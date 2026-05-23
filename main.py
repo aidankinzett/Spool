@@ -232,6 +232,7 @@ class App(ctk.CTk):
                 ctk.CTkButton(
                     self._results_box, text=g, anchor="w",
                     fg_color="transparent", hover_color=("gray85", "gray25"),
+                    text_color=("gray10", "gray90"),
                     command=lambda name=g: (self._name_var.set(name), self._results_box.pack_forget()),
                 ).pack(fill="x", pady=1)
         else:
