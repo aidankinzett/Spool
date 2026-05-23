@@ -18,6 +18,9 @@ namespace LudusaviWrap
 
         [JsonPropertyName("ludusavi_wrap_exe")]
         public string LudusaviWrapExe { get; set; } = "";
+
+        [JsonPropertyName("theme")]
+        public string Theme { get; set; } = "system";
     }
 
     [JsonSourceGenerationOptions(WriteIndented = true)]

@@ -7,7 +7,7 @@
         ResizeMode="NoResize"
         WindowStartupLocation="CenterScreen"
         WindowStyle="SingleBorderWindow"
-        Background="{StaticResource WindowBgBrush}">
+        Background="{DynamicResource WindowBgBrush}">
 
     <Grid Margin="24">
         <Grid.RowDefinitions>
@@ -28,9 +28,9 @@
                 <TextBlock Text="Ludusavi Wrap" 
                            FontSize="22" 
                            FontWeight="Bold" 
-                           Foreground="{StaticResource TextBrush}"/>
+                           Foreground="{DynamicResource TextBrush}"/>
                 <TextBlock Text="Generate a save-managed launcher .exe for Armoury Crate" 
-                           Foreground="{StaticResource TextMutedBrush}"
+                           Foreground="{DynamicResource TextMutedBrush}"
                            FontSize="12"
                            Margin="0,2,0,0"/>
             </StackPanel>
@@ -43,7 +43,7 @@
         </Grid>
 
         <!-- Separator -->
-        <Border BorderBrush="{StaticResource BorderBrush}" 
+        <Border BorderBrush="{DynamicResource BorderBrush}" 
                 BorderThickness="0,1,0,0" 
                 Margin="0,16,0,16" 
                 Grid.Row="1"/>
@@ -58,7 +58,7 @@
                     <ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
                 <TextBlock Text="Executable" 
-                           Foreground="{StaticResource TextBrush}" 
+                           Foreground="{DynamicResource TextBrush}" 
                            VerticalAlignment="Center"
                            Grid.Column="0"/>
                 <TextBox x:Name="ExePathTextBox" 
@@ -81,7 +81,7 @@
                     <ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
                 <TextBlock Text="Game Name" 
-                           Foreground="{StaticResource TextBrush}" 
+                           Foreground="{DynamicResource TextBrush}" 
                            VerticalAlignment="Center"
                            Grid.Column="0"/>
                 <TextBox x:Name="GameNameTextBox" 
@@ -108,7 +108,7 @@
                         <ListBox x:Name="ResultsListBox" 
                                  Background="Transparent" 
                                  BorderThickness="0" 
-                                 Foreground="{StaticResource TextBrush}"
+                                 Foreground="{DynamicResource TextBrush}"
                                  SelectionChanged="ResultsListBox_SelectionChanged">
                             <ListBox.ItemContainerStyle>
                                 <Style TargetType="ListBoxItem">
@@ -129,7 +129,7 @@
                                             <Setter Property="Background" Value="#33FFFFFF"/>
                                         </Trigger>
                                         <Trigger Property="IsSelected" Value="True">
-                                            <Setter Property="Background" Value="{StaticResource AccentBrush}"/>
+                                            <Setter Property="Background" Value="{DynamicResource AccentBrush}"/>
                                         </Trigger>
                                     </Style.Triggers>
                                 </Style>
