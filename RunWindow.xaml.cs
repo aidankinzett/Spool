@@ -1,6 +1,7 @@
 using System;
 using System.Diagnostics;
 using System.IO;
+using System.Text;
 using System.Threading.Tasks;
 using System.Windows;
 
@@ -51,11 +52,12 @@ namespace LudusaviWrap
 
             // 1. Restore saves
             StatusLabel.Text = $"Restoring saves for '{_gameName}'...";
-            
+            ClearOutput();
+
             ProcessResult restoreResult;
             try
             {
-                restoreResult = await RunProcessAsync(ludusavi, $"restore --api --cloud-sync --force \"{_gameName}\"");
+                restoreResult = await RunProcessAsync(ludusavi, $"restore --api --cloud-sync --force \"{_gameName}\"", AppendOutput);
             }
             catch (Exception ex)
             {
@@ -119,10 +121,11 @@ namespace LudusaviWrap
 
             // 3. Backup saves
             StatusLabel.Text = $"Backing up saves for '{_gameName}'...";
+            ClearOutput();
 
             try
             {
-                var backupResult = await RunProcessAsync(ludusavi, $"backup --force --cloud-sync \"{_gameName}\"");
+                var backupResult = await RunProcessAsync(ludusavi, $"backup --force --cloud-sync \"{_gameName}\"", AppendOutput);
                 if (backupResult.ExitCode != 0)
                 {
                     MessageBox.Show("Ludusavi backup failed. Your saves may not have been uploaded to the cloud.",
@@ -135,8 +138,29 @@ namespace LudusaviWrap
             }
         }
 
-        private async Task<ProcessResult> RunProcessAsync(string filename, string arguments)
+        private void AppendOutput(string line)
         {
+            Dispatcher.BeginInvoke(() =>
+            {
+                if (OutputPanel.Visibility == Visibility.Collapsed)
+                    OutputPanel.Visibility = Visibility.Visible;
+
+                OutputText.Text += (OutputText.Text.Length > 0 ? "\n" : "") + line;
+                OutputScroll.ScrollToEnd();
+            });
+        }
+
+        private void ClearOutput()
+        {
+            OutputText.Text = "";
+            OutputPanel.Visibility = Visibility.Collapsed;
+        }
+
+        private async Task<ProcessResult> RunProcessAsync(string filename, string arguments, Action<string>? onOutput = null)
+        {
+            var outputBuilder = new StringBuilder();
+            var errorBuilder = new StringBuilder();
+
             var process = new Process
             {
                 StartInfo = new ProcessStartInfo
@@ -147,24 +171,39 @@ namespace LudusaviWrap
                     RedirectStandardOutput = true,
                     RedirectStandardError = true,
                     CreateNoWindow = true
+                },
+                EnableRaisingEvents = true
+            };
+
+            process.OutputDataReceived += (sender, e) =>
+            {
+                if (e.Data is not null)
+                {
+                    outputBuilder.AppendLine(e.Data);
+                    onOutput?.Invoke(e.Data);
+                }
+            };
+
+            process.ErrorDataReceived += (sender, e) =>
+            {
+                if (e.Data is not null)
+                {
+                    errorBuilder.AppendLine(e.Data);
+                    onOutput?.Invoke(e.Data);
                 }
             };
 
             process.Start();
-
-            var outputTask = process.StandardOutput.ReadToEndAsync();
-            var errorTask = process.StandardError.ReadToEndAsync();
+            process.BeginOutputReadLine();
+            process.BeginErrorReadLine();
 
             await process.WaitForExitAsync();
-
-            string output = await outputTask;
-            string error = await errorTask;
 
             var result = new ProcessResult
             {
                 ExitCode = process.ExitCode,
-                Output = output,
-                Error = error
+                Output = outputBuilder.ToString(),
+                Error = errorBuilder.ToString()
             };
 
             process.Dispose();
