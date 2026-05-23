@@ -75,19 +75,17 @@ namespace LudusaviWrap
             return searchResponse?.Data ?? new List<SgdbSearchResult>();
         }
 
-        public async Task<string?> DownloadGridImageAsync(int gameId, string safeGameName, string destDir)
+        // Downloads the first result from an SGDB list endpoint to destPath (including extension).
+        // Returns the saved path on success, null if no results or download fails.
+        private async Task<string?> DownloadFirstAsync(string apiUrl, string destPathNoExt)
         {
-            string gridUrl = $"https://www.steamgriddb.com/api/v2/grids/game/{gameId}?dimensions=460x215,920x430";
-            using var req = CreateRequest(gridUrl);
+            using var req = CreateRequest(apiUrl);
             using var resp = await HttpClient.SendAsync(req);
-            resp.EnsureSuccessStatusCode();
+            if (!resp.IsSuccessStatusCode) return null;
 
             string json = await resp.Content.ReadAsStringAsync();
             var gridResponse = JsonSerializer.Deserialize(json, SgdbSourceGenerationContext.Default.SgdbGridResponse);
-            if (gridResponse?.Data == null || gridResponse.Data.Count == 0)
-            {
-                return null;
-            }
+            if (gridResponse?.Data == null || gridResponse.Data.Count == 0) return null;
 
             string imageUrl = gridResponse.Data[0].Url;
             string mimeType = gridResponse.Data[0].Mime;
@@ -95,19 +93,41 @@ namespace LudusaviWrap
             {
                 "image/png" => ".png",
                 "image/webp" => ".webp",
-                _ => ".jpg" // Fallback to jpg
+                _ => ".jpg"
             };
 
-            // Download image data
             using var imgResp = await HttpClient.GetAsync(imageUrl);
-            imgResp.EnsureSuccessStatusCode();
+            if (!imgResp.IsSuccessStatusCode) return null;
             byte[] imgBytes = await imgResp.Content.ReadAsByteArrayAsync();
 
-            Directory.CreateDirectory(destDir);
-            string destPath = Path.Combine(destDir, $"{safeGameName}{ext}");
+            string destPath = destPathNoExt + ext;
+            Directory.CreateDirectory(Path.GetDirectoryName(destPath)!);
             await File.WriteAllBytesAsync(destPath, imgBytes);
-
             return destPath;
         }
+
+        // Horizontal grid (460x215 / 920x430) — used for the Armoury Crate cover and as fallback.
+        public Task<string?> DownloadGridImageAsync(int gameId, string safeGameName, string destDir) =>
+            DownloadFirstAsync(
+                $"https://www.steamgriddb.com/api/v2/grids/game/{gameId}?dimensions=460x215,920x430",
+                Path.Combine(destDir, safeGameName));
+
+        // Portrait/vertical grid (600x900 etc.) — shown in the modern Steam library grid view.
+        public Task<string?> DownloadPortraitAsync(int gameId, string destPathNoExt) =>
+            DownloadFirstAsync(
+                $"https://www.steamgriddb.com/api/v2/grids/game/{gameId}?dimensions=600x900,342x482,660x930",
+                destPathNoExt);
+
+        // Hero banner image — shown at the top of the game's Steam page.
+        public Task<string?> DownloadHeroAsync(int gameId, string destPathNoExt) =>
+            DownloadFirstAsync(
+                $"https://www.steamgriddb.com/api/v2/heroes/game/{gameId}",
+                destPathNoExt);
+
+        // Logo (transparent PNG) — overlaid on the hero image.
+        public Task<string?> DownloadLogoAsync(int gameId, string destPathNoExt) =>
+            DownloadFirstAsync(
+                $"https://www.steamgriddb.com/api/v2/logos/game/{gameId}",
+                destPathNoExt);
     }
 }

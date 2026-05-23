@@ -136,16 +136,30 @@
                 </Grid>
             </StackPanel>
 
-            <!-- Generate button -->
-            <ui:Button x:Name="GenerateButton"
-                       Content="Generate Wrapper"
-                       Appearance="Primary"
-                       Height="40"
-                       FontSize="14"
-                       HorizontalAlignment="Stretch"
-                       Click="Generate_Click"
-                       Margin="0,8,0,16"
-                       Grid.Row="3"/>
+            <!-- Action buttons -->
+            <Grid Grid.Row="3" Margin="0,8,0,16">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="8"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+                <ui:Button x:Name="GenerateArmouryCrateButton"
+                           Grid.Column="0"
+                           Content="Generate for Armoury Crate"
+                           Appearance="Secondary"
+                           Height="40"
+                           FontSize="13"
+                           HorizontalAlignment="Stretch"
+                           Click="GenerateArmouryCrate_Click"/>
+                <ui:Button x:Name="AddToSteamButton"
+                           Grid.Column="2"
+                           Content="Add to Steam"
+                           Appearance="Primary"
+                           Height="40"
+                           FontSize="13"
+                           HorizontalAlignment="Stretch"
+                           Click="AddToSteam_Click"/>
+            </Grid>
 
             <!-- Status label -->
             <TextBlock x:Name="StatusLabel"

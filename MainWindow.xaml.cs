@@ -202,7 +202,14 @@ namespace LudusaviWrap
             }
         }
 
-        private async void Generate_Click(object sender, RoutedEventArgs e)
+        private void SetButtonsEnabled(bool enabled)
+        {
+            GenerateArmouryCrateButton.IsEnabled = enabled;
+            AddToSteamButton.IsEnabled = enabled;
+        }
+
+        // Returns (launcherExePath, safeName) on success, null on validation failure or error
+        private async Task<(string exePath, string safeName)?> GenerateLauncherAsync()
         {
             string exe = ExePathTextBox.Text.Trim();
             string name = GameNameTextBox.Text.Trim();
@@ -210,24 +217,24 @@ namespace LudusaviWrap
             if (string.IsNullOrEmpty(exe))
             {
                 ShowStatus("Please select a game executable.", success: false);
-                return;
+                return null;
             }
             if (string.IsNullOrEmpty(name))
             {
                 ShowStatus("Please enter a Ludusavi game name.", success: false);
-                return;
+                return null;
             }
             if (!_config.IsLudusaviOk)
             {
                 ShowStatus("Ludusavi not found - open Settings to configure it.", success: false);
-                return;
+                return null;
             }
 
             string safe = MakeSafeFilename(name);
             if (string.IsNullOrEmpty(safe))
             {
                 ShowStatus("Game name contains only invalid filename characters.", success: false);
-                return;
+                return null;
             }
 
             string appData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
@@ -238,14 +245,13 @@ namespace LudusaviWrap
             {
                 Directory.CreateDirectory(launchersDir);
 
-                // Write the embedded launcher_stub.exe
                 var assembly = Assembly.GetExecutingAssembly();
                 using (var stream = assembly.GetManifestResourceStream("launcher_stub.exe"))
                 {
                     if (stream == null)
                     {
                         ShowStatus("Launcher stub executable resource not found.", success: false);
-                        return;
+                        return null;
                     }
                     using (var fileStream = new FileStream(exePath, FileMode.Create, FileAccess.Write))
                     {
@@ -256,7 +262,7 @@ namespace LudusaviWrap
             catch (Exception ex)
             {
                 ShowStatus($"Failed to copy launcher stub: {ex.Message}", success: false);
-                return;
+                return null;
             }
 
             string ludusaviWrapExe = _config.Data.LudusaviWrapExe;
@@ -274,21 +280,126 @@ namespace LudusaviWrap
             {
                 try { File.Delete(exePath); } catch { }
                 ShowStatus($"Failed to write launcher configuration: {ex.Message}", success: false);
-                return;
+                return null;
             }
 
-            ShowStatus("", success: true);
-            _successWindow = new SuccessWindow(this, name, exePath);
+            return (exePath, safe);
+        }
 
-            // Fetch SteamGridDB Art in background if enabled
-            if (_config.Data.SteamGridDbEnabled && !string.IsNullOrEmpty(_config.Data.SteamGridDbApiKey))
+        private async void GenerateArmouryCrate_Click(object sender, RoutedEventArgs e)
+        {
+            SetButtonsEnabled(false);
+            try
             {
-                _successWindow.UpdateArtwork("Fetching cover image...", "#99FFFFFF");
-                _ = Task.Run(() => FetchCoverArtAsync(name, safe, exePath));
-            }
+                var result = await GenerateLauncherAsync();
+                if (result == null) return;
 
-            _successWindow.ShowDialog();
-            ClearForm();
+                var (exePath, safeName) = result.Value;
+                string name = GameNameTextBox.Text.Trim();
+
+                ShowStatus("", success: true);
+                _successWindow = new SuccessWindow(this, name, exePath, SuccessMode.ArmouryCrate);
+
+                if (_config.Data.SteamGridDbEnabled && !string.IsNullOrEmpty(_config.Data.SteamGridDbApiKey))
+                {
+                    _successWindow.UpdateArtwork("Fetching cover image...", "#99FFFFFF");
+                    _ = Task.Run(() => FetchCoverArtAsync(name, safeName, exePath));
+                }
+
+                _successWindow.ShowDialog();
+                ClearForm();
+            }
+            finally
+            {
+                SetButtonsEnabled(true);
+            }
+        }
+
+        private async void AddToSteam_Click(object sender, RoutedEventArgs e)
+        {
+            SetButtonsEnabled(false);
+            try
+            {
+                var result = await GenerateLauncherAsync();
+                if (result == null) return;
+
+                var (launcherExePath, safeName) = result.Value;
+                string name = GameNameTextBox.Text.Trim();
+
+                string? steamPath = SteamIntegration.GetSteamInstallPath();
+                if (steamPath == null)
+                {
+                    ShowStatus("Steam installation not found. Is Steam installed?", success: false);
+                    return;
+                }
+
+                var users = SteamIntegration.GetSteamUsers(steamPath);
+                if (users.Count == 0)
+                {
+                    ShowStatus("No Steam user profiles found. Launch Steam at least once to create your profile.", success: false);
+                    return;
+                }
+
+                var targetUser = users.OrderByDescending(u => u.LastModified).First();
+
+                if (SteamIntegration.IsSteamRunning())
+                {
+                    var answer = MessageBox.Show(
+                        "Steam is currently running. Writing to shortcuts.vdf while Steam is open may cause your changes to be overwritten when Steam exits.\n\nClose Steam first, or the shortcut may not appear.\n\nContinue anyway?",
+                        "Steam Is Running",
+                        MessageBoxButton.YesNo,
+                        MessageBoxImage.Warning);
+                    if (answer == MessageBoxResult.No)
+                        return;
+                }
+
+                VDFParser.Models.VDFEntry[] entries;
+                try
+                {
+                    entries = SteamIntegration.ReadShortcuts(targetUser.ShortcutsPath);
+                }
+                catch (Exception ex)
+                {
+                    ShowStatus($"Failed to read shortcuts.vdf: {ex.Message}", success: false);
+                    return;
+                }
+
+                string startDir = Path.GetDirectoryName(launcherExePath) ?? "";
+                SteamIntegration.UpsertShortcut(ref entries, name, launcherExePath, startDir);
+
+                try
+                {
+                    SteamIntegration.WriteShortcuts(targetUser.ShortcutsPath, entries);
+                }
+                catch (Exception ex)
+                {
+                    ShowStatus($"Failed to write shortcuts.vdf: {ex.Message}", success: false);
+                    return;
+                }
+
+                uint appId = SteamIntegration.CalculateAppId(launcherExePath, name);
+
+                ShowStatus("", success: true);
+                string multiUserNote = users.Count > 1 ? $" (Steam user {targetUser.UserId})" : "";
+                _successWindow = new SuccessWindow(this, name, launcherExePath, SuccessMode.Steam);
+
+                if (_config.Data.SteamGridDbEnabled && !string.IsNullOrEmpty(_config.Data.SteamGridDbApiKey))
+                {
+                    _successWindow.UpdateArtwork($"Fetching cover image{multiUserNote}...", "#99FFFFFF");
+                    _ = Task.Run(() => FetchCoverArtForSteamAsync(name, safeName, steamPath, targetUser.UserId, appId, multiUserNote));
+                }
+                else if (users.Count > 1)
+                {
+                    _successWindow.UpdateArtwork($"Added to Steam user {targetUser.UserId}", "#4CAF50");
+                }
+
+                _successWindow.ShowDialog();
+                ClearForm();
+            }
+            finally
+            {
+                SetButtonsEnabled(true);
+            }
         }
 
         private async Task FetchCoverArtAsync(string gameName, string safeName, string exePath)
@@ -315,6 +426,72 @@ namespace LudusaviWrap
                 else
                 {
                     Dispatcher.Invoke(() => _successWindow?.UpdateArtwork($"Cover art: {imgPath}", "#4CAF50"));
+                }
+            }
+            catch (Exception ex)
+            {
+                Dispatcher.Invoke(() => _successWindow?.UpdateArtwork($"⚠ Artwork error: {ex.Message}", "#FFC107"));
+            }
+        }
+
+        private async Task FetchCoverArtForSteamAsync(
+            string gameName,
+            string safeName,
+            string steamPath,
+            string userId,
+            uint appId,
+            string multiUserNote)
+        {
+            string appData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+            string coversDir = Path.Combine(appData, "ludusavi-wrap", "covers");
+            string gridDir = Path.Combine(steamPath, "userdata", userId, "config", "grid");
+
+            try
+            {
+                var sgdb = new SteamGridDbClient(_config.Data.SteamGridDbApiKey);
+                var searchResults = await sgdb.SearchGameAsync(gameName);
+                if (searchResults.Count == 0)
+                {
+                    Dispatcher.Invoke(() => _successWindow?.UpdateArtwork("⚠ Artwork: Game not found on SteamGridDB", "#FFC107"));
+                    return;
+                }
+
+                int gameId = searchResults[0].Id;
+                Directory.CreateDirectory(coversDir);
+                Directory.CreateDirectory(gridDir);
+
+                // Fetch all four image types in parallel
+                string gridBase = Path.Combine(gridDir, appId.ToString());
+                var tHorizontal = sgdb.DownloadGridImageAsync(gameId, safeName, coversDir);
+                var tPortrait   = sgdb.DownloadPortraitAsync(gameId, gridBase + "p");
+                var tHero       = sgdb.DownloadHeroAsync(gameId, gridBase + "_hero");
+                var tLogo       = sgdb.DownloadLogoAsync(gameId, gridBase + "_logo");
+                await Task.WhenAll(tHorizontal, tPortrait, tHero, tLogo);
+                string? horizontal = tHorizontal.Result;
+                string? portrait   = tPortrait.Result;
+                string? hero       = tHero.Result;
+                string? logo       = tLogo.Result;
+
+                // Copy horizontal grid to Steam (portrait/hero/logo already written directly to grid dir)
+                SteamIntegration.CopyGridImage(horizontal, steamPath, userId, appId, suffix: "");
+
+                int copied = new[] { horizontal, portrait, hero, logo }.Count(p => p != null);
+                if (copied == 0)
+                {
+                    Dispatcher.Invoke(() => _successWindow?.UpdateArtwork(
+                        $"⚠ Artwork: No images found on SteamGridDB{multiUserNote}", "#FFC107"));
+                }
+                else
+                {
+                    string detail = string.Join(", ", new[]
+                    {
+                        horizontal != null ? "grid" : null,
+                        portrait  != null ? "portrait" : null,
+                        hero      != null ? "hero" : null,
+                        logo      != null ? "logo" : null,
+                    }.Where(s => s != null));
+                    Dispatcher.Invoke(() => _successWindow?.UpdateArtwork(
+                        $"Art added to Steam ({detail}){multiUserNote}", "#4CAF50"));
                 }
             }
             catch (Exception ex)

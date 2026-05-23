@@ -14,7 +14,8 @@
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
-        <ui:TitleBar Title="Ready for Armoury Crate"
+        <ui:TitleBar x:Name="TitleBar"
+                     Title="Ready for Armoury Crate"
                      ShowMaximize="False"
                      ShowMinimize="False"
                      Grid.Row="0"/>
@@ -88,13 +89,24 @@
                            FontWeight="Bold"
                            FontSize="13"
                            Margin="0,0,0,6"/>
-                <TextBlock Foreground="{DynamicResource TextFillColorSecondaryBrush}"
-                           LineHeight="18"
-                           TextWrapping="Wrap">
-                    1.  Open Armoury Crate → Library → Manage Library (Add Game)<LineBreak/>
-                    2.  Browse and select the generated launcher .exe<LineBreak/>
-                    3.  (Optional) Add cover art manually if downloaded (path shown below)
-                </TextBlock>
+                <StackPanel x:Name="ArmouryCrateSteps">
+                    <TextBlock Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                               LineHeight="18"
+                               TextWrapping="Wrap">
+                        1.  Open Armoury Crate → Library → Manage Library (Add Game)<LineBreak/>
+                        2.  Browse and select the generated launcher .exe<LineBreak/>
+                        3.  (Optional) Add cover art manually if downloaded (path shown below)
+                    </TextBlock>
+                </StackPanel>
+                <StackPanel x:Name="SteamSteps" Visibility="Collapsed">
+                    <TextBlock Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                               LineHeight="18"
+                               TextWrapping="Wrap">
+                        1.  Restart Steam — changes to shortcuts.vdf are loaded at startup<LineBreak/>
+                        2.  The game will appear under "Non-Steam Games" in your library<LineBreak/>
+                        3.  Cover art has been placed in your Steam grid folder automatically
+                    </TextBlock>
+                </StackPanel>
             </StackPanel>
 
             <!-- Cover art status -->
@@ -115,7 +127,8 @@
                            Width="180"
                            Click="OpenFolder_Click"
                            Margin="0,0,12,0"/>
-                <ui:Button Content="New Wrapper"
+                <ui:Button x:Name="NewWrapperButton"
+                           Content="New Wrapper"
                            Appearance="Secondary"
                            Width="110"
                            Click="Close_Click"/>

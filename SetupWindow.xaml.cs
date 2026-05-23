@@ -4,6 +4,7 @@ using System.IO;
 using System.Windows;
 using System.Windows.Controls;
 using Microsoft.Win32;
+using Wpf.Ui.Appearance;
 
 namespace LudusaviWrap
 {
@@ -15,7 +16,15 @@ namespace LudusaviWrap
 
         public SetupWindow(Config config, bool isFirstRun = false)
         {
+            // Must be called before InitializeComponent so the window backdrop and
+            // DWM dark-mode attribute are set before the visual tree is rendered.
+            SystemThemeWatcher.Watch(this);
+
             InitializeComponent();
+
+            // Re-apply the configured app theme so dialogs follow the user's preference
+            // rather than the Windows system theme (they may differ).
+            ThemeManager.ApplyTheme(config.Data.Theme);
             _config = config;
             _isFirstRun = isFirstRun;
 

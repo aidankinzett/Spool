@@ -7,12 +7,14 @@ using System.Windows.Media;
 
 namespace LudusaviWrap
 {
+    public enum SuccessMode { ArmouryCrate, Steam }
+
     public partial class SuccessWindow : Wpf.Ui.Controls.FluentWindow
     {
         private readonly string _gameName;
         private readonly string _exePath;
 
-        public SuccessWindow(Window owner, string gameName, string exePath)
+        public SuccessWindow(Window owner, string gameName, string exePath, SuccessMode mode = SuccessMode.ArmouryCrate)
         {
             InitializeComponent();
             Owner = owner;
@@ -21,6 +23,19 @@ namespace LudusaviWrap
 
             GameNameTextBox.Text = _gameName;
             LauncherPathTextBox.Text = _exePath;
+            ApplyMode(mode);
+        }
+
+        private void ApplyMode(SuccessMode mode)
+        {
+            if (mode == SuccessMode.Steam)
+            {
+                Title = "Added to Steam";
+                TitleBar.Title = "Added to Steam";
+                ArmouryCrateSteps.Visibility = Visibility.Collapsed;
+                SteamSteps.Visibility = Visibility.Visible;
+                NewWrapperButton.Content = "Close";
+            }
         }
 
         private async void CopyText(string text, Button btn)

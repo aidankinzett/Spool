@@ -29,6 +29,7 @@
 
   <ItemGroup>
     <PackageReference Include="Autoupdater.NET.Official" Version="1.9.2" />
+    <PackageReference Include="VDFParser.dotnet" Version="1.1.0" />
     <PackageReference Include="WPF-UI" Version="3.*" />
   </ItemGroup>
 
