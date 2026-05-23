@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import threading
+import shutil
 import urllib.parse
 
 import requests
@@ -48,6 +49,14 @@ class Config:
             "steamgriddb_api_key": "",
         }
         self._load()
+        self._autodetect()
+
+    def _autodetect(self):
+        if not self.data.get("ludusavi_path"):
+            found = shutil.which("ludusavi")
+            if found:
+                self.data["ludusavi_path"] = os.path.normpath(found)
+                self.save()
 
     def _load(self):
         if os.path.exists(CONFIG_PATH):
