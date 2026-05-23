@@ -51,16 +51,20 @@ namespace LudusaviWrap
         {
             // AutoUpdater reads the assembly version automatically — no InstalledVersion override needed.
             // The assembly version is stamped from the git tag via /p:Version during dotnet publish.
+            // Start() MUST be called from the UI thread: AutoUpdater captures SynchronizationContext.Current
+            // to marshal CheckForUpdateEvent back to the UI thread. Task.Run strips that context, which
+            // prevents the update dialog from ever appearing.
             AutoUpdaterDotNET.AutoUpdater.ShowSkipButton = false;
             AutoUpdaterDotNET.AutoUpdater.ShowRemindLaterButton = false;
+            AutoUpdaterDotNET.AutoUpdater.SetOwner(this);
             AutoUpdaterDotNET.AutoUpdater.CheckForUpdateEvent += (args) =>
             {
                 if (args.Error != null) return; // silently ignore network/parse failures
                 if (args.IsUpdateAvailable)
                     AutoUpdaterDotNET.AutoUpdater.ShowUpdateForm(args);
             };
-            Task.Run(() => AutoUpdaterDotNET.AutoUpdater.Start(
-                "https://raw.githubusercontent.com/aidankinzett/ludusavi-wrap/main/update.xml"));
+            AutoUpdaterDotNET.AutoUpdater.Start(
+                "https://raw.githubusercontent.com/aidankinzett/ludusavi-wrap/main/update.xml");
         }
 
         private void Settings_Click(object sender, RoutedEventArgs e)
