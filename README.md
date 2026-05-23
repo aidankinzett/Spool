@@ -2,7 +2,7 @@
 
 A small Windows GUI that wraps any game executable with [ludusavi](https://github.com/mtkennerly/ludusavi) save management and generates a `.bat` launcher ready to add to [Armoury Crate](https://rog.asus.com/armoury-crate/).
 
-The generated launcher automatically **restores your saves before the game starts** and **backs them up when you close it** — using ludusavi's built-in `wrap` command.
+The generated launcher automatically **restores your saves before the game starts** and **backs them up when you close it**, with cloud sync support. If a cloud conflict is detected at launch, a dialog lets you open Ludusavi to resolve it before the game runs.
 
 ## Download
 
@@ -44,6 +44,6 @@ To build a standalone exe locally:
 
 ```
 uv sync --dev
-uv run pyinstaller --onefile --windowed --collect-all customtkinter --name ludusavi-wrap main.py
+uv run pyinstaller --onefile --windowed --collect-all customtkinter --add-data "themes;themes" --name ludusavi-wrap main.py
 # output: dist/ludusavi-wrap.exe
 ```

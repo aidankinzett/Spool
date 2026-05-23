@@ -29,7 +29,7 @@ The entire application lives in a single `main.py` file with four classes:
 
 - **`Config`**: Manages persistent JSON config, auto-detects `ludusavi.exe`, and handles both frozen (PyInstaller) and dev execution contexts. Config path is `%APPDATA%\ludusavi-wrap\config.json` when frozen, `./config.json` in dev.
 - **`SetupDialog`**: Modal settings window for ludusavi path and SteamGridDB API key.
-- **`CopyDialog`**: Post-generation dialog showing the .bat path and game name with copy-to-clipboard buttons.
+- **`SuccessDialog`**: Post-generation dialog showing the .bat path and game name with copy-to-clipboard buttons.
 - **`App`**: Main tkinter window driving three core workflows:
   1. **Executable selection** — file browse dialog filtered to `*.exe`
   2. **Game name search** — calls `ludusavi find --api --fuzzy --multiple <query>` via subprocess, parses JSON results into a dropdown
@@ -39,5 +39,5 @@ The entire application lives in a single `main.py` file with four classes:
 
 - **Thread safety**: Long-running work (ludusavi subprocess, SteamGridDB API) runs on daemon threads; UI updates are marshalled back via `self.after(0, callback)`.
 - **Window resizing**: The window auto-resizes to content height after state changes.
-- **BAT template**: `BAT_TEMPLATE` constant contains the full batch file with error-checking; game name and exe path are substituted at generation time.
+- **BAT template**: `BAT_TEMPLATE` constant contains the full batch file. At runtime it: restores saves via `ludusavi restore --api --cloud-sync --force`, checks the JSON output for cloud conflicts (shows a Yes/No dialog offering to open Ludusavi if found), launches the game via `start /wait`, then backs up via `ludusavi backup --force --cloud-sync`. Failures at restore or backup show a PowerShell `MessageBox`. Game name and exe path are substituted at generation time via `.format()`; literal `{`/`}` in the batch script must be escaped as `{{`/`}}`.
 - **Windows-only**: Uses `os.startfile()`, `TabTip.exe` for touch keyboard (ROG Ally support), and `.bat` file generation.
