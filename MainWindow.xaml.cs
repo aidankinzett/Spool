@@ -47,24 +47,34 @@ namespace LudusaviWrap
             Loaded += MainWindow_Loaded;
         }
 
+        private bool _updateCheckSubscribed = false;
+
         private void MainWindow_Loaded(object sender, RoutedEventArgs e)
         {
-            // AutoUpdater reads the assembly version automatically — no InstalledVersion override needed.
-            // The assembly version is stamped from the git tag via /p:Version during dotnet publish.
+            // InstalledVersion is set explicitly because single-file exe bundling can prevent
+            // AutoUpdater from reading the assembly version via reflection on its own.
             // Start() MUST be called from the UI thread: AutoUpdater captures SynchronizationContext.Current
-            // to marshal CheckForUpdateEvent back to the UI thread. Task.Run strips that context, which
-            // prevents the update dialog from ever appearing.
+            // to marshal CheckForUpdateEvent back to the UI thread.
+            if (System.Version.TryParse(Version, out var parsedVersion))
+                AutoUpdaterDotNET.AutoUpdater.InstalledVersion = parsedVersion;
+
             AutoUpdaterDotNET.AutoUpdater.ShowSkipButton = false;
             AutoUpdaterDotNET.AutoUpdater.ShowRemindLaterButton = false;
             AutoUpdaterDotNET.AutoUpdater.SetOwner(this);
-            AutoUpdaterDotNET.AutoUpdater.CheckForUpdateEvent += (args) =>
+
+            if (!_updateCheckSubscribed)
             {
-                if (args.Error != null) return; // silently ignore network/parse failures
-                if (args.IsUpdateAvailable)
-                    AutoUpdaterDotNET.AutoUpdater.ShowUpdateForm(args);
-            };
+                _updateCheckSubscribed = true;
+                AutoUpdaterDotNET.AutoUpdater.CheckForUpdateEvent += (args) =>
+                {
+                    if (args.Error != null) return;
+                    if (args.IsUpdateAvailable)
+                        AutoUpdaterDotNET.AutoUpdater.ShowUpdateForm(args);
+                };
+            }
+
             AutoUpdaterDotNET.AutoUpdater.Start(
-                "https://raw.githubusercontent.com/aidankinzett/ludusavi-wrap/main/update.xml");
+                "https://raw.githubusercontent.com/aidankinzett/ludusavi-wrap/master/update.xml");
         }
 
         private void Settings_Click(object sender, RoutedEventArgs e)
