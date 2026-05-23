@@ -113,7 +113,7 @@ namespace LudusaviWrap
                     byte b = (byte)((abgr >> 16) & 0xFF);
                     var brush = new SolidColorBrush(Color.FromRgb(r, g, b));
                     brush.Freeze();
-                    Resources["SystemAccentBrush"] = brush;
+                    Resources["AccentBrush"] = brush;
                     Log($"Accent color applied: #{r:X2}{g:X2}{b:X2}");
                 }
             }

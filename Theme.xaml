@@ -8,6 +8,7 @@
     
     <SolidColorBrush x:Key="TextBrush" Color="{DynamicResource {x:Static SystemColors.ControlTextColorKey}}"/>
     <SolidColorBrush x:Key="TextMutedBrush" Color="#666666"/>
+    <SolidColorBrush x:Key="AccentBrush" Color="#0078D4"/>
     
     <SolidColorBrush x:Key="InputBgBrush" Color="{DynamicResource {x:Static SystemColors.WindowColorKey}}"/>
     <SolidColorBrush x:Key="InputBorderBrush" Color="#CCCCCC"/>
