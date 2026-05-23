@@ -57,15 +57,19 @@ jobs:
             dist/ludusavi-wrap-setup.exe
           generate_release_notes: true
 
-      - name: Commit update.xml to master
+      - name: Commit version updates to master
         shell: pwsh
         run: |
+          $csContent = Get-Content MainWindow.xaml.cs -Raw
+          $issContent = Get-Content installer.iss -Raw
           $xmlContent = Get-Content update.xml -Raw
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git fetch origin master
           git checkout -f master
+          Set-Content MainWindow.xaml.cs $csContent -NoNewline
+          Set-Content installer.iss $issContent -NoNewline
           Set-Content update.xml $xmlContent -Encoding utf8 -NoNewline
-          git add update.xml
-          git commit -m "chore: bump update.xml to ${{ github.ref_name }}"
+          git add MainWindow.xaml.cs installer.iss update.xml
+          git commit -m "chore: bump version files to ${{ github.ref_name }}"
           git push origin master
