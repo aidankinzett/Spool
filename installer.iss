@@ -3,7 +3,7 @@
 
 [Setup]
 AppName=Ludusavi Wrap
-AppVersion=1.0.3
+AppVersion=2.0.3
 DefaultDirName={userpf}\Ludusavi Wrap
 DefaultGroupName=Ludusavi Wrap
 UninstallDisplayIcon={app}\ludusavi-wrap.exe

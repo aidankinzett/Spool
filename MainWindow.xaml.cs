@@ -31,7 +31,7 @@ namespace LudusaviWrap
 
     public partial class MainWindow : Window
     {
-        public const string Version = "1.0.3";
+        public const string Version = "2.0.3";
 
         private readonly Config _config;
         private static readonly HttpClient HttpClient = new HttpClient();
@@ -41,12 +41,14 @@ namespace LudusaviWrap
         {
             InitializeComponent();
             _config = config;
+            Title = $"Ludusavi Wrap v{Version}";
 
             Loaded += MainWindow_Loaded;
         }
 
         private void MainWindow_Loaded(object sender, RoutedEventArgs e)
         {
+            AutoUpdaterDotNET.AutoUpdater.InstalledVersion = new Version(Version);
             AutoUpdaterDotNET.AutoUpdater.ShowSkipButton = false;
             AutoUpdaterDotNET.AutoUpdater.ShowRemindLaterButton = false;
             AutoUpdaterDotNET.AutoUpdater.CheckForUpdateEvent += (args) =>
