@@ -378,16 +378,17 @@ class App(ctk.CTk):
 
             game_id = results[0]["id"]
 
-            resp2 = requests.get(f"{SGDB_BASE}/heroes/game/{game_id}",
-                                 headers=headers, timeout=10)
+            resp2 = requests.get(f"{SGDB_BASE}/grids/game/{game_id}",
+                                 headers=headers, timeout=10,
+                                 params={"dimensions": "460x215,920x430"})
             resp2.raise_for_status()
-            heroes = resp2.json().get("data", [])
-            if not heroes:
-                self.after(0, self._on_artwork_error, "No hero images found on SteamGridDB")
+            grids = resp2.json().get("data", [])
+            if not grids:
+                self.after(0, self._on_artwork_error, "No horizontal grid images found on SteamGridDB")
                 return
 
-            img_url = heroes[0]["url"]
-            mime = heroes[0].get("mime", "image/jpeg")
+            img_url = grids[0]["url"]
+            mime = grids[0].get("mime", "image/jpeg")
             ext = MIME_EXT.get(mime, os.path.splitext(img_url)[1] or ".jpg")
 
             img_resp = requests.get(img_url, timeout=20)
