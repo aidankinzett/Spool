@@ -14,29 +14,30 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: astral-sh/setup-uv@v6
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v4
         with:
-          python-version: "3.13"
-
-      - name: Install dependencies
-        run: uv sync --dev
+          dotnet-version: '9.x'
 
       - name: Set version from tag
         shell: pwsh
         run: |
           $version = "${{ github.ref_name }}".TrimStart('v')
-          (Get-Content main.py) -replace 'VERSION = ".*"', "VERSION = `"$version`"" | Set-Content main.py
+          (Get-Content MainWindow.xaml.cs) -replace 'Version = ".*"', "Version = `"$version`"" | Set-Content MainWindow.xaml.cs
 
-      - name: Build executable
+      - name: Compile Launcher Stub
+        shell: pwsh
         run: |
-          uv run pyinstaller `
-            --onefile `
-            --windowed `
-            --collect-all customtkinter `
-            --add-data "themes;themes" `
-            --add-data "launcher_stub.exe;." `
-            --name ludusavi-wrap `
-            main.py
+          & "C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe" /target:winexe /win32icon:launcher_stub.ico /out:launcher_stub.exe launcher_stub.cs
+
+      - name: Restore dependencies
+        run: dotnet restore
+
+      - name: Publish Single-File App
+        shell: pwsh
+        run: |
+          $version = "${{ github.ref_name }}".TrimStart('v')
+          dotnet publish -c Release -r win-x64 --self-contained true /p:PublishSingleFile=true /p:Version=$version
 
       - name: Build Installer
         run: iscc installer.iss
@@ -45,6 +46,6 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            dist/ludusavi-wrap.exe
+            bin/Release/net9.0-windows/win-x64/publish/ludusavi-wrap.exe
             dist/ludusavi-wrap-setup.exe
           generate_release_notes: true
