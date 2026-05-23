@@ -65,14 +65,7 @@ namespace LudusaviWrap
                 return;
             }
 
-            if (restoreResult.ExitCode != 0)
-            {
-                MessageBox.Show($"Ludusavi restore failed. Game will not launch.\n\nDetails:\n{restoreResult.Output}\n{restoreResult.Error}",
-                                "Ludusavi Error", MessageBoxButton.OK, MessageBoxImage.Error);
-                return;
-            }
-
-            // Check for cloud conflicts
+            // Check for cloud conflicts before exit code — a conflict may itself cause a non-zero exit
             string combinedOutput = restoreResult.Output + restoreResult.Error;
             if (combinedOutput.Contains("cloudConflict") || combinedOutput.Contains("cloudSyncFailed"))
             {
@@ -94,6 +87,15 @@ namespace LudusaviWrap
                         MessageBox.Show($"Failed to open Ludusavi GUI:\n{ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
                     }
                 }
+                return;
+            }
+
+            if (restoreResult.ExitCode != 0)
+            {
+                // Prefer stderr for human-readable details; fall back to stdout (JSON when --api is used)
+                string details = string.IsNullOrWhiteSpace(restoreResult.Error) ? restoreResult.Output : restoreResult.Error;
+                MessageBox.Show($"Ludusavi restore failed. Game will not launch.\n\nDetails:\n{details.Trim()}",
+                                "Ludusavi Error", MessageBoxButton.OK, MessageBoxImage.Error);
                 return;
             }
 
@@ -126,9 +128,16 @@ namespace LudusaviWrap
             try
             {
                 var backupResult = await RunProcessAsync(ludusavi, $"backup --force --cloud-sync \"{_gameName}\"", AppendOutput);
-                if (backupResult.ExitCode != 0)
+                string backupCombined = backupResult.Output + backupResult.Error;
+                if (backupCombined.Contains("cloudConflict") || backupCombined.Contains("cloudSyncFailed"))
                 {
-                    MessageBox.Show("Ludusavi backup failed. Your saves may not have been uploaded to the cloud.",
+                    MessageBox.Show($"Cloud sync conflict detected during backup for '{_gameName}'. Your saves are backed up locally but may not be synced to the cloud. Open Ludusavi to resolve.",
+                                    "Ludusavi - Cloud Sync Warning", MessageBoxButton.OK, MessageBoxImage.Warning);
+                }
+                else if (backupResult.ExitCode != 0)
+                {
+                    string details = string.IsNullOrWhiteSpace(backupResult.Error) ? backupResult.Output : backupResult.Error;
+                    MessageBox.Show($"Ludusavi backup failed. Your saves may not have been backed up.\n\nDetails:\n{details.Trim()}",
                                     "Ludusavi Warning", MessageBoxButton.OK, MessageBoxImage.Warning);
                 }
             }
