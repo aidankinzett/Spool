@@ -28,6 +28,10 @@ CONFIG_PATH = _config_path()
 SGDB_BASE = "https://www.steamgriddb.com/api/v2"
 MIME_EXT = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp"}
 
+VERSION = "1.0.3"
+RELEASES_API = "https://api.github.com/repos/aidankinzett/ludusavi-wrap/releases/latest"
+RELEASES_URL = "https://github.com/aidankinzett/ludusavi-wrap/releases/latest"
+
 BAT_TEMPLATE = (
     "@echo off\r\n"
     "setlocal\r\n"
@@ -192,6 +196,7 @@ class App(ctk.CTk):
         self.update_idletasks()
         self._form_height = self.winfo_reqheight()
         self.geometry(f"560x{self._form_height}")
+        threading.Thread(target=self._check_for_update, daemon=True).start()
 
     def _build(self):
         # ── Header ──────────────────────────────────────────────────────────
@@ -203,6 +208,25 @@ class App(ctk.CTk):
                       command=self._open_settings).pack(side="right")
         ctk.CTkLabel(self, text="Generate a save-managed launcher .bat for Armoury Crate",
                      text_color="gray").pack(anchor="w", padx=20)
+
+        # ── Update banner (hidden until a newer release is found) ────────────
+        self._update_banner = ctk.CTkFrame(
+            self, fg_color=("#cfe2ff", "#1a2f4a"),
+            border_width=1, border_color=("#6ea8fe", "#3a6fc4"),
+        )
+        banner_row = ctk.CTkFrame(self._update_banner, fg_color="transparent")
+        banner_row.pack(fill="x", padx=12, pady=8)
+        self._update_label = ctk.CTkLabel(
+            banner_row, text="", font=ctk.CTkFont(size=12),
+            text_color=("#084298", "#90c4ff"),
+        )
+        self._update_label.pack(side="left")
+        ctk.CTkButton(
+            banner_row, text="Download", width=80, height=26,
+            font=ctk.CTkFont(size=12),
+            command=lambda: os.startfile(RELEASES_URL),
+        ).pack(side="right")
+
         ctk.CTkFrame(self, height=2).pack(fill="x", padx=20, pady=12)
 
         # ── 1 — Executable ──────────────────────────────────────────────────
@@ -462,6 +486,32 @@ class App(ctk.CTk):
         folder = self._folder_var.get().strip()
         if folder and os.path.isdir(folder):
             os.startfile(folder)
+
+    def _check_for_update(self):
+        try:
+            resp = requests.get(RELEASES_API, timeout=8,
+                                headers={"Accept": "application/vnd.github+json"})
+            resp.raise_for_status()
+            latest = resp.json().get("tag_name", "").lstrip("v")
+            if latest and self._is_newer(latest, VERSION):
+                self.after(0, self._show_update_banner, latest)
+        except Exception:
+            pass
+
+    @staticmethod
+    def _is_newer(latest, current):
+        def parts(v):
+            return tuple(int(x) for x in v.split("."))
+        try:
+            return parts(latest) > parts(current)
+        except ValueError:
+            return False
+
+    def _show_update_banner(self, latest):
+        self._update_label.configure(text=f"v{latest} is available")
+        self._update_banner.pack(fill="x", padx=20, pady=(8, 0))
+        self.update_idletasks()
+        self.geometry(f"560x{self.winfo_reqheight()}")
 
     def _open_settings(self):
         dlg = SetupDialog(self, self.config, lambda: None)
