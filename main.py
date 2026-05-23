@@ -66,6 +66,7 @@ BAT_TEMPLATE = (
     'set "LUDUSAVI={ludusavi_path}"\r\n'
     'set "GAME_NAME={game_name}"\r\n'
     'set "GAME_EXE={game_exe}"\r\n'
+    'set "RESTORE_OUT=%TEMP%\\ludusavi_%RANDOM%.json"\r\n'
     "\r\n"
     'if not exist "%LUDUSAVI%" (\r\n'
     '    echo ERROR: ludusavi.exe not found at "%LUDUSAVI%"\r\n'
@@ -73,7 +74,30 @@ BAT_TEMPLATE = (
     "    exit /b 1\r\n"
     ")\r\n"
     "\r\n"
-    '"%LUDUSAVI%" wrap --name "%GAME_NAME%" --force -- "%GAME_EXE%"\r\n'
+    '"%LUDUSAVI%" restore --api --cloud-sync --force "%GAME_NAME%" > "%RESTORE_OUT%"\r\n'
+    "\r\n"
+    "powershell -NoProfile -NonInteractive -Command \""
+    "$ErrorActionPreference='SilentlyContinue'; "
+    "try {{ "
+    "$j = Get-Content $env:RESTORE_OUT | ConvertFrom-Json; "
+    "if ($j.errors.cloudConflict -ne $null -or $j.errors.cloudSyncFailed -ne $null) {{ "
+    "Add-Type -AssemblyName PresentationFramework; "
+    "[System.Windows.MessageBox]::Show("
+    "'Cloud sync conflict detected for ' + $env:GAME_NAME + '. "
+    "Please open Ludusavi to resolve the conflict before playing.',"
+    "'Ludusavi - Cloud Conflict','OK','Warning') | Out-Null; "
+    "exit 1 "
+    "}} "
+    "}} catch {{ }}"
+    "\"\r\n"
+    "\r\n"
+    "set \"PS_RESULT=%errorlevel%\"\r\n"
+    'del "%RESTORE_OUT%" 2>nul\r\n'
+    'if "%PS_RESULT%"=="1" exit /b 1\r\n'
+    "\r\n"
+    'start /wait "" "%GAME_EXE%"\r\n'
+    "\r\n"
+    '"%LUDUSAVI%" backup --force "%GAME_NAME%"\r\n'
 )
 
 
