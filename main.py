@@ -13,24 +13,14 @@ BAT_TEMPLATE = (
     'set "LUDUSAVI={ludusavi_path}"\r\n'
     'set "GAME_NAME={game_name}"\r\n'
     'set "GAME_EXE={game_exe}"\r\n'
-    'set "GAME_DIR={game_dir}"\r\n'
     "\r\n"
     'if not exist "%LUDUSAVI%" (\r\n'
-    '    echo [ludusavi-wrap] ERROR: ludusavi.exe not found at "%LUDUSAVI%"\r\n'
+    '    echo ERROR: ludusavi.exe not found at "%LUDUSAVI%"\r\n'
     "    pause\r\n"
     "    exit /b 1\r\n"
     ")\r\n"
     "\r\n"
-    'echo [ludusavi-wrap] Restoring saves for "%GAME_NAME%"...\r\n'
-    '"%LUDUSAVI%" restore --force "%GAME_NAME%"\r\n'
-    "if %errorlevel% neq 0 echo [ludusavi-wrap] Warning: Restore had errors, launching anyway...\r\n"
-    "\r\n"
-    'echo [ludusavi-wrap] Launching "%GAME_NAME%"...\r\n'
-    'start /wait /D "%GAME_DIR%" "" "%GAME_EXE%"\r\n'
-    "\r\n"
-    'echo [ludusavi-wrap] Backing up saves for "%GAME_NAME%"...\r\n'
-    '"%LUDUSAVI%" backup --force "%GAME_NAME%"\r\n'
-    "echo [ludusavi-wrap] Done.\r\n"
+    '"%LUDUSAVI%" wrap --name "%GAME_NAME%" --force -- "%GAME_EXE%"\r\n'
 )
 
 ARMOURY_STEPS = (
@@ -224,8 +214,8 @@ class App(ctk.CTk):
     def _do_search(self, query):
         try:
             proc = subprocess.run(
-                [self.config.get("ludusavi_path"), "find", "--api", query],
-                capture_output=True, text=True, timeout=10,
+                [self.config.get("ludusavi_path"), "find", "--api", "--fuzzy", "--multiple", query],
+                capture_output=True, text=True, timeout=15,
             )
             games = list(json.loads(proc.stdout).get("games", {}).keys()) if proc.returncode == 0 else []
         except Exception:
@@ -272,7 +262,6 @@ class App(ctk.CTk):
             ludusavi_path=self.config.get("ludusavi_path"),
             game_name=name,
             game_exe=exe,
-            game_dir=os.path.dirname(exe),
         )
         with open(out_path, "w", newline="") as f:
             f.write(content)
