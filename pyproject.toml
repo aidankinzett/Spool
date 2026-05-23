@@ -5,4 +5,5 @@ description = "Wrap any executable with ludusavi save management for Armoury Cra
 requires-python = ">=3.14"
 dependencies = [
     "customtkinter>=5.2.2",
+    "requests>=2.34.2",
 ]

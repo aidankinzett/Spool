@@ -4,8 +4,14 @@ import json
 import os
 import subprocess
 import threading
+import urllib.parse
+
+import requests
 
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
+
+SGDB_BASE = "https://www.steamgriddb.com/api/v2"
+MIME_EXT = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp"}
 
 BAT_TEMPLATE = (
     "@echo off\r\n"
@@ -29,13 +35,18 @@ ARMOURY_STEPS = (
     "3.  Select the generated .bat file as the game\n"
     "4.  Press X → Game Options → Game Info → Edit\n"
     "5.  Paste the .bat path into Launch CMD\n"
-    "6.  Set the game title and add cover art"
+    "6.  Set the game title and use the downloaded hero image for art"
 )
 
 
 class Config:
     def __init__(self):
-        self.data = {"ludusavi_path": "", "default_output_folder": ""}
+        self.data = {
+            "ludusavi_path": "",
+            "default_output_folder": "",
+            "steamgriddb_enabled": False,
+            "steamgriddb_api_key": "",
+        }
         self._load()
 
     def _load(self):
@@ -67,26 +78,64 @@ class SetupDialog(ctk.CTkToplevel):
         super().__init__(parent)
         self.config = config
         self.on_saved = on_saved
-        self.title("Setup")
-        self.geometry("500x190")
+        self.title("Settings")
+        self.geometry("520x370")
         self.resizable(False, False)
         self.grab_set()
 
-        ctk.CTkLabel(self, text="Where is ludusavi.exe?",
-                     font=ctk.CTkFont(size=15, weight="bold")).pack(pady=(24, 6))
+        # ── Ludusavi ──────────────────────────────────────────────────────────
+        ctk.CTkLabel(self, text="Ludusavi",
+                     font=ctk.CTkFont(size=14, weight="bold")).pack(anchor="w", padx=24, pady=(20, 6))
 
         row = ctk.CTkFrame(self, fg_color="transparent")
         row.pack(fill="x", padx=24)
         self._path_var = ctk.StringVar(value=config.get("ludusavi_path"))
         ctk.CTkEntry(row, textvariable=self._path_var, width=360).pack(side="left", padx=(0, 8))
-        ctk.CTkButton(row, text="Browse", width=80, command=self._browse).pack(side="left")
+        ctk.CTkButton(row, text="Browse", width=80, command=self._browse_ludusavi).pack(side="left")
 
+        # ── SteamGridDB ───────────────────────────────────────────────────────
+        ctk.CTkFrame(self, height=1).pack(fill="x", padx=24, pady=(18, 0))
+
+        sgdb_hdr = ctk.CTkFrame(self, fg_color="transparent")
+        sgdb_hdr.pack(fill="x", padx=24, pady=(12, 2))
+        ctk.CTkLabel(sgdb_hdr, text="SteamGridDB Artwork",
+                     font=ctk.CTkFont(size=14, weight="bold")).pack(side="left")
+        self._sgdb_switch = ctk.CTkSwitch(sgdb_hdr, text="", width=44,
+                                           command=self._on_sgdb_toggle,
+                                           onvalue=True, offvalue=False)
+        self._sgdb_switch.pack(side="right")
+        if config.get("steamgriddb_enabled"):
+            self._sgdb_switch.select()
+
+        ctk.CTkLabel(self, text="Download hero images automatically when generating a wrapper.",
+                     text_color="gray", font=ctk.CTkFont(size=11)).pack(anchor="w", padx=24, pady=(0, 10))
+
+        key_row = ctk.CTkFrame(self, fg_color="transparent")
+        key_row.pack(fill="x", padx=24)
+        ctk.CTkLabel(key_row, text="API Key:").pack(side="left", padx=(0, 8))
+        self._key_var = ctk.StringVar(value=config.get("steamgriddb_api_key"))
+        self._key_entry = ctk.CTkEntry(key_row, textvariable=self._key_var, width=290, show="•")
+        self._key_entry.pack(side="left", padx=(0, 8))
+        ctk.CTkButton(key_row, text="Get Key", width=74,
+                      command=lambda: os.startfile(
+                          "https://www.steamgriddb.com/profile/preferences/api"
+                      )).pack(side="left")
+
+        ctk.CTkLabel(self, text="steamgriddb.com/profile/preferences/api",
+                     text_color="gray", font=ctk.CTkFont(size=10)).pack(anchor="w", padx=24, pady=(4, 0))
+
+        # ── Error + Save ──────────────────────────────────────────────────────
         self._err = ctk.CTkLabel(self, text="", text_color="red", font=ctk.CTkFont(size=12))
-        self._err.pack(pady=4)
+        self._err.pack(pady=(14, 0))
 
-        ctk.CTkButton(self, text="Save & Continue", command=self._save).pack(pady=(0, 20))
+        ctk.CTkButton(self, text="Save & Continue", command=self._save).pack(pady=(8, 20))
 
-    def _browse(self):
+        self._on_sgdb_toggle()
+
+    def _on_sgdb_toggle(self):
+        self._key_entry.configure(state="normal" if self._sgdb_switch.get() else "disabled")
+
+    def _browse_ludusavi(self):
         path = filedialog.askopenfilename(
             parent=self,
             title="Select ludusavi.exe",
@@ -101,6 +150,8 @@ class SetupDialog(ctk.CTkToplevel):
             self._err.configure(text="File not found — please browse to a valid ludusavi.exe")
             return
         self.config.set("ludusavi_path", path)
+        self.config.set("steamgriddb_enabled", bool(self._sgdb_switch.get()))
+        self.config.set("steamgriddb_api_key", self._key_var.get().strip())
         self.destroy()
         self.on_saved()
 
@@ -145,8 +196,7 @@ class App(ctk.CTk):
 
         self._results_outer = ctk.CTkFrame(self, fg_color="transparent")
         self._results_outer.pack(fill="x", padx=20)
-        self._results_box = ctk.CTkScrollableFrame(self._results_outer, height=80,
-                                                    label_text="")
+        self._results_box = ctk.CTkScrollableFrame(self._results_outer, height=80, label_text="")
 
         # ── 3 — Output ──────────────────────────────────────────────────────
         self._heading("3 — Output")
@@ -171,7 +221,7 @@ class App(ctk.CTk):
         self._status = ctk.CTkLabel(self, text="", font=ctk.CTkFont(size=13), wraplength=500)
         self._status.pack(padx=20)
 
-        # ── Success panel (hidden until generation succeeds) ─────────────────
+        # ── Success panel ────────────────────────────────────────────────────
         self._success_frame = ctk.CTkFrame(
             self, fg_color=("#d6f0dc", "#1b3a24"),
             border_width=1, border_color=("#28a745", "#2ea043"),
@@ -183,7 +233,12 @@ class App(ctk.CTk):
             self._success_frame, text="", wraplength=490,
             font=ctk.CTkFont(size=11), text_color=("gray30", "gray70"),
         )
-        self._success_path.pack(anchor="w", padx=14, pady=(0, 10))
+        self._success_path.pack(anchor="w", padx=14, pady=(0, 4))
+        self._artwork_status = ctk.CTkLabel(
+            self._success_frame, text="", wraplength=490,
+            font=ctk.CTkFont(size=11), text_color=("gray40", "gray60"),
+        )
+        self._artwork_status.pack(anchor="w", padx=14, pady=(0, 10))
         success_btns = ctk.CTkFrame(self._success_frame, fg_color="transparent")
         success_btns.pack(anchor="w", padx=10, pady=(0, 12))
         ctk.CTkButton(success_btns, text="Open Folder", width=110,
@@ -193,14 +248,14 @@ class App(ctk.CTk):
                       text_color=("gray10", "gray90"),
                       command=self._clear).pack(side="left")
 
-        # ── Armoury Crate instructions (shown alongside success panel) ───────
+        # ── Armoury Crate instructions ───────────────────────────────────────
         self._instr_frame = ctk.CTkFrame(self, border_width=1)
         ctk.CTkLabel(self._instr_frame, text="Armoury Crate — Next Steps",
                      font=ctk.CTkFont(size=13, weight="bold")).pack(anchor="w", padx=14, pady=(10, 4))
         ctk.CTkLabel(self._instr_frame, text=ARMOURY_STEPS, justify="left",
                      wraplength=490).pack(anchor="w", padx=14, pady=(0, 12))
 
-    # ── helpers ─────────────────────────────────────────────────────────────
+    # ── helpers ──────────────────────────────────────────────────────────────
 
     def _heading(self, text):
         ctk.CTkLabel(self, text=text, font=ctk.CTkFont(size=13, weight="bold")).pack(
@@ -293,8 +348,67 @@ class App(ctk.CTk):
         self._set_status("", ok=True)
         self._generate_btn.pack_forget()
         self._success_path.configure(text=out_path)
+
+        base = os.path.splitext(fname)[0]
+        if self.config.get("steamgriddb_enabled") and self.config.get("steamgriddb_api_key"):
+            self._artwork_status.configure(text="Fetching hero image…", text_color=("gray40", "gray60"))
+            threading.Thread(target=self._fetch_hero, args=(name, folder, base), daemon=True).start()
+        else:
+            self._artwork_status.configure(text="")
+
         self._success_frame.pack(fill="x", padx=20, pady=(16, 0))
         self._instr_frame.pack(fill="x", padx=20, pady=(10, 16))
+
+    def _fetch_hero(self, game_name, folder, base_name):
+        api_key = self.config.get("steamgriddb_api_key")
+        headers = {"Authorization": f"Bearer {api_key}"}
+        try:
+            encoded = urllib.parse.quote(game_name)
+            resp = requests.get(f"{SGDB_BASE}/search/autocomplete/{encoded}",
+                                headers=headers, timeout=10)
+            resp.raise_for_status()
+            results = resp.json().get("data", [])
+            if not results:
+                self.after(0, self._on_artwork_error, "Game not found on SteamGridDB")
+                return
+
+            game_id = results[0]["id"]
+
+            resp2 = requests.get(f"{SGDB_BASE}/heroes/game/{game_id}",
+                                 headers=headers, timeout=10)
+            resp2.raise_for_status()
+            heroes = resp2.json().get("data", [])
+            if not heroes:
+                self.after(0, self._on_artwork_error, "No hero images found on SteamGridDB")
+                return
+
+            img_url = heroes[0]["url"]
+            mime = heroes[0].get("mime", "image/jpeg")
+            ext = MIME_EXT.get(mime, os.path.splitext(img_url)[1] or ".jpg")
+
+            img_resp = requests.get(img_url, timeout=20)
+            img_resp.raise_for_status()
+
+            img_path = os.path.join(folder, f"{base_name}{ext}")
+            with open(img_path, "wb") as f:
+                f.write(img_resp.content)
+
+            self.after(0, self._on_artwork_done, img_path)
+
+        except Exception as e:
+            self.after(0, self._on_artwork_error, str(e))
+
+    def _on_artwork_done(self, img_path):
+        self._artwork_status.configure(
+            text=f"✓ Hero image saved: {os.path.basename(img_path)}",
+            text_color=("#155724", "#4caf50"),
+        )
+
+    def _on_artwork_error(self, msg):
+        self._artwork_status.configure(
+            text=f"⚠ Artwork: {msg}",
+            text_color=("#856404", "#ffc107"),
+        )
 
     def _set_status(self, msg, ok=True):
         self._status.configure(text=msg, text_color="green" if ok else "red")
@@ -308,6 +422,7 @@ class App(ctk.CTk):
         for w in self._results_box.winfo_children():
             w.destroy()
         self._results_box.pack_forget()
+        self._artwork_status.configure(text="")
         self._set_status("", ok=True)
         self._generate_btn.pack(pady=20)
 
