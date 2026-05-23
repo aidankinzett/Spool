@@ -74,7 +74,16 @@ BAT_TEMPLATE = (
     "    exit /b 1\r\n"
     ")\r\n"
     "\r\n"
-    '"%LUDUSAVI%" restore --api --cloud-sync --force "%GAME_NAME%" > "%RESTORE_OUT%"\r\n'
+    '"%LUDUSAVI%" restore --api --cloud-sync --force "%GAME_NAME%" > "%RESTORE_OUT%" 2>&1\r\n'
+    "if errorlevel 1 (\r\n"
+    "    powershell -NoProfile -NonInteractive -Command \""
+    "Add-Type -AssemblyName PresentationFramework; "
+    "[System.Windows.MessageBox]::Show("
+    "'Ludusavi restore failed. Game will not launch.',"
+    "'Ludusavi Error','OK','Error') | Out-Null\"\r\n"
+    "    del \"%RESTORE_OUT%\" 2>nul\r\n"
+    "    exit /b 1\r\n"
+    ")\r\n"
     "\r\n"
     "powershell -NoProfile -NonInteractive -Command \""
     "$ErrorActionPreference='SilentlyContinue'; "
@@ -97,7 +106,7 @@ BAT_TEMPLATE = (
     "\r\n"
     'start /wait "" "%GAME_EXE%"\r\n'
     "\r\n"
-    '"%LUDUSAVI%" backup --force "%GAME_NAME%"\r\n'
+    '"%LUDUSAVI%" backup --force --cloud-sync "%GAME_NAME%"\r\n'
 )
 
 
