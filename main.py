@@ -32,6 +32,19 @@ VERSION = "1.0.3"
 RELEASES_API = "https://api.github.com/repos/aidankinzett/ludusavi-wrap/releases/latest"
 RELEASES_URL = "https://github.com/aidankinzett/ludusavi-wrap/releases/latest"
 
+WINDOW_W = 660
+
+
+def _show_touch_keyboard():
+    for base in (os.environ.get("ProgramFiles", ""), os.environ.get("ProgramFiles(x86)", "")):
+        tabtip = os.path.join(base, "Common Files", "microsoft shared", "ink", "TabTip.exe")
+        if os.path.exists(tabtip):
+            try:
+                subprocess.Popen([tabtip])
+            except OSError:
+                pass
+            return
+
 BAT_TEMPLATE = (
     "@echo off\r\n"
     "setlocal\r\n"
@@ -195,7 +208,8 @@ class App(ctk.CTk):
         self._build()
         self.update_idletasks()
         self._form_height = self.winfo_reqheight()
-        self.geometry(f"560x{self._form_height}")
+        self.geometry(f"{WINDOW_W}x{self._form_height}")
+        self.bind_all("<FocusIn>", self._on_focus_in)
         threading.Thread(target=self._check_for_update, daemon=True).start()
 
     def _build(self):
@@ -229,20 +243,21 @@ class App(ctk.CTk):
 
         ctk.CTkFrame(self, height=2).pack(fill="x", padx=20, pady=12)
 
-        # ── 1 — Executable ──────────────────────────────────────────────────
-        self._heading("1 — Game Executable")
+        # ── Form ─────────────────────────────────────────────────────────────
+        LW = 110  # fixed label column width keeps inputs aligned
+
         r1 = ctk.CTkFrame(self, fg_color="transparent")
-        r1.pack(fill="x", padx=20, pady=(4, 0))
+        r1.pack(fill="x", padx=20, pady=(0, 8))
+        ctk.CTkLabel(r1, text="Executable", width=LW, anchor="w").pack(side="left", padx=(0, 8))
         self._exe_var = ctk.StringVar()
-        ctk.CTkEntry(r1, textvariable=self._exe_var, state="readonly", width=400).pack(side="left", padx=(0, 8))
+        ctk.CTkEntry(r1, textvariable=self._exe_var, state="readonly").pack(side="left", fill="x", expand=True, padx=(0, 8))
         ctk.CTkButton(r1, text="Browse", width=80, command=self._browse_exe).pack(side="left")
 
-        # ── 2 — Game Name ───────────────────────────────────────────────────
-        self._heading("2 — Ludusavi Game Name")
         r2 = ctk.CTkFrame(self, fg_color="transparent")
-        r2.pack(fill="x", padx=20, pady=(4, 0))
+        r2.pack(fill="x", padx=20, pady=(0, 0))
+        ctk.CTkLabel(r2, text="Game Name", width=LW, anchor="w").pack(side="left", padx=(0, 8))
         self._name_var = ctk.StringVar()
-        ctk.CTkEntry(r2, textvariable=self._name_var, width=330).pack(side="left", padx=(0, 8))
+        ctk.CTkEntry(r2, textvariable=self._name_var).pack(side="left", fill="x", expand=True, padx=(0, 8))
         self._search_btn = ctk.CTkButton(r2, text="Search", width=80, command=self._search)
         self._search_btn.pack(side="left")
 
@@ -250,19 +265,18 @@ class App(ctk.CTk):
         self._results_outer.pack(fill="x", padx=20)
         self._results_box = ctk.CTkScrollableFrame(self._results_outer, height=80, label_text="")
 
-        # ── 3 — Output ──────────────────────────────────────────────────────
-        self._heading("3 — Output")
         r3 = ctk.CTkFrame(self, fg_color="transparent")
-        r3.pack(fill="x", padx=20, pady=(4, 0))
+        r3.pack(fill="x", padx=20, pady=(8, 8))
+        ctk.CTkLabel(r3, text="Output Folder", width=LW, anchor="w").pack(side="left", padx=(0, 8))
         self._folder_var = ctk.StringVar(value=self.config.get("default_output_folder"))
-        ctk.CTkEntry(r3, textvariable=self._folder_var, width=400).pack(side="left", padx=(0, 8))
+        ctk.CTkEntry(r3, textvariable=self._folder_var).pack(side="left", fill="x", expand=True, padx=(0, 8))
         ctk.CTkButton(r3, text="Browse", width=80, command=self._browse_folder).pack(side="left")
 
         r4 = ctk.CTkFrame(self, fg_color="transparent")
-        r4.pack(fill="x", padx=20, pady=(8, 0))
-        ctk.CTkLabel(r4, text="Filename:").pack(side="left", padx=(0, 8))
+        r4.pack(fill="x", padx=20, pady=(0, 0))
+        ctk.CTkLabel(r4, text="Filename", width=LW, anchor="w").pack(side="left", padx=(0, 8))
         self._fname_var = ctk.StringVar()
-        ctk.CTkEntry(r4, textvariable=self._fname_var, width=320).pack(side="left")
+        ctk.CTkEntry(r4, textvariable=self._fname_var).pack(side="left", fill="x", expand=True)
 
         # ── Generate ────────────────────────────────────────────────────────
         self._generate_btn = ctk.CTkButton(self, text="Generate Wrapper", height=40,
@@ -282,12 +296,12 @@ class App(ctk.CTk):
                      font=ctk.CTkFont(size=14, weight="bold"),
                      text_color=("#155724", "#4caf50")).pack(anchor="w", padx=14, pady=(12, 2))
         self._success_path = ctk.CTkLabel(
-            self._success_frame, text="", wraplength=490,
+            self._success_frame, text="", wraplength=620,
             font=ctk.CTkFont(size=11), text_color=("gray30", "gray70"),
         )
         self._success_path.pack(anchor="w", padx=14, pady=(0, 4))
         self._artwork_status = ctk.CTkLabel(
-            self._success_frame, text="", wraplength=490,
+            self._success_frame, text="", wraplength=620,
             font=ctk.CTkFont(size=11), text_color=("gray40", "gray60"),
         )
         self._artwork_status.pack(anchor="w", padx=14, pady=(0, 10))
@@ -305,13 +319,13 @@ class App(ctk.CTk):
         ctk.CTkLabel(self._instr_frame, text="Armoury Crate — Next Steps",
                      font=ctk.CTkFont(size=13, weight="bold")).pack(anchor="w", padx=14, pady=(10, 4))
         ctk.CTkLabel(self._instr_frame, text=ARMOURY_STEPS, justify="left",
-                     wraplength=490).pack(anchor="w", padx=14, pady=(0, 12))
+                     wraplength=620).pack(anchor="w", padx=14, pady=(0, 12))
 
     # ── helpers ──────────────────────────────────────────────────────────────
 
-    def _heading(self, text):
-        ctk.CTkLabel(self, text=text, font=ctk.CTkFont(size=13, weight="bold")).pack(
-            anchor="w", padx=20, pady=(14, 0))
+    def _on_focus_in(self, event):
+        if event.widget.winfo_class() == "Entry":
+            _show_touch_keyboard()
 
     def _browse_exe(self):
         path = filedialog.askopenfilename(
@@ -411,7 +425,7 @@ class App(ctk.CTk):
         self._success_frame.pack(fill="x", padx=20, pady=(16, 0))
         self._instr_frame.pack(fill="x", padx=20, pady=(10, 16))
         self.update_idletasks()
-        self.geometry(f"560x{self.winfo_reqheight()}")
+        self.geometry(f"{WINDOW_W}x{self.winfo_reqheight()}")
 
     def _fetch_hero(self, game_name, folder, base_name):
         api_key = self.config.get("steamgriddb_api_key")
@@ -480,7 +494,7 @@ class App(ctk.CTk):
         self._artwork_status.configure(text="")
         self._set_status("", ok=True)
         self._generate_btn.pack(pady=20)
-        self.geometry(f"560x{self._form_height}")
+        self.geometry(f"{WINDOW_W}x{self._form_height}")
 
     def _open_output_folder(self):
         folder = self._folder_var.get().strip()
@@ -511,7 +525,7 @@ class App(ctk.CTk):
         self._update_label.configure(text=f"v{latest} is available")
         self._update_banner.pack(fill="x", padx=20, pady=(8, 0))
         self.update_idletasks()
-        self.geometry(f"560x{self.winfo_reqheight()}")
+        self.geometry(f"{WINDOW_W}x{self.winfo_reqheight()}")
 
     def _open_settings(self):
         dlg = SetupDialog(self, self.config, lambda: None)
