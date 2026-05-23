@@ -83,11 +83,20 @@ class Config:
         self._autodetect()
 
     def _autodetect(self):
-        if not self.data.get("ludusavi_path"):
-            found = shutil.which("ludusavi")
-            if found:
-                self.data["ludusavi_path"] = os.path.normpath(found)
+        if self.data.get("ludusavi_path"):
+            return
+        candidates = []
+        found = shutil.which("ludusavi") or shutil.which("ludusavi.exe")
+        if found:
+            candidates.append(found)
+        if getattr(sys, "frozen", False):
+            candidates.append(os.path.join(os.path.dirname(sys.executable), "ludusavi.exe"))
+        for path in candidates:
+            path = os.path.normpath(os.path.abspath(path))
+            if os.path.isfile(path):
+                self.data["ludusavi_path"] = path
                 self.save()
+                return
 
     def _load(self):
         if os.path.exists(CONFIG_PATH):
