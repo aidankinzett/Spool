@@ -9,7 +9,7 @@
         WindowStyle="SingleBorderWindow"
         Topmost="True">
 
-    <Grid VerticalAlignment="Center" HorizontalAlignment="Center" Margin="40,24">
+    <Grid VerticalAlignment="Center" Margin="40,24">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
@@ -20,11 +20,12 @@
                    FontSize="13"
                    FontWeight="SemiBold"
                    HorizontalAlignment="Center"
+                   TextWrapping="Wrap"
+                   TextAlignment="Center"
                    Margin="0,0,0,16"
                    Grid.Row="0"/>
 
         <ProgressBar x:Name="LoadProgress"
-                        Width="340"
                         Height="4"
                         IsIndeterminate="True"
                         Grid.Row="1"/>
