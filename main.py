@@ -149,6 +149,9 @@ class SetupDialog(ctk.CTkToplevel):
         if not os.path.isfile(path):
             self._err.configure(text="File not found — please browse to a valid ludusavi.exe")
             return
+        if self._sgdb_switch.get() and not self._key_var.get().strip():
+            self._err.configure(text="An API key is required when SteamGridDB is enabled")
+            return
         self.config.set("ludusavi_path", path)
         self.config.set("steamgriddb_enabled", bool(self._sgdb_switch.get()))
         self.config.set("steamgriddb_api_key", self._key_var.get().strip())
