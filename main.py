@@ -1,26 +1,45 @@
 import customtkinter as ctk
 from tkinter import filedialog
+import datetime
 import json
 import os
+import re
 import shutil
+import sqlite3
 import subprocess
 import sys
 import threading
+import time
 import urllib.parse
+import uuid
 
 import requests
 
 
 def _config_path():
     if getattr(sys, "frozen", False):
-        # Running as a PyInstaller exe — write to AppData so the config
-        # survives updates and isn't lost in the temp extraction folder.
         base = os.environ.get("APPDATA") or os.path.expanduser("~")
         directory = os.path.join(base, "ludusavi-wrap")
     else:
         directory = os.path.dirname(os.path.abspath(__file__))
     os.makedirs(directory, exist_ok=True)
     return os.path.join(directory, "config.json")
+
+
+def _launchers_dir():
+    d = os.path.join(os.environ.get("APPDATA", ""), "ludusavi-wrap", "launchers")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def _covers_dir():
+    d = os.path.join(os.environ.get("APPDATA", ""), "ludusavi-wrap", "covers")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def _safe_filename(name):
+    return re.sub(r'[\\/:*?"<>|]', "", name).strip()
 
 
 CONFIG_PATH = _config_path()
@@ -34,6 +53,12 @@ RELEASES_URL = "https://github.com/aidankinzett/ludusavi-wrap/releases/latest"
 
 WINDOW_W = 660
 
+AC_DB_PATH = r"C:\ProgramData\ASUS\ARMOURY CRATE Service\ArmouryCrate_v1.5.db"
+AC_CACHE_PATH = os.path.join(
+    os.environ.get("LOCALAPPDATA", ""),
+    "ASUS", "Armoury Crate Service", "GameLibrary", "GameListCache.json.item",
+)
+
 
 def _show_touch_keyboard():
     for base in (os.environ.get("ProgramFiles", ""), os.environ.get("ProgramFiles(x86)", "")):
@@ -44,6 +69,7 @@ def _show_touch_keyboard():
             except OSError:
                 pass
             return
+
 
 BAT_TEMPLATE = (
     "@echo off\r\n"
@@ -61,21 +87,162 @@ BAT_TEMPLATE = (
     '"%LUDUSAVI%" wrap --name "%GAME_NAME%" --force -- "%GAME_EXE%"\r\n'
 )
 
-ARMOURY_STEPS = (
-    "1.  Open Armoury Crate → Library → Manage Library\n"
-    "2.  Use L/R buttons to open File Explorer\n"
-    "3.  Select the generated .bat file as the game\n"
-    "4.  Press X → Game Options → Game Info → Edit\n"
-    "5.  Paste the .bat path into Launch CMD\n"
-    "6.  Set the game title and use the downloaded hero image for art"
-)
+
+def _write_ac_db(bat_path, game_name, exe_path):
+    """Write or update a game entry in the Armoury Crate SQLite DB.
+
+    Returns (True, "") on success, (False, "ac_not_found") if AC isn't installed,
+    or (False, error_message) on any other failure.
+    """
+    if not os.path.isfile(AC_DB_PATH):
+        return False, "ac_not_found"
+    try:
+        with sqlite3.connect(AC_DB_PATH) as conn:
+            row = conn.execute(
+                'SELECT guid_generic, model_name, brand, "90pn" FROM GameLibrary LIMIT 1'
+            ).fetchone()
+            if row:
+                guid_generic, model_name, brand, pn90 = row
+            else:
+                guid_generic = str(uuid.uuid4())
+                model_name = "Unknown"
+                brand = "ROG"
+                pn90 = "NA"
+
+            exe_filename = os.path.basename(exe_path)
+            generic1 = json.dumps(
+                {
+                    "target_file": {exe_filename: ""},
+                    "origin_name": game_name,
+                    "rog_id": -1,
+                    "launch_cmd": bat_path,
+                    "install_date": str(int(time.time())),
+                    "add_way": 2,
+                    "category": 1,
+                },
+                separators=(",", ":"),
+            )
+            generic_header = json.dumps(
+                {
+                    "data_length": len(generic1.encode("utf-8")),
+                    "version": 20250714,
+                    "content": 2,
+                },
+                separators=(",", ":"),
+            )
+            now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+            # Upsert: find existing row by matching the bat path inside generic1 JSON
+            search_fragment = f'"launch_cmd":{json.dumps(bat_path)}'
+            existing = conn.execute(
+                "SELECT rowid FROM GameLibrary WHERE generic1 LIKE ?",
+                (f"%{search_fragment}%",),
+            ).fetchone()
+
+            if existing:
+                conn.execute(
+                    "UPDATE GameLibrary SET datetime=?, generic_header=?, generic1=? WHERE rowid=?",
+                    (now, generic_header, generic1, existing[0]),
+                )
+            else:
+                conn.execute(
+                    'INSERT INTO GameLibrary'
+                    ' (datetime, guid_generic, model_name, brand, "90pn", generic_header, generic1)'
+                    " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (now, guid_generic, model_name, brand, pn90, generic_header, generic1),
+                )
+        return True, ""
+    except Exception as e:
+        return False, str(e)
+
+
+def _write_ac_cache(bat_path, game_name, exe_path, cover_path=""):
+    """Append or update a game entry in the Armoury Crate JSON cache.
+
+    The cache may not exist on the first run; if missing it is created.
+    Returns (True, "") on success or (False, error_message) on failure.
+    """
+    cache = []
+    if os.path.isfile(AC_CACHE_PATH):
+        try:
+            with open(AC_CACHE_PATH, encoding="utf-8") as f:
+                cache = json.load(f)
+        except Exception:
+            cache = []
+
+    exe_dir = os.path.dirname(exe_path)
+    start_in = exe_dir + "\\" if exe_dir else ""
+
+    existing_idx = next(
+        (i for i, e in enumerate(cache) if e.get("AppID") == bat_path), None
+    )
+    if existing_idx is not None:
+        game_id = cache[existing_idx]["GameData"]["GameID"]
+    else:
+        game_id = max((e.get("GameData", {}).get("GameID", 0) for e in cache), default=0) + 1
+
+    entry = {
+        "AppID": bat_path,
+        "AppName": os.path.basename(exe_path),
+        "GameData": {
+            "AUMID": "",
+            "BackgroundColor": "#00000000",
+            "DisplayCoverPath": cover_path,
+            "DisplayIconPath": "",
+            "GameID": game_id,
+            "GameName": game_name,
+            "GameTags": [],
+            "InGameLibrary": True,
+            "IsFilterToLaunchDetected": False,
+            "IsGamePlatform": False,
+            "IsInstalled": True,
+            "LaunchCommand": bat_path,
+            "PerGameOptimizeProfile": "",
+            "PlatformGameID": "",
+            "PlatformIcon": "",
+            "PlatformName": "",
+            "PreSetID": -1,
+            "Properties": "",
+        },
+        "StartInPath": start_in,
+        "TargetPath": exe_path,
+    }
+
+    if existing_idx is not None:
+        cache[existing_idx] = entry
+    else:
+        cache.append(entry)
+
+    try:
+        os.makedirs(os.path.dirname(AC_CACHE_PATH), exist_ok=True)
+        with open(AC_CACHE_PATH, "w", encoding="utf-8") as f:
+            json.dump(cache, f, indent=2)
+        return True, ""
+    except Exception as e:
+        return False, str(e)
+
+
+def _update_ac_cover(bat_path, cover_path):
+    """Patch DisplayCoverPath in the cache after async artwork fetch."""
+    if not os.path.isfile(AC_CACHE_PATH):
+        return
+    try:
+        with open(AC_CACHE_PATH, encoding="utf-8") as f:
+            cache = json.load(f)
+        for entry in cache:
+            if entry.get("AppID") == bat_path:
+                entry["GameData"]["DisplayCoverPath"] = cover_path
+                break
+        with open(AC_CACHE_PATH, "w", encoding="utf-8") as f:
+            json.dump(cache, f, indent=2)
+    except Exception:
+        pass
 
 
 class Config:
     def __init__(self):
         self.data = {
             "ludusavi_path": "",
-            "default_output_folder": "",
             "steamgriddb_enabled": False,
             "steamgriddb_api_key": "",
         }
@@ -156,7 +323,7 @@ class SetupDialog(ctk.CTkToplevel):
         if config.get("steamgriddb_enabled"):
             self._sgdb_switch.select()
 
-        ctk.CTkLabel(self, text="Download hero images automatically when generating a wrapper.",
+        ctk.CTkLabel(self, text="Download cover images automatically when generating a wrapper.",
                      text_color="gray", font=ctk.CTkFont(size=11)).pack(anchor="w", padx=24, pady=(0, 10))
 
         key_row = ctk.CTkFrame(self, fg_color="transparent")
@@ -206,45 +373,6 @@ class SetupDialog(ctk.CTkToplevel):
         self.config.set("steamgriddb_api_key", self._key_var.get().strip())
         self.destroy()
         self.on_saved()
-
-
-class CopyDialog(ctk.CTkToplevel):
-    def __init__(self, parent, game_name, bat_path):
-        super().__init__(parent)
-        self.title("Ready for Armoury Crate")
-        self.resizable(False, False)
-        self.grab_set()
-
-        ctk.CTkLabel(self, text="Ready for Armoury Crate",
-                     font=ctk.CTkFont(size=15, weight="bold")).pack(pady=(20, 16))
-
-        self._build_row("Game Name", game_name)
-        self._build_row("Launch CMD", bat_path)
-
-        ctk.CTkButton(self, text="Close", width=120, command=self.destroy).pack(pady=(14, 20))
-
-        self.update_idletasks()
-        self.geometry(f"500x{self.winfo_reqheight()}")
-
-    def _build_row(self, label, value):
-        ctk.CTkLabel(self, text=label, anchor="w",
-                     font=ctk.CTkFont(size=12, weight="bold")).pack(anchor="w", padx=20, pady=(0, 3))
-        row = ctk.CTkFrame(self, fg_color="transparent")
-        row.pack(fill="x", padx=20, pady=(0, 12))
-        entry = ctk.CTkEntry(row, font=ctk.CTkFont(size=12))
-        entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
-        entry.insert(0, value)
-        entry.configure(state="readonly")
-        btn = ctk.CTkButton(row, text="Copy", width=70,
-                            command=lambda: self._copy(value, btn))
-        btn.pack(side="left")
-
-    def _copy(self, text, btn):
-        self.clipboard_clear()
-        self.clipboard_append(text)
-        self.update()
-        btn.configure(text="✓ Copied")
-        self.after(1500, lambda: btn.configure(text="Copy"))
 
 
 class App(ctk.CTk):
@@ -313,19 +441,6 @@ class App(ctk.CTk):
         self._results_outer.pack(fill="x", padx=20)
         self._results_box = ctk.CTkScrollableFrame(self._results_outer, height=80, label_text="")
 
-        r3 = ctk.CTkFrame(self, fg_color="transparent")
-        r3.pack(fill="x", padx=20, pady=(8, 8))
-        ctk.CTkLabel(r3, text="Output Folder", width=LW, anchor="w").pack(side="left", padx=(0, 8))
-        self._folder_var = ctk.StringVar(value=self.config.get("default_output_folder"))
-        ctk.CTkEntry(r3, textvariable=self._folder_var).pack(side="left", fill="x", expand=True, padx=(0, 8))
-        ctk.CTkButton(r3, text="Browse", width=80, command=self._browse_folder).pack(side="left")
-
-        r4 = ctk.CTkFrame(self, fg_color="transparent")
-        r4.pack(fill="x", padx=20, pady=(0, 0))
-        ctk.CTkLabel(r4, text="Filename", width=LW, anchor="w").pack(side="left", padx=(0, 8))
-        self._fname_var = ctk.StringVar()
-        ctk.CTkEntry(r4, textvariable=self._fname_var).pack(side="left", fill="x", expand=True)
-
         # ── Generate ────────────────────────────────────────────────────────
         self._generate_btn = ctk.CTkButton(self, text="Generate Wrapper", height=40,
                                            font=ctk.CTkFont(size=14, weight="bold"),
@@ -348,6 +463,11 @@ class App(ctk.CTk):
             font=ctk.CTkFont(size=11), text_color=("gray30", "gray70"),
         )
         self._success_path.pack(anchor="w", padx=14, pady=(0, 4))
+        self._ac_status = ctk.CTkLabel(
+            self._success_frame, text="", wraplength=620,
+            font=ctk.CTkFont(size=12),
+        )
+        self._ac_status.pack(anchor="w", padx=14, pady=(0, 2))
         self._artwork_status = ctk.CTkLabel(
             self._success_frame, text="", wraplength=620,
             font=ctk.CTkFont(size=11), text_color=("gray40", "gray60"),
@@ -355,19 +475,12 @@ class App(ctk.CTk):
         self._artwork_status.pack(anchor="w", padx=14, pady=(0, 10))
         success_btns = ctk.CTkFrame(self._success_frame, fg_color="transparent")
         success_btns.pack(anchor="w", padx=10, pady=(0, 12))
-        ctk.CTkButton(success_btns, text="Open Folder", width=110,
-                      command=self._open_output_folder).pack(side="left", padx=(0, 8))
+        ctk.CTkButton(success_btns, text="Open Launchers Folder", width=150,
+                      command=lambda: os.startfile(_launchers_dir())).pack(side="left", padx=(0, 8))
         ctk.CTkButton(success_btns, text="New Wrapper", width=110,
                       fg_color="transparent", border_width=1,
                       text_color=("gray10", "gray90"),
                       command=self._clear).pack(side="left")
-
-        # ── Armoury Crate instructions ───────────────────────────────────────
-        self._instr_frame = ctk.CTkFrame(self, border_width=1)
-        ctk.CTkLabel(self._instr_frame, text="Armoury Crate — Next Steps",
-                     font=ctk.CTkFont(size=13, weight="bold")).pack(anchor="w", padx=14, pady=(10, 4))
-        ctk.CTkLabel(self._instr_frame, text=ARMOURY_STEPS, justify="left",
-                     wraplength=620).pack(anchor="w", padx=14, pady=(0, 12))
 
     # ── helpers ──────────────────────────────────────────────────────────────
 
@@ -384,17 +497,9 @@ class App(ctk.CTk):
             return
         path = os.path.normpath(path)
         self._exe_var.set(path)
-        base = os.path.splitext(os.path.basename(path))[0]
-        self._fname_var.set(f"{base}.bat")
         if not self._name_var.get():
+            base = os.path.splitext(os.path.basename(path))[0]
             self._name_var.set(base.replace("_", " ").replace("-", " ").title())
-
-    def _browse_folder(self):
-        folder = filedialog.askdirectory(parent=self, title="Select output folder")
-        if folder:
-            folder = os.path.normpath(folder)
-            self._folder_var.set(folder)
-            self.config.set("default_output_folder", folder)
 
     def _search(self):
         query = self._name_var.get().strip()
@@ -431,53 +536,62 @@ class App(ctk.CTk):
             self._results_box.pack_forget()
 
     def _generate(self):
-        exe    = self._exe_var.get().strip()
-        name   = self._name_var.get().strip()
-        folder = self._folder_var.get().strip()
-        fname  = self._fname_var.get().strip()
+        exe  = self._exe_var.get().strip()
+        name = self._name_var.get().strip()
 
         if not exe:
             return self._set_status("Please select a game executable.", ok=False)
         if not name:
             return self._set_status("Please enter a Ludusavi game name.", ok=False)
-        if not folder:
-            return self._set_status("Please select an output folder.", ok=False)
-        if not fname:
-            return self._set_status("Please enter a wrapper filename.", ok=False)
+        if not self.config.ludusavi_ok():
+            return self._set_status("Ludusavi not found — open Settings to configure it.", ok=False)
 
-        if not fname.lower().endswith(".bat"):
-            fname += ".bat"
+        safe = _safe_filename(name)
+        if not safe:
+            return self._set_status("Game name contains only invalid filename characters.", ok=False)
 
-        os.makedirs(folder, exist_ok=True)
-        out_path = os.path.join(folder, fname)
+        bat_path = os.path.join(_launchers_dir(), safe + ".bat")
 
         content = BAT_TEMPLATE.format(
             ludusavi_path=self.config.get("ludusavi_path"),
             game_name=name,
             game_exe=exe,
         )
-        with open(out_path, "w", newline="") as f:
+        with open(bat_path, "w", newline="") as f:
             f.write(content)
 
-        CopyDialog(self, name, out_path)
+        db_ok, db_msg = _write_ac_db(bat_path, name, exe)
+        cache_ok, cache_msg = _write_ac_cache(bat_path, name, exe)
 
+        if db_msg == "ac_not_found":
+            ac_text = "⚠  Armoury Crate not found — .bat saved but not registered"
+            ac_color = ("#856404", "#ffc107")
+        elif not db_ok:
+            ac_text = f"⚠  DB error: {db_msg}"
+            ac_color = ("red", "#ff6b6b")
+        elif not cache_ok:
+            ac_text = f"⚠  Cache error: {cache_msg}"
+            ac_color = ("red", "#ff6b6b")
+        else:
+            ac_text = "✓  Added to Armoury Crate"
+            ac_color = ("#155724", "#4caf50")
+
+        self._ac_status.configure(text=ac_text, text_color=ac_color)
         self._set_status("", ok=True)
         self._generate_btn.pack_forget()
-        self._success_path.configure(text=out_path)
+        self._success_path.configure(text=bat_path)
 
-        base = os.path.splitext(fname)[0]
         if self.config.get("steamgriddb_enabled") and self.config.get("steamgriddb_api_key"):
-            self._artwork_status.configure(text="Fetching hero image…", text_color=("gray40", "gray60"))
-            threading.Thread(target=self._fetch_hero, args=(name, folder, base), daemon=True).start()
+            self._artwork_status.configure(text="Fetching cover image…", text_color=("gray40", "gray60"))
+            threading.Thread(target=self._fetch_hero, args=(name, safe, bat_path), daemon=True).start()
         else:
             self._artwork_status.configure(text="")
 
         self._success_frame.pack(fill="x", padx=20, pady=(16, 0))
-        self._instr_frame.pack(fill="x", padx=20, pady=(10, 16))
         self.update_idletasks()
         self.geometry(f"{WINDOW_W}x{self.winfo_reqheight()}")
 
-    def _fetch_hero(self, game_name, folder, base_name):
+    def _fetch_hero(self, game_name, safe_name, bat_path):
         api_key = self.config.get("steamgriddb_api_key")
         headers = {"Authorization": f"Bearer {api_key}"}
         try:
@@ -508,10 +622,11 @@ class App(ctk.CTk):
             img_resp = requests.get(img_url, timeout=20)
             img_resp.raise_for_status()
 
-            img_path = os.path.join(folder, f"{base_name}{ext}")
+            img_path = os.path.join(_covers_dir(), f"{safe_name}{ext}")
             with open(img_path, "wb") as f:
                 f.write(img_resp.content)
 
+            _update_ac_cover(bat_path, img_path)
             self.after(0, self._on_artwork_done, img_path)
 
         except Exception as e:
@@ -519,7 +634,7 @@ class App(ctk.CTk):
 
     def _on_artwork_done(self, img_path):
         self._artwork_status.configure(
-            text=f"✓ Hero image saved: {os.path.basename(img_path)}",
+            text=f"✓ Cover image saved: {os.path.basename(img_path)}",
             text_color=("#155724", "#4caf50"),
         )
 
@@ -534,22 +649,16 @@ class App(ctk.CTk):
 
     def _clear(self):
         self._success_frame.pack_forget()
-        self._instr_frame.pack_forget()
         self._exe_var.set("")
         self._name_var.set("")
-        self._fname_var.set("")
         for w in self._results_box.winfo_children():
             w.destroy()
         self._results_box.pack_forget()
         self._artwork_status.configure(text="")
+        self._ac_status.configure(text="")
         self._set_status("", ok=True)
         self._generate_btn.pack(pady=20)
         self.geometry(f"{WINDOW_W}x{self._form_height}")
-
-    def _open_output_folder(self):
-        folder = self._folder_var.get().strip()
-        if folder and os.path.isdir(folder):
-            os.startfile(folder)
 
     def _check_for_update(self):
         try:
