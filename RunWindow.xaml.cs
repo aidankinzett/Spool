@@ -5,10 +5,11 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
+using FluentWindow = Wpf.Ui.Controls.FluentWindow;
 
 namespace LudusaviWrap
 {
-    public partial class RunWindow : Window
+    public partial class RunWindow : FluentWindow
     {
         private readonly string _gameName;
         private readonly string _gameExe;
