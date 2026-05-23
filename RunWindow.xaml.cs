@@ -81,12 +81,11 @@ namespace LudusaviWrap
 
             // 1. Restore saves
             StatusLabel.Text = $"Restoring saves for '{_gameName}'...";
-            ClearOutput();
 
             ProcessResult restoreResult;
             try
             {
-                restoreResult = await RunProcessAsync(ludusavi, $"restore --api --cloud-sync --force \"{_gameName}\"", AppendOutput);
+                restoreResult = await RunProcessAsync(ludusavi, $"restore --api --cloud-sync --force \"{_gameName}\"");
             }
             catch (Exception ex)
             {
@@ -183,11 +182,10 @@ namespace LudusaviWrap
 
             // 4. Backup saves
             StatusLabel.Text = $"Backing up saves for '{_gameName}'...";
-            ClearOutput();
 
             try
             {
-                var backupResult = await RunProcessAsync(ludusavi, $"backup --force --cloud-sync \"{_gameName}\"", AppendOutput);
+                var backupResult = await RunProcessAsync(ludusavi, $"backup --force --cloud-sync \"{_gameName}\"");
                 string backupCombined = backupResult.Output + backupResult.Error;
                 if (backupCombined.Contains("cloudConflict") || backupCombined.Contains("cloudSyncFailed"))
                 {
@@ -211,25 +209,7 @@ namespace LudusaviWrap
                 _ = _lockClient.ReleaseLockAsync(_gameName);
         }
 
-        private void AppendOutput(string line)
-        {
-            Dispatcher.BeginInvoke(() =>
-            {
-                if (OutputPanel.Visibility == Visibility.Collapsed)
-                    OutputPanel.Visibility = Visibility.Visible;
-
-                OutputText.Text += (OutputText.Text.Length > 0 ? "\n" : "") + line;
-                OutputScroll.ScrollToEnd();
-            });
-        }
-
-        private void ClearOutput()
-        {
-            OutputText.Text = "";
-            OutputPanel.Visibility = Visibility.Collapsed;
-        }
-
-        private async Task<ProcessResult> RunProcessAsync(string filename, string arguments, Action<string>? onOutput = null)
+        private async Task<ProcessResult> RunProcessAsync(string filename, string arguments)
         {
             var outputBuilder = new StringBuilder();
             var errorBuilder = new StringBuilder();
@@ -255,10 +235,7 @@ namespace LudusaviWrap
                 if (e.Data is null)
                     outputClosedTcs.TrySetResult(true);
                 else
-                {
                     outputBuilder.AppendLine(e.Data);
-                    onOutput?.Invoke(e.Data);
-                }
             };
 
             process.ErrorDataReceived += (sender, e) =>
@@ -266,10 +243,7 @@ namespace LudusaviWrap
                 if (e.Data is null)
                     errorClosedTcs.TrySetResult(true);
                 else
-                {
                     errorBuilder.AppendLine(e.Data);
-                    onOutput?.Invoke(e.Data);
-                }
             };
 
             process.Start();
