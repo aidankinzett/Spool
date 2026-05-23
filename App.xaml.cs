@@ -1,21 +1,13 @@
 using System;
 using System.IO;
 using System.Windows;
-using System.Windows.Media;
 using Microsoft.Win32;
+using Wpf.Ui.Appearance;
 
 namespace LudusaviWrap
 {
     public static class ThemeManager
     {
-        private const string LightSource = "Theme.Light.xaml";
-        private const string DarkSource  = "Theme.Dark.xaml";
-
-        /// <summary>
-        /// Resolves the effective theme from the user preference string
-        /// ("system" | "light" | "dark") and swaps the colour palette in
-        /// Application.Current.Resources.
-        /// </summary>
         public static void ApplyTheme(string preference)
         {
             bool useDark = preference switch
@@ -25,25 +17,10 @@ namespace LudusaviWrap
                 _       => IsSystemDark()
             };
 
-            string source = useDark ? DarkSource : LightSource;
-
-            var dict = new ResourceDictionary
-            {
-                Source = new Uri($"pack://application:,,,/{source}", UriKind.Absolute)
-            };
-
-            // Remove any previously-loaded palette dictionary (Light or Dark)
-            var merged = Application.Current.Resources.MergedDictionaries;
-            for (int i = merged.Count - 1; i >= 0; i--)
-            {
-                string? src = merged[i].Source?.OriginalString;
-                if (src != null && (src.EndsWith(LightSource) || src.EndsWith(DarkSource)))
-                {
-                    merged.RemoveAt(i);
-                }
-            }
-
-            merged.Add(dict);
+            ApplicationThemeManager.Apply(
+                useDark ? ApplicationTheme.Dark : ApplicationTheme.Light,
+                updateAccent: true
+            );
         }
 
         private static bool IsSystemDark()
@@ -78,7 +55,6 @@ namespace LudusaviWrap
 
         protected override void OnStartup(StartupEventArgs e)
         {
-            // Catch anything that slips past individual try/catches
             AppDomain.CurrentDomain.UnhandledException += (s, ex) =>
                 Log($"FATAL UnhandledException: {ex.ExceptionObject}");
             DispatcherUnhandledException += (s, ex) =>
@@ -101,9 +77,7 @@ namespace LudusaviWrap
             {
                 if (args.Length >= 3)
                 {
-                    // Apply theme from config before showing the window
                     ApplyThemeFromConfig();
-                    ApplySystemAccentColor();
 
                     string gameName = args[1];
                     string gameExe  = args[2];
@@ -128,7 +102,6 @@ namespace LudusaviWrap
             Log($"Theme = '{config.Data.Theme}'");
 
             ThemeManager.ApplyTheme(config.Data.Theme);
-            ApplySystemAccentColor();
 
             if (!config.IsLudusaviOk)
             {
@@ -162,10 +135,6 @@ namespace LudusaviWrap
             }
         }
 
-        /// <summary>
-        /// Reads the theme preference from the config file on disk and applies it.
-        /// Used by --run mode which needs the theme before a Config object is built for the UI.
-        /// </summary>
         private static void ApplyThemeFromConfig()
         {
             try
@@ -176,28 +145,6 @@ namespace LudusaviWrap
             catch
             {
                 ThemeManager.ApplyTheme("system");
-            }
-        }
-
-        private void ApplySystemAccentColor()
-        {
-            try
-            {
-                using var key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\DWM");
-                if (key?.GetValue("AccentColor") is int abgr)
-                {
-                    byte r = (byte)(abgr & 0xFF);
-                    byte g = (byte)((abgr >> 8) & 0xFF);
-                    byte b = (byte)((abgr >> 16) & 0xFF);
-                    var brush = new SolidColorBrush(Color.FromRgb(r, g, b));
-                    brush.Freeze();
-                    Resources["AccentBrush"] = brush;
-                    Log($"Accent color applied: #{r:X2}{g:X2}{b:X2}");
-                }
-            }
-            catch (Exception ex)
-            {
-                Log($"ApplySystemAccentColor failed (non-fatal): {ex.Message}");
             }
         }
     }
