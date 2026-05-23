@@ -29,7 +29,7 @@ namespace LudusaviWrap
     {
     }
 
-    public partial class MainWindow : Window
+    public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
     {
         public static readonly string Version =
             System.Reflection.Assembly.GetEntryAssembly()?.GetName().Version?.ToString(3) ?? "0.0.0";

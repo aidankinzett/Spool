@@ -7,7 +7,7 @@ using System.Windows.Media;
 
 namespace LudusaviWrap
 {
-    public partial class SuccessWindow : Window
+    public partial class SuccessWindow : Wpf.Ui.Controls.FluentWindow
     {
         private readonly string _gameName;
         private readonly string _exePath;

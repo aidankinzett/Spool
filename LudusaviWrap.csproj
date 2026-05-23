@@ -27,9 +27,9 @@
     <Compile Remove="launcher_stub.cs" />
   </ItemGroup>
 
-  <!-- AutoUpdater.NET NuGet dependency -->
   <ItemGroup>
     <PackageReference Include="Autoupdater.NET.Official" Version="1.9.2" />
+    <PackageReference Include="WPF-UI" Version="3.*" />
   </ItemGroup>
 
 </Project>

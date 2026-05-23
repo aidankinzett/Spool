@@ -1,154 +1,152 @@
-<Window x:Class="LudusaviWrap.SetupWindow"
+<ui:FluentWindow x:Class="LudusaviWrap.SetupWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
         xmlns:local="clr-namespace:LudusaviWrap"
-        Title="Settings" 
-        Width="520" 
+        Title="Settings"
+        Width="520"
         SizeToContent="Height"
         ResizeMode="NoResize"
-        WindowStartupLocation="CenterScreen"
-        WindowStyle="SingleBorderWindow"
-        Background="{DynamicResource WindowBgBrush}">
+        WindowStartupLocation="CenterScreen">
 
-    <Grid Margin="24">
+    <Grid>
         <Grid.RowDefinitions>
-            <RowDefinition Height="Auto"/> <!-- Title -->
-            <RowDefinition Height="Auto"/> <!-- Ludusavi Group -->
-            <RowDefinition Height="Auto"/> <!-- SteamGridDB Group -->
-            <RowDefinition Height="Auto"/> <!-- Appearance Group -->
-            <RowDefinition Height="Auto"/> <!-- Error Message -->
-            <RowDefinition Height="Auto"/> <!-- Action Buttons -->
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
-        <!-- Header -->
-        <TextBlock Text="Settings" 
-                   FontSize="18" 
-                   FontWeight="Bold" 
-                   Foreground="{DynamicResource TextBrush}"
-                   Margin="0,0,0,16"
-                   Grid.Row="0"/>
+        <ui:TitleBar Title="Settings"
+                     ShowMaximize="False"
+                     ShowMinimize="False"
+                     Grid.Row="0"/>
 
-        <!-- Ludusavi Path Card -->
-        <Border Style="{StaticResource CardFrame}" Margin="0,0,0,16" Grid.Row="1">
-            <StackPanel>
-                <TextBlock Text="Ludusavi Path" 
-                           FontWeight="SemiBold" 
-                           Foreground="{DynamicResource TextBrush}" 
-                           Margin="0,0,0,8"/>
-                <Grid>
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="*"/>
-                        <ColumnDefinition Width="Auto"/>
-                    </Grid.ColumnDefinitions>
-                    <TextBox x:Name="LudusaviPathTextBox" 
-                             Tag="C:\Path\to\ludusavi.exe"
-                             Grid.Column="0" 
-                             Margin="0,0,8,0"/>
-                    <Button Content="Browse" 
-                            Style="{StaticResource SecondaryButton}" 
-                            Click="BrowseLudusavi_Click"
-                            Grid.Column="1"/>
-                </Grid>
+        <Grid Grid.Row="1" Margin="24,12,24,24">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/> <!-- Ludusavi Path card -->
+                <RowDefinition Height="Auto"/> <!-- SteamGridDB card -->
+                <RowDefinition Height="Auto"/> <!-- Appearance card -->
+                <RowDefinition Height="Auto"/> <!-- Error label -->
+                <RowDefinition Height="Auto"/> <!-- Action buttons -->
+            </Grid.RowDefinitions>
+
+            <!-- Ludusavi Path card -->
+            <ui:Card Margin="0,0,0,12" Grid.Row="0">
+                <StackPanel>
+                    <TextBlock Text="Ludusavi Path"
+                               FontWeight="SemiBold"
+                               Margin="0,0,0,8"/>
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <ui:TextBox x:Name="LudusaviPathTextBox"
+                                    PlaceholderText="C:\Path\to\ludusavi.exe"
+                                    Grid.Column="0"
+                                    Margin="0,0,8,0"/>
+                        <ui:Button Content="Browse"
+                                   Appearance="Secondary"
+                                   Click="BrowseLudusavi_Click"
+                                   Grid.Column="1"/>
+                    </Grid>
+                </StackPanel>
+            </ui:Card>
+
+            <!-- SteamGridDB card -->
+            <ui:Card Margin="0,0,0,12" Grid.Row="1">
+                <StackPanel>
+                    <Grid Margin="0,0,0,4">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="SteamGridDB Artwork"
+                                   FontWeight="SemiBold"
+                                   Grid.Column="0"
+                                   VerticalAlignment="Center"/>
+                        <ui:ToggleSwitch x:Name="SgdbSwitch"
+                                         Checked="SgdbSwitch_Changed"
+                                         Unchecked="SgdbSwitch_Changed"
+                                         Grid.Column="1"
+                                         VerticalAlignment="Center"/>
+                    </Grid>
+
+                    <TextBlock Text="Download cover images automatically when generating a wrapper."
+                               Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                               FontSize="11"
+                               Margin="0,0,0,12"/>
+
+                    <Grid x:Name="ApiKeyGrid">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="API Key:"
+                                   VerticalAlignment="Center"
+                                   Margin="0,0,8,0"
+                                   Grid.Column="0"/>
+                        <ui:TextBox x:Name="ApiKeyTextBox"
+                                    PlaceholderText="Paste API Key here"
+                                    Margin="0,0,8,0"
+                                    Grid.Column="1"/>
+                        <ui:Button Content="Get Key"
+                                   Appearance="Secondary"
+                                   Click="GetKey_Click"
+                                   Grid.Column="2"/>
+                    </Grid>
+                </StackPanel>
+            </ui:Card>
+
+            <!-- Appearance card -->
+            <ui:Card Margin="0,0,0,12" Grid.Row="2">
+                <StackPanel>
+                    <TextBlock Text="Appearance"
+                               FontWeight="SemiBold"
+                               Margin="0,0,0,8"/>
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="Theme:"
+                                   VerticalAlignment="Center"
+                                   Margin="0,0,12,0"
+                                   Grid.Column="0"/>
+                        <ComboBox x:Name="ThemeComboBox"
+                                  SelectionChanged="ThemeComboBox_SelectionChanged"
+                                  Grid.Column="1">
+                            <ComboBoxItem x:Name="ThemeSystem" Content="System default" Tag="system"/>
+                            <ComboBoxItem x:Name="ThemeLight"  Content="Light"          Tag="light"/>
+                            <ComboBoxItem x:Name="ThemeDark"   Content="Dark"           Tag="dark"/>
+                        </ComboBox>
+                    </Grid>
+                </StackPanel>
+            </ui:Card>
+
+            <!-- Error label -->
+            <TextBlock x:Name="ErrorLabel"
+                       Foreground="#FF5F5F"
+                       HorizontalAlignment="Center"
+                       FontWeight="SemiBold"
+                       Margin="0,0,0,12"
+                       Visibility="Collapsed"
+                       Grid.Row="3"/>
+
+            <!-- Action buttons -->
+            <StackPanel Orientation="Horizontal"
+                        HorizontalAlignment="Center"
+                        Grid.Row="4">
+                <ui:Button Content="Save &amp; Continue"
+                           Appearance="Primary"
+                           Width="160"
+                           Click="Save_Click"
+                           Margin="0,0,12,0"/>
+                <ui:Button Content="Cancel"
+                           Appearance="Secondary"
+                           Width="100"
+                           Click="Cancel_Click"/>
             </StackPanel>
-        </Border>
-
-        <!-- SteamGridDB Card -->
-        <Border Style="{StaticResource CardFrame}" Margin="0,0,0,16" Grid.Row="2">
-            <StackPanel>
-                <Grid Margin="0,0,0,4">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="*"/>
-                        <ColumnDefinition Width="Auto"/>
-                    </Grid.ColumnDefinitions>
-                    <TextBlock Text="SteamGridDB Artwork" 
-                               FontWeight="SemiBold" 
-                               Foreground="{DynamicResource TextBrush}"
-                               Grid.Column="0"
-                               VerticalAlignment="Center"/>
-                    <CheckBox x:Name="SgdbSwitch" 
-                              Checked="SgdbSwitch_Changed"
-                              Unchecked="SgdbSwitch_Changed"
-                              Grid.Column="1"
-                              VerticalAlignment="Center"/>
-                </Grid>
-                
-                <TextBlock Text="Download cover images automatically when generating a wrapper." 
-                           Foreground="{DynamicResource TextMutedBrush}" 
-                           FontSize="11" 
-                           Margin="0,0,0,12"/>
-
-                <Grid x:Name="ApiKeyGrid">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="Auto"/>
-                        <ColumnDefinition Width="*"/>
-                        <ColumnDefinition Width="Auto"/>
-                    </Grid.ColumnDefinitions>
-                    <TextBlock Text="API Key:" 
-                               Foreground="{DynamicResource TextBrush}" 
-                               VerticalAlignment="Center"
-                               Margin="0,0,8,0"
-                               Grid.Column="0"/>
-                    <TextBox x:Name="ApiKeyTextBox" 
-                             Tag="Paste API Key here"
-                             Margin="0,0,8,0"
-                             Grid.Column="1"/>
-                    <Button Content="Get Key" 
-                            Style="{StaticResource SecondaryButton}" 
-                            Click="GetKey_Click"
-                            Grid.Column="2"/>
-                </Grid>
-            </StackPanel>
-        </Border>
-
-        <!-- Appearance Card -->
-        <Border Style="{StaticResource CardFrame}" Margin="0,0,0,16" Grid.Row="3">
-            <StackPanel>
-                <TextBlock Text="Appearance" 
-                           FontWeight="SemiBold" 
-                           Foreground="{DynamicResource TextBrush}"
-                           Margin="0,0,0,8"/>
-                <Grid>
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="Auto"/>
-                        <ColumnDefinition Width="*"/>
-                    </Grid.ColumnDefinitions>
-                    <TextBlock Text="Theme:" 
-                               Foreground="{DynamicResource TextBrush}"
-                               VerticalAlignment="Center"
-                               Margin="0,0,12,0"
-                               Grid.Column="0"/>
-                    <ComboBox x:Name="ThemeComboBox"
-                              SelectionChanged="ThemeComboBox_SelectionChanged"
-                              Grid.Column="1">
-                        <ComboBoxItem x:Name="ThemeSystem" Content="System default" Tag="system"/>
-                        <ComboBoxItem x:Name="ThemeLight"  Content="Light"          Tag="light"/>
-                        <ComboBoxItem x:Name="ThemeDark"   Content="Dark"           Tag="dark"/>
-                    </ComboBox>
-                </Grid>
-            </StackPanel>
-        </Border>
-
-        <!-- Error Text -->
-        <TextBlock x:Name="ErrorLabel" 
-                   Foreground="#FF5F5F" 
-                   HorizontalAlignment="Center" 
-                   FontWeight="SemiBold"
-                   Margin="0,0,0,12" 
-                   Visibility="Collapsed"
-                   Grid.Row="4"/>
-
-        <!-- Action Buttons -->
-        <StackPanel Orientation="Horizontal" 
-                    HorizontalAlignment="Center" 
-                    Grid.Row="5">
-            <Button Content="Save &amp; Continue" 
-                    Width="160"
-                    Click="Save_Click" 
-                    Margin="0,0,12,0"/>
-            <Button Content="Cancel" 
-                    Style="{StaticResource SecondaryButton}"
-                    Width="100"
-                    Click="Cancel_Click"/>
-        </StackPanel>
+        </Grid>
     </Grid>
-</Window>
+</ui:FluentWindow>

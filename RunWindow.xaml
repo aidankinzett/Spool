@@ -1,39 +1,32 @@
 <Window x:Class="LudusaviWrap.RunWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Ludusavi Wrap" 
-        Width="420" 
-        Height="130"
+        Title="Ludusavi Wrap"
+        Width="420"
+        SizeToContent="Height"
         ResizeMode="NoResize"
         WindowStartupLocation="CenterScreen"
-        WindowStyle="None"
-        Topmost="True"
-        BorderBrush="{DynamicResource BorderBrush}"
-        BorderThickness="1.5"
-        Background="{DynamicResource WindowBgBrush}">
+        WindowStyle="SingleBorderWindow"
+        Topmost="True">
 
-    <Grid VerticalAlignment="Center" HorizontalAlignment="Center">
+    <Grid VerticalAlignment="Center" HorizontalAlignment="Center" Margin="40,24">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
-        <!-- Loading Text -->
-        <TextBlock x:Name="StatusLabel" 
-                   Text="Initializing..." 
-                   FontSize="13" 
-                   FontWeight="Bold" 
-                   Foreground="{DynamicResource TextBrush}"
+        <TextBlock x:Name="StatusLabel"
+                   Text="Initializing..."
+                   FontSize="13"
+                   FontWeight="SemiBold"
                    HorizontalAlignment="Center"
                    Margin="0,0,0,16"
                    Grid.Row="0"/>
 
-        <!-- Progress Bar (styled via Theme.xaml ControlTemplate) -->
-        <ProgressBar x:Name="LoadProgress" 
-                     Width="340" 
-                     Height="8" 
-                     IsIndeterminate="True"
-                     Grid.Row="1"/>
+        <ProgressBar x:Name="LoadProgress"
+                        Width="340"
+                        Height="4"
+                        IsIndeterminate="True"
+                        Grid.Row="1"/>
     </Grid>
 </Window>
-

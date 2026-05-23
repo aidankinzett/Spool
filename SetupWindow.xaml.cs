@@ -7,7 +7,7 @@ using Microsoft.Win32;
 
 namespace LudusaviWrap
 {
-    public partial class SetupWindow : Window
+    public partial class SetupWindow : Wpf.Ui.Controls.FluentWindow
     {
         private readonly Config _config;
         private readonly bool _isFirstRun;
