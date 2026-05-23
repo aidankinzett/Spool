@@ -33,6 +33,7 @@ jobs:
             --onefile `
             --windowed `
             --collect-all customtkinter `
+            --add-data "themes;themes" `
             --name ludusavi-wrap `
             main.py
 

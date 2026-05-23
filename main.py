@@ -366,7 +366,6 @@ class App(ctk.CTk):
         self._generate_btn.pack(pady=20)
 
         self._status = ctk.CTkLabel(self, text="", font=ctk.CTkFont(size=13), wraplength=500)
-        self._status.pack(padx=20, pady=(0, 20))
 
     # ── helpers ──────────────────────────────────────────────────────────────
 
@@ -509,6 +508,11 @@ class App(ctk.CTk):
 
     def _set_status(self, msg, ok=True):
         self._status.configure(text=msg, text_color="green" if ok else "red")
+        if msg:
+            self._status.pack(padx=20, pady=(0, 20))
+        else:
+            self._status.pack_forget()
+        self.geometry(f"{WINDOW_W}x{self.winfo_reqheight()}")
 
     def _clear(self):
         self._exe_var.set("")
@@ -550,8 +554,9 @@ class App(ctk.CTk):
 
 
 def main():
-    ctk.set_appearance_mode("system")
-    ctk.set_default_color_theme("blue")
+    ctk.set_appearance_mode("System")
+    _base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+    ctk.set_default_color_theme(os.path.join(_base, "themes", "rime.json"))
 
     config = Config()
     app = App(config)

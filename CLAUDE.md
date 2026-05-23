@@ -17,7 +17,7 @@ uv run main.py
 
 # Build standalone executable (requires dev deps)
 uv sync --dev
-uv run pyinstaller --onefile --windowed --collect-all customtkinter --name ludusavi-wrap main.py
+uv run pyinstaller --onefile --windowed --collect-all customtkinter --add-data "themes;themes" --name ludusavi-wrap main.py
 # Output: dist/ludusavi-wrap.exe
 ```
 
