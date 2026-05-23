@@ -31,7 +31,8 @@ namespace LudusaviWrap
 
     public partial class MainWindow : Window
     {
-        public const string Version = "2.0.3";
+        public static readonly string Version =
+            System.Reflection.Assembly.GetEntryAssembly()?.GetName().Version?.ToString(3) ?? "0.0.0";
 
         private readonly Config _config;
         private static readonly HttpClient HttpClient = new HttpClient();
@@ -48,7 +49,8 @@ namespace LudusaviWrap
 
         private void MainWindow_Loaded(object sender, RoutedEventArgs e)
         {
-            AutoUpdaterDotNET.AutoUpdater.InstalledVersion = new Version(Version);
+            // AutoUpdater reads the assembly version automatically — no InstalledVersion override needed.
+            // The assembly version is stamped from the git tag via /p:Version during dotnet publish.
             AutoUpdaterDotNET.AutoUpdater.ShowSkipButton = false;
             AutoUpdaterDotNET.AutoUpdater.ShowRemindLaterButton = false;
             AutoUpdaterDotNET.AutoUpdater.CheckForUpdateEvent += (args) =>

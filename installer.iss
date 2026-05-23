@@ -1,9 +1,12 @@
 ; Inno Setup Compiler script for Ludusavi Wrap
 ; To build: iscc installer.iss
 
+#define AppExe "bin\Release\net9.0-windows\win-x64\publish\ludusavi-wrap.exe"
+#define AppVersion GetFileVersion(AppExe)
+
 [Setup]
 AppName=Ludusavi Wrap
-AppVersion=2.0.3
+AppVersion={#AppVersion}
 DefaultDirName={userpf}\Ludusavi Wrap
 DefaultGroupName=Ludusavi Wrap
 UninstallDisplayIcon={app}\ludusavi-wrap.exe
