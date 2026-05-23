@@ -164,9 +164,11 @@ class App(ctk.CTk):
         super().__init__()
         self.config = config
         self.title("Ludusavi Wrap")
-        self.geometry("560x520")
         self.resizable(False, False)
         self._build()
+        self.update_idletasks()
+        self._form_height = self.winfo_reqheight()
+        self.geometry(f"560x{self._form_height}")
 
     def _build(self):
         # ── Header ──────────────────────────────────────────────────────────
@@ -361,7 +363,8 @@ class App(ctk.CTk):
 
         self._success_frame.pack(fill="x", padx=20, pady=(16, 0))
         self._instr_frame.pack(fill="x", padx=20, pady=(10, 16))
-        self.geometry("560x760")
+        self.update_idletasks()
+        self.geometry(f"560x{self.winfo_reqheight()}")
 
     def _fetch_hero(self, game_name, folder, base_name):
         api_key = self.config.get("steamgriddb_api_key")
@@ -430,7 +433,7 @@ class App(ctk.CTk):
         self._artwork_status.configure(text="")
         self._set_status("", ok=True)
         self._generate_btn.pack(pady=20)
-        self.geometry("560x520")
+        self.geometry(f"560x{self._form_height}")
 
     def _open_output_folder(self):
         folder = self._folder_var.get().strip()
