@@ -21,6 +21,21 @@ namespace LudusaviWrap
 
         [JsonPropertyName("theme")]
         public string Theme { get; set; } = "system";
+
+        [JsonPropertyName("sync_server_enabled")]
+        public bool SyncServerEnabled { get; set; } = false;
+
+        [JsonPropertyName("sync_server_url")]
+        public string SyncServerUrl { get; set; } = "";
+
+        [JsonPropertyName("sync_server_api_key")]
+        public string SyncServerApiKey { get; set; } = "";
+
+        [JsonPropertyName("device_id")]
+        public string DeviceId { get; set; } = "";
+
+        [JsonPropertyName("device_name")]
+        public string DeviceName { get; set; } = "";
     }
 
     [JsonSourceGenerationOptions(WriteIndented = true)]
@@ -44,6 +59,7 @@ namespace LudusaviWrap
         {
             Data = new ConfigData();
             Load();
+            EnsureDeviceIdentity();
             AutoDetectLudusavi();
             SaveCurrentExePath();
         }
@@ -80,6 +96,14 @@ namespace LudusaviWrap
             {
                 // Ignore save failures
             }
+        }
+
+        private void EnsureDeviceIdentity()
+        {
+            bool changed = false;
+            if (string.IsNullOrEmpty(Data.DeviceId))   { Data.DeviceId   = Guid.NewGuid().ToString(); changed = true; }
+            if (string.IsNullOrEmpty(Data.DeviceName)) { Data.DeviceName = Environment.MachineName;   changed = true; }
+            if (changed) Save();
         }
 
         private void AutoDetectLudusavi()

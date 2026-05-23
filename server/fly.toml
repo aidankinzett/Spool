@@ -1,0 +1,26 @@
+# fly.toml app configuration file for ludusavi-wrap-server
+
+app = 'ludusavi-wrap-server'
+primary_region = 'syd'
+
+[build]
+
+[env]
+  DATABASE_PATH = '/data/ludusavi.db'
+  PORT = '3000'
+
+[[mounts]]
+  source = 'ludusavi_wrap_data'
+  destination = '/data'
+
+[http_service]
+  internal_port = 3000
+  force_https = true
+  auto_stop_machines = 'stop'
+  auto_start_machines = true
+  min_machines_running = 0
+
+[[vm]]
+  memory = '256mb'
+  cpu_kind = 'shared'
+  cpus = 1
