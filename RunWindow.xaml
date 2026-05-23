@@ -8,9 +8,9 @@
         WindowStartupLocation="CenterScreen"
         WindowStyle="None"
         Topmost="True"
-        BorderBrush="{StaticResource BorderBrush}"
+        BorderBrush="{DynamicResource BorderBrush}"
         BorderThickness="1.5"
-        Background="{StaticResource WindowBgBrush}">
+        Background="{DynamicResource WindowBgBrush}">
 
     <Grid VerticalAlignment="Center" HorizontalAlignment="Center">
         <Grid.RowDefinitions>
@@ -23,16 +23,17 @@
                    Text="Initializing..." 
                    FontSize="13" 
                    FontWeight="Bold" 
-                   Foreground="{StaticResource TextBrush}"
+                   Foreground="{DynamicResource TextBrush}"
                    HorizontalAlignment="Center"
                    Margin="0,0,0,16"
                    Grid.Row="0"/>
 
-        <!-- Progress Bar -->
+        <!-- Progress Bar (styled via Theme.xaml ControlTemplate) -->
         <ProgressBar x:Name="LoadProgress" 
                      Width="340" 
-                     Height="6" 
+                     Height="8" 
                      IsIndeterminate="True"
                      Grid.Row="1"/>
     </Grid>
 </Window>
+
