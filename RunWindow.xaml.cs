@@ -160,6 +160,8 @@ namespace LudusaviWrap
         {
             var outputBuilder = new StringBuilder();
             var errorBuilder = new StringBuilder();
+            var outputClosedTcs = new TaskCompletionSource<bool>();
+            var errorClosedTcs = new TaskCompletionSource<bool>();
 
             var process = new Process
             {
@@ -177,7 +179,9 @@ namespace LudusaviWrap
 
             process.OutputDataReceived += (sender, e) =>
             {
-                if (e.Data is not null)
+                if (e.Data is null)
+                    outputClosedTcs.TrySetResult(true);
+                else
                 {
                     outputBuilder.AppendLine(e.Data);
                     onOutput?.Invoke(e.Data);
@@ -186,7 +190,9 @@ namespace LudusaviWrap
 
             process.ErrorDataReceived += (sender, e) =>
             {
-                if (e.Data is not null)
+                if (e.Data is null)
+                    errorClosedTcs.TrySetResult(true);
+                else
                 {
                     errorBuilder.AppendLine(e.Data);
                     onOutput?.Invoke(e.Data);
@@ -198,6 +204,7 @@ namespace LudusaviWrap
             process.BeginErrorReadLine();
 
             await process.WaitForExitAsync();
+            await Task.WhenAll(outputClosedTcs.Task, errorClosedTcs.Task);
 
             var result = new ProcessResult
             {
