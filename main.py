@@ -375,6 +375,55 @@ class SetupDialog(ctk.CTkToplevel):
         self.on_saved()
 
 
+class SuccessDialog(ctk.CTkToplevel):
+    def __init__(self, parent, bat_path, ac_text, ac_color, on_close):
+        super().__init__(parent)
+        self.title("Wrapper Created")
+        self.resizable(False, False)
+        self.grab_set()
+        self._on_close = on_close
+        self.protocol("WM_DELETE_WINDOW", self._close)
+
+        ctk.CTkLabel(self, text="✓  Wrapper created",
+                     font=ctk.CTkFont(size=15, weight="bold"),
+                     text_color=("#155724", "#4caf50")).pack(padx=20, pady=(20, 4))
+
+        ctk.CTkLabel(self, text=bat_path, wraplength=440,
+                     font=ctk.CTkFont(size=11),
+                     text_color=("gray30", "gray70")).pack(padx=20, pady=(0, 8))
+
+        self._ac_label = ctk.CTkLabel(self, text=ac_text,
+                                       font=ctk.CTkFont(size=12),
+                                       text_color=ac_color)
+        self._ac_label.pack(padx=20, pady=(0, 4))
+
+        self._artwork_label = ctk.CTkLabel(self, text="", wraplength=440,
+                                            font=ctk.CTkFont(size=11))
+        self._artwork_label.pack(padx=20, pady=(0, 4))
+
+        btn_row = ctk.CTkFrame(self, fg_color="transparent")
+        btn_row.pack(pady=(8, 20))
+        ctk.CTkButton(btn_row, text="Open Launchers Folder", width=160,
+                      command=lambda: os.startfile(_launchers_dir())).pack(side="left", padx=(0, 8))
+        ctk.CTkButton(btn_row, text="New Wrapper", width=110,
+                      fg_color="transparent", border_width=1,
+                      text_color=("gray10", "gray90"),
+                      command=self._close).pack(side="left")
+
+        self.update_idletasks()
+        self.geometry(f"500x{self.winfo_reqheight()}")
+
+    def update_artwork(self, text, color):
+        if self.winfo_exists():
+            self._artwork_label.configure(text=text, text_color=color)
+            self.update_idletasks()
+            self.geometry(f"500x{self.winfo_reqheight()}")
+
+    def _close(self):
+        self.destroy()
+        self._on_close()
+
+
 class App(ctk.CTk):
     def __init__(self, config):
         super().__init__()
@@ -448,39 +497,7 @@ class App(ctk.CTk):
         self._generate_btn.pack(pady=20)
 
         self._status = ctk.CTkLabel(self, text="", font=ctk.CTkFont(size=13), wraplength=500)
-        self._status.pack(padx=20)
-
-        # ── Success panel ────────────────────────────────────────────────────
-        self._success_frame = ctk.CTkFrame(
-            self, fg_color=("#d6f0dc", "#1b3a24"),
-            border_width=1, border_color=("#28a745", "#2ea043"),
-        )
-        ctk.CTkLabel(self._success_frame, text="✓  Wrapper created",
-                     font=ctk.CTkFont(size=14, weight="bold"),
-                     text_color=("#155724", "#4caf50")).pack(anchor="w", padx=14, pady=(12, 2))
-        self._success_path = ctk.CTkLabel(
-            self._success_frame, text="", wraplength=620,
-            font=ctk.CTkFont(size=11), text_color=("gray30", "gray70"),
-        )
-        self._success_path.pack(anchor="w", padx=14, pady=(0, 4))
-        self._ac_status = ctk.CTkLabel(
-            self._success_frame, text="", wraplength=620,
-            font=ctk.CTkFont(size=12),
-        )
-        self._ac_status.pack(anchor="w", padx=14, pady=(0, 2))
-        self._artwork_status = ctk.CTkLabel(
-            self._success_frame, text="", wraplength=620,
-            font=ctk.CTkFont(size=11), text_color=("gray40", "gray60"),
-        )
-        self._artwork_status.pack(anchor="w", padx=14, pady=(0, 10))
-        success_btns = ctk.CTkFrame(self._success_frame, fg_color="transparent")
-        success_btns.pack(anchor="w", padx=10, pady=(0, 12))
-        ctk.CTkButton(success_btns, text="Open Launchers Folder", width=150,
-                      command=lambda: os.startfile(_launchers_dir())).pack(side="left", padx=(0, 8))
-        ctk.CTkButton(success_btns, text="New Wrapper", width=110,
-                      fg_color="transparent", border_width=1,
-                      text_color=("gray10", "gray90"),
-                      command=self._clear).pack(side="left")
+        self._status.pack(padx=20, pady=(0, 20))
 
     # ── helpers ──────────────────────────────────────────────────────────────
 
@@ -576,20 +593,12 @@ class App(ctk.CTk):
             ac_text = "✓  Added to Armoury Crate"
             ac_color = ("#155724", "#4caf50")
 
-        self._ac_status.configure(text=ac_text, text_color=ac_color)
         self._set_status("", ok=True)
-        self._generate_btn.pack_forget()
-        self._success_path.configure(text=bat_path)
+        self._success_dlg = SuccessDialog(self, bat_path, ac_text, ac_color, on_close=self._clear)
 
         if self.config.get("steamgriddb_enabled") and self.config.get("steamgriddb_api_key"):
-            self._artwork_status.configure(text="Fetching cover image…", text_color=("gray40", "gray60"))
+            self._success_dlg.update_artwork("Fetching cover image…", ("gray40", "gray60"))
             threading.Thread(target=self._fetch_hero, args=(name, safe, bat_path), daemon=True).start()
-        else:
-            self._artwork_status.configure(text="")
-
-        self._success_frame.pack(fill="x", padx=20, pady=(16, 0))
-        self.update_idletasks()
-        self.geometry(f"{WINDOW_W}x{self.winfo_reqheight()}")
 
     def _fetch_hero(self, game_name, safe_name, bat_path):
         api_key = self.config.get("steamgriddb_api_key")
@@ -633,32 +642,29 @@ class App(ctk.CTk):
             self.after(0, self._on_artwork_error, str(e))
 
     def _on_artwork_done(self, img_path):
-        self._artwork_status.configure(
-            text=f"✓ Cover image saved: {os.path.basename(img_path)}",
-            text_color=("#155724", "#4caf50"),
-        )
+        if hasattr(self, "_success_dlg") and self._success_dlg.winfo_exists():
+            self._success_dlg.update_artwork(
+                f"✓ Cover image saved: {os.path.basename(img_path)}",
+                ("#155724", "#4caf50"),
+            )
 
     def _on_artwork_error(self, msg):
-        self._artwork_status.configure(
-            text=f"⚠ Artwork: {msg}",
-            text_color=("#856404", "#ffc107"),
-        )
+        if hasattr(self, "_success_dlg") and self._success_dlg.winfo_exists():
+            self._success_dlg.update_artwork(
+                f"⚠ Artwork: {msg}",
+                ("#856404", "#ffc107"),
+            )
 
     def _set_status(self, msg, ok=True):
         self._status.configure(text=msg, text_color="green" if ok else "red")
 
     def _clear(self):
-        self._success_frame.pack_forget()
         self._exe_var.set("")
         self._name_var.set("")
         for w in self._results_box.winfo_children():
             w.destroy()
         self._results_box.pack_forget()
-        self._artwork_status.configure(text="")
-        self._ac_status.configure(text="")
         self._set_status("", ok=True)
-        self._generate_btn.pack(pady=20)
-        self.geometry(f"{WINDOW_W}x{self._form_height}")
 
     def _check_for_update(self):
         try:
