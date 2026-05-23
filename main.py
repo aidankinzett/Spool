@@ -199,6 +199,45 @@ class SetupDialog(ctk.CTkToplevel):
         self.on_saved()
 
 
+class CopyDialog(ctk.CTkToplevel):
+    def __init__(self, parent, game_name, bat_path):
+        super().__init__(parent)
+        self.title("Ready for Armoury Crate")
+        self.resizable(False, False)
+        self.grab_set()
+
+        ctk.CTkLabel(self, text="Ready for Armoury Crate",
+                     font=ctk.CTkFont(size=15, weight="bold")).pack(pady=(20, 16))
+
+        self._build_row("Game Name", game_name)
+        self._build_row("Launch CMD", bat_path)
+
+        ctk.CTkButton(self, text="Close", width=120, command=self.destroy).pack(pady=(14, 20))
+
+        self.update_idletasks()
+        self.geometry(f"500x{self.winfo_reqheight()}")
+
+    def _build_row(self, label, value):
+        ctk.CTkLabel(self, text=label, anchor="w",
+                     font=ctk.CTkFont(size=12, weight="bold")).pack(anchor="w", padx=20, pady=(0, 3))
+        row = ctk.CTkFrame(self, fg_color="transparent")
+        row.pack(fill="x", padx=20, pady=(0, 12))
+        entry = ctk.CTkEntry(row, font=ctk.CTkFont(size=12))
+        entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
+        entry.insert(0, value)
+        entry.configure(state="readonly")
+        btn = ctk.CTkButton(row, text="Copy", width=70,
+                            command=lambda: self._copy(value, btn))
+        btn.pack(side="left")
+
+    def _copy(self, text, btn):
+        self.clipboard_clear()
+        self.clipboard_append(text)
+        self.update()
+        btn.configure(text="✓ Copied")
+        self.after(1500, lambda: btn.configure(text="Copy"))
+
+
 class App(ctk.CTk):
     def __init__(self, config):
         super().__init__()
@@ -410,6 +449,8 @@ class App(ctk.CTk):
         )
         with open(out_path, "w", newline="") as f:
             f.write(content)
+
+        CopyDialog(self, name, out_path)
 
         self._set_status("", ok=True)
         self._generate_btn.pack_forget()
