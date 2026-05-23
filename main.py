@@ -2,14 +2,28 @@ import customtkinter as ctk
 from tkinter import filedialog
 import json
 import os
-import subprocess
-import threading
 import shutil
+import subprocess
+import sys
+import threading
 import urllib.parse
 
 import requests
 
-CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
+
+def _config_path():
+    if getattr(sys, "frozen", False):
+        # Running as a PyInstaller exe — write to AppData so the config
+        # survives updates and isn't lost in the temp extraction folder.
+        base = os.environ.get("APPDATA") or os.path.expanduser("~")
+        directory = os.path.join(base, "ludusavi-wrap")
+    else:
+        directory = os.path.dirname(os.path.abspath(__file__))
+    os.makedirs(directory, exist_ok=True)
+    return os.path.join(directory, "config.json")
+
+
+CONFIG_PATH = _config_path()
 
 SGDB_BASE = "https://www.steamgriddb.com/api/v2"
 MIME_EXT = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp"}
