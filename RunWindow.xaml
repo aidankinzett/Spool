@@ -6,11 +6,12 @@
         SizeToContent="Height"
         ResizeMode="NoResize"
         WindowStartupLocation="CenterScreen"
-        WindowStyle="SingleBorderWindow"
+        WindowStyle="None"
         Topmost="True">
 
-    <Grid VerticalAlignment="Center" HorizontalAlignment="Center" Margin="40,24">
+    <Grid VerticalAlignment="Center" Margin="40,24">
         <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
@@ -20,13 +21,33 @@
                    FontSize="13"
                    FontWeight="SemiBold"
                    HorizontalAlignment="Center"
+                   TextWrapping="Wrap"
+                   TextAlignment="Center"
                    Margin="0,0,0,16"
                    Grid.Row="0"/>
 
         <ProgressBar x:Name="LoadProgress"
-                        Width="340"
                         Height="4"
                         IsIndeterminate="True"
                         Grid.Row="1"/>
+
+        <Border x:Name="OutputPanel"
+                Grid.Row="2"
+                Visibility="Collapsed"
+                Margin="0,12,0,0"
+                MaxHeight="200"
+                Background="{DynamicResource SubtleFillColorSecondaryBrush}"
+                CornerRadius="6">
+            <ScrollViewer x:Name="OutputScroll"
+                          VerticalScrollBarVisibility="Auto"
+                          HorizontalScrollBarVisibility="Disabled">
+                <TextBlock x:Name="OutputText"
+                           FontFamily="Consolas, Courier New"
+                           FontSize="11"
+                           TextWrapping="Wrap"
+                           Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                           Padding="10,8"/>
+            </ScrollViewer>
+        </Border>
     </Grid>
 </Window>
