@@ -47,10 +47,16 @@ namespace LudusaviWrap
 
         private void MainWindow_Loaded(object sender, RoutedEventArgs e)
         {
-            // Configure and run AutoUpdater.NET
             AutoUpdaterDotNET.AutoUpdater.ShowSkipButton = false;
             AutoUpdaterDotNET.AutoUpdater.ShowRemindLaterButton = false;
-            AutoUpdaterDotNET.AutoUpdater.Start("https://raw.githubusercontent.com/aidankinzett/ludusavi-wrap/main/update.xml");
+            AutoUpdaterDotNET.AutoUpdater.CheckForUpdateEvent += (args) =>
+            {
+                if (args.Error != null) return; // silently ignore network/parse failures
+                if (args.IsUpdateAvailable)
+                    AutoUpdaterDotNET.AutoUpdater.ShowUpdateForm(args);
+            };
+            Task.Run(() => AutoUpdaterDotNET.AutoUpdater.Start(
+                "https://raw.githubusercontent.com/aidankinzett/ludusavi-wrap/main/update.xml"));
         }
 
         private void Settings_Click(object sender, RoutedEventArgs e)
