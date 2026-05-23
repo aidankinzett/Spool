@@ -163,14 +163,37 @@ class App(ctk.CTk):
         ctk.CTkEntry(r4, textvariable=self._fname_var, width=320).pack(side="left")
 
         # ── Generate ────────────────────────────────────────────────────────
-        ctk.CTkButton(self, text="Generate Wrapper", height=40,
-                      font=ctk.CTkFont(size=14, weight="bold"),
-                      command=self._generate).pack(pady=20)
+        self._generate_btn = ctk.CTkButton(self, text="Generate Wrapper", height=40,
+                                           font=ctk.CTkFont(size=14, weight="bold"),
+                                           command=self._generate)
+        self._generate_btn.pack(pady=20)
 
         self._status = ctk.CTkLabel(self, text="", font=ctk.CTkFont(size=13), wraplength=500)
         self._status.pack(padx=20)
 
-        # ── Armoury Crate instructions (hidden until generation succeeds) ───
+        # ── Success panel (hidden until generation succeeds) ─────────────────
+        self._success_frame = ctk.CTkFrame(
+            self, fg_color=("#d6f0dc", "#1b3a24"),
+            border_width=1, border_color=("#28a745", "#2ea043"),
+        )
+        ctk.CTkLabel(self._success_frame, text="✓  Wrapper created",
+                     font=ctk.CTkFont(size=14, weight="bold"),
+                     text_color=("#155724", "#4caf50")).pack(anchor="w", padx=14, pady=(12, 2))
+        self._success_path = ctk.CTkLabel(
+            self._success_frame, text="", wraplength=490,
+            font=ctk.CTkFont(size=11), text_color=("gray30", "gray70"),
+        )
+        self._success_path.pack(anchor="w", padx=14, pady=(0, 10))
+        success_btns = ctk.CTkFrame(self._success_frame, fg_color="transparent")
+        success_btns.pack(anchor="w", padx=10, pady=(0, 12))
+        ctk.CTkButton(success_btns, text="Open Folder", width=110,
+                      command=self._open_output_folder).pack(side="left", padx=(0, 8))
+        ctk.CTkButton(success_btns, text="New Wrapper", width=110,
+                      fg_color="transparent", border_width=1,
+                      text_color=("gray10", "gray90"),
+                      command=self._clear).pack(side="left")
+
+        # ── Armoury Crate instructions (shown alongside success panel) ───────
         self._instr_frame = ctk.CTkFrame(self, border_width=1)
         ctk.CTkLabel(self._instr_frame, text="Armoury Crate — Next Steps",
                      font=ctk.CTkFont(size=13, weight="bold")).pack(anchor="w", padx=14, pady=(10, 4))
@@ -267,11 +290,31 @@ class App(ctk.CTk):
         with open(out_path, "w", newline="") as f:
             f.write(content)
 
-        self._set_status(f"✓ Created: {out_path}", ok=True)
+        self._set_status("", ok=True)
+        self._generate_btn.pack_forget()
+        self._success_path.configure(text=out_path)
+        self._success_frame.pack(fill="x", padx=20, pady=(16, 0))
         self._instr_frame.pack(fill="x", padx=20, pady=(10, 16))
 
     def _set_status(self, msg, ok=True):
         self._status.configure(text=msg, text_color="green" if ok else "red")
+
+    def _clear(self):
+        self._success_frame.pack_forget()
+        self._instr_frame.pack_forget()
+        self._exe_var.set("")
+        self._name_var.set("")
+        self._fname_var.set("")
+        for w in self._results_box.winfo_children():
+            w.destroy()
+        self._results_box.pack_forget()
+        self._set_status("", ok=True)
+        self._generate_btn.pack(pady=20)
+
+    def _open_output_folder(self):
+        folder = self._folder_var.get().strip()
+        if folder and os.path.isdir(folder):
+            os.startfile(folder)
 
     def _open_settings(self):
         dlg = SetupDialog(self, self.config, lambda: None)
