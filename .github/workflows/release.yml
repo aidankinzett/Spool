@@ -21,6 +21,12 @@ jobs:
       - name: Install dependencies
         run: uv sync --dev
 
+      - name: Set version from tag
+        shell: pwsh
+        run: |
+          $version = "${{ github.ref_name }}".TrimStart('v')
+          (Get-Content main.py) -replace 'VERSION = ".*"', "VERSION = `"$version`"" | Set-Content main.py
+
       - name: Build executable
         run: |
           uv run pyinstaller `
