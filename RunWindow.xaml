@@ -6,7 +6,7 @@
         SizeToContent="Height"
         ResizeMode="NoResize"
         WindowStartupLocation="CenterScreen"
-        WindowStyle="SingleBorderWindow"
+        WindowStyle="None"
         Topmost="True">
 
     <Grid VerticalAlignment="Center" Margin="40,24">
