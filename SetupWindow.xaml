@@ -8,13 +8,14 @@
         ResizeMode="NoResize"
         WindowStartupLocation="CenterScreen"
         WindowStyle="SingleBorderWindow"
-        Background="{StaticResource WindowBgBrush}">
+        Background="{DynamicResource WindowBgBrush}">
 
     <Grid Margin="24">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/> <!-- Title -->
             <RowDefinition Height="Auto"/> <!-- Ludusavi Group -->
             <RowDefinition Height="Auto"/> <!-- SteamGridDB Group -->
+            <RowDefinition Height="Auto"/> <!-- Appearance Group -->
             <RowDefinition Height="Auto"/> <!-- Error Message -->
             <RowDefinition Height="Auto"/> <!-- Action Buttons -->
         </Grid.RowDefinitions>
@@ -23,7 +24,7 @@
         <TextBlock Text="Settings" 
                    FontSize="18" 
                    FontWeight="Bold" 
-                   Foreground="{StaticResource TextBrush}"
+                   Foreground="{DynamicResource TextBrush}"
                    Margin="0,0,0,16"
                    Grid.Row="0"/>
 
@@ -32,7 +33,7 @@
             <StackPanel>
                 <TextBlock Text="Ludusavi Path" 
                            FontWeight="SemiBold" 
-                           Foreground="{StaticResource TextBrush}" 
+                           Foreground="{DynamicResource TextBrush}" 
                            Margin="0,0,0,8"/>
                 <Grid>
                     <Grid.ColumnDefinitions>
@@ -61,7 +62,7 @@
                     </Grid.ColumnDefinitions>
                     <TextBlock Text="SteamGridDB Artwork" 
                                FontWeight="SemiBold" 
-                               Foreground="{StaticResource TextBrush}"
+                               Foreground="{DynamicResource TextBrush}"
                                Grid.Column="0"
                                VerticalAlignment="Center"/>
                     <CheckBox x:Name="SgdbSwitch" 
@@ -72,7 +73,7 @@
                 </Grid>
                 
                 <TextBlock Text="Download cover images automatically when generating a wrapper." 
-                           Foreground="{StaticResource TextMutedBrush}" 
+                           Foreground="{DynamicResource TextMutedBrush}" 
                            FontSize="11" 
                            Margin="0,0,0,12"/>
 
@@ -83,7 +84,7 @@
                         <ColumnDefinition Width="Auto"/>
                     </Grid.ColumnDefinitions>
                     <TextBlock Text="API Key:" 
-                               Foreground="{StaticResource TextBrush}" 
+                               Foreground="{DynamicResource TextBrush}" 
                                VerticalAlignment="Center"
                                Margin="0,0,8,0"
                                Grid.Column="0"/>
@@ -99,6 +100,34 @@
             </StackPanel>
         </Border>
 
+        <!-- Appearance Card -->
+        <Border Style="{StaticResource CardFrame}" Margin="0,0,0,16" Grid.Row="3">
+            <StackPanel>
+                <TextBlock Text="Appearance" 
+                           FontWeight="SemiBold" 
+                           Foreground="{DynamicResource TextBrush}"
+                           Margin="0,0,0,8"/>
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Text="Theme:" 
+                               Foreground="{DynamicResource TextBrush}"
+                               VerticalAlignment="Center"
+                               Margin="0,0,12,0"
+                               Grid.Column="0"/>
+                    <ComboBox x:Name="ThemeComboBox"
+                              SelectionChanged="ThemeComboBox_SelectionChanged"
+                              Grid.Column="1">
+                        <ComboBoxItem x:Name="ThemeSystem" Content="System default" Tag="system"/>
+                        <ComboBoxItem x:Name="ThemeLight"  Content="Light"          Tag="light"/>
+                        <ComboBoxItem x:Name="ThemeDark"   Content="Dark"           Tag="dark"/>
+                    </ComboBox>
+                </Grid>
+            </StackPanel>
+        </Border>
+
         <!-- Error Text -->
         <TextBlock x:Name="ErrorLabel" 
                    Foreground="#FF5F5F" 
@@ -106,12 +135,12 @@
                    FontWeight="SemiBold"
                    Margin="0,0,0,12" 
                    Visibility="Collapsed"
-                   Grid.Row="3"/>
+                   Grid.Row="4"/>
 
         <!-- Action Buttons -->
         <StackPanel Orientation="Horizontal" 
                     HorizontalAlignment="Center" 
-                    Grid.Row="4">
+                    Grid.Row="5">
             <Button Content="Save &amp; Continue" 
                     Width="160"
                     Click="Save_Click" 

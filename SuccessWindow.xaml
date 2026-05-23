@@ -7,7 +7,7 @@
         ResizeMode="NoResize"
         WindowStartupLocation="CenterOwner"
         WindowStyle="SingleBorderWindow"
-        Background="{StaticResource WindowBgBrush}">
+        Background="{DynamicResource WindowBgBrush}">
 
     <Grid Margin="24">
         <Grid.RowDefinitions>
@@ -25,7 +25,7 @@
                    FontSize="16" 
                    FontWeight="Bold" 
                    HorizontalAlignment="Center" 
-                   Foreground="{StaticResource TextBrush}"
+                   Foreground="{DynamicResource TextBrush}"
                    Margin="0,0,0,16"
                    Grid.Row="0"/>
 
@@ -34,7 +34,7 @@
             <TextBlock Text="Game Name" 
                        FontWeight="SemiBold" 
                        FontSize="11" 
-                       Foreground="{StaticResource TextMutedBrush}" 
+                       Foreground="{DynamicResource TextMutedBrush}" 
                        Margin="0,0,0,4"/>
             <Grid>
                 <Grid.ColumnDefinitions>
@@ -59,7 +59,7 @@
             <TextBlock Text="Launcher EXE Path" 
                        FontWeight="SemiBold" 
                        FontSize="11" 
-                       Foreground="{StaticResource TextMutedBrush}" 
+                       Foreground="{DynamicResource TextMutedBrush}" 
                        Margin="0,0,0,4"/>
             <Grid>
                 <Grid.ColumnDefinitions>
@@ -80,7 +80,7 @@
         </StackPanel>
 
         <!-- Separator -->
-        <Border BorderBrush="{StaticResource BorderBrush}" 
+        <Border BorderBrush="{DynamicResource BorderBrush}" 
                 BorderThickness="0,1,0,0" 
                 Margin="0,8,0,12" 
                 Grid.Row="3"/>
@@ -90,9 +90,9 @@
             <TextBlock Text="Next Steps" 
                        FontWeight="Bold" 
                        FontSize="13" 
-                       Foreground="{StaticResource TextBrush}" 
+                       Foreground="{DynamicResource TextBrush}" 
                        Margin="0,0,0,6"/>
-            <TextBlock Foreground="{StaticResource TextBrush}" 
+            <TextBlock Foreground="{DynamicResource TextBrush}" 
                        LineHeight="18"
                        TextWrapping="Wrap">
                 1.  Open Armoury Crate → Library → Manage Library (Add Game)<LineBreak/>
@@ -106,7 +106,7 @@
                    Text="" 
                    FontSize="11" 
                    TextWrapping="Wrap"
-                   Foreground="{StaticResource TextMutedBrush}"
+                   Foreground="{DynamicResource TextMutedBrush}"
                    Margin="0,0,0,16"
                    Grid.Row="5"/>
 
