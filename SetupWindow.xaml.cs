@@ -33,12 +33,18 @@ namespace LudusaviWrap
             SgdbSwitch.IsChecked = _config.Data.SteamGridDbEnabled;
             ApiKeyTextBox.Text = _config.Data.SteamGridDbApiKey;
 
+            SyncSwitch.IsChecked    = _config.Data.SyncServerEnabled;
+            SyncUrlTextBox.Text     = _config.Data.SyncServerUrl;
+            SyncApiKeyBox.Password  = _config.Data.SyncServerApiKey;
+            DeviceNameTextBox.Text  = _config.Data.DeviceName;
+
             // Populate theme ComboBox
             SelectThemeComboItem(_config.Data.Theme);
             _themeComboInitialized = true;
 
-            // Update UI state based on switch
+            // Update UI state based on switches
             UpdateSgdbUiState();
+            UpdateSyncUiState();
         }
 
         private void SelectThemeComboItem(string theme)
@@ -80,6 +86,18 @@ namespace LudusaviWrap
                 bool enabled = SgdbSwitch.IsChecked ?? false;
                 ApiKeyTextBox.IsEnabled = enabled;
             }
+        }
+
+        private void SyncSwitch_Changed(object sender, RoutedEventArgs e)
+        {
+            UpdateSyncUiState();
+        }
+
+        private void UpdateSyncUiState()
+        {
+            if (SyncFieldsGrid == null) return;
+            bool enabled = SyncSwitch.IsChecked ?? false;
+            SyncFieldsGrid.IsEnabled = enabled;
         }
 
         private void BrowseLudusavi_Click(object sender, RoutedEventArgs e)
@@ -140,10 +158,15 @@ namespace LudusaviWrap
             }
 
             // Save back to configuration
-            _config.Data.LudusaviPath      = path;
+            _config.Data.LudusaviPath       = path;
             _config.Data.SteamGridDbEnabled = sgdbEnabled;
             _config.Data.SteamGridDbApiKey  = apiKey;
             _config.Data.Theme              = themeValue;
+            _config.Data.SyncServerEnabled  = SyncSwitch.IsChecked ?? false;
+            _config.Data.SyncServerUrl      = SyncUrlTextBox.Text.Trim();
+            _config.Data.SyncServerApiKey   = SyncApiKeyBox.Password.Trim();
+            if (!string.IsNullOrWhiteSpace(DeviceNameTextBox.Text))
+                _config.Data.DeviceName     = DeviceNameTextBox.Text.Trim();
             _config.Save();
 
             DialogResult = true;

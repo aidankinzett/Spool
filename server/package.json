@@ -1,0 +1,24 @@
+{
+  "name": "ludusavi-wrap-server",
+  "version": "1.0.0",
+  "description": "Cross-device play state lock server for ludusavi-wrap",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsx src/index.ts"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.0.0",
+    "hono": "^4.0.0",
+    "uuid": "^10.0.0"
+  },
+  "devDependencies": {
+    "@hono/node-server": "^1.13.0",
+    "@types/better-sqlite3": "^7.6.0",
+    "@types/node": "^22.0.0",
+    "@types/uuid": "^10.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.0.0"
+  }
+}

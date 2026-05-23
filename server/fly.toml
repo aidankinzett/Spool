@@ -1,0 +1,33 @@
+app = "ludusavi-wrap-server"
+primary_region = "syd"
+
+[build]
+
+[env]
+  PORT = "3000"
+  DATABASE_PATH = "/data/ludusavi.db"
+
+[mounts]
+  source = "ludusavi_wrap_data"
+  destination = "/data"
+
+[[services]]
+  internal_port = 3000
+  protocol = "tcp"
+  auto_stop_machines = true
+  auto_start_machines = true
+  min_machines_running = 0
+
+  [[services.ports]]
+    handlers = ["http"]
+    port = 80
+    force_https = true
+
+  [[services.ports]]
+    handlers = ["tls", "http"]
+    port = 443
+
+  [services.concurrency]
+    type = "requests"
+    hard_limit = 100
+    soft_limit = 80

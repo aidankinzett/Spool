@@ -2,6 +2,7 @@ using System;
 using System.Diagnostics;
 using System.IO;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 
@@ -12,6 +13,7 @@ namespace LudusaviWrap
         private readonly string _gameName;
         private readonly string _gameExe;
         private readonly Config _config;
+        private PlayStateLockClient? _lockClient;
 
         public RunWindow(string gameName, string gameExe)
         {
@@ -19,6 +21,15 @@ namespace LudusaviWrap
             _gameName = gameName;
             _gameExe = gameExe;
             _config = new Config();
+
+            if (_config.Data.SyncServerEnabled && !string.IsNullOrEmpty(_config.Data.SyncServerUrl))
+            {
+                _lockClient = new PlayStateLockClient(
+                    _config.Data.SyncServerUrl,
+                    _config.Data.SyncServerApiKey,
+                    _config.Data.DeviceId,
+                    _config.Data.DeviceName);
+            }
 
             Loaded += RunWindow_Loaded;
         }
@@ -49,6 +60,23 @@ namespace LudusaviWrap
             }
 
             string ludusavi = _config.Data.LudusaviPath;
+
+            // 0. Check play state lock before restoring saves
+            if (_lockClient != null)
+            {
+                StatusLabel.Text = $"Checking play state for '{_gameName}'...";
+                var lockStatus = await _lockClient.CheckLockAsync(_gameName);
+                if (lockStatus != null && lockStatus.Locked && !lockStatus.Stale &&
+                    lockStatus.DeviceId != _config.Data.DeviceId)
+                {
+                    string device = lockStatus.DeviceName ?? "another device";
+                    var ans = MessageBox.Show(
+                        $"{device} is currently playing '{_gameName}'.\n\nLaunch anyway?",
+                        "Game Already Running", MessageBoxButton.YesNo, MessageBoxImage.Warning);
+                    if (ans == MessageBoxResult.No)
+                        return;
+                }
+            }
 
             // 1. Restore saves
             StatusLabel.Text = $"Restoring saves for '{_gameName}'...";
@@ -99,7 +127,28 @@ namespace LudusaviWrap
                 return;
             }
 
-            // 2. Launch the game
+            // 2. Acquire play state lock before launching
+            if (_lockClient != null)
+            {
+                StatusLabel.Text = $"Acquiring play lock for '{_gameName}'...";
+                var acquireResult = await _lockClient.AcquireLockAsync(_gameName);
+
+                if (acquireResult.Outcome == AcquireOutcome.Conflict)
+                {
+                    string device = acquireResult.ConflictDeviceName ?? "another device";
+                    var ans = MessageBox.Show(
+                        $"{device} is currently playing '{_gameName}'.\n\nLaunch anyway?",
+                        "Game Already Running", MessageBoxButton.YesNo, MessageBoxImage.Warning);
+                    if (ans == MessageBoxResult.No)
+                        return;
+                }
+                else if (acquireResult.Outcome == AcquireOutcome.Unavailable)
+                {
+                    StatusLabel.Text = $"Sync server unavailable — launching anyway...";
+                }
+            }
+
+            // 3. Launch the game
             if (!File.Exists(_gameExe))
             {
                 MessageBox.Show($"Game executable not found at:\n{_gameExe}", "Game Launcher Error", MessageBoxButton.OK, MessageBoxImage.Error);
@@ -108,20 +157,30 @@ namespace LudusaviWrap
 
             Hide();
 
+            using var heartbeatCts = new CancellationTokenSource();
+            Task? heartbeatTask = _lockClient != null
+                ? _lockClient.StartHeartbeatLoopAsync(_gameName, heartbeatCts.Token)
+                : null;
+
             try
             {
                 await RunGameAsync(_gameExe);
             }
             catch (Exception ex)
             {
+                heartbeatCts.Cancel();
+                if (heartbeatTask != null) try { await heartbeatTask; } catch { }
                 Show();
                 MessageBox.Show($"Failed to start game:\n{ex.Message}", "Game Launcher Error", MessageBoxButton.OK, MessageBoxImage.Error);
                 return;
             }
 
+            heartbeatCts.Cancel();
+            if (heartbeatTask != null) try { await heartbeatTask; } catch { }
+
             Show();
 
-            // 3. Backup saves
+            // 4. Backup saves
             StatusLabel.Text = $"Backing up saves for '{_gameName}'...";
             ClearOutput();
 
@@ -145,6 +204,10 @@ namespace LudusaviWrap
             {
                 MessageBox.Show($"Failed to run Ludusavi backup:\n{ex.Message}", "Ludusavi Warning", MessageBoxButton.OK, MessageBoxImage.Warning);
             }
+
+            // 5. Release play state lock (fire-and-forget)
+            if (_lockClient != null)
+                _ = _lockClient.ReleaseLockAsync(_gameName);
         }
 
         private void AppendOutput(string line)
