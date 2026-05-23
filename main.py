@@ -117,27 +117,30 @@ def run_cli_wrapper(game_name, game_exe):
 
         root = ctk.CTk()
         root.title("Ludusavi Wrap")
-        root.geometry("420x130")
         root.resizable(False, False)
         root.protocol("WM_DELETE_WINDOW", lambda: None)  # Prevent closing during operation
-
-        # Center on screen
-        screen_width = root.winfo_screenwidth()
-        screen_height = root.winfo_screenheight()
-        x = (screen_width - 420) // 2
-        y = (screen_height - 130) // 2
-        root.geometry(f"+{x}+{y}")
-        root.attributes("-topmost", True)
 
         ctk.CTkLabel(
             root, text=label_text,
             font=ctk.CTkFont(size=13, weight="bold")
-        ).pack(pady=(20, 8))
+        ).pack(pady=(20, 8), padx=40)
 
-        pb = ctk.CTkProgressBar(root, width=340)
-        pb.pack(pady=8)
+        pb = ctk.CTkProgressBar(root)
+        pb.pack(pady=8, padx=40, fill="x")
         pb.configure(mode="indeterminate")
         pb.start()
+
+        # Let Tkinter calculate required sizes and center on screen
+        root.update_idletasks()
+        req_width = max(420, root.winfo_reqwidth())
+        req_height = max(130, root.winfo_reqheight())
+
+        screen_width = root.winfo_screenwidth()
+        screen_height = root.winfo_screenheight()
+        x = (screen_width - req_width) // 2
+        y = (screen_height - req_height) // 2
+        root.geometry(f"{req_width}x{req_height}+{x}+{y}")
+        root.attributes("-topmost", True)
 
         def check_thread():
             if thread.is_alive():
