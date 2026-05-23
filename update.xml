@@ -1,10 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <item>
     <!-- The version number of the latest available update. If this is higher than the Version defined in MainWindow.xaml.cs, the user will be prompted to update. -->
-    <version>2.0.6</version>
+    <version>2.1.0</version>
     
     <!-- URL to the latest installer or executable file (typically hosted as a GitHub Release asset) -->
-    <url>https://github.com/aidankinzett/ludusavi-wrap/releases/download/v2.0.6/ludusavi-wrap-setup.exe</url>
+    <url>https://github.com/aidankinzett/ludusavi-wrap/releases/download/v2.1.0/ludusavi-wrap-setup.exe</url>
     
     <!-- URL to the release changelog (or a markdown/HTML page summarizing the new features) -->
     <changelog>https://github.com/aidankinzett/ludusavi-wrap/releases/latest</changelog>
