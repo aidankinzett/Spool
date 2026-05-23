@@ -140,7 +140,6 @@ namespace LudusaviWrap
             }
 
             string ludusavi = _config.Data.LudusaviPath;
-            var tcs = new TaskCompletionSource<List<string>>();
 
             var process = new Process
             {
@@ -151,28 +150,16 @@ namespace LudusaviWrap
                     UseShellExecute = false,
                     RedirectStandardOutput = true,
                     CreateNoWindow = true
-                },
-                EnableRaisingEvents = true
-            };
-
-            process.Exited += (sender, args) =>
-            {
-                try
-                {
-                    string json = process.StandardOutput.ReadToEnd();
-                    var response = JsonSerializer.Deserialize(json, MainSourceGenerationContext.Default.LudusaviFindResponse);
-                    var keys = response?.Games?.Keys.ToList() ?? new List<string>();
-                    tcs.SetResult(keys);
                 }
-                catch (Exception ex)
-                {
-                    tcs.SetException(ex);
-                }
-                process.Dispose();
             };
 
             process.Start();
-            return await tcs.Task;
+            string json = await process.StandardOutput.ReadToEndAsync();
+            await process.WaitForExitAsync();
+            process.Dispose();
+
+            var response = JsonSerializer.Deserialize(json, MainSourceGenerationContext.Default.LudusaviFindResponse);
+            return response?.Games?.Keys.ToList() ?? new List<string>();
         }
 
         private void ShowSearchResults(List<string> games)

@@ -23,7 +23,14 @@ jobs:
         shell: pwsh
         run: |
           $version = "${{ github.ref_name }}".TrimStart('v')
+          $tag = "${{ github.ref_name }}"
+          # Bump app version constant
           (Get-Content MainWindow.xaml.cs) -replace 'Version = ".*"', "Version = `"$version`"" | Set-Content MainWindow.xaml.cs
+          # Bump installer version
+          (Get-Content installer.iss) -replace 'AppVersion=.*', "AppVersion=$version" | Set-Content installer.iss
+          # Bump auto-updater manifest
+          (Get-Content update.xml) -replace '<version>.*</version>', "<version>$version</version>" | Set-Content update.xml -Encoding utf8
+          (Get-Content update.xml) -replace '<url>.*</url>', "<url>https://github.com/aidankinzett/ludusavi-wrap/releases/download/$tag/ludusavi-wrap-setup.exe</url>" | Set-Content update.xml -Encoding utf8
 
       - name: Compile Launcher Stub
         shell: pwsh
@@ -49,3 +56,16 @@ jobs:
             bin/Release/net9.0-windows/win-x64/publish/ludusavi-wrap.exe
             dist/ludusavi-wrap-setup.exe
           generate_release_notes: true
+
+      - name: Commit update.xml to main
+        shell: pwsh
+        run: |
+          $xmlContent = Get-Content update.xml -Raw
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git fetch origin main
+          git checkout -f main
+          Set-Content update.xml $xmlContent -Encoding utf8 -NoNewline
+          git add update.xml
+          git commit -m "chore: bump update.xml to ${{ github.ref_name }}"
+          git push origin main
