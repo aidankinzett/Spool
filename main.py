@@ -60,61 +60,168 @@ def _show_touch_keyboard():
             return
 
 
-BAT_TEMPLATE = (
-    "@echo off\r\n"
-    "setlocal\r\n"
-    'set "LUDUSAVI={ludusavi_path}"\r\n'
-    'set "GAME_NAME={game_name}"\r\n'
-    'set "GAME_EXE={game_exe}"\r\n'
-    'set "RESTORE_OUT=%TEMP%\\ludusavi_%RANDOM%.json"\r\n'
-    "\r\n"
-    'if not exist "%LUDUSAVI%" (\r\n'
-    '    echo ERROR: ludusavi.exe not found at "%LUDUSAVI%"\r\n'
-    "    pause\r\n"
-    "    exit /b 1\r\n"
-    ")\r\n"
-    "\r\n"
-    '"%LUDUSAVI%" restore --api --cloud-sync --force "%GAME_NAME%" > "%RESTORE_OUT%" 2>&1\r\n'
-    "if errorlevel 1 (\r\n"
-    "    powershell -NoProfile -NonInteractive -Command \""
-    "Add-Type -AssemblyName PresentationFramework; "
-    "[System.Windows.MessageBox]::Show("
-    "'Ludusavi restore failed. Game will not launch.',"
-    "'Ludusavi Error','OK','Error') | Out-Null\"\r\n"
-    "    del \"%RESTORE_OUT%\" 2>nul\r\n"
-    "    exit /b 1\r\n"
-    ")\r\n"
-    "\r\n"
-    "powershell -NoProfile -NonInteractive -Command \""
-    "$ErrorActionPreference='SilentlyContinue'; "
-    "try {{ "
-    "$j = Get-Content $env:RESTORE_OUT | ConvertFrom-Json; "
-    "if ($j.errors.cloudConflict -ne $null -or $j.errors.cloudSyncFailed -ne $null) {{ "
-    "Add-Type -AssemblyName PresentationFramework; "
-    "$r = [System.Windows.MessageBox]::Show("
-    "'Cloud sync conflict detected for ' + $env:GAME_NAME + '. Open Ludusavi to resolve?',"
-    "'Ludusavi - Cloud Conflict','YesNo','Warning'); "
-    "if ($r -eq 'Yes') {{ Start-Process $env:LUDUSAVI -ArgumentList 'gui' }}; "
-    "exit 1 "
-    "}} "
-    "}} catch {{ }}"
-    "\"\r\n"
-    "\r\n"
-    "set \"PS_RESULT=%errorlevel%\"\r\n"
-    'del "%RESTORE_OUT%" 2>nul\r\n'
-    'if "%PS_RESULT%"=="1" exit /b 1\r\n'
-    "\r\n"
-    'start /wait "" "%GAME_EXE%"\r\n'
-    "\r\n"
-    '"%LUDUSAVI%" backup --force --cloud-sync "%GAME_NAME%"\r\n'
-    "if errorlevel 1 (\r\n"
-    "    powershell -NoProfile -NonInteractive -Command \""
-    "Add-Type -AssemblyName PresentationFramework; "
-    "[System.Windows.MessageBox]::Show("
-    "'Ludusavi backup failed. Your saves may not have been uploaded to the cloud.',"
-    "'Ludusavi Warning','OK','Warning') | Out-Null\"\r\n"
-    ")\r\n"
-)
+def run_cli_wrapper(game_name, game_exe):
+    import tkinter as tk
+    import tkinter.messagebox as messagebox
+
+    def show_error(title, msg):
+        root = tk.Tk()
+        root.withdraw()
+        messagebox.showerror(title, msg, parent=root)
+        root.destroy()
+
+    def show_warning(title, msg):
+        root = tk.Tk()
+        root.withdraw()
+        messagebox.showwarning(title, msg, parent=root)
+        root.destroy()
+
+    def ask_yes_no(title, msg):
+        root = tk.Tk()
+        root.withdraw()
+        res = messagebox.askyesno(title, msg, parent=root)
+        root.destroy()
+        return res
+
+    config = Config()
+    ludusavi_path = config.get("ludusavi_path")
+    if not ludusavi_path or not os.path.isfile(ludusavi_path):
+        show_error(
+            "Ludusavi Error",
+            f"Ludusavi executable not found at:\n{ludusavi_path}\n\nPlease open settings in Ludusavi Wrap to configure it."
+        )
+        sys.exit(1)
+
+    # Helper function to run a process with a loading GUI dialog
+    def run_ludusavi_with_loading(args, label_text):
+        result = {"proc": None, "error": None}
+
+        def worker():
+            try:
+                result["proc"] = subprocess.run(
+                    [ludusavi_path] + args,
+                    capture_output=True,
+                    text=True,
+                    creationflags=subprocess.CREATE_NO_WINDOW
+                )
+            except Exception as e:
+                result["error"] = e
+
+        thread = threading.Thread(target=worker, daemon=True)
+        thread.start()
+
+        # Build dialog window using CustomTkinter
+        ctk.set_appearance_mode("System")
+        _base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+        ctk.set_default_color_theme(os.path.join(_base, "themes", "rime.json"))
+
+        root = ctk.CTk()
+        root.title("Ludusavi Wrap")
+        root.geometry("420x130")
+        root.resizable(False, False)
+        root.protocol("WM_DELETE_WINDOW", lambda: None)  # Prevent closing during operation
+
+        # Center on screen
+        screen_width = root.winfo_screenwidth()
+        screen_height = root.winfo_screenheight()
+        x = (screen_width - 420) // 2
+        y = (screen_height - 130) // 2
+        root.geometry(f"+{x}+{y}")
+        root.attributes("-topmost", True)
+
+        ctk.CTkLabel(
+            root, text=label_text,
+            font=ctk.CTkFont(size=13, weight="bold")
+        ).pack(pady=(20, 8))
+
+        pb = ctk.CTkProgressBar(root, width=340)
+        pb.pack(pady=8)
+        pb.configure(mode="indeterminate")
+        pb.start()
+
+        def check_thread():
+            if thread.is_alive():
+                root.after(100, check_thread)
+            else:
+                root.destroy()
+
+        root.after(100, check_thread)
+        root.mainloop()
+
+        if result["error"]:
+            raise result["error"]
+        return result["proc"]
+
+    # 1. Run Ludusavi restore with loading dialog
+    try:
+        proc = run_ludusavi_with_loading(
+            ["restore", "--api", "--cloud-sync", "--force", game_name],
+            f"Restoring saves for '{game_name}'..."
+        )
+        restore_out = proc.stdout + proc.stderr
+        returncode = proc.returncode
+    except Exception as e:
+        show_error(
+            "Ludusavi Error",
+            f"Failed to start Ludusavi restore process:\n{e}"
+        )
+        sys.exit(1)
+
+    if returncode != 0:
+        show_error(
+            "Ludusavi Error",
+            f"Ludusavi restore failed. Game will not launch.\n\nDetails:\n{restore_out}"
+        )
+        sys.exit(1)
+
+    # Check for cloud conflicts
+    if "cloudConflict" in restore_out or "cloudSyncFailed" in restore_out:
+        ans = ask_yes_no(
+            "Ludusavi - Cloud Conflict",
+            f"Cloud sync conflict detected for '{game_name}'. Open Ludusavi to resolve?"
+        )
+        if ans:
+            try:
+                subprocess.Popen([ludusavi_path, "gui"])
+            except Exception as e:
+                show_error("Error", f"Failed to open Ludusavi GUI:\n{e}")
+        sys.exit(1)
+
+    # 2. Run the game
+    if not os.path.isfile(game_exe):
+        show_error(
+            "Game Launcher Error",
+            f"Game executable not found at:\n{game_exe}"
+        )
+        sys.exit(1)
+
+    try:
+        game_dir = os.path.dirname(game_exe)
+        subprocess.run([game_exe], cwd=game_dir)
+    except Exception as e:
+        show_error(
+            "Game Launcher Error",
+            f"Failed to start game:\n{e}"
+        )
+        sys.exit(1)
+
+    # 3. Run Ludusavi backup with loading dialog
+    try:
+        proc = run_ludusavi_with_loading(
+            ["backup", "--force", "--cloud-sync", game_name],
+            f"Backing up saves for '{game_name}'..."
+        )
+        if proc.returncode != 0:
+            show_warning(
+                "Ludusavi Warning",
+                "Ludusavi backup failed. Your saves may not have been uploaded to the cloud."
+            )
+    except Exception as e:
+        show_warning(
+            "Ludusavi Warning",
+            f"Failed to run Ludusavi backup:\n{e}"
+        )
+
 
 
 class Config:
@@ -123,9 +230,22 @@ class Config:
             "ludusavi_path": "",
             "steamgriddb_enabled": False,
             "steamgriddb_api_key": "",
+            "ludusavi_wrap_exe": "",
+            "ludusavi_wrap_args": "",
         }
         self._load()
         self._autodetect()
+        self._save_current_exe_path()
+
+    def _save_current_exe_path(self):
+        if getattr(sys, "frozen", False):
+            self.data["ludusavi_wrap_exe"] = sys.executable
+            self.data["ludusavi_wrap_args"] = ""
+        else:
+            self.data["ludusavi_wrap_exe"] = sys.executable
+            main_py = os.path.normpath(os.path.abspath(sys.argv[0]))
+            self.data["ludusavi_wrap_args"] = main_py
+        self.save()
 
     def _autodetect(self):
         if self.data.get("ludusavi_path"):
@@ -254,17 +374,14 @@ class SetupDialog(ctk.CTkToplevel):
 
 
 ARMOURY_STEPS = (
-    "1.  Open Armoury Crate → Library → Manage Library\n"
-    "2.  Add the game's .exe file to your library\n"
-    "3.  Select the game → press X → Game Options → Game Info → Edit\n"
-    "4.  Paste the Game Name into the title field\n"
-    "5.  Paste the Launch CMD into the Launch CMD field\n"
-    "6.  Add cover art manually (path shown below if downloaded)"
+    "1.  Open Armoury Crate → Library → Manage Library (Add Game)\n"
+    "2.  Browse and select the generated launcher .exe\n"
+    "3.  (Optional) Add cover art manually if downloaded (path shown below)"
 )
 
 
 class SuccessDialog(ctk.CTkToplevel):
-    def __init__(self, parent, game_name, bat_path, on_close):
+    def __init__(self, parent, game_name, exe_path, on_close):
         super().__init__(parent)
         self.title("Ready for Armoury Crate")
         self.resizable(False, False)
@@ -276,7 +393,7 @@ class SuccessDialog(ctk.CTkToplevel):
                      font=ctk.CTkFont(size=15, weight="bold")).pack(pady=(20, 12))
 
         self._build_copy_row("Game Name", game_name)
-        self._build_copy_row("Launch CMD", bat_path)
+        self._build_copy_row("Launcher EXE Path", exe_path)
 
         ctk.CTkFrame(self, height=1).pack(fill="x", padx=20, pady=(8, 6))
 
@@ -475,24 +592,39 @@ class App(ctk.CTk):
         if not safe:
             return self._set_status("Game name contains only invalid filename characters.", ok=False)
 
-        bat_path = os.path.join(_launchers_dir(), safe + ".bat")
+        base_dir = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+        stub_path = os.path.join(base_dir, "launcher_stub.exe")
+        if not os.path.isfile(stub_path):
+            return self._set_status(f"Launcher stub not found at: {stub_path}", ok=False)
 
-        content = BAT_TEMPLATE.format(
-            ludusavi_path=self.config.get("ludusavi_path"),
-            game_name=name,
-            game_exe=exe,
-        )
-        with open(bat_path, "w", newline="") as f:
-            f.write(content)
+        exe_path = os.path.join(_launchers_dir(), safe + ".exe")
+
+        try:
+            shutil.copy2(stub_path, exe_path)
+        except Exception as e:
+            return self._set_status(f"Failed to copy launcher stub: {e}", ok=False)
+
+        ludusavi_wrap_exe = self.config.get("ludusavi_wrap_exe")
+        payload = f"\r\nLUDUSAVI_WRAP_CFG_START\r\n{name}\r\n{exe}\r\n{ludusavi_wrap_exe}\r\nLUDUSAVI_WRAP_CFG_END\r\n"
+
+        try:
+            with open(exe_path, "ab") as f:
+                f.write(payload.encode("utf-8"))
+        except Exception as e:
+            try:
+                os.remove(exe_path)
+            except OSError:
+                pass
+            return self._set_status(f"Failed to write launcher configuration: {e}", ok=False)
 
         self._set_status("", ok=True)
-        self._success_dlg = SuccessDialog(self, name, bat_path, on_close=self._clear)
+        self._success_dlg = SuccessDialog(self, name, exe_path, on_close=self._clear)
 
         if self.config.get("steamgriddb_enabled") and self.config.get("steamgriddb_api_key"):
             self._success_dlg.update_artwork("Fetching cover image…", ("gray40", "gray60"))
-            threading.Thread(target=self._fetch_hero, args=(name, safe, bat_path), daemon=True).start()
+            threading.Thread(target=self._fetch_hero, args=(name, safe, exe_path), daemon=True).start()
 
-    def _fetch_hero(self, game_name, safe_name, bat_path):
+    def _fetch_hero(self, game_name, safe_name, exe_path):
         api_key = self.config.get("steamgriddb_api_key")
         headers = {"Authorization": f"Bearer {api_key}"}
         try:
@@ -594,6 +726,11 @@ class App(ctk.CTk):
 
 
 def main():
+    if len(sys.argv) > 1 and sys.argv[1] == "--run":
+        if len(sys.argv) >= 4:
+            run_cli_wrapper(sys.argv[2], sys.argv[3])
+        return
+
     ctk.set_appearance_mode("System")
     _base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
     ctk.set_default_color_theme(os.path.join(_base, "themes", "rime.json"))

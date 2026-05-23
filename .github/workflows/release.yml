@@ -34,11 +34,17 @@ jobs:
             --windowed `
             --collect-all customtkinter `
             --add-data "themes;themes" `
+            --add-data "launcher_stub.exe;." `
             --name ludusavi-wrap `
             main.py
+
+      - name: Build Installer
+        run: iscc installer.iss
 
       - name: Upload release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/ludusavi-wrap.exe
+          files: |
+            dist/ludusavi-wrap.exe
+            dist/ludusavi-wrap-setup.exe
           generate_release_notes: true

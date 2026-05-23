@@ -17,8 +17,15 @@ uv run main.py
 
 # Build standalone executable (requires dev deps)
 uv sync --dev
-uv run pyinstaller --onefile --windowed --collect-all customtkinter --add-data "themes;themes" --name ludusavi-wrap main.py
+uv run pyinstaller --onefile --windowed --collect-all customtkinter --add-data "themes;themes" --add-data "launcher_stub.exe;." --name ludusavi-wrap main.py
 # Output: dist/ludusavi-wrap.exe
+
+# Compile the C# launcher stub (if changes are made to launcher_stub.cs)
+C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe /target:winexe /out:launcher_stub.exe launcher_stub.cs
+
+# Compile the Inno Setup installer locally (optional, requires Inno Setup)
+# iscc installer.iss
+# Output: dist/ludusavi-wrap-setup.exe
 ```
 
 **Release**: Tag commits as `v*` (e.g., `v1.0.4`). GitHub Actions bumps the `VERSION` constant from the tag, builds the exe, and creates a GitHub release. Do not manually edit `VERSION` for releases.
