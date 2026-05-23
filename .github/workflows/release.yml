@@ -13,11 +13,33 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup .NET SDK
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '9.x'
+
+      - name: Generate changelog
+        id: changelog
+        shell: pwsh
+        run: |
+          $prevTag = git describe --tags --abbrev=0 HEAD^
+          $commits = git log "$prevTag..HEAD" --pretty=format:"%s" | Where-Object { $_ -ne "" }
+
+          $features = @($commits | Where-Object { $_ -match '^feat' } | ForEach-Object { "- $_" })
+          $fixes    = @($commits | Where-Object { $_ -match '^fix'  } | ForEach-Object { "- $_" })
+          $other    = @($commits | Where-Object { $_ -notmatch '^feat|^fix' } | ForEach-Object { "- $_" })
+
+          $body = ""
+          if ($features.Count -gt 0) { $body += "### Features`n" + ($features -join "`n") + "`n`n" }
+          if ($fixes.Count    -gt 0) { $body += "### Bug Fixes`n" + ($fixes    -join "`n") + "`n`n" }
+          if ($other.Count    -gt 0) { $body += "### Other`n"     + ($other    -join "`n") + "`n`n" }
+
+          "CHANGELOG<<EOF" >> $env:GITHUB_OUTPUT
+          $body.TrimEnd() >> $env:GITHUB_OUTPUT
+          "EOF" >> $env:GITHUB_OUTPUT
 
       - name: Set version from tag
         shell: pwsh
@@ -51,7 +73,7 @@ jobs:
           files: |
             bin/Release/net9.0-windows/win-x64/publish/ludusavi-wrap.exe
             dist/ludusavi-wrap-setup.exe
-          generate_release_notes: true
+          body: ${{ steps.changelog.outputs.CHANGELOG }}
 
       - name: Commit update.xml to master
         shell: pwsh
