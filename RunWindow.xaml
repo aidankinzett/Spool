@@ -1,0 +1,38 @@
+<Window x:Class="LudusaviWrap.RunWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Ludusavi Wrap" 
+        Width="420" 
+        Height="130"
+        ResizeMode="NoResize"
+        WindowStartupLocation="CenterScreen"
+        WindowStyle="None"
+        Topmost="True"
+        BorderBrush="{StaticResource BorderBrush}"
+        BorderThickness="1.5"
+        Background="{StaticResource WindowBgBrush}">
+
+    <Grid VerticalAlignment="Center" HorizontalAlignment="Center">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <!-- Loading Text -->
+        <TextBlock x:Name="StatusLabel" 
+                   Text="Initializing..." 
+                   FontSize="13" 
+                   FontWeight="Bold" 
+                   Foreground="{StaticResource TextBrush}"
+                   HorizontalAlignment="Center"
+                   Margin="0,0,0,16"
+                   Grid.Row="0"/>
+
+        <!-- Progress Bar -->
+        <ProgressBar x:Name="LoadProgress" 
+                     Width="340" 
+                     Height="6" 
+                     IsIndeterminate="True"
+                     Grid.Row="1"/>
+    </Grid>
+</Window>

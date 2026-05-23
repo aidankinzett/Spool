@@ -1,0 +1,35 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net9.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <UseWpf>true</UseWpf>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <!-- Single-File Publishing instead of Native AOT for WPF compatibility -->
+    <PublishSingleFile>true</PublishSingleFile>
+    <SelfContained>true</SelfContained>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <ApplicationIcon>ludusavi-wrap.ico</ApplicationIcon>
+    <AssemblyName>ludusavi-wrap</AssemblyName>
+    <RootNamespace>LudusaviWrap</RootNamespace>
+  </PropertyGroup>
+
+  <!-- Embed launcher_stub.exe as a resource so we can write it out at runtime -->
+  <ItemGroup>
+    <EmbeddedResource Include="launcher_stub.exe">
+      <LogicalName>launcher_stub.exe</LogicalName>
+    </EmbeddedResource>
+  </ItemGroup>
+
+  <!-- Exclude launcher_stub.cs from compilation since it is a separate tool stub -->
+  <ItemGroup>
+    <Compile Remove="launcher_stub.cs" />
+  </ItemGroup>
+
+  <!-- AutoUpdater.NET NuGet dependency -->
+  <ItemGroup>
+    <PackageReference Include="Autoupdater.NET.Official" Version="1.9.2" />
+  </ItemGroup>
+
+</Project>

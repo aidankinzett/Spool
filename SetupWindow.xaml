@@ -1,0 +1,125 @@
+<Window x:Class="LudusaviWrap.SetupWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:local="clr-namespace:LudusaviWrap"
+        Title="Settings" 
+        Width="520" 
+        SizeToContent="Height"
+        ResizeMode="NoResize"
+        WindowStartupLocation="CenterScreen"
+        WindowStyle="SingleBorderWindow"
+        Background="{StaticResource WindowBgBrush}">
+
+    <Grid Margin="24">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/> <!-- Title -->
+            <RowDefinition Height="Auto"/> <!-- Ludusavi Group -->
+            <RowDefinition Height="Auto"/> <!-- SteamGridDB Group -->
+            <RowDefinition Height="Auto"/> <!-- Error Message -->
+            <RowDefinition Height="Auto"/> <!-- Action Buttons -->
+        </Grid.RowDefinitions>
+
+        <!-- Header -->
+        <TextBlock Text="Settings" 
+                   FontSize="18" 
+                   FontWeight="Bold" 
+                   Foreground="{StaticResource TextBrush}"
+                   Margin="0,0,0,16"
+                   Grid.Row="0"/>
+
+        <!-- Ludusavi Path Card -->
+        <Border Style="{StaticResource CardFrame}" Margin="0,0,0,16" Grid.Row="1">
+            <StackPanel>
+                <TextBlock Text="Ludusavi Path" 
+                           FontWeight="SemiBold" 
+                           Foreground="{StaticResource TextBrush}" 
+                           Margin="0,0,0,8"/>
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBox x:Name="LudusaviPathTextBox" 
+                             Tag="C:\Path\to\ludusavi.exe"
+                             Grid.Column="0" 
+                             Margin="0,0,8,0"/>
+                    <Button Content="Browse" 
+                            Style="{StaticResource SecondaryButton}" 
+                            Click="BrowseLudusavi_Click"
+                            Grid.Column="1"/>
+                </Grid>
+            </StackPanel>
+        </Border>
+
+        <!-- SteamGridDB Card -->
+        <Border Style="{StaticResource CardFrame}" Margin="0,0,0,16" Grid.Row="2">
+            <StackPanel>
+                <Grid Margin="0,0,0,4">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Text="SteamGridDB Artwork" 
+                               FontWeight="SemiBold" 
+                               Foreground="{StaticResource TextBrush}"
+                               Grid.Column="0"
+                               VerticalAlignment="Center"/>
+                    <CheckBox x:Name="SgdbSwitch" 
+                              Checked="SgdbSwitch_Changed"
+                              Unchecked="SgdbSwitch_Changed"
+                              Grid.Column="1"
+                              VerticalAlignment="Center"/>
+                </Grid>
+                
+                <TextBlock Text="Download cover images automatically when generating a wrapper." 
+                           Foreground="{StaticResource TextMutedBrush}" 
+                           FontSize="11" 
+                           Margin="0,0,0,12"/>
+
+                <Grid x:Name="ApiKeyGrid">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Text="API Key:" 
+                               Foreground="{StaticResource TextBrush}" 
+                               VerticalAlignment="Center"
+                               Margin="0,0,8,0"
+                               Grid.Column="0"/>
+                    <TextBox x:Name="ApiKeyTextBox" 
+                             Tag="Paste API Key here"
+                             Margin="0,0,8,0"
+                             Grid.Column="1"/>
+                    <Button Content="Get Key" 
+                            Style="{StaticResource SecondaryButton}" 
+                            Click="GetKey_Click"
+                            Grid.Column="2"/>
+                </Grid>
+            </StackPanel>
+        </Border>
+
+        <!-- Error Text -->
+        <TextBlock x:Name="ErrorLabel" 
+                   Foreground="#FF5F5F" 
+                   HorizontalAlignment="Center" 
+                   FontWeight="SemiBold"
+                   Margin="0,0,0,12" 
+                   Visibility="Collapsed"
+                   Grid.Row="3"/>
+
+        <!-- Action Buttons -->
+        <StackPanel Orientation="Horizontal" 
+                    HorizontalAlignment="Center" 
+                    Grid.Row="4">
+            <Button Content="Save &amp; Continue" 
+                    Width="160"
+                    Click="Save_Click" 
+                    Margin="0,0,12,0"/>
+            <Button Content="Cancel" 
+                    Style="{StaticResource SecondaryButton}"
+                    Width="100"
+                    Click="Cancel_Click"/>
+        </StackPanel>
+    </Grid>
+</Window>

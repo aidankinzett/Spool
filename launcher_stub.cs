@@ -87,7 +87,7 @@ class Launcher {
     
     static void GetWrapExeFromGlobalConfig(ref string wrapExe, ref string wrapArgs) {
         try {
-            string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+            string appData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
             string configPath = Path.Combine(appData, "ludusavi-wrap", "config.json");
             if (File.Exists(configPath)) {
                 string json = File.ReadAllText(configPath);

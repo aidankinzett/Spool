@@ -1,0 +1,57 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <!-- Basic Clean Native Windows Theme Brushes -->
+    <SolidColorBrush x:Key="WindowBgBrush" Color="{DynamicResource {x:Static SystemColors.ControlColorKey}}"/>
+    <SolidColorBrush x:Key="CardBgBrush" Color="{DynamicResource {x:Static SystemColors.WindowColorKey}}"/>
+    <SolidColorBrush x:Key="BorderBrush" Color="#CCCCCC"/>
+    
+    <SolidColorBrush x:Key="TextBrush" Color="{DynamicResource {x:Static SystemColors.ControlTextColorKey}}"/>
+    <SolidColorBrush x:Key="TextMutedBrush" Color="#666666"/>
+    
+    <SolidColorBrush x:Key="InputBgBrush" Color="{DynamicResource {x:Static SystemColors.WindowColorKey}}"/>
+    <SolidColorBrush x:Key="InputBorderBrush" Color="#CCCCCC"/>
+
+    <!-- Base Window Style -->
+    <Style TargetType="Window">
+        <Setter Property="Background" Value="{StaticResource WindowBgBrush}"/>
+        <Setter Property="Foreground" Value="{StaticResource TextBrush}"/>
+        <Setter Property="FontFamily" Value="Segoe UI, Tahoma, Arial"/>
+        <Setter Property="FontSize" Value="12"/>
+    </Style>
+
+    <!-- Base Label Style -->
+    <Style TargetType="Label">
+        <Setter Property="Foreground" Value="{StaticResource TextBrush}"/>
+        <Setter Property="VerticalAlignment" Value="Center"/>
+        <Setter Property="Padding" Value="0"/>
+    </Style>
+
+    <!-- Card/Frame Style (Simple Border with white background) -->
+    <Style x:Key="CardFrame" TargetType="Border">
+        <Setter Property="Background" Value="{StaticResource CardBgBrush}"/>
+        <Setter Property="BorderBrush" Value="{StaticResource BorderBrush}"/>
+        <Setter Property="BorderThickness" Value="1"/>
+        <Setter Property="CornerRadius" Value="4"/>
+        <Setter Property="Padding" Value="12"/>
+    </Style>
+
+    <!-- Setup margins/paddings for native buttons without replacing templates -->
+    <Style TargetType="Button">
+        <Setter Property="Padding" Value="12,6"/>
+        <Setter Property="MinHeight" Value="24"/>
+    </Style>
+
+    <Style x:Key="SecondaryButton" TargetType="Button">
+        <Setter Property="Padding" Value="10,4"/>
+    </Style>
+
+    <!-- Setup padding for native text boxes without replacing templates -->
+    <Style TargetType="TextBox">
+        <Setter Property="Padding" Value="4,3"/>
+        <Setter Property="VerticalContentAlignment" Value="Center"/>
+        <Setter Property="Background" Value="{StaticResource InputBgBrush}"/>
+        <Setter Property="BorderBrush" Value="{StaticResource InputBorderBrush}"/>
+    </Style>
+
+</ResourceDictionary>

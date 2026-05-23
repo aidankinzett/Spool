@@ -17,7 +17,7 @@ DisableDirPage=auto
 DisableReadyPage=yes
 
 [Files]
-Source: "dist\ludusavi-wrap.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "bin\Release\net9.0-windows\win-x64\publish\ludusavi-wrap.exe"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\Ludusavi Wrap"; Filename: "{app}\ludusavi-wrap.exe"

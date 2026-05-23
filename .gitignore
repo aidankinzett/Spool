@@ -1,8 +1,17 @@
+# Python legacy
 .venv/
 __pycache__/
 *.pyc
 *.pyo
+*.spec
+
+# C# / dotnet
+bin/
+obj/
+.vs/
+*.user
+*.suo
+
+# Project specifics
 config.json
 dist/
-build/
-*.spec

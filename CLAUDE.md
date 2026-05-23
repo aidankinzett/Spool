@@ -4,47 +4,44 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**ludusavi-wrap** is a Windows GUI application that wraps game executables with [ludusavi](https://github.com/mtkennerly/ludusavi) save management for ASUS Armoury Crate integration. It generates a `.bat` launcher that automatically restores saves before a game launches and backs them up on exit.
+**ludusavi-wrap** is a Windows WPF GUI application (.NET 9.0) that wraps game executables with [ludusavi](https://github.com/mtkennerly/ludusavi) save management for ASUS Armoury Crate integration. It generates a launcher `.exe` shortcut that automatically restores saves before a game launches and backs them up on exit, checking for cloud sync conflicts.
 
 ## Commands
 
 ```bash
-# Install dependencies
-uv sync
+# Run application in development mode
+dotnet run
 
-# Run from source
-uv run main.py
+# Build project locally (Debug)
+dotnet build
 
-# Build standalone executable (requires dev deps)
-uv sync --dev
-uv run pyinstaller --onefile --windowed --collect-all customtkinter --add-data "themes;themes" --add-data "launcher_stub.exe;." --name ludusavi-wrap main.py
-# Output: dist/ludusavi-wrap.exe
+# Publish standalone single-file executable (includes .NET runtime and WPF framework)
+dotnet publish -c Release -r win-x64 --self-contained true /p:PublishSingleFile=true
+# Output: bin\Release\net9.0-windows\win-x64\publish\ludusavi-wrap.exe
 
 # Compile the C# launcher stub (if changes are made to launcher_stub.cs)
 C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe /target:winexe /out:launcher_stub.exe launcher_stub.cs
 
-# Compile the Inno Setup installer locally (optional, requires Inno Setup)
-# iscc installer.iss
+# Compile the Inno Setup installer (requires Inno Setup)
+iscc installer.iss
 # Output: dist/ludusavi-wrap-setup.exe
 ```
 
-**Release**: Tag commits as `v*` (e.g., `v1.0.4`). GitHub Actions bumps the `VERSION` constant from the tag, builds the exe, and creates a GitHub release. Do not manually edit `VERSION` for releases.
-
 ## Architecture
 
-The entire application lives in a single `main.py` file with four classes:
+The application is structured into the following C# and XAML components:
 
-- **`Config`**: Manages persistent JSON config, auto-detects `ludusavi.exe`, and handles both frozen (PyInstaller) and dev execution contexts. Config path is `%APPDATA%\ludusavi-wrap\config.json` when frozen, `./config.json` in dev.
-- **`SetupDialog`**: Modal settings window for ludusavi path and SteamGridDB API key.
-- **`SuccessDialog`**: Post-generation dialog showing the .bat path and game name with copy-to-clipboard buttons.
-- **`App`**: Main tkinter window driving three core workflows:
-  1. **Executable selection** — file browse dialog filtered to `*.exe`
-  2. **Game name search** — calls `ludusavi find --api --fuzzy --multiple <query>` via subprocess, parses JSON results into a dropdown
-  3. **Wrapper generation** — writes a `.bat` from `BAT_TEMPLATE` with embedded paths; optionally fetches a Steam horizontal grid image (460×215 or 920×430) from SteamGridDB API and saves it alongside the .bat
+* **`App.xaml` / `App.xaml.cs`**: Main entry point. Parses command line arguments. Routes `--run` to `RunWindow` and standard launch to `MainWindow`. Dynamically queries Windows DWM registry on start to load and override UI colors with the user's active system accent color.
+* **`Theme.xaml`**: ResourceDictionary defining modern Windows 11 Fluent styling (dark mode, rounded corners, custom text box placeholders, custom toggle switch).
+* **`Config.cs`**: Handles loading/saving config parameters to `%APPDATA%\ludusavi-wrap\config.json`. Implements autodetect of `ludusavi.exe` in common paths or System PATH. Uses AOT-safe Source-Generated JSON.
+* **`SteamGridDbClient.cs`**: Queries the SteamGridDB API to search for game artwork and download horizontal grids to `%APPDATA%\ludusavi-wrap\covers`. Uses source-generated JSON.
+* **`Switch.cs`**: Custom toggle switch control inheriting from `ToggleButton`.
+* **`MainWindow.xaml` / `MainWindow.xaml.cs`**: UI for configuring and building wrappers. Automatically extracts the embedded resource `launcher_stub.exe` and appends configuration bytes to make launcher shortcuts. Launches touch keyboard if textbox focuses on handheld screens.
+* **`SetupWindow.xaml` / `SetupWindow.xaml.cs`**: Dialog for managing Settings (Ludusavi path and SteamGridDB API key).
+* **`SuccessWindow.xaml` / `SuccessWindow.xaml.cs`**: Dialog shown after successful generation, displaying path details and copy actions.
+* **`RunWindow.xaml` / `RunWindow.xaml.cs`**: Background-friendly sync overlay which displays progress while restoring saves, waits for the game process to exit, and runs backup.
 
 ### Key Patterns
 
-- **Thread safety**: Long-running work (ludusavi subprocess, SteamGridDB API) runs on daemon threads; UI updates are marshalled back via `self.after(0, callback)`.
-- **Window resizing**: The window auto-resizes to content height after state changes.
-- **BAT template**: `BAT_TEMPLATE` constant contains the full batch file. At runtime it: restores saves via `ludusavi restore --api --cloud-sync --force`, checks the JSON output for cloud conflicts (shows a Yes/No dialog offering to open Ludusavi if found), launches the game via `start /wait`, then backs up via `ludusavi backup --force --cloud-sync`. Failures at restore or backup show a PowerShell `MessageBox`. Game name and exe path are substituted at generation time via `.format()`; literal `{`/`}` in the batch script must be escaped as `{{`/`}}`.
-- **Windows-only**: Uses `os.startfile()`, `TabTip.exe` for touch keyboard (ROG Ally support), and `.bat` file generation.
+* **Async operations**: File IO, API requests, and subprocess execution run asynchronously via Tasks (`async`/`await`) to keep the WPF UI thread responsive.
+* **WPF Single-File self-contained configuration**: Output is packaged as a single large binary with native libraries bundled, ensuring instant start and zero user-facing installation friction.
