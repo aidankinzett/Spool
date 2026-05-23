@@ -107,6 +107,13 @@ BAT_TEMPLATE = (
     'start /wait "" "%GAME_EXE%"\r\n'
     "\r\n"
     '"%LUDUSAVI%" backup --force --cloud-sync "%GAME_NAME%"\r\n'
+    "if errorlevel 1 (\r\n"
+    "    powershell -NoProfile -NonInteractive -Command \""
+    "Add-Type -AssemblyName PresentationFramework; "
+    "[System.Windows.MessageBox]::Show("
+    "'Ludusavi backup failed. Your saves may not have been uploaded to the cloud.',"
+    "'Ludusavi Warning','OK','Warning') | Out-Null\"\r\n"
+    ")\r\n"
 )
 
 
