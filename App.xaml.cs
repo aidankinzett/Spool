@@ -11,6 +11,7 @@ namespace LudusaviWrap
         protected override void OnStartup(StartupEventArgs e)
         {
             base.OnStartup(e);
+            ApplySystemAccentColor();
 
             string[] args = e.Args;
 
@@ -50,6 +51,27 @@ namespace LudusaviWrap
 
             var mainWindow = new MainWindow(config);
             mainWindow.Show();
+        }
+
+        private void ApplySystemAccentColor()
+        {
+            try
+            {
+                using var key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\DWM");
+                if (key?.GetValue("AccentColor") is int abgr)
+                {
+                    byte r = (byte)(abgr & 0xFF);
+                    byte g = (byte)((abgr >> 8) & 0xFF);
+                    byte b = (byte)((abgr >> 16) & 0xFF);
+                    var brush = new SolidColorBrush(Color.FromRgb(r, g, b));
+                    brush.Freeze();
+                    Resources["SystemAccentBrush"] = brush;
+                }
+            }
+            catch
+            {
+                // Fall back to default theme if registry read fails
+            }
         }
     }
 }

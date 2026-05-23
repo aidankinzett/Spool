@@ -37,7 +37,7 @@ Requires the [.NET 9.0 SDK](https://dotnet.microsoft.com/download/dotnet/9.0) (W
 
 1. Clone the repository:
    ```cmd
-   git clone https://github.com/akinzett/ludusavi-wrap
+   git clone https://github.com/aidankinzett/ludusavi-wrap
    cd ludusavi-wrap
    ```
 2. Run the application from source:

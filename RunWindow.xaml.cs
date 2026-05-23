@@ -137,7 +137,6 @@ namespace LudusaviWrap
 
         private async Task<ProcessResult> RunProcessAsync(string filename, string arguments)
         {
-            var tcs = new TaskCompletionSource<ProcessResult>();
             var process = new Process
             {
                 StartInfo = new ProcessStartInfo
@@ -148,33 +147,28 @@ namespace LudusaviWrap
                     RedirectStandardOutput = true,
                     RedirectStandardError = true,
                     CreateNoWindow = true
-                },
-                EnableRaisingEvents = true
+                }
             };
 
-            process.Exited += (sender, args) =>
+            process.Start();
+
+            var outputTask = process.StandardOutput.ReadToEndAsync();
+            var errorTask = process.StandardError.ReadToEndAsync();
+
+            await process.WaitForExitAsync();
+
+            string output = await outputTask;
+            string error = await errorTask;
+
+            var result = new ProcessResult
             {
-                string output = process.StandardOutput.ReadToEnd();
-                string error = process.StandardError.ReadToEnd();
-                tcs.SetResult(new ProcessResult
-                {
-                    ExitCode = process.ExitCode,
-                    Output = output,
-                    Error = error
-                });
-                process.Dispose();
+                ExitCode = process.ExitCode,
+                Output = output,
+                Error = error
             };
 
-            try
-            {
-                process.Start();
-            }
-            catch (Exception ex)
-            {
-                tcs.SetException(ex);
-            }
-
-            return await tcs.Task;
+            process.Dispose();
+            return result;
         }
 
         private async Task RunGameAsync(string exePath)
