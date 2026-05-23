@@ -57,15 +57,15 @@ jobs:
             dist/ludusavi-wrap-setup.exe
           generate_release_notes: true
 
-      - name: Commit update.xml to main
+      - name: Commit update.xml to master
         shell: pwsh
         run: |
           $xmlContent = Get-Content update.xml -Raw
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git fetch origin main
-          git checkout -f main
+          git fetch origin master
+          git checkout -f master
           Set-Content update.xml $xmlContent -Encoding utf8 -NoNewline
           git add update.xml
           git commit -m "chore: bump update.xml to ${{ github.ref_name }}"
-          git push origin main
+          git push origin master

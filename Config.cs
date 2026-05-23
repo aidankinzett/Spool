@@ -18,9 +18,6 @@ namespace LudusaviWrap
 
         [JsonPropertyName("ludusavi_wrap_exe")]
         public string LudusaviWrapExe { get; set; } = "";
-
-        [JsonPropertyName("ludusavi_wrap_args")]
-        public string LudusaviWrapArgs { get; set; } = "";
     }
 
     [JsonSourceGenerationOptions(WriteIndented = true)]
@@ -131,7 +128,6 @@ namespace LudusaviWrap
                 if (!string.IsNullOrEmpty(exePath))
                 {
                     Data.LudusaviWrapExe = exePath;
-                    Data.LudusaviWrapArgs = ""; // No CLI args needed for compiled launcher
                     Save();
                 }
             }
