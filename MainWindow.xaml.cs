@@ -6,6 +6,7 @@ using System.IO;
 using System.Linq;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
@@ -143,7 +144,8 @@ namespace LudusaviWrap
         private readonly LanShareServer _lanServer;
         private readonly LanShareClient _lanClient;
         private CancellationTokenSource? _scanCts;
-        private DateTime _lastScanTime = DateTime.MinValue;
+        private CancellationTokenSource? _uiCleanupCts;
+        private long _lastScanTimeTicks = DateTime.MinValue.Ticks;
 
         public static readonly DependencyProperty IsLanScanningProperty =
             DependencyProperty.Register(nameof(IsLanScanning), typeof(bool), typeof(MainWindow), new PropertyMetadata(false));
@@ -202,6 +204,10 @@ namespace LudusaviWrap
         private void MainWindow_Closing(object? sender, System.ComponentModel.CancelEventArgs e)
         {
             _scanCts?.Cancel();
+            _scanCts?.Dispose();
+            _uiCleanupCts?.Cancel();
+            _uiCleanupCts?.Dispose();
+            _downloadCts?.Dispose();
             _lanServer.Stop();
         }
 
@@ -277,7 +283,7 @@ namespace LudusaviWrap
 
         private async Task ScanLanPeersAsync()
         {
-            _lastScanTime = DateTime.UtcNow;
+            Interlocked.Exchange(ref _lastScanTimeTicks, DateTime.UtcNow.Ticks);
             Dispatcher.Invoke(() => IsLanScanning = true);
             try
             {
@@ -298,11 +304,9 @@ namespace LudusaviWrap
 
         private void LanServer_PeerActivityDetected(object? sender, EventArgs e)
         {
-            // Rate limit auto-scans to once every 10 seconds to avoid UDP scan storms
-            if ((DateTime.UtcNow - _lastScanTime).TotalSeconds > 10)
-            {
-                _ = Dispatcher.BeginInvoke(new Action(async () => await ScanLanPeersAsync()));
-            }
+            var lastScan = new DateTime(Interlocked.Read(ref _lastScanTimeTicks), DateTimeKind.Utc);
+            if ((DateTime.UtcNow - lastScan).TotalSeconds > 10)
+                _ = ScanLanPeersAsync();
         }
 
         private void MergeLanGames(System.Collections.Generic.List<LanPeer> peers)
@@ -746,6 +750,7 @@ namespace LudusaviWrap
             DownloadBytesText.Text = "";
             DownloadProgressBar.Value = 0;
 
+            _downloadCts?.Dispose();
             _downloadCts = new CancellationTokenSource();
             var ct = _downloadCts.Token;
 
@@ -835,7 +840,8 @@ namespace LudusaviWrap
             }
             catch (OperationCanceledException)
             {
-                DownloadTitleText.Text = "Download cancelled";
+                bool hostCancelled = !ct.IsCancellationRequested;
+                DownloadTitleText.Text = hostCancelled ? "Cancelled by host" : "Download cancelled";
                 DownloadCountText.Text = "";
                 DownloadSpeedText.Text = "";
                 DownloadBytesText.Text = "";
@@ -852,6 +858,22 @@ namespace LudusaviWrap
             {
                 _isDownloading = false;
                 CancelDownloadButton.Visibility = Visibility.Collapsed;
+                _uiCleanupCts?.Cancel();
+                _uiCleanupCts?.Dispose();
+                _uiCleanupCts = new CancellationTokenSource();
+                var cleanupToken = _uiCleanupCts.Token;
+                _ = Task.Delay(TimeSpan.FromSeconds(5), cleanupToken).ContinueWith(t =>
+                {
+                    if (cleanupToken.IsCancellationRequested) return;
+                    Dispatcher.Invoke(() =>
+                    {
+                        if (!_isDownloading)
+                        {
+                            DownloadSeparator.Visibility = Visibility.Collapsed;
+                            DownloadBarGrid.Visibility = Visibility.Collapsed;
+                        }
+                    });
+                }, TaskScheduler.Default);
             }
         }
 

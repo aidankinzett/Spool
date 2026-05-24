@@ -48,7 +48,7 @@ namespace LudusaviWrap
 
     public class SteamGridDbClient
     {
-        private static readonly HttpClient HttpClient = new HttpClient();
+        private static readonly HttpClient HttpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
         private readonly string _apiKey;
 
         public SteamGridDbClient(string apiKey)
