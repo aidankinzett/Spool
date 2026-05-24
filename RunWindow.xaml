@@ -3,11 +3,12 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
         Title="Ludusavi Wrap"
-        Width="360"
-        SizeToContent="Height"
+        Width="0"
+        Height="0"
+        ShowInTaskbar="False"
+        WindowStyle="None"
         ResizeMode="NoResize"
-        WindowStartupLocation="CenterScreen"
-        Topmost="True">
+        WindowStartupLocation="CenterScreen">
 
     <Grid>
         <Grid.RowDefinitions>

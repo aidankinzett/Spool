@@ -47,9 +47,14 @@ namespace LudusaviWrap
             Loaded += RunWindow_Loaded;
         }
 
+        protected override void OnSourceInitialized(EventArgs e)
+        {
+            base.OnSourceInitialized(e);
+            Hide();
+        }
+
         private async void RunWindow_Loaded(object sender, RoutedEventArgs e)
         {
-            Hide();
             try
             {
                 await ExecuteWorkflowAsync();
@@ -265,38 +270,20 @@ namespace LudusaviWrap
 
         private void ShowOrUpdateProgressToast(string status)
         {
-            try
-            {
-                var data = new NotificationData();
-                data.Values["progressStatus"] = status;
-
-                var result = ToastNotificationManagerCompat.CreateToastNotifier()
-                    .Update(data, ProgressToastTag, ProgressToastGroup);
-
-                if (result == NotificationUpdateResult.NotificationNotFound)
-                    ShowProgressToastInternal(status);
-            }
-            catch (Exception ex)
-            {
-                App.Log($"Toast progress update failed: {ex.Message}");
-            }
-        }
-
-        private void ShowProgressToastInternal(string status)
-        {
+            DismissProgressToast();
             try
             {
                 string escapedName = System.Security.SecurityElement.Escape(_gameName) ?? _gameName;
                 string escapedStatus = System.Security.SecurityElement.Escape(status) ?? status;
 
                 var xml = new XmlDocument();
-                xml.LoadXml($$"""
+                xml.LoadXml($"""
                     <toast>
                       <visual>
                         <binding template="ToastGeneric">
                           <text>Ludusavi Wrap</text>
-                          <text>{{escapedName}}</text>
-                          <progress value="indeterminate" status="{Binding progressStatus}"/>
+                          <text>{escapedName}</text>
+                          <text>{escapedStatus}</text>
                         </binding>
                       </visual>
                     </toast>
@@ -305,8 +292,6 @@ namespace LudusaviWrap
                 var toast = new ToastNotification(xml);
                 toast.Tag = ProgressToastTag;
                 toast.Group = ProgressToastGroup;
-                toast.Data = new NotificationData();
-                toast.Data.Values["progressStatus"] = escapedStatus;
                 ToastNotificationManagerCompat.CreateToastNotifier().Show(toast);
             }
             catch (Exception ex)
