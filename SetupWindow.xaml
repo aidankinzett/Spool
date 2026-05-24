@@ -137,10 +137,7 @@
                             </Grid>
                         </StackPanel>
                     </ui:Card>
-                </StackPanel>
 
-                <!-- Right Column -->
-                <StackPanel Grid.Column="2">
                     <!-- Sync Server card -->
                     <ui:Card Margin="0,0,0,12">
                         <StackPanel>
@@ -203,6 +200,10 @@
                             </Grid>
                         </StackPanel>
                     </ui:Card>
+                </StackPanel>
+
+                <!-- Right Column -->
+                <StackPanel Grid.Column="2">
 
                     <!-- LAN Share card -->
                     <ui:Card Margin="0,0,0,12">
