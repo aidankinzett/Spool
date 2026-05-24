@@ -49,6 +49,7 @@ namespace LudusaviWrap
             }
             catch (Exception ex)
             {
+                App.Log($"RunWindow unexpected error for '{_gameName}': {ex}");
                 MessageBox.Show($"An unexpected error occurred: {ex.Message}", "Ludusavi Wrap Error", MessageBoxButton.OK, MessageBoxImage.Error);
             }
             finally
@@ -107,6 +108,7 @@ namespace LudusaviWrap
             }
             catch (Exception ex)
             {
+                App.Log($"Failed to start Ludusavi restore for '{_gameName}': {ex}");
                 MessageBox.Show($"Failed to start Ludusavi restore process:\n{ex.Message}", "Ludusavi Error", MessageBoxButton.OK, MessageBoxImage.Error);
                 return;
             }
@@ -131,6 +133,7 @@ namespace LudusaviWrap
                     }
                     catch (Exception ex)
                     {
+                        App.Log($"Failed to open Ludusavi GUI: {ex}");
                         MessageBox.Show($"Failed to open Ludusavi GUI:\n{ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
                     }
                 }
@@ -141,6 +144,7 @@ namespace LudusaviWrap
             {
                 // Prefer stderr for human-readable details; fall back to stdout (JSON when --api is used)
                 string details = string.IsNullOrWhiteSpace(restoreResult.Error) ? restoreResult.Output : restoreResult.Error;
+                App.Log($"Ludusavi restore failed for '{_gameName}' (exit {restoreResult.ExitCode}): {details.Trim()}");
                 MessageBox.Show($"Ludusavi restore failed. Game will not launch.\n\nDetails:\n{details.Trim()}",
                                 "Ludusavi Error", MessageBoxButton.OK, MessageBoxImage.Error);
                 return;
@@ -190,6 +194,7 @@ namespace LudusaviWrap
                 heartbeatCts.Cancel();
                 if (heartbeatTask != null) try { await heartbeatTask; } catch { }
                 Show();
+                App.Log($"Failed to start game '{_gameName}': {ex}");
                 MessageBox.Show($"Failed to start game:\n{ex.Message}", "Game Launcher Error", MessageBoxButton.OK, MessageBoxImage.Error);
                 return;
             }
@@ -208,14 +213,16 @@ namespace LudusaviWrap
                 string backupCombined = backupResult.Output + backupResult.Error;
                 if (backupCombined.Contains("cloudConflict") || backupCombined.Contains("cloudSyncFailed"))
                 {
+                    App.Log($"Ludusavi backup cloud conflict for '{_gameName}': {backupCombined.Trim()}");
                     UpdateSyncStatus(SyncStatus.LocalNotSynced);
                     MessageBox.Show($"Cloud sync conflict detected during backup for '{_gameName}'. Your saves are backed up locally but may not be synced to the cloud. Open Ludusavi to resolve.",
                                     "Ludusavi - Cloud Sync Warning", MessageBoxButton.OK, MessageBoxImage.Warning);
                 }
                 else if (backupResult.ExitCode != 0)
                 {
-                    UpdateSyncStatus(SyncStatus.LocalNotSynced);
                     string details = string.IsNullOrWhiteSpace(backupResult.Error) ? backupResult.Output : backupResult.Error;
+                    App.Log($"Ludusavi backup failed for '{_gameName}' (exit {backupResult.ExitCode}): {details.Trim()}");
+                    UpdateSyncStatus(SyncStatus.LocalNotSynced);
                     MessageBox.Show($"Ludusavi backup failed. Your saves may not have been backed up.\n\nDetails:\n{details.Trim()}",
                                     "Ludusavi Warning", MessageBoxButton.OK, MessageBoxImage.Warning);
                 }
@@ -226,6 +233,7 @@ namespace LudusaviWrap
             }
             catch (Exception ex)
             {
+                App.Log($"Failed to run Ludusavi backup for '{_gameName}': {ex}");
                 UpdateSyncStatus(SyncStatus.LocalNotSynced);
                 MessageBox.Show($"Failed to run Ludusavi backup:\n{ex.Message}", "Ludusavi Warning", MessageBoxButton.OK, MessageBoxImage.Warning);
             }

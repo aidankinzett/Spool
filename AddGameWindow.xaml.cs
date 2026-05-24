@@ -248,7 +248,10 @@ namespace LudusaviWrap
                     });
                 }
             }
-            catch { }
+            catch (Exception ex)
+            {
+                App.Log($"[AddGameWindow] Failed to fetch cover art for '{entry.GameName}': {ex.Message}");
+            }
         }
 
         private async void GenerateArmouryCrate_Click(object sender, RoutedEventArgs e)
@@ -318,6 +321,7 @@ namespace LudusaviWrap
             }
             catch (Exception ex)
             {
+                App.Log($"[AddGameWindow] Failed to fetch cover art for Armoury Crate '{gameName}': {ex.Message}");
                 Dispatcher.Invoke(() => _successWindow?.UpdateArtwork($"⚠ Artwork error: {ex.Message}", "#FFC107"));
             }
         }
@@ -480,6 +484,7 @@ namespace LudusaviWrap
             }
             catch (Exception ex)
             {
+                App.Log($"[AddGameWindow] Failed to fetch cover art for Steam '{gameName}': {ex.Message}");
                 Dispatcher.Invoke(() => _successWindow?.UpdateArtwork($"⚠ Artwork error: {ex.Message}", "#FFC107"));
             }
         }
