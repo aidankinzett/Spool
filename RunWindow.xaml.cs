@@ -203,6 +203,14 @@ namespace LudusaviWrap
             {
                 await RunGameAsync(_gameExe);
             }
+            catch (OperationCanceledException ex)
+            {
+                heartbeatCts.Cancel();
+                if (heartbeatTask != null) try { await heartbeatTask; } catch { }
+                App.Log($"Game launch cancelled for '{_gameName}': {ex.Message}");
+                ShowToast("Launch Cancelled", "Game launch was cancelled.");
+                return;
+            }
             catch (Exception ex)
             {
                 heartbeatCts.Cancel();
@@ -413,13 +421,23 @@ namespace LudusaviWrap
         private async Task RunGameAsync(string exePath)
         {
             var tcs = new TaskCompletionSource<int>();
+            bool runAsAdmin = (_entry?.RunAsAdmin == true) || RegistryHelper.GetCompatFlagRunAsAdmin(exePath);
+
+            var startInfo = new ProcessStartInfo
+            {
+                FileName = exePath,
+                WorkingDirectory = Path.GetDirectoryName(exePath) ?? "",
+                UseShellExecute = true
+            };
+
+            if (runAsAdmin)
+            {
+                startInfo.Verb = "runas";
+            }
+
             var process = new Process
             {
-                StartInfo = new ProcessStartInfo
-                {
-                    FileName = exePath,
-                    WorkingDirectory = Path.GetDirectoryName(exePath) ?? ""
-                },
+                StartInfo = startInfo,
                 EnableRaisingEvents = true
             };
 
@@ -429,7 +447,15 @@ namespace LudusaviWrap
                 process.Dispose();
             };
 
-            process.Start();
+            try
+            {
+                process.Start();
+            }
+            catch (System.ComponentModel.Win32Exception ex) when (ex.NativeErrorCode == 1223)
+            {
+                throw new OperationCanceledException("Game launch was cancelled (Administrator elevation was denied).", ex);
+            }
+
             await tcs.Task;
         }
     }

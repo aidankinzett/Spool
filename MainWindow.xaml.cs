@@ -644,6 +644,40 @@ namespace LudusaviWrap
                 "LAN Share", MessageBoxButton.OK, MessageBoxImage.Information);
         }
 
+        private void ContextRunAsAdmin_Loaded(object sender, RoutedEventArgs e)
+        {
+            if (sender is MenuItem mi && mi.Parent is ContextMenu cm &&
+                cm.PlacementTarget is FrameworkElement fe && fe.DataContext is GameEntry entry)
+            {
+                bool registryAdmin = RegistryHelper.GetCompatFlagRunAsAdmin(entry.ExePath);
+                if (registryAdmin != entry.RunAsAdmin)
+                {
+                    entry.RunAsAdmin = registryAdmin;
+                    _library.Update(entry);
+                }
+                mi.IsChecked = entry.RunAsAdmin;
+            }
+        }
+
+        private void ContextRunAsAdmin_Click(object sender, RoutedEventArgs e)
+        {
+            if (sender is MenuItem mi && mi.Parent is ContextMenu cm &&
+                cm.PlacementTarget is FrameworkElement fe && fe.DataContext is GameEntry entry)
+            {
+                entry.RunAsAdmin = mi.IsChecked;
+                _library.Update(entry);
+
+                if (entry.RunAsAdmin)
+                {
+                    RegistryHelper.SetCompatFlagRunAsAdmin(entry.ExePath);
+                }
+                else
+                {
+                    RegistryHelper.RemoveCompatFlagRunAsAdmin(entry.ExePath);
+                }
+            }
+        }
+
         private async void DownloadCard_Click(object sender, RoutedEventArgs e)
         {
             if (_isDownloading)
@@ -934,11 +968,28 @@ namespace LudusaviWrap
             }
         }
 
-        private void OfferAddToLibrary(string gameName, string destFolder, LanPeer? sourcePeer = null)
+        private async void OfferAddToLibrary(string gameName, string destFolder, LanPeer? sourcePeer = null)
         {
             string? exePath = Directory.GetFiles(destFolder, "*.exe", SearchOption.AllDirectories)
                 .OrderBy(f => Path.GetDirectoryName(f)?.Length)
                 .FirstOrDefault();
+
+            bool runAsAdmin = false;
+            if (sourcePeer != null)
+            {
+                try
+                {
+                    var meta = await _lanClient.GetMetadataAsync(sourcePeer, gameName);
+                    if (meta != null)
+                    {
+                        runAsAdmin = meta.RunAsAdmin;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    App.Log($"Failed to fetch LAN metadata for '{gameName}': {ex.Message}");
+                }
+            }
 
             var ans = MessageBox.Show(
                 $"Download of \"{gameName}\" is complete.\n\nAdd it to your library?\n" +
@@ -951,19 +1002,34 @@ namespace LudusaviWrap
             if (existing != null)
             {
                 existing.GameFolderPath = destFolder;
-                if (exePath != null) existing.ExePath = exePath;
+                if (exePath != null)
+                {
+                    existing.ExePath = exePath;
+                    existing.RunAsAdmin = runAsAdmin;
+                    if (runAsAdmin)
+                    {
+                        RegistryHelper.SetCompatFlagRunAsAdmin(exePath);
+                    }
+                }
                 _library.Update(existing);
             }
             else
             {
-                _library.Add(new GameEntry
+                var newEntry = new GameEntry
                 {
                     GameName       = gameName,
                     SafeName       = LauncherGenerator.MakeSafeFilename(gameName),
                     ExePath        = exePath ?? "",
                     GameFolderPath = destFolder,
+                    RunAsAdmin     = runAsAdmin,
                     AddedAt        = DateTime.UtcNow
-                });
+                };
+                _library.Add(newEntry);
+
+                if (runAsAdmin && exePath != null)
+                {
+                    RegistryHelper.SetCompatFlagRunAsAdmin(exePath);
+                }
             }
             LoadGames();
 

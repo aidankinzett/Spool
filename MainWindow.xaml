@@ -26,6 +26,8 @@
             <MenuItem Header="Open Game Folder" Click="ContextOpenFolder_Click"/>
             <MenuItem Header="Set Game Folder (LAN Share)" Click="ContextSetFolder_Click"/>
             <Separator/>
+            <MenuItem Header="Run as Administrator" IsCheckable="True" Click="ContextRunAsAdmin_Click" Loaded="ContextRunAsAdmin_Loaded"/>
+            <Separator/>
             <MenuItem Header="Remove from Library" Click="ContextRemove_Click"/>
         </ContextMenu>
     </Window.Resources>

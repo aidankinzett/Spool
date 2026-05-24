@@ -23,6 +23,7 @@ namespace LudusaviWrap
         private SyncStatus _syncStatus;
         private bool _isLanCard;
         private List<LanPeer>? _lanPeers;
+        private bool _runAsAdmin;
 
         [JsonIgnore]
         public bool IsLanCard
@@ -79,6 +80,13 @@ namespace LudusaviWrap
 
         [JsonPropertyName("game_folder_path")]
         public string? GameFolderPath { get; set; }
+
+        [JsonPropertyName("run_as_admin")]
+        public bool RunAsAdmin
+        {
+            get => _runAsAdmin;
+            set { _runAsAdmin = value; OnPropertyChanged(); }
+        }
 
         public event PropertyChangedEventHandler? PropertyChanged;
         private void OnPropertyChanged([CallerMemberName] string? name = null)

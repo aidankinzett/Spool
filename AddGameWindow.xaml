@@ -147,6 +147,13 @@
                         </ScrollViewer>
                     </ui:Card>
                 </Grid>
+
+                <!-- Run as Administrator checkbox -->
+                <Grid Margin="110,0,0,12">
+                    <CheckBox x:Name="RunAsAdminCheckBox"
+                              Content="Run as Administrator"
+                              ToolTip="Sets the Windows compatibility flag to run this game elevated as administrator"/>
+                </Grid>
             </StackPanel>
 
             <!-- Action buttons -->

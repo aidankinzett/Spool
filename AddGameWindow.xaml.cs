@@ -40,6 +40,7 @@ namespace LudusaviWrap
             if (dialog.ShowDialog() == true)
             {
                 ExePathTextBox.Text = dialog.FileName;
+                RunAsAdminCheckBox.IsChecked = RegistryHelper.GetCompatFlagRunAsAdmin(dialog.FileName);
                 if (string.IsNullOrEmpty(GameNameTextBox.Text.Trim()))
                 {
                     string filename = Path.GetFileNameWithoutExtension(dialog.FileName);
@@ -190,6 +191,19 @@ namespace LudusaviWrap
             return (exe, name, safe);
         }
 
+        private void ApplyRunAsAdmin(GameEntry entry)
+        {
+            entry.RunAsAdmin = RunAsAdminCheckBox.IsChecked == true;
+            if (entry.RunAsAdmin)
+            {
+                RegistryHelper.SetCompatFlagRunAsAdmin(entry.ExePath);
+            }
+            else
+            {
+                RegistryHelper.RemoveCompatFlagRunAsAdmin(entry.ExePath);
+            }
+        }
+
         private void AddToLibrary_Click(object sender, RoutedEventArgs e)
         {
             var fields = ValidateFields();
@@ -207,6 +221,7 @@ namespace LudusaviWrap
                     if (ans != MessageBoxResult.Yes) return;
                     existing.ExePath = exe;
                     existing.SafeName = safe;
+                    ApplyRunAsAdmin(existing);
                     _library.Update(existing);
                     DialogResult = true;
                     Close();
@@ -222,6 +237,7 @@ namespace LudusaviWrap
                     GameFolderPath = folder.Length > 0 ? folder : null,
                     AddedAt        = DateTime.UtcNow
                 };
+                ApplyRunAsAdmin(entry);
                 _library.Add(entry);
 
                 if (_config.Data.SteamGridDbEnabled && !string.IsNullOrEmpty(_config.Data.SteamGridDbApiKey))
@@ -288,6 +304,7 @@ namespace LudusaviWrap
                     entry = existing ?? new GameEntry { GameName = name, ExePath = exe, SafeName = safe, GameFolderPath = folder.Length > 0 ? folder : null, AddedAt = DateTime.UtcNow };
                     if (existing != null && string.IsNullOrEmpty(existing.GameFolderPath) && folder.Length > 0)
                         entry.GameFolderPath = folder;
+                    ApplyRunAsAdmin(entry);
                     launcherExePath = await LauncherGenerator.GenerateLauncherExeAsync(entry, _config);
                     entry.LauncherExePath = launcherExePath;
                     if (existing == null) _library.Add(entry); else _library.Update(entry);
@@ -363,6 +380,7 @@ namespace LudusaviWrap
                     entry = existing ?? new GameEntry { GameName = name, ExePath = exe, SafeName = safe, GameFolderPath = folder.Length > 0 ? folder : null, AddedAt = DateTime.UtcNow };
                     if (existing != null && string.IsNullOrEmpty(existing.GameFolderPath) && folder.Length > 0)
                         entry.GameFolderPath = folder;
+                    ApplyRunAsAdmin(entry);
                     launcherExePath = await LauncherGenerator.GenerateLauncherExeAsync(entry, _config);
                     entry.LauncherExePath = launcherExePath;
                     if (existing == null) _library.Add(entry); else _library.Update(entry);

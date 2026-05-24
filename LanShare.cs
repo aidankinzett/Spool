@@ -16,6 +16,13 @@ namespace LudusaviWrap
 {
     // ── JSON DTOs ─────────────────────────────────────────────────────────────
 
+    public class LanGameMetadata
+    {
+        [JsonPropertyName("game_name")]    public string GameName { get; set; } = "";
+        [JsonPropertyName("run_as_admin")] public bool   RunAsAdmin { get; set; }
+        [JsonPropertyName("exe_name")]     public string ExeName { get; set; } = "";
+    }
+
     public class LanAnnounce
     {
         [JsonPropertyName("type")]       public string Type       { get; set; } = "announce";
@@ -93,6 +100,7 @@ namespace LudusaviWrap
     [JsonSerializable(typeof(LanQuery))]
     [JsonSerializable(typeof(List<LanFileEntry>))]
     [JsonSerializable(typeof(List<string>))]
+    [JsonSerializable(typeof(LanGameMetadata))]
     internal partial class LanJsonContext : JsonSerializerContext { }
 
     // ── Server ────────────────────────────────────────────────────────────────
@@ -300,6 +308,10 @@ namespace LudusaviWrap
                 {
                     await ServeManifestAsync(stream, segments[1], ct);
                 }
+                else if (segments.Length == 3 && segments[0] == "games" && segments[2] == "metadata")
+                {
+                    await ServeMetadataAsync(stream, segments[1], ct);
+                }
                 else if (segments.Length == 3 && segments[0] == "games" && segments[2] == "cancel-check")
                 {
                     await ServeCancelCheckAsync(stream, segments[1], ct);
@@ -362,6 +374,28 @@ namespace LudusaviWrap
                 .Select(g => g.GameName)
                 .ToList();
             byte[] json = JsonSerializer.SerializeToUtf8Bytes(names, LanJsonContext.Default.ListString);
+            await SendResponseAsync(stream, 200, "application/json", json, ct);
+        }
+
+        private async Task ServeMetadataAsync(NetworkStream stream, string gameName, CancellationToken ct)
+        {
+            var entry = _gameSource!().FirstOrDefault(g =>
+                string.Equals(g.GameName, gameName, StringComparison.OrdinalIgnoreCase));
+
+            if (entry == null)
+            {
+                await SendResponseAsync(stream, 404, "text/plain", "Game not found"u8.ToArray(), ct);
+                return;
+            }
+
+            var meta = new LanGameMetadata
+            {
+                GameName = entry.GameName,
+                RunAsAdmin = entry.RunAsAdmin || RegistryHelper.GetCompatFlagRunAsAdmin(entry.ExePath),
+                ExeName = Path.GetFileName(entry.ExePath)
+            };
+
+            byte[] json = JsonSerializer.SerializeToUtf8Bytes(meta, LanJsonContext.Default.LanGameMetadata);
             await SendResponseAsync(stream, 200, "application/json", json, ct);
         }
 
@@ -734,6 +768,22 @@ namespace LudusaviWrap
             string url = $"http://{peer.IPAddress}:{peer.Port}/games/{Uri.EscapeDataString(gameName)}/manifest";
             string json = await http.GetStringAsync(url, ct);
             return JsonSerializer.Deserialize(json, LanJsonContext.Default.ListLanFileEntry) ?? new();
+        }
+
+        public async Task<LanGameMetadata?> GetMetadataAsync(LanPeer peer, string gameName, CancellationToken ct = default)
+        {
+            try
+            {
+                using var http = MakeHttpClient(peer);
+                string url = $"http://{peer.IPAddress}:{peer.Port}/games/{Uri.EscapeDataString(gameName)}/metadata";
+                string json = await http.GetStringAsync(url, ct);
+                return JsonSerializer.Deserialize(json, LanJsonContext.Default.LanGameMetadata);
+            }
+            catch (Exception ex)
+            {
+                App.Log($"GetMetadataAsync failed for '{gameName}': {ex.Message}");
+                return null;
+            }
         }
 
         public async Task DownloadGameAsync(
