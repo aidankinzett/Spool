@@ -61,13 +61,8 @@
                        FontWeight="SemiBold"
                        VerticalAlignment="Center"
                        Grid.Column="0"/>
-            <ui:Button x:Name="AddGameButton"
-                       Grid.Column="1"
-                       Content="Add Game"
-                       Appearance="Primary"
-                       Click="AddGame_Click"/>
             <!-- WiFi Status Panel -->
-            <StackPanel Grid.Column="3" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,8,0">
+            <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,8,0">
                 <ui:ProgressRing IsIndeterminate="True" 
                                  Width="16" 
                                  Height="16" 
@@ -83,6 +78,11 @@
                     <Run Text=" peers"/>
                 </TextBlock>
             </StackPanel>
+            <ui:Button x:Name="AddGameButton"
+                       Grid.Column="3"
+                       Content="Add Game"
+                       Appearance="Primary"
+                       Click="AddGame_Click"/>
             <ui:Button x:Name="SettingsButton"
                        Grid.Column="5"
                        Content="Settings"
@@ -129,7 +129,7 @@
                     </ItemsControl.ItemsPanel>
                     <ItemsControl.ItemTemplate>
                         <DataTemplate DataType="{x:Type local:GameEntry}">
-                            <ui:Card Width="180" Height="265" Margin="6" Padding="0">
+                            <ui:Card Width="180" Height="360" Margin="6" Padding="0">
                                 <ui:Card.Style>
                                     <Style TargetType="ui:Card" BasedOn="{StaticResource {x:Type ui:Card}}">
                                         <Setter Property="ContextMenu" Value="{StaticResource GameCardContextMenu}"/>
@@ -142,8 +142,8 @@
                                 </ui:Card.Style>
                                 <Grid>
                                     <Grid.RowDefinitions>
+                                        <RowDefinition Height="270"/>
                                         <RowDefinition Height="*"/>
-                                        <RowDefinition Height="Auto"/>
                                     </Grid.RowDefinitions>
 
                                     <!-- Cover image -->
@@ -156,35 +156,35 @@
                                     </Border>
 
                                     <!-- Info area -->
-                                    <Grid Grid.Row="1" Margin="10,6,10,8">
+                                    <Grid Grid.Row="1" Margin="8,6,8,8">
                                         <Grid.RowDefinitions>
                                             <RowDefinition Height="*"/>
                                             <RowDefinition Height="Auto"/>
-                                            <RowDefinition Height="Auto"/>
                                         </Grid.RowDefinitions>
-                                        <TextBlock Grid.Row="0"
-                                                   Text="{Binding GameName}"
-                                                   FontSize="12"
-                                                   FontWeight="SemiBold"
-                                                   TextTrimming="CharacterEllipsis"
-                                                   ToolTip="{Binding GameName}"
-                                                   VerticalAlignment="Center"
-                                                   Margin="0,0,0,2"/>
-                                        <StackPanel Grid.Row="1"
-                                                    Orientation="Horizontal"
-                                                    Margin="0,0,0,4"
-                                                    Visibility="{Binding SyncStatus, Converter={StaticResource SyncStatusToVisibilityConverter}}"
-                                                    ToolTip="{Binding SyncStatus, Converter={StaticResource SyncStatusToLabelConverter}}">
-                                            <Ellipse Width="6" Height="6"
-                                                     VerticalAlignment="Center"
-                                                     Margin="0,0,4,0"
-                                                     Fill="{Binding SyncStatus, Converter={StaticResource SyncStatusToBrushConverter}}"/>
-                                            <TextBlock Text="{Binding SyncStatus, Converter={StaticResource SyncStatusToLabelConverter}}"
-                                                       FontSize="10"
-                                                       VerticalAlignment="Center"
-                                                       Foreground="{Binding SyncStatus, Converter={StaticResource SyncStatusToBrushConverter}}"/>
+                                        
+                                        <StackPanel Grid.Row="0" VerticalAlignment="Top">
+                                            <TextBlock Text="{Binding GameName}"
+                                                       FontSize="12"
+                                                       FontWeight="SemiBold"
+                                                       TextTrimming="CharacterEllipsis"
+                                                       ToolTip="{Binding GameName}"
+                                                       Margin="0,0,0,2"/>
+                                            <StackPanel Orientation="Horizontal"
+                                                        Margin="0,0,0,4"
+                                                        Visibility="{Binding SyncStatus, Converter={StaticResource SyncStatusToVisibilityConverter}}"
+                                                        ToolTip="{Binding SyncStatus, Converter={StaticResource SyncStatusToLabelConverter}}">
+                                                <Ellipse Width="6" Height="6"
+                                                         VerticalAlignment="Center"
+                                                         Margin="0,0,4,0"
+                                                         Fill="{Binding SyncStatus, Converter={StaticResource SyncStatusToBrushConverter}}"/>
+                                                <TextBlock Text="{Binding SyncStatus, Converter={StaticResource SyncStatusToLabelConverter}}"
+                                                           FontSize="10"
+                                                           VerticalAlignment="Center"
+                                                           Foreground="{Binding SyncStatus, Converter={StaticResource SyncStatusToBrushConverter}}"/>
+                                            </StackPanel>
                                         </StackPanel>
-                                        <Grid Grid.Row="2">
+
+                                        <Grid Grid.Row="1" VerticalAlignment="Bottom">
                                             <ui:Button Content="Play"
                                                        Icon="{ui:SymbolIcon Symbol=Play24}"
                                                        Appearance="Primary"
