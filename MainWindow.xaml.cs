@@ -87,7 +87,10 @@ namespace LudusaviWrap
                     bi.CacheOption = BitmapCacheOption.OnLoad;
                 }
                 bi.EndInit();
-                bi.Freeze();
+                if (!path.StartsWith("http://", StringComparison.OrdinalIgnoreCase) && !path.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+                {
+                    bi.Freeze();
+                }
                 return bi;
             }
             catch (Exception ex)
