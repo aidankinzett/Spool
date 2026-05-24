@@ -1,4 +1,5 @@
 using System;
+using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.IO;
 using System.Windows;
@@ -13,6 +14,7 @@ namespace LudusaviWrap
         private readonly Config _config;
         private readonly bool _isFirstRun;
         private bool _themeComboInitialized = false;
+        private readonly ObservableCollection<string> _sources = new();
 
         public SetupWindow(Config config, bool isFirstRun = false)
         {
@@ -42,6 +44,14 @@ namespace LudusaviWrap
             LanPortTextBox.Text        = _config.Data.LanSharePort.ToString();
             LanInstallDirTextBox.Text  = _config.Data.LanInstallDir;
 
+            TorBoxSwitch.IsChecked       = _config.Data.TorBoxEnabled;
+            TorBoxApiKeyBox.Password     = _config.Data.TorBoxApiKey;
+            TorBoxDownloadDirTextBox.Text = _config.Data.DownloadDir;
+
+            foreach (var url in _config.Data.DownloadSources)
+                _sources.Add(url);
+            SourcesListBox.ItemsSource = _sources;
+
             // Populate theme ComboBox
             SelectThemeComboItem(_config.Data.Theme);
             _themeComboInitialized = true;
@@ -50,6 +60,7 @@ namespace LudusaviWrap
             UpdateSgdbUiState();
             UpdateSyncUiState();
             UpdateLanUiState();
+            UpdateTorBoxUiState();
         }
 
         private void SelectThemeComboItem(string theme)
@@ -114,6 +125,65 @@ namespace LudusaviWrap
         {
             if (LanFieldsGrid == null) return;
             LanFieldsGrid.IsEnabled = LanSwitch.IsChecked ?? false;
+        }
+
+        private void TorBoxSwitch_Changed(object sender, RoutedEventArgs e)
+        {
+            UpdateTorBoxUiState();
+        }
+
+        private void UpdateTorBoxUiState()
+        {
+            if (TorBoxFieldsGrid == null) return;
+            TorBoxFieldsGrid.IsEnabled = TorBoxSwitch.IsChecked ?? false;
+        }
+
+        private void TorBoxGetKey_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = "https://torbox.app/settings",
+                    UseShellExecute = true
+                });
+            }
+            catch (Exception ex)
+            {
+                ShowError($"Could not open website: {ex.Message}");
+            }
+        }
+
+        private void BrowseTorBoxDir_Click(object sender, RoutedEventArgs e)
+        {
+            var dialog = new OpenFolderDialog
+            {
+                Title = "Select default folder for TorBox downloads",
+                Multiselect = false
+            };
+            if (dialog.ShowDialog() == true)
+                TorBoxDownloadDirTextBox.Text = dialog.FolderName;
+        }
+
+        private void AddSource_Click(object sender, RoutedEventArgs e)
+        {
+            string url = NewSourceUrlTextBox.Text.Trim();
+            if (string.IsNullOrEmpty(url)) return;
+            if (!Uri.TryCreate(url, UriKind.Absolute, out _))
+            {
+                ShowError("Please enter a valid URL.");
+                return;
+            }
+            if (!_sources.Contains(url))
+                _sources.Add(url);
+            NewSourceUrlTextBox.Text = "";
+            ErrorLabel.Visibility = Visibility.Collapsed;
+        }
+
+        private void RemoveSource_Click(object sender, RoutedEventArgs e)
+        {
+            if (SourcesListBox.SelectedItem is string selected)
+                _sources.Remove(selected);
         }
 
         private void BrowseLanInstallDir_Click(object sender, RoutedEventArgs e)
@@ -204,6 +274,10 @@ namespace LudusaviWrap
             _config.Data.LanShareEnabled    = LanSwitch.IsChecked ?? false;
             _config.Data.LanSharePort       = lanPort;
             _config.Data.LanInstallDir      = LanInstallDirTextBox.Text.Trim();
+            _config.Data.TorBoxEnabled      = TorBoxSwitch.IsChecked ?? false;
+            _config.Data.TorBoxApiKey       = TorBoxApiKeyBox.Password.Trim();
+            _config.Data.DownloadDir        = TorBoxDownloadDirTextBox.Text.Trim();
+            _config.Data.DownloadSources    = new System.Collections.Generic.List<string>(_sources);
             _config.Save();
 
             DialogResult = true;

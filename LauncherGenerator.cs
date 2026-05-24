@@ -17,7 +17,17 @@ namespace LudusaviWrap
         {
             string invalidChars = Regex.Escape(new string(Path.GetInvalidFileNameChars()));
             string invalidRegStr = string.Format(@"([{0}]*\.+$)|([{0}]+)", invalidChars);
-            return Regex.Replace(name, invalidRegStr, "_").Trim();
+            string safe = Regex.Replace(name, invalidRegStr, "_").Trim();
+
+            // Remove non-ASCII characters to prevent path resolution issues in legacy non-Unicode tools (e.g. ISDone.dll)
+            var sb = new StringBuilder();
+            foreach (char c in safe)
+            {
+                if (c <= 127)
+                    sb.Append(c);
+            }
+            string asciiSafe = Regex.Replace(sb.ToString(), @"\s+", " ").Trim();
+            return asciiSafe.Length > 0 ? asciiSafe : "Game";
         }
 
         // Generates the launcher stub .exe for the given entry. Returns the launcher exe path.

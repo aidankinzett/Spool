@@ -1034,5 +1034,206 @@ namespace LudusaviWrap
         {
             _downloadCts?.Cancel();
         }
+
+        private void Browse_Click(object sender, RoutedEventArgs e)
+        {
+            if (_config.Data.DownloadSources.Count == 0)
+            {
+                MessageBox.Show(
+                    "No download sources configured.\n\nAdd Hydra-compatible JSON source URLs in Settings.",
+                    "No Sources", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
+            if (_isDownloading)
+            {
+                MessageBox.Show("A download is already in progress. Please wait for it to finish or cancel it first.",
+                    "Download in Progress", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
+            var browse = new BrowseWindow(_config) { Owner = this };
+            if (browse.ShowDialog() == true && browse.SelectedDownload != null)
+            {
+                if (!_config.IsTorBoxOk)
+                {
+                    MessageBox.Show(
+                        "TorBox is not configured.\n\nEnable TorBox and enter your API key in Settings.",
+                        "TorBox Not Configured", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    return;
+                }
+                _ = StartTorBoxDownloadAsync(browse.SelectedDownload);
+            }
+        }
+
+        private async Task StartTorBoxDownloadAsync(HydraDownloadEntry download)
+        {
+            _isDownloading = true;
+            DownloadSeparator.Visibility = Visibility.Visible;
+            DownloadBarGrid.Visibility = Visibility.Visible;
+            CancelDownloadButton.Visibility = Visibility.Visible;
+
+            DownloadTitleText.Text = "Preparing...";
+            DownloadCountText.Text = "";
+            DownloadSpeedText.Text = "";
+            DownloadBytesText.Text = "";
+            DownloadProgressBar.Value = 0;
+
+            _downloadCts?.Dispose();
+            _downloadCts = new CancellationTokenSource();
+            var ct = _downloadCts.Token;
+
+            string? destDir = null;
+
+            try
+            {
+                var torbox = new TorBoxClient(_config.Data.TorBoxApiKey);
+                string magnet = download.Uris.Find(u => u.StartsWith("magnet:", StringComparison.OrdinalIgnoreCase))
+                    ?? download.Uris[0];
+
+                DownloadTitleText.Text = "Adding to TorBox...";
+                int torrentId = await torbox.AddMagnetAsync(magnet);
+
+                DownloadTitleText.Text = "Waiting for TorBox...";
+                TorBoxTorrent? torrent = null;
+                while (!ct.IsCancellationRequested)
+                {
+                    torrent = await torbox.GetTorrentInfoAsync(torrentId);
+                    if (torrent == null) throw new Exception("Torrent not found in TorBox");
+
+                    bool ready = torrent.DownloadState is "cached" or "completed" or "uploading";
+                    if (ready) break;
+
+                    DownloadTitleText.Text = $"TorBox: {torrent.DownloadState}...";
+                    DownloadProgressBar.Value = torrent.Progress * 100;
+                    await Task.Delay(5000, ct);
+                }
+                ct.ThrowIfCancellationRequested();
+
+                var files = torrent!.Files ?? new System.Collections.Generic.List<TorBoxFile>();
+                if (files.Count == 0) throw new Exception("No files found in torrent");
+
+                string safeTitle = LauncherGenerator.MakeSafeFilename(download.Title);
+                destDir = System.IO.Path.Combine(_config.EffectiveDownloadDir, safeTitle);
+
+                // Determine if all files share a single top-level directory
+                string? commonRoot = null;
+                bool shareCommonRoot = files.Count > 0;
+                foreach (var file in files)
+                {
+                    string name = file.Name;
+                    int slashIdx = name.IndexOf('/');
+                    if (slashIdx <= 0)
+                    {
+                        shareCommonRoot = false;
+                        break;
+                    }
+                    string root = name.Substring(0, slashIdx);
+                    if (commonRoot == null)
+                    {
+                        commonRoot = root;
+                    }
+                    else if (commonRoot != root)
+                    {
+                        shareCommonRoot = false;
+                        break;
+                    }
+                }
+
+                long totalBytesAllFiles = 0;
+                foreach (var file in files)
+                {
+                    totalBytesAllFiles += file.Size;
+                }
+
+                long totalBytesDownloaded = 0;
+                long lastBytes = 0;
+                DateTime lastTick = DateTime.UtcNow;
+                int currentFileIndex = 0;
+
+                foreach (var file in files)
+                {
+                    currentFileIndex++;
+                    ct.ThrowIfCancellationRequested();
+
+                    string relativePath = file.Name;
+                    if (shareCommonRoot && commonRoot != null && relativePath.StartsWith(commonRoot + "/"))
+                    {
+                        relativePath = relativePath.Substring(commonRoot.Length + 1);
+                    }
+                    string normalizedRelativePath = relativePath.Replace('/', System.IO.Path.DirectorySeparatorChar);
+                    string destPath = System.IO.Path.Combine(destDir, normalizedRelativePath);
+
+                    DownloadTitleText.Text = $"[{currentFileIndex}/{files.Count}] Getting link for {file.ShortName}...";
+                    DownloadCountText.Text = $"File {currentFileIndex} of {files.Count}";
+                    string link = await torbox.RequestDownloadLinkAsync(torrentId, file.Id);
+
+                    var fileProgress = new Progress<(long bytes, long total)>(p =>
+                    {
+                        long currentTotalDownloaded = totalBytesDownloaded + p.bytes;
+
+                        double pct = totalBytesAllFiles > 0 ? (double)currentTotalDownloaded / totalBytesAllFiles * 100 : 0;
+                        DownloadProgressBar.Value = pct;
+                        DownloadTitleText.Text = $"Downloading {file.ShortName}";
+                        DownloadBytesText.Text = totalBytesAllFiles > 0
+                            ? $"{FormatBytes(currentTotalDownloaded)} of {FormatBytes(totalBytesAllFiles)}"
+                            : FormatBytes(currentTotalDownloaded);
+
+                        var now = DateTime.UtcNow;
+                        double elapsed = (now - lastTick).TotalSeconds;
+                        if (elapsed >= 1.0)
+                        {
+                            double speed = (currentTotalDownloaded - lastBytes) / elapsed;
+                            DownloadSpeedText.Text = FormatSpeed(speed);
+                            lastBytes = currentTotalDownloaded;
+                            lastTick = now;
+                        }
+                    });
+
+                    await torbox.DownloadFileAsync(link, destPath, fileProgress, ct);
+                    totalBytesDownloaded += file.Size;
+                }
+
+                DownloadTitleText.Text = "Download complete";
+                DownloadCountText.Text = "";
+                DownloadSpeedText.Text = "";
+                DownloadBytesText.Text = "";
+                DownloadProgressBar.Value = 100;
+
+                OfferAddToLibrary(download.Title, destDir);
+            }
+            catch (OperationCanceledException)
+            {
+                DownloadTitleText.Text = "Download cancelled";
+                DownloadCountText.Text = "";
+                DownloadSpeedText.Text = "";
+                DownloadBytesText.Text = "";
+            }
+            catch (Exception ex)
+            {
+                App.Log($"TorBox download failed: {ex.Message}");
+                MessageBox.Show($"Download failed: {ex.Message}", "Error",
+                    MessageBoxButton.OK, MessageBoxImage.Error);
+                DownloadTitleText.Text = "Download failed";
+                DownloadCountText.Text = "";
+                DownloadSpeedText.Text = "";
+                DownloadBytesText.Text = "";
+            }
+            finally
+            {
+                _isDownloading = false;
+                _ = Task.Delay(TimeSpan.FromSeconds(4)).ContinueWith(_ =>
+                {
+                    Dispatcher.Invoke(() =>
+                    {
+                        if (!_isDownloading)
+                        {
+                            DownloadSeparator.Visibility = Visibility.Collapsed;
+                            DownloadBarGrid.Visibility = Visibility.Collapsed;
+                        }
+                    });
+                }, TaskScheduler.Default);
+            }
+        }
     }
 }

@@ -258,6 +258,119 @@
                             </Grid>
                         </StackPanel>
                     </ui:Card>
+
+                    <!-- TorBox card -->
+                    <ui:Card Margin="0,0,0,12">
+                        <StackPanel>
+                            <Grid Margin="0,0,0,4">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Text="TorBox Downloader"
+                                           FontWeight="SemiBold"
+                                           Grid.Column="0"
+                                           VerticalAlignment="Center"/>
+                                <ui:ToggleSwitch x:Name="TorBoxSwitch"
+                                                 Checked="TorBoxSwitch_Changed"
+                                                 Unchecked="TorBoxSwitch_Changed"
+                                                 Grid.Column="1"
+                                                 VerticalAlignment="Center"/>
+                            </Grid>
+
+                            <TextBlock Text="Download game files via TorBox debrid service."
+                                       Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                       FontSize="11"
+                                       Margin="0,0,0,12"/>
+
+                            <Grid x:Name="TorBoxFieldsGrid">
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                </Grid.RowDefinitions>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+
+                                <TextBlock Text="API Key:"
+                                           VerticalAlignment="Center"
+                                           Margin="0,0,8,8"
+                                           Grid.Row="0" Grid.Column="0"/>
+                                <PasswordBox x:Name="TorBoxApiKeyBox"
+                                             Margin="0,0,8,8"
+                                             Grid.Row="0" Grid.Column="1"/>
+                                <ui:Button Content="Get Key"
+                                           Appearance="Secondary"
+                                           Click="TorBoxGetKey_Click"
+                                           Margin="0,0,0,8"
+                                           Grid.Row="0" Grid.Column="2"/>
+
+                                <TextBlock Text="Download to:"
+                                           VerticalAlignment="Center"
+                                           Margin="0,0,8,0"
+                                           Grid.Row="1" Grid.Column="0"/>
+                                <ui:TextBox x:Name="TorBoxDownloadDirTextBox"
+                                            IsReadOnly="True"
+                                            PlaceholderText="Default: ~/Downloads"
+                                            Margin="0,0,8,0"
+                                            Grid.Row="1" Grid.Column="1"/>
+                                <ui:Button Content="Browse"
+                                           Appearance="Secondary"
+                                           Click="BrowseTorBoxDir_Click"
+                                           Grid.Row="1" Grid.Column="2"/>
+                            </Grid>
+                        </StackPanel>
+                    </ui:Card>
+
+                    <!-- Download Sources card -->
+                    <ui:Card Margin="0,0,0,12">
+                        <StackPanel>
+                            <TextBlock Text="Download Sources"
+                                       FontWeight="SemiBold"
+                                       Margin="0,0,0,4"/>
+                            <TextBlock Text="Hydra-compatible JSON source URLs for browsing games."
+                                       Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                       FontSize="11"
+                                       Margin="0,0,0,8"/>
+
+                            <ListBox x:Name="SourcesListBox"
+                                     Height="88"
+                                     Margin="0,0,0,8"
+                                     Background="{DynamicResource ControlFillColorDefaultBrush}">
+                                <ListBox.ItemTemplate>
+                                    <DataTemplate>
+                                        <TextBlock Text="{Binding}"
+                                                   TextTrimming="CharacterEllipsis"
+                                                   FontSize="11"
+                                                   ToolTip="{Binding}"/>
+                                    </DataTemplate>
+                                </ListBox.ItemTemplate>
+                            </ListBox>
+
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="8"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="8"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <ui:TextBox x:Name="NewSourceUrlTextBox"
+                                            PlaceholderText="https://example.com/source.json"
+                                            Grid.Column="0"/>
+                                <ui:Button Content="Add"
+                                           Appearance="Primary"
+                                           Click="AddSource_Click"
+                                           Grid.Column="2"/>
+                                <ui:Button Content="Remove"
+                                           Appearance="Secondary"
+                                           Click="RemoveSource_Click"
+                                           Grid.Column="4"/>
+                            </Grid>
+                        </StackPanel>
+                    </ui:Card>
                 </StackPanel>
             </Grid>
 

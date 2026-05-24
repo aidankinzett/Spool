@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -45,10 +46,23 @@ namespace LudusaviWrap
 
         [JsonPropertyName("lan_install_dir")]
         public string LanInstallDir { get; set; } = "";
+
+        [JsonPropertyName("torbox_enabled")]
+        public bool TorBoxEnabled { get; set; } = false;
+
+        [JsonPropertyName("torbox_api_key")]
+        public string TorBoxApiKey { get; set; } = "";
+
+        [JsonPropertyName("download_dir")]
+        public string DownloadDir { get; set; } = "";
+
+        [JsonPropertyName("download_sources")]
+        public List<string> DownloadSources { get; set; } = new();
     }
 
     [JsonSourceGenerationOptions(WriteIndented = true)]
     [JsonSerializable(typeof(ConfigData))]
+    [JsonSerializable(typeof(List<string>))]
     internal partial class ConfigSourceGenerationContext : JsonSerializerContext
     {
     }
@@ -174,5 +188,12 @@ namespace LudusaviWrap
         }
 
         public bool IsLudusaviOk => !string.IsNullOrEmpty(Data.LudusaviPath) && File.Exists(Data.LudusaviPath);
+
+        public bool IsTorBoxOk => Data.TorBoxEnabled && !string.IsNullOrEmpty(Data.TorBoxApiKey);
+
+        public string EffectiveDownloadDir =>
+            !string.IsNullOrEmpty(Data.DownloadDir)
+                ? Data.DownloadDir
+                : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads");
     }
 }
