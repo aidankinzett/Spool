@@ -53,7 +53,7 @@
         </Grid>
 
         <!-- Separator -->
-        <Separator Grid.Row="2" Margin="16,0"/>
+        <Separator Grid.Row="2" Margin="0"/>
 
         <!-- Content area -->
         <Grid Grid.Row="3">
