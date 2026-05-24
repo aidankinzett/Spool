@@ -457,12 +457,49 @@ namespace LudusaviWrap
                 _library.Update(entry);
 
                 _successWindow = new SuccessWindow(this, entry.GameName, launcherExePath, SuccessMode.ArmouryCrate);
+
+                if (_config.Data.SteamGridDbEnabled && !string.IsNullOrEmpty(_config.Data.SteamGridDbApiKey))
+                {
+                    _successWindow.UpdateArtwork("Fetching cover image...", "#99FFFFFF");
+                    _ = Task.Run(() => FetchCoverArtForACAsync(entry.GameName, entry.SafeName));
+                }
+
                 _successWindow.ShowDialog();
             }
             catch (Exception ex)
             {
                 MessageBox.Show($"Failed to generate launcher: {ex.Message}",
                     "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        private async Task FetchCoverArtForACAsync(string gameName, string safeName)
+        {
+            string coversDir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "ludusavi-wrap", "covers");
+
+            try
+            {
+                var sgdb = new SteamGridDbClient(_config.Data.SteamGridDbApiKey);
+                var results = await sgdb.SearchGameAsync(gameName);
+                if (results.Count == 0)
+                {
+                    Dispatcher.Invoke(() => _successWindow?.UpdateArtwork("⚠ Artwork: Game not found on SteamGridDB", "#FFC107"));
+                    return;
+                }
+
+                int gameId = results[0].Id;
+                string? imgPath = await sgdb.DownloadGridImageAsync(gameId, safeName, coversDir);
+                if (imgPath == null)
+                    Dispatcher.Invoke(() => _successWindow?.UpdateArtwork("⚠ Artwork: No horizontal grid images found on SteamGridDB", "#FFC107"));
+                else
+                    Dispatcher.Invoke(() => _successWindow?.UpdateArtwork($"Cover art: {imgPath}", "#4CAF50"));
+            }
+            catch (Exception ex)
+            {
+                App.Log($"[MainWindow] Failed to fetch cover art for Armoury Crate '{gameName}': {ex.Message}");
+                Dispatcher.Invoke(() => _successWindow?.UpdateArtwork($"⚠ Artwork error: {ex.Message}", "#FFC107"));
             }
         }
 
