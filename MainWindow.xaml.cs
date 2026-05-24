@@ -1,5 +1,6 @@
 using System;
 using System.Collections.ObjectModel;
+using Microsoft.Toolkit.Uwp.Notifications;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
@@ -135,6 +136,21 @@ namespace LudusaviWrap
     {
         public static readonly string Version =
             System.Reflection.Assembly.GetEntryAssembly()?.GetName().Version?.ToString(3) ?? "0.0.0";
+
+        private static void ShowToast(string title, string body)
+        {
+            try
+            {
+                new ToastContentBuilder()
+                    .AddText(title)
+                    .AddText(body)
+                    .Show();
+            }
+            catch (Exception ex)
+            {
+                App.Log($"Toast notification failed: {ex.Message}");
+            }
+        }
 
         private readonly Config _config;
         private readonly GameLibrary _library;
@@ -970,11 +986,9 @@ namespace LudusaviWrap
 
         private async void OfferAddToLibrary(string gameName, string destFolder, LanPeer? sourcePeer = null)
         {
-            string? exePath = Directory.GetFiles(destFolder, "*.exe", SearchOption.AllDirectories)
-                .OrderBy(f => Path.GetDirectoryName(f)?.Length)
-                .FirstOrDefault();
-
             bool runAsAdmin = false;
+            string? relativeExePath = null;
+
             if (sourcePeer != null)
             {
                 try
@@ -983,6 +997,7 @@ namespace LudusaviWrap
                     if (meta != null)
                     {
                         runAsAdmin = meta.RunAsAdmin;
+                        relativeExePath = meta.RelativeExePath;
                     }
                 }
                 catch (Exception ex)
@@ -991,12 +1006,23 @@ namespace LudusaviWrap
                 }
             }
 
-            var ans = MessageBox.Show(
-                $"Download of \"{gameName}\" is complete.\n\nAdd it to your library?\n" +
-                (exePath != null ? $"\nDetected executable:\n{exePath}" : "\n(No .exe found — you can set it manually)"),
-                "Add to Library?", MessageBoxButton.YesNo, MessageBoxImage.Question);
+            string? exePath = null;
+            if (!string.IsNullOrEmpty(relativeExePath))
+            {
+                string candidate = Path.Combine(destFolder, relativeExePath.Replace('/', Path.DirectorySeparatorChar));
+                if (File.Exists(candidate))
+                {
+                    exePath = candidate;
+                }
+            }
 
-            if (ans != MessageBoxResult.Yes) return;
+            // Fallback to directory search if relative path is missing or doesn't exist
+            if (exePath == null)
+            {
+                exePath = Directory.GetFiles(destFolder, "*.exe", SearchOption.AllDirectories)
+                    .OrderBy(f => Path.GetDirectoryName(f)?.Length)
+                    .FirstOrDefault();
+            }
 
             var existing = _library.FindByName(gameName);
             if (existing != null)
@@ -1032,6 +1058,8 @@ namespace LudusaviWrap
                 }
             }
             LoadGames();
+
+            ShowToast("Transfer Complete", $"\"{gameName}\" was automatically added to your library.");
 
             var entry = _library.FindByName(gameName);
             if (entry != null && string.IsNullOrEmpty(entry.CoverImagePath))

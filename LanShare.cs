@@ -18,9 +18,9 @@ namespace LudusaviWrap
 
     public class LanGameMetadata
     {
-        [JsonPropertyName("game_name")]    public string GameName { get; set; } = "";
-        [JsonPropertyName("run_as_admin")] public bool   RunAsAdmin { get; set; }
-        [JsonPropertyName("exe_name")]     public string ExeName { get; set; } = "";
+        [JsonPropertyName("game_name")]         public string GameName { get; set; } = "";
+        [JsonPropertyName("run_as_admin")]      public bool   RunAsAdmin { get; set; }
+        [JsonPropertyName("relative_exe_path")] public string RelativeExePath { get; set; } = "";
     }
 
     public class LanAnnounce
@@ -388,11 +388,21 @@ namespace LudusaviWrap
                 return;
             }
 
+            string relExePath = "";
+            if (!string.IsNullOrEmpty(entry.ExePath) && !string.IsNullOrEmpty(entry.GameFolderPath))
+            {
+                try
+                {
+                    relExePath = Path.GetRelativePath(entry.GameFolderPath, entry.ExePath).Replace('\\', '/');
+                }
+                catch { }
+            }
+
             var meta = new LanGameMetadata
             {
                 GameName = entry.GameName,
                 RunAsAdmin = entry.RunAsAdmin || RegistryHelper.GetCompatFlagRunAsAdmin(entry.ExePath),
-                ExeName = Path.GetFileName(entry.ExePath)
+                RelativeExePath = relExePath
             };
 
             byte[] json = JsonSerializer.SerializeToUtf8Bytes(meta, LanJsonContext.Default.LanGameMetadata);
