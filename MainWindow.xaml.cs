@@ -99,6 +99,7 @@ namespace LudusaviWrap
         private SuccessWindow? _successWindow;
         private bool _updateCheckSubscribed = false;
         private readonly LanShareServer _lanServer;
+        private readonly LanShareClient _lanClient;
 
         public MainWindow(Config config, GameLibrary library)
         {
@@ -108,6 +109,8 @@ namespace LudusaviWrap
             Title = $"Ludusavi Wrap v{Version}";
 
             _lanServer = new LanShareServer(config.Data.DeviceName, config.Data.DeviceId);
+            _lanServer.UploadsChanged += LanServer_UploadsChanged;
+            _lanClient = new LanShareClient(config.Data.DeviceName, config.Data.DeviceId);
 
             GamesGrid.ItemsSource = _games;
             LoadGames();
@@ -393,14 +396,277 @@ namespace LudusaviWrap
                 "LAN Share", MessageBoxButton.OK, MessageBoxImage.Information);
         }
 
-        private void LanDownload_Click(object sender, RoutedEventArgs e)
+        private async void LanDownload_Click(object sender, RoutedEventArgs e)
         {
+            if (_isDownloading)
+            {
+                MessageBox.Show("A download is already in progress. Please wait for it to finish or cancel it first.",
+                    "Download in Progress", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
             var dlg = new LanDownloadWindow(_config, _library);
             dlg.Owner = this;
-            dlg.ShowDialog();
+            if (dlg.ShowDialog() == true && dlg.StartDownloadRequested)
+            {
+                var peer = dlg.SelectedPeer;
+                var game = dlg.SelectedGame;
+                var dest = dlg.DestFolder;
+                if (peer != null && !string.IsNullOrEmpty(game) && !string.IsNullOrEmpty(dest))
+                {
+                    await StartDownloadAsync(peer, game, dest);
+                }
+            }
+            else
+            {
+                LoadGames();
+            }
+        }
 
-            // Refresh library in case user added a game during download
+        private System.Windows.Threading.DispatcherTimer? _uploadTimer;
+        private long _lastBytesSent = 0;
+        private DateTime _lastUploadTick = DateTime.MinValue;
+
+        private void LanServer_UploadsChanged(object? sender, EventArgs e)
+        {
+            Dispatcher.BeginInvoke(new Action(UpdateUploadProgress));
+        }
+
+        private void UpdateUploadProgress()
+        {
+            var uploads = _lanServer.GetActiveUploads();
+            if (uploads.Count == 0)
+            {
+                if (_uploadTimer != null)
+                {
+                    _uploadTimer.Stop();
+                    _uploadTimer = null;
+                }
+                UploadSeparator.Visibility = Visibility.Collapsed;
+                UploadBarGrid.Visibility = Visibility.Collapsed;
+                _lastBytesSent = 0;
+                return;
+            }
+
+            // Make sure the timer is running
+            if (_uploadTimer == null)
+            {
+                _uploadTimer = new System.Windows.Threading.DispatcherTimer
+                {
+                    Interval = TimeSpan.FromSeconds(1)
+                };
+                _uploadTimer.Tick += (s, e) => UpdateUploadProgress();
+                _uploadTimer.Start();
+                _lastUploadTick = DateTime.UtcNow;
+                _lastBytesSent = 0;
+            }
+
+            // Calculate total stats
+            long totalBytes = 0;
+            long bytesSent = 0;
+            string gameName = "";
+
+            foreach (var u in uploads)
+            {
+                totalBytes += u.TotalBytes;
+                bytesSent += u.BytesSent;
+                if (string.IsNullOrEmpty(gameName))
+                    gameName = u.GameName;
+            }
+
+            // If multiple games are uploading, aggregate
+            var gameNames = uploads.Select(u => u.GameName).Distinct().ToList();
+            if (gameNames.Count > 1)
+            {
+                UploadTitleText.Text = $"Uploading {gameNames.Count} games to LAN peer...";
+            }
+            else
+            {
+                UploadTitleText.Text = $"Uploading {gameName} to LAN peer...";
+            }
+
+            // Progress bar
+            double progress = totalBytes > 0 ? (bytesSent * 100.0 / totalBytes) : 0;
+            UploadProgressBar.Value = progress;
+
+            // Speed calculation
+            double speed = 0;
+            var now = DateTime.UtcNow;
+            if (_lastUploadTick != DateTime.MinValue && _lastBytesSent > 0)
+            {
+                double elapsed = (now - _lastUploadTick).TotalSeconds;
+                if (elapsed > 0)
+                {
+                    speed = Math.Max(0, (bytesSent - _lastBytesSent) / elapsed);
+                }
+            }
+
+            _lastBytesSent = bytesSent;
+            _lastUploadTick = now;
+
+            // Status text: Speed + Progress bytes
+            string speedStr = FormatSpeed(speed);
+            string progressStr = $"{FormatBytes(bytesSent)} of {FormatBytes(totalBytes)}";
+            UploadStatusText.Text = $"{speedStr} - {progressStr}";
+
+            UploadSeparator.Visibility = Visibility.Visible;
+            UploadBarGrid.Visibility = Visibility.Visible;
+        }
+
+        private static string FormatBytes(long bytes)
+        {
+            string[] suffixes = { "B", "KB", "MB", "GB", "TB" };
+            double val = bytes;
+            int i = 0;
+            while (val >= 1024 && i < suffixes.Length - 1)
+            {
+                val /= 1024;
+                i++;
+            }
+            return $"{val:0.0} {suffixes[i]}";
+        }
+
+        private static string FormatSpeed(double bytesPerSec)
+        {
+            string[] suffixes = { "B/s", "KB/s", "MB/s", "GB/s" };
+            double val = bytesPerSec;
+            int i = 0;
+            while (val >= 1024 && i < suffixes.Length - 1)
+            {
+                val /= 1024;
+                i++;
+            }
+            return $"{val:0.0} {suffixes[i]}";
+        }
+
+        private void CancelUpload_Click(object sender, RoutedEventArgs e)
+        {
+            _lanServer.CancelAllUploads();
+        }
+
+        private CancellationTokenSource? _downloadCts;
+        private bool _isDownloading = false;
+
+        private async Task StartDownloadAsync(LanPeer peer, string gameName, string destFolder)
+        {
+            _isDownloading = true;
+            DownloadSeparator.Visibility = Visibility.Visible;
+            DownloadBarGrid.Visibility = Visibility.Visible;
+            CancelDownloadButton.Visibility = Visibility.Visible;
+
+            DownloadTitleText.Text = "Preparing...";
+            DownloadCountText.Text = "";
+            DownloadSpeedText.Text = "";
+            DownloadBytesText.Text = "";
+            DownloadProgressBar.Value = 0;
+
+            _downloadCts = new CancellationTokenSource();
+            var ct = _downloadCts.Token;
+
+            var progress = new Progress<LanDownloadProgress>(p =>
+            {
+                if (!string.IsNullOrEmpty(p.Status) && p.Status != "Downloading")
+                {
+                    DownloadTitleText.Text = p.Status;
+                    if (p.Status.StartsWith("Verifying"))
+                    {
+                        DownloadBytesText.Text = Path.GetFileName(p.CurrentFile);
+                        double pct = p.TotalBytes > 0 ? (double)p.BytesTransferred / p.TotalBytes * 100 : 0;
+                        DownloadProgressBar.Value = pct;
+                    }
+                    else
+                    {
+                        DownloadBytesText.Text = "";
+                        DownloadProgressBar.Value = 0;
+                    }
+                    DownloadCountText.Text = "";
+                    DownloadSpeedText.Text = "";
+                }
+                else
+                {
+                    DownloadTitleText.Text = $"Downloading {Path.GetFileName(p.CurrentFile)}";
+                    DownloadCountText.Text = $"({p.FilesCompleted} / {p.TotalFiles} files)";
+
+                    double pct = p.TotalBytes > 0 ? (double)p.BytesTransferred / p.TotalBytes * 100 : 0;
+                    DownloadProgressBar.Value = pct;
+
+                    DownloadBytesText.Text = $"{FormatBytes(p.BytesTransferred)} of {FormatBytes(p.TotalBytes)}";
+                    DownloadSpeedText.Text = $"{FormatSpeed(p.SpeedBytesPerSec)}";
+                }
+            });
+
+            try
+            {
+                await _lanClient.DownloadGameAsync(peer, gameName, destFolder, progress, ct);
+
+                DownloadTitleText.Text = "Download complete";
+                DownloadCountText.Text = "";
+                DownloadProgressBar.Value = 100;
+                DownloadSpeedText.Text = "";
+                DownloadBytesText.Text = "";
+
+                OfferAddToLibrary(gameName, destFolder);
+            }
+            catch (OperationCanceledException)
+            {
+                DownloadTitleText.Text = "Download cancelled";
+                DownloadCountText.Text = "";
+                DownloadSpeedText.Text = "";
+                DownloadBytesText.Text = "";
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Download failed: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                DownloadTitleText.Text = "Download failed";
+                DownloadCountText.Text = "";
+                DownloadSpeedText.Text = "";
+                DownloadBytesText.Text = "";
+            }
+            finally
+            {
+                _isDownloading = false;
+                CancelDownloadButton.Visibility = Visibility.Collapsed;
+            }
+        }
+
+        private void OfferAddToLibrary(string gameName, string destFolder)
+        {
+            // Try to find an exe in the destination folder
+            string? exePath = Directory.GetFiles(destFolder, "*.exe", SearchOption.AllDirectories)
+                .OrderBy(f => Path.GetDirectoryName(f)?.Length) // prefer shallower
+                .FirstOrDefault();
+
+            var ans = MessageBox.Show(
+                $"Download of \"{gameName}\" is complete.\n\nAdd it to your library?\n" +
+                (exePath != null ? $"\nDetected executable:\n{exePath}" : "\n(No .exe found — you can set it manually)"),
+                "Add to Library?", MessageBoxButton.YesNo, MessageBoxImage.Question);
+
+            if (ans != MessageBoxResult.Yes) return;
+
+            var existing = _library.FindByName(gameName);
+            if (existing != null)
+            {
+                existing.GameFolderPath = destFolder;
+                if (exePath != null) existing.ExePath = exePath;
+                _library.Update(existing);
+            }
+            else
+            {
+                _library.Add(new GameEntry
+                {
+                    GameName       = gameName,
+                    SafeName       = LauncherGenerator.MakeSafeFilename(gameName),
+                    ExePath        = exePath ?? "",
+                    GameFolderPath = destFolder,
+                    AddedAt        = DateTime.UtcNow
+                });
+            }
             LoadGames();
+        }
+
+        private void CancelDownload_Click(object sender, RoutedEventArgs e)
+        {
+            _downloadCts?.Cancel();
         }
     }
 }

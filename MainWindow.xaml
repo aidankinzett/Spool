@@ -24,6 +24,10 @@
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
         <ui:TitleBar Title="Ludusavi Wrap"
@@ -172,5 +176,104 @@
             </ScrollViewer>
 
         </Grid>
+
+        <!-- Separator before upload bar (visible only when upload bar is visible) -->
+        <Separator x:Name="UploadSeparator" Grid.Row="4" Visibility="Collapsed" Margin="0"/>
+
+        <!-- Upload status bar -->
+        <Border x:Name="UploadBarGrid" Grid.Row="5" Background="{DynamicResource CardBackgroundFillBrushDefault}" Padding="24,12" Visibility="Collapsed">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+
+                <StackPanel Grid.Column="0" VerticalAlignment="Center">
+                    <Grid Margin="0,0,0,6">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock x:Name="UploadTitleText"
+                                   Text="Uploading Game..."
+                                   FontWeight="SemiBold"
+                                   FontSize="13"
+                                   Grid.Column="0"/>
+                        <TextBlock x:Name="UploadStatusText"
+                                   Text="0 KB/s - 0 MB of 0 MB"
+                                   Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                   FontSize="12"
+                                   Grid.Column="1"/>
+                    </Grid>
+                    <ProgressBar x:Name="UploadProgressBar"
+                                 Height="8"
+                                 Minimum="0"
+                                 Maximum="100"
+                                 Value="0"/>
+                </StackPanel>
+
+                <ui:Button x:Name="CancelUploadButton"
+                           Grid.Column="1"
+                           Content="Cancel"
+                           Appearance="Danger"
+                           Margin="16,0,0,0"
+                           VerticalAlignment="Center"
+                           Click="CancelUpload_Click"/>
+            </Grid>
+        </Border>
+
+        <!-- Separator before download bar (visible only when download bar is visible) -->
+        <Separator x:Name="DownloadSeparator" Grid.Row="6" Visibility="Collapsed" Margin="0"/>
+
+        <!-- Download status bar -->
+        <Border x:Name="DownloadBarGrid" Grid.Row="7" Background="{DynamicResource CardBackgroundFillBrushDefault}" Padding="24,12" Visibility="Collapsed">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+
+                <StackPanel Grid.Column="0" VerticalAlignment="Center">
+                    <Grid Margin="0,0,0,6">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <StackPanel Orientation="Horizontal" Grid.Column="0">
+                            <TextBlock x:Name="DownloadTitleText"
+                                       Text="Preparing..."
+                                       FontWeight="SemiBold"
+                                       FontSize="13"/>
+                            <TextBlock x:Name="DownloadCountText"
+                                       FontSize="12"
+                                       Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                       Margin="8,1,0,0"/>
+                        </StackPanel>
+                        <StackPanel Orientation="Horizontal" Grid.Column="1" VerticalAlignment="Bottom">
+                            <TextBlock x:Name="DownloadSpeedText"
+                                       FontSize="12"
+                                       Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                       Margin="0,0,8,0"/>
+                            <TextBlock x:Name="DownloadBytesText"
+                                       FontSize="12"
+                                       Foreground="{DynamicResource TextFillColorSecondaryBrush}"/>
+                        </StackPanel>
+                    </Grid>
+                    <ProgressBar x:Name="DownloadProgressBar"
+                                 Height="8"
+                                 Minimum="0"
+                                 Maximum="100"
+                                 Value="0"/>
+                </StackPanel>
+
+                <ui:Button x:Name="CancelDownloadButton"
+                           Grid.Column="1"
+                           Content="Cancel"
+                           Appearance="Danger"
+                           Margin="16,0,0,0"
+                           VerticalAlignment="Center"
+                           Click="CancelDownload_Click"/>
+            </Grid>
+        </Border>
     </Grid>
 </ui:FluentWindow>

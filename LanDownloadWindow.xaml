@@ -24,7 +24,6 @@
                 <RowDefinition Height="Auto"/>
                 <RowDefinition Height="Auto"/>
                 <RowDefinition Height="Auto"/>
-                <RowDefinition Height="Auto"/>
             </Grid.RowDefinitions>
 
             <!-- Discovery / peer selection panel -->
@@ -107,51 +106,8 @@
                 </StackPanel>
             </ui:Card>
 
-            <!-- Progress card -->
-            <ui:Card Grid.Row="2" Margin="0,0,0,12" x:Name="ProgressCard" Visibility="Collapsed">
-                <StackPanel>
-                    <Grid Margin="0,0,0,6">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*"/>
-                            <ColumnDefinition Width="Auto"/>
-                        </Grid.ColumnDefinitions>
-                        <TextBlock x:Name="ProgressFileLabel"
-                                   Text="Preparing..."
-                                   TextTrimming="CharacterEllipsis"
-                                   FontSize="12"
-                                   VerticalAlignment="Center"
-                                   Grid.Column="0"/>
-                        <TextBlock x:Name="ProgressCountLabel"
-                                   FontSize="12"
-                                   Foreground="{DynamicResource TextFillColorSecondaryBrush}"
-                                   VerticalAlignment="Center"
-                                   Grid.Column="1"/>
-                    </Grid>
-                    <ProgressBar x:Name="ProgressBar"
-                                 Height="8"
-                                 Minimum="0"
-                                 Maximum="100"
-                                 Value="0"
-                                 Margin="0,0,0,6"/>
-                    <Grid>
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*"/>
-                            <ColumnDefinition Width="Auto"/>
-                        </Grid.ColumnDefinitions>
-                        <TextBlock x:Name="ProgressBytesLabel"
-                                   FontSize="11"
-                                   Foreground="{DynamicResource TextFillColorSecondaryBrush}"
-                                   Grid.Column="0"/>
-                        <TextBlock x:Name="ProgressSpeedLabel"
-                                   FontSize="11"
-                                   Foreground="{DynamicResource TextFillColorSecondaryBrush}"
-                                   Grid.Column="1"/>
-                    </Grid>
-                </StackPanel>
-            </ui:Card>
-
             <!-- Action buttons -->
-            <Grid Grid.Row="3">
+            <Grid Grid.Row="2">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*"/>
                     <ColumnDefinition Width="8"/>

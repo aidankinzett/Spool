@@ -4,7 +4,7 @@
         xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
         xmlns:local="clr-namespace:LudusaviWrap"
         Title="Settings"
-        Width="520"
+        Width="880"
         SizeToContent="Height"
         ResizeMode="NoResize"
         WindowStartupLocation="CenterScreen">
@@ -22,233 +22,244 @@
 
         <Grid Grid.Row="1" Margin="24,12,24,24">
             <Grid.RowDefinitions>
-                <RowDefinition Height="Auto"/> <!-- Ludusavi Path card -->
-                <RowDefinition Height="Auto"/> <!-- SteamGridDB card -->
-                <RowDefinition Height="Auto"/> <!-- Appearance card -->
-                <RowDefinition Height="Auto"/> <!-- Sync Server card -->
-                <RowDefinition Height="Auto"/> <!-- LAN Share card -->
+                <RowDefinition Height="Auto"/> <!-- Columns container -->
                 <RowDefinition Height="Auto"/> <!-- Error label -->
                 <RowDefinition Height="Auto"/> <!-- Action buttons -->
             </Grid.RowDefinitions>
 
-            <!-- Ludusavi Path card -->
-            <ui:Card Margin="0,0,0,12" Grid.Row="0">
-                <StackPanel>
-                    <TextBlock Text="Ludusavi Path"
-                               FontWeight="SemiBold"
-                               Margin="0,0,0,8"/>
-                    <Grid>
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*"/>
-                            <ColumnDefinition Width="Auto"/>
-                        </Grid.ColumnDefinitions>
-                        <ui:TextBox x:Name="LudusaviPathTextBox"
-                                    PlaceholderText="C:\Path\to\ludusavi.exe"
-                                    Grid.Column="0"
-                                    Margin="0,0,8,0"/>
-                        <ui:Button Content="Browse"
-                                   Appearance="Secondary"
-                                   Click="BrowseLudusavi_Click"
-                                   Grid.Column="1"/>
-                    </Grid>
+            <!-- Columns container -->
+            <Grid Grid.Row="0" Margin="0,0,0,16">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="16"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+
+                <!-- Left Column -->
+                <StackPanel Grid.Column="0">
+                    <!-- Ludusavi Path card -->
+                    <ui:Card Margin="0,0,0,12">
+                        <StackPanel>
+                            <TextBlock Text="Ludusavi Path"
+                                       FontWeight="SemiBold"
+                                       Margin="0,0,0,8"/>
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <ui:TextBox x:Name="LudusaviPathTextBox"
+                                            PlaceholderText="C:\Path\to\ludusavi.exe"
+                                            Grid.Column="0"
+                                            Margin="0,0,8,0"/>
+                                <ui:Button Content="Browse"
+                                           Appearance="Secondary"
+                                           Click="BrowseLudusavi_Click"
+                                           Grid.Column="1"/>
+                            </Grid>
+                        </StackPanel>
+                    </ui:Card>
+
+                    <!-- SteamGridDB card -->
+                    <ui:Card Margin="0,0,0,12">
+                        <StackPanel>
+                            <Grid Margin="0,0,0,4">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Text="SteamGridDB Artwork"
+                                           FontWeight="SemiBold"
+                                           Grid.Column="0"
+                                           VerticalAlignment="Center"/>
+                                <ui:ToggleSwitch x:Name="SgdbSwitch"
+                                                 Checked="SgdbSwitch_Changed"
+                                                 Unchecked="SgdbSwitch_Changed"
+                                                 Grid.Column="1"
+                                                 VerticalAlignment="Center"/>
+                            </Grid>
+
+                            <TextBlock Text="Download cover images automatically when generating a wrapper."
+                                       Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                       FontSize="11"
+                                       Margin="0,0,0,12"/>
+
+                            <Grid x:Name="ApiKeyGrid">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Text="API Key:"
+                                           VerticalAlignment="Center"
+                                           Margin="0,0,8,0"
+                                           Grid.Column="0"/>
+                                <ui:TextBox x:Name="ApiKeyTextBox"
+                                            PlaceholderText="Paste API Key here"
+                                            Margin="0,0,8,0"
+                                            Grid.Column="1"/>
+                                <ui:Button Content="Get Key"
+                                           Appearance="Secondary"
+                                           Click="GetKey_Click"
+                                           Grid.Column="2"/>
+                            </Grid>
+                        </StackPanel>
+                    </ui:Card>
+
+                    <!-- Appearance card -->
+                    <ui:Card Margin="0,0,0,12">
+                        <StackPanel>
+                            <TextBlock Text="Appearance"
+                                       FontWeight="SemiBold"
+                                       Margin="0,0,0,8"/>
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Text="Theme:"
+                                           VerticalAlignment="Center"
+                                           Margin="0,0,12,0"
+                                           Grid.Column="0"/>
+                                <ComboBox x:Name="ThemeComboBox"
+                                          SelectionChanged="ThemeComboBox_SelectionChanged"
+                                          Grid.Column="1">
+                                    <ComboBoxItem x:Name="ThemeSystem" Content="System default" Tag="system"/>
+                                    <ComboBoxItem x:Name="ThemeLight"  Content="Light"          Tag="light"/>
+                                    <ComboBoxItem x:Name="ThemeDark"   Content="Dark"           Tag="dark"/>
+                                </ComboBox>
+                            </Grid>
+                        </StackPanel>
+                    </ui:Card>
                 </StackPanel>
-            </ui:Card>
 
-            <!-- SteamGridDB card -->
-            <ui:Card Margin="0,0,0,12" Grid.Row="1">
-                <StackPanel>
-                    <Grid Margin="0,0,0,4">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*"/>
-                            <ColumnDefinition Width="Auto"/>
-                        </Grid.ColumnDefinitions>
-                        <TextBlock Text="SteamGridDB Artwork"
-                                   FontWeight="SemiBold"
-                                   Grid.Column="0"
-                                   VerticalAlignment="Center"/>
-                        <ui:ToggleSwitch x:Name="SgdbSwitch"
-                                         Checked="SgdbSwitch_Changed"
-                                         Unchecked="SgdbSwitch_Changed"
-                                         Grid.Column="1"
-                                         VerticalAlignment="Center"/>
-                    </Grid>
+                <!-- Right Column -->
+                <StackPanel Grid.Column="2">
+                    <!-- Sync Server card -->
+                    <ui:Card Margin="0,0,0,12">
+                        <StackPanel>
+                            <Grid Margin="0,0,0,4">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Text="Sync Server"
+                                           FontWeight="SemiBold"
+                                           Grid.Column="0"
+                                           VerticalAlignment="Center"/>
+                                <ui:ToggleSwitch x:Name="SyncSwitch"
+                                                 Checked="SyncSwitch_Changed"
+                                                 Unchecked="SyncSwitch_Changed"
+                                                 Grid.Column="1"
+                                                 VerticalAlignment="Center"/>
+                            </Grid>
 
-                    <TextBlock Text="Download cover images automatically when generating a wrapper."
-                               Foreground="{DynamicResource TextFillColorSecondaryBrush}"
-                               FontSize="11"
-                               Margin="0,0,0,12"/>
+                            <TextBlock Text="Prevents launching a game that&#x2019;s already running on another device."
+                                       Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                       FontSize="11"
+                                       Margin="0,0,0,12"/>
 
-                    <Grid x:Name="ApiKeyGrid">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="Auto"/>
-                            <ColumnDefinition Width="*"/>
-                            <ColumnDefinition Width="Auto"/>
-                        </Grid.ColumnDefinitions>
-                        <TextBlock Text="API Key:"
-                                   VerticalAlignment="Center"
-                                   Margin="0,0,8,0"
-                                   Grid.Column="0"/>
-                        <ui:TextBox x:Name="ApiKeyTextBox"
-                                    PlaceholderText="Paste API Key here"
-                                    Margin="0,0,8,0"
-                                    Grid.Column="1"/>
-                        <ui:Button Content="Get Key"
-                                   Appearance="Secondary"
-                                   Click="GetKey_Click"
-                                   Grid.Column="2"/>
-                    </Grid>
+                            <Grid x:Name="SyncFieldsGrid">
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                </Grid.RowDefinitions>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+
+                                <TextBlock Text="Server URL:"
+                                           VerticalAlignment="Center"
+                                           Margin="0,0,8,8"
+                                           Grid.Row="0" Grid.Column="0"/>
+                                <ui:TextBox x:Name="SyncUrlTextBox"
+                                            PlaceholderText="https://your-server.fly.dev"
+                                            Margin="0,0,0,8"
+                                            Grid.Row="0" Grid.Column="1"/>
+
+                                <TextBlock Text="API Key:"
+                                           VerticalAlignment="Center"
+                                           Margin="0,0,8,8"
+                                           Grid.Row="1" Grid.Column="0"/>
+                                <PasswordBox x:Name="SyncApiKeyBox"
+                                             Margin="0,0,0,8"
+                                             Grid.Row="1" Grid.Column="1"/>
+
+                                <TextBlock Text="Device Name:"
+                                           VerticalAlignment="Center"
+                                           Margin="0,0,8,0"
+                                           Grid.Row="2" Grid.Column="0"/>
+                                <ui:TextBox x:Name="DeviceNameTextBox"
+                                            PlaceholderText="PC name shown to other devices"
+                                            Grid.Row="2" Grid.Column="1"/>
+                            </Grid>
+                        </StackPanel>
+                    </ui:Card>
+
+                    <!-- LAN Share card -->
+                    <ui:Card Margin="0,0,0,12">
+                        <StackPanel>
+                            <Grid Margin="0,0,0,4">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Text="LAN Game Transfer"
+                                           FontWeight="SemiBold"
+                                           Grid.Column="0"
+                                           VerticalAlignment="Center"/>
+                                <ui:ToggleSwitch x:Name="LanSwitch"
+                                                 Checked="LanSwitch_Changed"
+                                                 Unchecked="LanSwitch_Changed"
+                                                 Grid.Column="1"
+                                                 VerticalAlignment="Center"/>
+                            </Grid>
+
+                            <TextBlock Text="Share game files with other devices on your local network."
+                                       Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                       FontSize="11"
+                                       Margin="0,0,0,12"/>
+
+                            <Grid x:Name="LanFieldsGrid">
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                </Grid.RowDefinitions>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+
+                                <TextBlock Text="Port:"
+                                           VerticalAlignment="Center"
+                                           Margin="0,0,8,8"
+                                           Grid.Row="0" Grid.Column="0"/>
+                                <ui:TextBox x:Name="LanPortTextBox"
+                                            PlaceholderText="47632"
+                                            Margin="0,0,0,8"
+                                            Grid.Row="0" Grid.Column="1" Grid.ColumnSpan="2"/>
+
+                                <TextBlock Text="Default install dir:"
+                                           VerticalAlignment="Center"
+                                           Margin="0,0,8,0"
+                                           Grid.Row="1" Grid.Column="0"/>
+                                <ui:TextBox x:Name="LanInstallDirTextBox"
+                                            IsReadOnly="True"
+                                            PlaceholderText="Where downloads go by default..."
+                                            Margin="0,0,8,0"
+                                            Grid.Row="1" Grid.Column="1"/>
+                                <ui:Button Content="Browse"
+                                           Appearance="Secondary"
+                                           Click="BrowseLanInstallDir_Click"
+                                           Grid.Row="1" Grid.Column="2"/>
+                            </Grid>
+                        </StackPanel>
+                    </ui:Card>
                 </StackPanel>
-            </ui:Card>
-
-            <!-- Appearance card -->
-            <ui:Card Margin="0,0,0,12" Grid.Row="2">
-                <StackPanel>
-                    <TextBlock Text="Appearance"
-                               FontWeight="SemiBold"
-                               Margin="0,0,0,8"/>
-                    <Grid>
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="Auto"/>
-                            <ColumnDefinition Width="*"/>
-                        </Grid.ColumnDefinitions>
-                        <TextBlock Text="Theme:"
-                                   VerticalAlignment="Center"
-                                   Margin="0,0,12,0"
-                                   Grid.Column="0"/>
-                        <ComboBox x:Name="ThemeComboBox"
-                                  SelectionChanged="ThemeComboBox_SelectionChanged"
-                                  Grid.Column="1">
-                            <ComboBoxItem x:Name="ThemeSystem" Content="System default" Tag="system"/>
-                            <ComboBoxItem x:Name="ThemeLight"  Content="Light"          Tag="light"/>
-                            <ComboBoxItem x:Name="ThemeDark"   Content="Dark"           Tag="dark"/>
-                        </ComboBox>
-                    </Grid>
-                </StackPanel>
-            </ui:Card>
-
-            <!-- Sync Server card -->
-            <ui:Card Margin="0,0,0,12" Grid.Row="3">
-                <StackPanel>
-                    <Grid Margin="0,0,0,4">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*"/>
-                            <ColumnDefinition Width="Auto"/>
-                        </Grid.ColumnDefinitions>
-                        <TextBlock Text="Sync Server"
-                                   FontWeight="SemiBold"
-                                   Grid.Column="0"
-                                   VerticalAlignment="Center"/>
-                        <ui:ToggleSwitch x:Name="SyncSwitch"
-                                         Checked="SyncSwitch_Changed"
-                                         Unchecked="SyncSwitch_Changed"
-                                         Grid.Column="1"
-                                         VerticalAlignment="Center"/>
-                    </Grid>
-
-                    <TextBlock Text="Prevents launching a game that&#x2019;s already running on another device."
-                               Foreground="{DynamicResource TextFillColorSecondaryBrush}"
-                               FontSize="11"
-                               Margin="0,0,0,12"/>
-
-                    <Grid x:Name="SyncFieldsGrid">
-                        <Grid.RowDefinitions>
-                            <RowDefinition Height="Auto"/>
-                            <RowDefinition Height="Auto"/>
-                            <RowDefinition Height="Auto"/>
-                        </Grid.RowDefinitions>
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="Auto"/>
-                            <ColumnDefinition Width="*"/>
-                        </Grid.ColumnDefinitions>
-
-                        <TextBlock Text="Server URL:"
-                                   VerticalAlignment="Center"
-                                   Margin="0,0,8,8"
-                                   Grid.Row="0" Grid.Column="0"/>
-                        <ui:TextBox x:Name="SyncUrlTextBox"
-                                    PlaceholderText="https://your-server.fly.dev"
-                                    Margin="0,0,0,8"
-                                    Grid.Row="0" Grid.Column="1"/>
-
-                        <TextBlock Text="API Key:"
-                                   VerticalAlignment="Center"
-                                   Margin="0,0,8,8"
-                                   Grid.Row="1" Grid.Column="0"/>
-                        <PasswordBox x:Name="SyncApiKeyBox"
-                                     Margin="0,0,0,8"
-                                     Grid.Row="1" Grid.Column="1"/>
-
-                        <TextBlock Text="Device Name:"
-                                   VerticalAlignment="Center"
-                                   Margin="0,0,8,0"
-                                   Grid.Row="2" Grid.Column="0"/>
-                        <ui:TextBox x:Name="DeviceNameTextBox"
-                                    PlaceholderText="PC name shown to other devices"
-                                    Grid.Row="2" Grid.Column="1"/>
-                    </Grid>
-                </StackPanel>
-            </ui:Card>
-
-            <!-- LAN Share card -->
-            <ui:Card Margin="0,0,0,12" Grid.Row="4">
-                <StackPanel>
-                    <Grid Margin="0,0,0,4">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*"/>
-                            <ColumnDefinition Width="Auto"/>
-                        </Grid.ColumnDefinitions>
-                        <TextBlock Text="LAN Game Transfer"
-                                   FontWeight="SemiBold"
-                                   Grid.Column="0"
-                                   VerticalAlignment="Center"/>
-                        <ui:ToggleSwitch x:Name="LanSwitch"
-                                         Checked="LanSwitch_Changed"
-                                         Unchecked="LanSwitch_Changed"
-                                         Grid.Column="1"
-                                         VerticalAlignment="Center"/>
-                    </Grid>
-
-                    <TextBlock Text="Share game files with other devices on your local network."
-                               Foreground="{DynamicResource TextFillColorSecondaryBrush}"
-                               FontSize="11"
-                               Margin="0,0,0,12"/>
-
-                    <Grid x:Name="LanFieldsGrid">
-                        <Grid.RowDefinitions>
-                            <RowDefinition Height="Auto"/>
-                            <RowDefinition Height="Auto"/>
-                        </Grid.RowDefinitions>
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="Auto"/>
-                            <ColumnDefinition Width="*"/>
-                            <ColumnDefinition Width="Auto"/>
-                        </Grid.ColumnDefinitions>
-
-                        <TextBlock Text="Port:"
-                                   VerticalAlignment="Center"
-                                   Margin="0,0,8,8"
-                                   Grid.Row="0" Grid.Column="0"/>
-                        <ui:TextBox x:Name="LanPortTextBox"
-                                    PlaceholderText="47632"
-                                    Margin="0,0,0,8"
-                                    Grid.Row="0" Grid.Column="1" Grid.ColumnSpan="2"/>
-
-                        <TextBlock Text="Default install dir:"
-                                   VerticalAlignment="Center"
-                                   Margin="0,0,8,0"
-                                   Grid.Row="1" Grid.Column="0"/>
-                        <ui:TextBox x:Name="LanInstallDirTextBox"
-                                    IsReadOnly="True"
-                                    PlaceholderText="Where downloads go by default..."
-                                    Margin="0,0,8,0"
-                                    Grid.Row="1" Grid.Column="1"/>
-                        <ui:Button Content="Browse"
-                                   Appearance="Secondary"
-                                   Click="BrowseLanInstallDir_Click"
-                                   Grid.Row="1" Grid.Column="2"/>
-                    </Grid>
-                </StackPanel>
-            </ui:Card>
+            </Grid>
 
             <!-- Error label -->
             <TextBlock x:Name="ErrorLabel"
@@ -257,12 +268,12 @@
                        FontWeight="SemiBold"
                        Margin="0,0,0,12"
                        Visibility="Collapsed"
-                       Grid.Row="5"/>
+                       Grid.Row="1"/>
 
             <!-- Action buttons -->
             <StackPanel Orientation="Horizontal"
                         HorizontalAlignment="Center"
-                        Grid.Row="6">
+                        Grid.Row="2">
                 <ui:Button Content="Save &amp; Continue"
                            Appearance="Primary"
                            Width="160"

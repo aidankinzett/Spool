@@ -19,8 +19,6 @@ namespace LudusaviWrap
         private List<LanPeer> _peers = new();
         private LanPeer? _selectedPeer;
         private string? _selectedGame;
-        private CancellationTokenSource? _downloadCts;
-        private bool _downloadComplete;
 
         public LanDownloadWindow(Config config, GameLibrary library)
         {
@@ -145,111 +143,29 @@ namespace LudusaviWrap
 
         private async void Rescan_Click(object sender, RoutedEventArgs e) => await ScanAsync();
 
-        private async void Download_Click(object sender, RoutedEventArgs e)
+        public LanPeer? SelectedPeer { get; private set; }
+        public string? SelectedGame { get; private set; }
+        public string? DestFolder { get; private set; }
+        public bool StartDownloadRequested { get; private set; }
+
+        private void Download_Click(object sender, RoutedEventArgs e)
         {
             if (_selectedPeer == null || _selectedGame == null) return;
             string dest = DestFolderBox.Text.Trim();
             if (string.IsNullOrEmpty(dest)) return;
 
-            SetDownloading(true);
-
-            _downloadCts = new CancellationTokenSource();
-            var ct = _downloadCts.Token;
-
-            var progress = new Progress<LanDownloadProgress>(p =>
-            {
-                ProgressFileLabel.Text  = Path.GetFileName(p.CurrentFile);
-                ProgressCountLabel.Text = $"{p.FilesCompleted} / {p.TotalFiles} files";
-
-                double pct = p.TotalBytes > 0 ? (double)p.BytesTransferred / p.TotalBytes * 100 : 0;
-                ProgressBar.Value = pct;
-
-                ProgressBytesLabel.Text  = $"{FormatBytes(p.BytesTransferred)} / {FormatBytes(p.TotalBytes)}";
-                ProgressSpeedLabel.Text  = $"{FormatBytes((long)p.SpeedBytesPerSec)}/s";
-            });
-
-            try
-            {
-                await _client.DownloadGameAsync(_selectedPeer, _selectedGame, dest, progress, ct);
-                _downloadComplete = true;
-
-                ProgressFileLabel.Text  = "Download complete";
-                ProgressCountLabel.Text = "";
-                ProgressBar.Value       = 100;
-                ProgressSpeedLabel.Text = "";
-
-                OfferAddToLibrary(_selectedGame, dest);
-            }
-            catch (OperationCanceledException)
-            {
-                ProgressFileLabel.Text = "Download cancelled";
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show($"Download failed: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
-                App.Log($"LAN download error: {ex}");
-            }
-            finally
-            {
-                SetDownloading(false);
-            }
-        }
-
-        private void OfferAddToLibrary(string gameName, string destFolder)
-        {
-            // Try to find an exe in the destination folder
-            string? exePath = Directory.GetFiles(destFolder, "*.exe", SearchOption.AllDirectories)
-                .OrderBy(f => Path.GetDirectoryName(f)?.Length) // prefer shallower
-                .FirstOrDefault();
-
-            var ans = MessageBox.Show(
-                $"Download of \"{gameName}\" is complete.\n\nAdd it to your library?\n" +
-                (exePath != null ? $"\nDetected executable:\n{exePath}" : "\n(No .exe found — you can set it manually)"),
-                "Add to Library?", MessageBoxButton.YesNo, MessageBoxImage.Question);
-
-            if (ans != MessageBoxResult.Yes) return;
-
-            var existing = _library.FindByName(gameName);
-            if (existing != null)
-            {
-                existing.GameFolderPath = destFolder;
-                if (exePath != null) existing.ExePath = exePath;
-                _library.Update(existing);
-            }
-            else
-            {
-                _library.Add(new GameEntry
-                {
-                    GameName       = gameName,
-                    SafeName       = LauncherGenerator.MakeSafeFilename(gameName),
-                    ExePath        = exePath ?? "",
-                    GameFolderPath = destFolder,
-                    AddedAt        = DateTime.UtcNow
-                });
-            }
-        }
-
-        private void SetDownloading(bool active)
-        {
-            DiscoveryCard.IsEnabled  = !active;
-            DestCard.IsEnabled       = !active;
-            DownloadButton.IsEnabled = !active;
-            CloseButton.Content      = active ? "Cancel" : (_downloadComplete ? "Done" : "Close");
-            ProgressCard.Visibility  = Visibility.Visible;
+            SelectedPeer = _selectedPeer;
+            SelectedGame = _selectedGame;
+            DestFolder = dest;
+            StartDownloadRequested = true;
+            DialogResult = true;
+            Close();
         }
 
         private void Close_Click(object sender, RoutedEventArgs e)
         {
-            _downloadCts?.Cancel();
+            DialogResult = false;
             Close();
-        }
-
-        private static string FormatBytes(long bytes)
-        {
-            if (bytes >= 1_073_741_824) return $"{bytes / 1_073_741_824.0:F1} GB";
-            if (bytes >= 1_048_576)     return $"{bytes / 1_048_576.0:F1} MB";
-            if (bytes >= 1024)          return $"{bytes / 1024.0:F1} KB";
-            return $"{bytes} B";
         }
     }
 }

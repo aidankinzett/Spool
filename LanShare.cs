@@ -49,12 +49,40 @@ namespace LudusaviWrap
 
     public class LanDownloadProgress
     {
+        public string Status            { get; set; } = "";
         public string CurrentFile       { get; set; } = "";
         public int    FilesCompleted    { get; set; }
         public int    TotalFiles        { get; set; }
         public long   BytesTransferred  { get; set; }
         public long   TotalBytes        { get; set; }
         public double SpeedBytesPerSec  { get; set; }
+    }
+
+    public class ActiveUpload
+    {
+        public string Guid { get; } = System.Guid.NewGuid().ToString();
+        public string GameName { get; }
+        public string RelativePath { get; }
+        public long TotalBytes { get; }
+        public long BytesSent { get; set; }
+        public CancellationTokenSource Cts { get; }
+
+        public ActiveUpload(string gameName, string relativePath, long totalBytes, CancellationTokenSource cts)
+        {
+            GameName = gameName;
+            RelativePath = relativePath;
+            TotalBytes = totalBytes;
+            Cts = cts;
+        }
+    }
+
+    public class ActiveUploadSnapshot
+    {
+        public string Guid { get; set; } = "";
+        public string GameName { get; set; } = "";
+        public string RelativePath { get; set; } = "";
+        public long TotalBytes { get; set; }
+        public long BytesSent { get; set; }
     }
 
     [JsonSourceGenerationOptions]
@@ -83,6 +111,48 @@ namespace LudusaviWrap
         // manifest cache: gameName → list of entries (built once per game, cleared on stop)
         private readonly Dictionary<string, List<LanFileEntry>> _manifestCache = new();
         private readonly object _cacheLock = new();
+
+        private readonly List<ActiveUpload> _activeUploads = new();
+        private readonly object _uploadsLock = new();
+        public event EventHandler? UploadsChanged;
+
+        private readonly HashSet<string> _cancelledGames = new();
+        private readonly object _cancelledLock = new();
+
+        private void NotifyUploadsChanged()
+        {
+            UploadsChanged?.Invoke(this, EventArgs.Empty);
+        }
+
+        public List<ActiveUploadSnapshot> GetActiveUploads()
+        {
+            lock (_uploadsLock)
+            {
+                return _activeUploads.Select(u => new ActiveUploadSnapshot
+                {
+                    Guid = u.Guid,
+                    GameName = u.GameName,
+                    RelativePath = u.RelativePath,
+                    TotalBytes = u.TotalBytes,
+                    BytesSent = u.BytesSent
+                }).ToList();
+            }
+        }
+
+        public void CancelAllUploads()
+        {
+            lock (_uploadsLock)
+            {
+                foreach (var upload in _activeUploads)
+                {
+                    lock (_cancelledLock)
+                    {
+                        _cancelledGames.Add(upload.GameName);
+                    }
+                    try { upload.Cts.Cancel(); } catch { }
+                }
+            }
+        }
 
         public bool IsRunning { get; private set; }
 
@@ -189,6 +259,10 @@ namespace LudusaviWrap
                 {
                     await ServeManifestAsync(stream, segments[1], ct);
                 }
+                else if (segments.Length == 3 && segments[0] == "games" && segments[2] == "cancel-check")
+                {
+                    await ServeCancelCheckAsync(stream, segments[1], ct);
+                }
                 else if (segments.Length >= 4 && segments[0] == "games" && segments[2] == "files")
                 {
                     string relPath = string.Join("/", segments.Skip(3));
@@ -219,8 +293,24 @@ namespace LudusaviWrap
             await SendResponseAsync(stream, 200, "application/json", json, ct);
         }
 
+        private async Task ServeCancelCheckAsync(NetworkStream stream, string gameName, CancellationToken ct)
+        {
+            bool cancelled;
+            lock (_cancelledLock)
+            {
+                cancelled = _cancelledGames.Contains(gameName);
+            }
+            string response = cancelled ? "cancelled" : "active";
+            await SendResponseAsync(stream, 200, "text/plain", Encoding.UTF8.GetBytes(response), ct);
+        }
+
         private async Task ServeManifestAsync(NetworkStream stream, string gameName, CancellationToken ct)
         {
+            lock (_cancelledLock)
+            {
+                _cancelledGames.Remove(gameName);
+            }
+
             var entry = _gameSource!().FirstOrDefault(g =>
                 string.Equals(g.GameName, gameName, StringComparison.OrdinalIgnoreCase));
 
@@ -264,6 +354,17 @@ namespace LudusaviWrap
 
         private async Task ServeFileAsync(NetworkStream stream, string gameName, string relPath, CancellationToken ct)
         {
+            bool isCancelled;
+            lock (_cancelledLock)
+            {
+                isCancelled = _cancelledGames.Contains(gameName);
+            }
+            if (isCancelled)
+            {
+                await SendResponseAsync(stream, 410, "text/plain", "Cancelled by host"u8.ToArray(), ct);
+                return;
+            }
+
             var entry = _gameSource!().FirstOrDefault(g =>
                 string.Equals(g.GameName, gameName, StringComparison.OrdinalIgnoreCase));
 
@@ -291,14 +392,41 @@ namespace LudusaviWrap
             long fileSize = new FileInfo(fullPath).Length;
             string statusLine = "HTTP/1.1 200 OK\r\n";
             string headers = $"Content-Type: application/octet-stream\r\nContent-Length: {fileSize}\r\nConnection: close\r\n\r\n";
-            await stream.WriteAsync(Encoding.ASCII.GetBytes(statusLine + headers), ct);
 
-            using var fs = new FileStream(fullPath, FileMode.Open, FileAccess.Read, FileShare.Read,
-                BufferSize, FileOptions.SequentialScan | FileOptions.Asynchronous);
-            var buf = new byte[BufferSize];
-            int read;
-            while ((read = await fs.ReadAsync(buf, ct)) > 0)
-                await stream.WriteAsync(buf.AsMemory(0, read), ct);
+            using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            var linkedCt = linkedCts.Token;
+
+            var upload = new ActiveUpload(gameName, relPath, fileSize, linkedCts);
+            lock (_uploadsLock)
+            {
+                _activeUploads.Add(upload);
+            }
+            NotifyUploadsChanged();
+
+            try
+            {
+                await stream.WriteAsync(Encoding.ASCII.GetBytes(statusLine + headers), linkedCt);
+
+                using var fs = new FileStream(fullPath, FileMode.Open, FileAccess.Read, FileShare.Read,
+                    BufferSize, FileOptions.SequentialScan | FileOptions.Asynchronous);
+                var buf = new byte[BufferSize];
+                int read;
+                while ((read = await fs.ReadAsync(buf, linkedCt)) > 0)
+                {
+                    await stream.WriteAsync(buf.AsMemory(0, read), linkedCt);
+                    upload.BytesSent += read;
+                    NotifyUploadsChanged();
+                }
+            }
+            finally
+            {
+                lock (_uploadsLock)
+                {
+                    _activeUploads.Remove(upload);
+                }
+                linkedCts.Dispose();
+                NotifyUploadsChanged();
+            }
         }
 
         private static async Task SendResponseAsync(NetworkStream stream, int code, string contentType, byte[] body, CancellationToken ct)
@@ -480,6 +608,8 @@ namespace LudusaviWrap
             IProgress<LanDownloadProgress>? progress,
             CancellationToken ct)
         {
+            progress?.Report(new LanDownloadProgress { Status = "Requesting game file list..." });
+
             var manifest = await GetManifestAsync(peer, gameName, ct);
             Directory.CreateDirectory(destFolder);
 
@@ -487,8 +617,18 @@ namespace LudusaviWrap
             var toDownload = new List<LanFileEntry>();
             long totalBytes = 0;
 
+            int checkedCount = 0;
             foreach (var entry in manifest)
             {
+                checkedCount++;
+                progress?.Report(new LanDownloadProgress
+                {
+                    Status = $"Verifying existing files ({checkedCount}/{manifest.Count})...",
+                    CurrentFile = entry.RelativePath,
+                    BytesTransferred = checkedCount,
+                    TotalBytes = manifest.Count
+                });
+
                 string localPath = Path.Combine(destFolder, entry.RelativePath.Replace('/', Path.DirectorySeparatorChar));
                 bool skip = false;
                 if (File.Exists(localPath) && new FileInfo(localPath).Length == entry.Size)
@@ -510,15 +650,29 @@ namespace LudusaviWrap
 
             var prog = new LanDownloadProgress
             {
+                Status = "Downloading",
                 TotalFiles = toDownload.Count,
                 TotalBytes = totalBytes
             };
 
+            using var queueCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            var queueCt = queueCts.Token;
+
             var tasks = toDownload.Select(async entry =>
             {
-                await sem.WaitAsync(ct);
                 try
                 {
+                    await sem.WaitAsync(queueCt);
+                }
+                catch (OperationCanceledException)
+                {
+                    return;
+                }
+
+                try
+                {
+                    queueCt.ThrowIfCancellationRequested();
+
                     prog.CurrentFile = entry.RelativePath;
                     progress?.Report(prog);
 
@@ -529,18 +683,18 @@ namespace LudusaviWrap
                     using var http = MakeHttpClient(peer);
                     string url = $"http://{peer.IPAddress}:{peer.Port}/games/{Uri.EscapeDataString(gameName)}/files/{Uri.EscapeDataString(entry.RelativePath)}";
 
-                    using var response = await http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct);
+                    using var response = await http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, queueCt);
                     response.EnsureSuccessStatusCode();
 
-                    using var responseStream = await response.Content.ReadAsStreamAsync(ct);
+                    using var responseStream = await response.Content.ReadAsStreamAsync(queueCt);
                     using var fs = new FileStream(tmpPath, FileMode.Create, FileAccess.Write, FileShare.None,
                         BufferSize, FileOptions.Asynchronous);
 
                     var buf = new byte[BufferSize];
                     int read;
-                    while ((read = await responseStream.ReadAsync(buf, ct)) > 0)
+                    while ((read = await responseStream.ReadAsync(buf, queueCt)) > 0)
                     {
-                        await fs.WriteAsync(buf.AsMemory(0, read), ct);
+                        await fs.WriteAsync(buf.AsMemory(0, read), queueCt);
                         long newTotal = Interlocked.Add(ref bytesTransferred, read);
                         double elapsed = (DateTime.UtcNow - startTime).TotalSeconds;
                         prog.BytesTransferred = newTotal;
@@ -548,7 +702,7 @@ namespace LudusaviWrap
                         progress?.Report(prog);
                     }
 
-                    await fs.FlushAsync(ct);
+                    await fs.FlushAsync(queueCt);
                     fs.Dispose();
 
                     if (File.Exists(localPath)) File.Delete(localPath);
@@ -557,13 +711,44 @@ namespace LudusaviWrap
                     prog.FilesCompleted = Interlocked.Increment(ref filesCompleted);
                     progress?.Report(prog);
                 }
+                catch (Exception)
+                {
+                    try { queueCts.Cancel(); } catch { }
+                    throw;
+                }
                 finally
                 {
                     sem.Release();
                 }
             });
 
-            await Task.WhenAll(tasks);
+            try
+            {
+                await Task.WhenAll(tasks);
+            }
+            catch (Exception ex)
+            {
+                // Check if the host cancelled the download
+                bool hostCancelled = false;
+                try
+                {
+                    using var http = MakeHttpClient(peer);
+                    string url = $"http://{peer.IPAddress}:{peer.Port}/games/{Uri.EscapeDataString(gameName)}/cancel-check";
+                    string resp = await http.GetStringAsync(url, ct);
+                    if (resp == "cancelled")
+                    {
+                        hostCancelled = true;
+                    }
+                }
+                catch { }
+
+                if (hostCancelled)
+                {
+                    throw new OperationCanceledException("Cancelled by host", ex);
+                }
+
+                throw;
+            }
         }
 
         private static HttpClient MakeHttpClient(LanPeer peer)
