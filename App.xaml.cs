@@ -17,10 +17,11 @@ namespace LudusaviWrap
                 _       => IsSystemDark()
             };
 
-            ApplicationThemeManager.Apply(
-                useDark ? ApplicationTheme.Dark : ApplicationTheme.Light,
-                updateAccent: true
-            );
+            var theme = useDark ? ApplicationTheme.Dark : ApplicationTheme.Light;
+            ApplicationThemeManager.Apply(theme, updateAccent: true);
+
+            foreach (System.Windows.Window window in System.Windows.Application.Current.Windows)
+                WindowBackgroundManager.UpdateBackground(window, theme, Wpf.Ui.Controls.WindowBackdropType.Mica);
         }
 
         private static bool IsSystemDark()
