@@ -18,6 +18,16 @@
         <local:SyncStatusToVisibilityConverter x:Key="SyncStatusToVisibilityConverter"/>
         <local:BooleanToVisibilityConverter x:Key="BooleanToVisibilityConverter"/>
         <local:InverseBooleanToVisibilityConverter x:Key="InverseBooleanToVisibilityConverter"/>
+
+        <ContextMenu x:Key="GameCardContextMenu" x:Shared="False">
+            <MenuItem Header="Generate for Armoury Crate" Click="ContextGenerateAC_Click"/>
+            <MenuItem Header="Add to Steam" Click="ContextAddToSteam_Click"/>
+            <Separator/>
+            <MenuItem Header="Open Game Folder" Click="ContextOpenFolder_Click"/>
+            <MenuItem Header="Set Game Folder (LAN Share)" Click="ContextSetFolder_Click"/>
+            <Separator/>
+            <MenuItem Header="Remove from Library" Click="ContextRemove_Click"/>
+        </ContextMenu>
     </Window.Resources>
 
     <Grid>
@@ -122,19 +132,7 @@
                             <ui:Card Width="180" Height="265" Margin="6" Padding="0">
                                 <ui:Card.Style>
                                     <Style TargetType="ui:Card" BasedOn="{StaticResource {x:Type ui:Card}}">
-                                        <Setter Property="ContextMenu">
-                                            <Setter.Value>
-                                                <ContextMenu>
-                                                    <MenuItem Header="Generate for Armoury Crate" Click="ContextGenerateAC_Click"/>
-                                                    <MenuItem Header="Add to Steam" Click="ContextAddToSteam_Click"/>
-                                                    <Separator/>
-                                                    <MenuItem Header="Open Game Folder" Click="ContextOpenFolder_Click"/>
-                                                    <MenuItem Header="Set Game Folder (LAN Share)" Click="ContextSetFolder_Click"/>
-                                                    <Separator/>
-                                                    <MenuItem Header="Remove from Library" Click="ContextRemove_Click"/>
-                                                </ContextMenu>
-                                            </Setter.Value>
-                                        </Setter>
+                                        <Setter Property="ContextMenu" Value="{StaticResource GameCardContextMenu}"/>
                                         <Style.Triggers>
                                             <DataTrigger Binding="{Binding IsLanCard}" Value="True">
                                                 <Setter Property="ContextMenu" Value="{x:Null}"/>
