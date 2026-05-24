@@ -15,12 +15,14 @@ namespace LudusaviWrap
         private readonly string _gameExe;
         private readonly Config _config;
         private PlayStateLockClient? _lockClient;
+        private readonly bool _exitAppOnFinish;
 
-        public RunWindow(string gameName, string gameExe)
+        public RunWindow(string gameName, string gameExe, bool exitAppOnFinish = true)
         {
             InitializeComponent();
             _gameName = gameName;
             _gameExe = gameExe;
+            _exitAppOnFinish = exitAppOnFinish;
             _config = new Config();
 
             if (_config.Data.SyncServerEnabled && !string.IsNullOrEmpty(_config.Data.SyncServerUrl))
@@ -47,7 +49,19 @@ namespace LudusaviWrap
             }
             finally
             {
-                Application.Current.Shutdown();
+                if (_exitAppOnFinish)
+                {
+                    Application.Current.Shutdown();
+                }
+                else
+                {
+                    try
+                    {
+                        Close();
+                        Application.Current.MainWindow?.Show();
+                    }
+                    catch { }
+                }
             }
         }
 

@@ -1,0 +1,174 @@
+<ui:FluentWindow x:Class="LudusaviWrap.AddGameWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
+        Title="Add Game"
+        Width="660"
+        SizeToContent="Height"
+        ResizeMode="NoResize"
+        WindowStartupLocation="CenterOwner">
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <ui:TitleBar Title="Add Game"
+                     ShowMaximize="False"
+                     Grid.Row="0"/>
+
+        <Grid Grid.Row="1" Margin="24,12,24,24">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+            </Grid.RowDefinitions>
+
+            <!-- Subtitle -->
+            <TextBlock Grid.Row="0"
+                       Text="Add a game to your library with save management"
+                       Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                       FontSize="12"
+                       Margin="0,0,0,12"/>
+
+            <!-- Separator -->
+            <Separator Grid.Row="1" Margin="0,0,0,16"/>
+
+            <!-- Form rows -->
+            <StackPanel Grid.Row="2">
+                <!-- Executable row -->
+                <Grid Margin="0,0,0,12">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="110"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Text="Executable"
+                               VerticalAlignment="Center"
+                               Grid.Column="0"/>
+                    <ui:TextBox x:Name="ExePathTextBox"
+                                IsReadOnly="True"
+                                PlaceholderText="Browse to a game executable..."
+                                Margin="0,0,8,0"
+                                Grid.Column="1"/>
+                    <ui:Button Content="Browse"
+                               Appearance="Secondary"
+                               Click="BrowseExe_Click"
+                               Grid.Column="2"/>
+                </Grid>
+
+                <!-- Game name row -->
+                <Grid Margin="0,0,0,4">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="110"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Text="Game Name"
+                               VerticalAlignment="Center"
+                               Grid.Column="0"/>
+                    <ui:TextBox x:Name="GameNameTextBox"
+                                PlaceholderText="Enter or search for game name..."
+                                GotFocus="TextBox_GotFocus"
+                                Margin="0,0,8,0"
+                                Grid.Column="1"/>
+                    <ui:Button x:Name="SearchButton"
+                               Content="Search"
+                               Appearance="Secondary"
+                               Click="Search_Click"
+                               Grid.Column="2"/>
+                </Grid>
+
+                <!-- Autocomplete results dropdown -->
+                <Grid Margin="110,0,0,12">
+                    <ui:Card x:Name="ResultsBorder"
+                             Padding="2"
+                             MaxHeight="120"
+                             Visibility="Collapsed">
+                        <ScrollViewer VerticalScrollBarVisibility="Auto">
+                            <ListBox x:Name="ResultsListBox"
+                                     Background="Transparent"
+                                     BorderThickness="0"
+                                     SelectionChanged="ResultsListBox_SelectionChanged">
+                                <ListBox.ItemContainerStyle>
+                                    <Style TargetType="ListBoxItem">
+                                        <Setter Property="Background" Value="Transparent"/>
+                                        <Setter Property="BorderThickness" Value="0"/>
+                                        <Setter Property="Padding" Value="8,6"/>
+                                        <Setter Property="Template">
+                                            <Setter.Value>
+                                                <ControlTemplate TargetType="ListBoxItem">
+                                                    <Border Background="{TemplateBinding Background}"
+                                                            CornerRadius="4"
+                                                            Padding="{TemplateBinding Padding}">
+                                                        <ContentPresenter/>
+                                                    </Border>
+                                                </ControlTemplate>
+                                            </Setter.Value>
+                                        </Setter>
+                                        <Style.Triggers>
+                                            <Trigger Property="IsMouseOver" Value="True">
+                                                <Setter Property="Background" Value="{DynamicResource SubtleFillColorSecondaryBrush}"/>
+                                            </Trigger>
+                                            <Trigger Property="IsSelected" Value="True">
+                                                <Setter Property="Background" Value="{DynamicResource SystemAccentColorPrimaryBrush}"/>
+                                            </Trigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </ListBox.ItemContainerStyle>
+                            </ListBox>
+                        </ScrollViewer>
+                    </ui:Card>
+                </Grid>
+            </StackPanel>
+
+            <!-- Action buttons -->
+            <Grid Grid.Row="3" Margin="0,8,0,16">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="8"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="8"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+                <ui:Button x:Name="AddToLibraryButton"
+                           Grid.Column="0"
+                           Content="Add to Library"
+                           Appearance="Primary"
+                           Height="40"
+                           FontSize="13"
+                           HorizontalAlignment="Stretch"
+                           Click="AddToLibrary_Click"/>
+                <ui:Button x:Name="GenerateArmouryCrateButton"
+                           Grid.Column="2"
+                           Content="Armoury Crate"
+                           Appearance="Secondary"
+                           Height="40"
+                           FontSize="13"
+                           HorizontalAlignment="Stretch"
+                           Click="GenerateArmouryCrate_Click"/>
+                <ui:Button x:Name="AddToSteamButton"
+                           Grid.Column="4"
+                           Content="Add to Steam"
+                           Appearance="Secondary"
+                           Height="40"
+                           FontSize="13"
+                           HorizontalAlignment="Stretch"
+                           Click="AddToSteam_Click"/>
+            </Grid>
+
+            <!-- Status label -->
+            <TextBlock x:Name="StatusLabel"
+                       Text=""
+                       TextWrapping="Wrap"
+                       HorizontalAlignment="Center"
+                       FontWeight="SemiBold"
+                       Margin="0,0,0,8"
+                       Visibility="Collapsed"
+                       Grid.Row="4"/>
+        </Grid>
+    </Grid>
+</ui:FluentWindow>

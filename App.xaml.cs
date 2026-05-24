@@ -121,7 +121,8 @@ namespace LudusaviWrap
             Log("Creating MainWindow...");
             try
             {
-                var mainWindow = new MainWindow(config);
+                var library = new GameLibrary();
+                var mainWindow = new MainWindow(config, library);
                 Log("Calling MainWindow.Show()...");
                 mainWindow.Show();
                 Log("MainWindow.Show() returned");
