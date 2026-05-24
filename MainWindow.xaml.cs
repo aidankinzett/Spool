@@ -145,7 +145,7 @@ namespace LudusaviWrap
         private readonly LanShareClient _lanClient;
         private CancellationTokenSource? _scanCts;
         private CancellationTokenSource? _uiCleanupCts;
-        private long _lastScanTimeTicks = DateTime.MinValue.Ticks;
+        private int _scanInProgress = 0;
 
         public static readonly DependencyProperty IsLanScanningProperty =
             DependencyProperty.Register(nameof(IsLanScanning), typeof(bool), typeof(MainWindow), new PropertyMetadata(false));
@@ -302,7 +302,7 @@ namespace LudusaviWrap
 
         private async Task ScanLanPeersAsync()
         {
-            Interlocked.Exchange(ref _lastScanTimeTicks, DateTime.UtcNow.Ticks);
+            if (Interlocked.CompareExchange(ref _scanInProgress, 1, 0) != 0) return;
             Dispatcher.Invoke(() => IsLanScanning = true);
             try
             {
@@ -317,15 +317,14 @@ namespace LudusaviWrap
             }
             finally
             {
+                Interlocked.Exchange(ref _scanInProgress, 0);
                 Dispatcher.Invoke(() => IsLanScanning = false);
             }
         }
 
         private void LanServer_PeerActivityDetected(object? sender, EventArgs e)
         {
-            var lastScan = new DateTime(Interlocked.Read(ref _lastScanTimeTicks), DateTimeKind.Utc);
-            if ((DateTime.UtcNow - lastScan).TotalSeconds > 10)
-                _ = ScanLanPeersAsync();
+            _ = ScanLanPeersAsync();
         }
 
         private void MergeLanGames(System.Collections.Generic.List<LanPeer> peers)
