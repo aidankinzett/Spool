@@ -212,6 +212,19 @@ namespace LudusaviWrap
             lock (_cacheLock) _manifestCache.Clear();
         }
 
+        public void BroadcastAnnounce()
+        {
+            if (!IsRunning || _cts == null) return;
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await BroadcastAnnounceAsync(_cts.Token);
+                }
+                catch { }
+            });
+        }
+
         private async Task AcceptLoopAsync(CancellationToken ct)
         {
             while (!ct.IsCancellationRequested)

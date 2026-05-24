@@ -384,6 +384,7 @@ namespace LudusaviWrap
                         _games.Add(entry);
                 }
                 UpdateEmptyState();
+                _lanServer.BroadcastAnnounce();
             }
         }
 
@@ -559,6 +560,7 @@ namespace LudusaviWrap
             var toRemove = _games.FirstOrDefault(g => g.Id == entry.Id);
             if (toRemove != null) _games.Remove(toRemove);
             _lanServer.InvalidateManifestCache();
+            _lanServer.BroadcastAnnounce();
             UpdateEmptyState();
         }
 
@@ -577,6 +579,7 @@ namespace LudusaviWrap
             entry.GameFolderPath = dialog.FolderName;
             _library.Update(entry);
             _lanServer.InvalidateManifestCache();
+            _lanServer.BroadcastAnnounce();
 
             MessageBox.Show($"Game folder set.\n{entry.GameName} is now shared on LAN.",
                 "LAN Share", MessageBoxButton.OK, MessageBoxImage.Information);
