@@ -69,19 +69,54 @@ namespace LudusaviWrap
     {
         public object? Convert(object value, Type targetType, object parameter, CultureInfo culture)
         {
-            if (value is not string path || string.IsNullOrEmpty(path) || !File.Exists(path))
+            if (value is not string path || string.IsNullOrEmpty(path))
                 return null;
             try
             {
                 var bi = new BitmapImage();
                 bi.BeginInit();
                 bi.UriSource = new Uri(path);
-                bi.CacheOption = BitmapCacheOption.OnLoad;
+                if (path.StartsWith("http://", StringComparison.OrdinalIgnoreCase) || path.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+                {
+                    bi.CacheOption = BitmapCacheOption.Default;
+                }
+                else
+                {
+                    if (!File.Exists(path))
+                        return null;
+                    bi.CacheOption = BitmapCacheOption.OnLoad;
+                }
                 bi.EndInit();
                 bi.Freeze();
                 return bi;
             }
             catch { return null; }
+        }
+
+        public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
+            => throw new NotImplementedException();
+    }
+
+    public class BooleanToVisibilityConverter : IValueConverter
+    {
+        public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
+        {
+            if (value is bool b)
+                return b ? Visibility.Visible : Visibility.Collapsed;
+            return Visibility.Collapsed;
+        }
+
+        public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
+            => throw new NotImplementedException();
+    }
+
+    public class InverseBooleanToVisibilityConverter : IValueConverter
+    {
+        public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
+        {
+            if (value is bool b)
+                return b ? Visibility.Collapsed : Visibility.Visible;
+            return Visibility.Visible;
         }
 
         public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
@@ -100,6 +135,25 @@ namespace LudusaviWrap
         private bool _updateCheckSubscribed = false;
         private readonly LanShareServer _lanServer;
         private readonly LanShareClient _lanClient;
+        private CancellationTokenSource? _scanCts;
+
+        public static readonly DependencyProperty IsLanScanningProperty =
+            DependencyProperty.Register(nameof(IsLanScanning), typeof(bool), typeof(MainWindow), new PropertyMetadata(false));
+
+        public bool IsLanScanning
+        {
+            get => (bool)GetValue(IsLanScanningProperty);
+            set => SetValue(IsLanScanningProperty, value);
+        }
+
+        public static readonly DependencyProperty LanPeersCountProperty =
+            DependencyProperty.Register(nameof(LanPeersCount), typeof(int), typeof(MainWindow), new PropertyMetadata(0));
+
+        public int LanPeersCount
+        {
+            get => (int)GetValue(LanPeersCountProperty);
+            set => SetValue(LanPeersCountProperty, value);
+        }
 
         public MainWindow(Config config, GameLibrary library)
         {
@@ -120,9 +174,12 @@ namespace LudusaviWrap
 
         private void LoadGames()
         {
+            var lanCards = _games.Where(g => g.IsLanCard).ToList();
             _games.Clear();
             foreach (var entry in _library.Entries)
                 _games.Add(entry);
+            foreach (var lanCard in lanCards)
+                _games.Add(lanCard);
             UpdateEmptyState();
         }
 
@@ -135,6 +192,7 @@ namespace LudusaviWrap
 
         private void MainWindow_Closing(object? sender, System.ComponentModel.CancelEventArgs e)
         {
+            _scanCts?.Cancel();
             _lanServer.Stop();
         }
 
@@ -154,6 +212,9 @@ namespace LudusaviWrap
         private void MainWindow_Loaded(object sender, RoutedEventArgs e)
         {
             StartLanServerIfEnabled();
+
+            _scanCts = new CancellationTokenSource();
+            _ = RunLanScanLoopAsync();
 
             if (System.Version.TryParse(Version, out var parsedVersion))
                 AutoUpdaterDotNET.AutoUpdater.InstalledVersion = parsedVersion;
@@ -181,7 +242,113 @@ namespace LudusaviWrap
         {
             var setup = new SetupWindow(_config);
             setup.Owner = this;
-            setup.ShowDialog();
+            if (setup.ShowDialog() == true)
+            {
+                _lanServer.Stop();
+                StartLanServerIfEnabled();
+                _ = ScanLanPeersAsync();
+            }
+        }
+
+        private async Task RunLanScanLoopAsync()
+        {
+            while (_scanCts != null && !_scanCts.IsCancellationRequested)
+            {
+                await ScanLanPeersAsync();
+                try
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(30), _scanCts.Token);
+                }
+                catch (OperationCanceledException)
+                {
+                    break;
+                }
+            }
+        }
+
+        private async Task ScanLanPeersAsync()
+        {
+            Dispatcher.Invoke(() => IsLanScanning = true);
+            try
+            {
+                int discoveryPort = _config.Data.LanSharePort - 1;
+                var peers = await _lanClient.DiscoverPeersAsync(discoveryPort, _scanCts?.Token ?? default);
+                Dispatcher.Invoke(() => LanPeersCount = peers.Count);
+                MergeLanGames(peers);
+            }
+            catch (Exception ex)
+            {
+                App.Log($"Error during background LAN scan: {ex.Message}");
+            }
+            finally
+            {
+                Dispatcher.Invoke(() => IsLanScanning = false);
+            }
+        }
+
+        private void MergeLanGames(System.Collections.Generic.List<LanPeer> peers)
+        {
+            var lanGames = new System.Collections.Generic.Dictionary<string, System.Collections.Generic.List<LanPeer>>(StringComparer.OrdinalIgnoreCase);
+            foreach (var peer in peers)
+            {
+                foreach (var gameName in peer.Games)
+                {
+                    if (!lanGames.TryGetValue(gameName, out var peerList))
+                    {
+                        peerList = new System.Collections.Generic.List<LanPeer>();
+                        lanGames[gameName] = peerList;
+                    }
+                    peerList.Add(peer);
+                }
+            }
+
+            var localInstalledGames = _library.Entries
+                .Where(e => !string.IsNullOrEmpty(e.GameFolderPath) && Directory.Exists(e.GameFolderPath))
+                .Select(e => e.GameName)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+            Dispatcher.BeginInvoke(new Action(() =>
+            {
+                var toRemove = _games
+                    .Where(g => g.IsLanCard && (!lanGames.ContainsKey(g.GameName) || localInstalledGames.Contains(g.GameName)))
+                    .ToList();
+                foreach (var g in toRemove)
+                {
+                    _games.Remove(g);
+                }
+
+                foreach (var kvp in lanGames)
+                {
+                    string gameName = kvp.Key;
+                    var gamePeers = kvp.Value;
+
+                    if (localInstalledGames.Contains(gameName))
+                        continue;
+
+                    var firstPeer = gamePeers.First();
+                    string coverUrl = $"http://{firstPeer.IPAddress}:{firstPeer.Port}/games/{Uri.EscapeDataString(gameName)}/cover";
+
+                    var existingCard = _games.FirstOrDefault(g => g.IsLanCard && string.Equals(g.GameName, gameName, StringComparison.OrdinalIgnoreCase));
+                    if (existingCard != null)
+                    {
+                        existingCard.LanPeers = gamePeers;
+                        existingCard.CoverImagePath = coverUrl;
+                    }
+                    else
+                    {
+                        _games.Add(new GameEntry
+                        {
+                            GameName = gameName,
+                            SafeName = LauncherGenerator.MakeSafeFilename(gameName),
+                            CoverImagePath = coverUrl,
+                            IsLanCard = true,
+                            LanPeers = gamePeers
+                        });
+                    }
+                }
+
+                UpdateEmptyState();
+            }));
         }
 
         private void AddGame_Click(object sender, RoutedEventArgs e)
@@ -396,7 +563,7 @@ namespace LudusaviWrap
                 "LAN Share", MessageBoxButton.OK, MessageBoxImage.Information);
         }
 
-        private async void LanDownload_Click(object sender, RoutedEventArgs e)
+        private async void DownloadCard_Click(object sender, RoutedEventArgs e)
         {
             if (_isDownloading)
             {
@@ -405,21 +572,14 @@ namespace LudusaviWrap
                 return;
             }
 
-            var dlg = new LanDownloadWindow(_config, _library);
+            if ((sender as Button)?.DataContext is not GameEntry entry || !entry.IsLanCard || entry.LanPeers == null || entry.LanPeers.Count == 0)
+                return;
+
+            var dlg = new DownloadLocationWindow(_config, _library, entry.GameName);
             dlg.Owner = this;
-            if (dlg.ShowDialog() == true && dlg.StartDownloadRequested)
+            if (dlg.ShowDialog() == true && !string.IsNullOrEmpty(dlg.DestFolder))
             {
-                var peer = dlg.SelectedPeer;
-                var game = dlg.SelectedGame;
-                var dest = dlg.DestFolder;
-                if (peer != null && !string.IsNullOrEmpty(game) && !string.IsNullOrEmpty(dest))
-                {
-                    await StartDownloadAsync(peer, game, dest);
-                }
-            }
-            else
-            {
-                LoadGames();
+                await StartDownloadWithPeersAsync(entry.LanPeers, entry.GameName, dlg.DestFolder);
             }
         }
 
@@ -551,7 +711,7 @@ namespace LudusaviWrap
         private CancellationTokenSource? _downloadCts;
         private bool _isDownloading = false;
 
-        private async Task StartDownloadAsync(LanPeer peer, string gameName, string destFolder)
+        private async Task StartDownloadWithPeersAsync(System.Collections.Generic.List<LanPeer> peers, string gameName, string destFolder)
         {
             _isDownloading = true;
             DownloadSeparator.Visibility = Visibility.Visible;
@@ -599,17 +759,57 @@ namespace LudusaviWrap
                 }
             });
 
+            Exception? lastEx = null;
+            bool success = false;
+            foreach (var peer in peers)
+            {
+                if (ct.IsCancellationRequested) break;
+                try
+                {
+                    App.Log($"Attempting LAN download from peer: {peer.DeviceName} ({peer.IPAddress}:{peer.Port})");
+                    await _lanClient.DownloadGameAsync(peer, gameName, destFolder, progress, ct);
+                    success = true;
+                    break;
+                }
+                catch (OperationCanceledException)
+                {
+                    throw; // Propagate cancellation immediately
+                }
+                catch (Exception ex)
+                {
+                    App.Log($"Download from peer {peer.DeviceName} failed: {ex.Message}");
+                    lastEx = ex;
+                }
+            }
+
             try
             {
-                await _lanClient.DownloadGameAsync(peer, gameName, destFolder, progress, ct);
+                if (success)
+                {
+                    DownloadTitleText.Text = "Download complete";
+                    DownloadCountText.Text = "";
+                    DownloadProgressBar.Value = 100;
+                    DownloadSpeedText.Text = "";
+                    DownloadBytesText.Text = "";
 
-                DownloadTitleText.Text = "Download complete";
-                DownloadCountText.Text = "";
-                DownloadProgressBar.Value = 100;
-                DownloadSpeedText.Text = "";
-                DownloadBytesText.Text = "";
-
-                OfferAddToLibrary(gameName, destFolder);
+                    OfferAddToLibrary(gameName, destFolder);
+                }
+                else if (ct.IsCancellationRequested)
+                {
+                    DownloadTitleText.Text = "Download cancelled";
+                    DownloadCountText.Text = "";
+                    DownloadSpeedText.Text = "";
+                    DownloadBytesText.Text = "";
+                }
+                else
+                {
+                    string errorMsg = lastEx?.Message ?? "No peers available";
+                    MessageBox.Show($"Download failed: {errorMsg}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                    DownloadTitleText.Text = "Download failed";
+                    DownloadCountText.Text = "";
+                    DownloadSpeedText.Text = "";
+                    DownloadBytesText.Text = "";
+                }
             }
             catch (OperationCanceledException)
             {

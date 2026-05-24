@@ -16,6 +16,8 @@
         <local:SyncStatusToBrushConverter x:Key="SyncStatusToBrushConverter"/>
         <local:SyncStatusToLabelConverter x:Key="SyncStatusToLabelConverter"/>
         <local:SyncStatusToVisibilityConverter x:Key="SyncStatusToVisibilityConverter"/>
+        <local:BooleanToVisibilityConverter x:Key="BooleanToVisibilityConverter"/>
+        <local:InverseBooleanToVisibilityConverter x:Key="InverseBooleanToVisibilityConverter"/>
     </Window.Resources>
 
     <Grid>
@@ -54,11 +56,23 @@
                        Content="Add Game"
                        Appearance="Primary"
                        Click="AddGame_Click"/>
-            <ui:Button x:Name="LanDownloadButton"
-                       Grid.Column="3"
-                       Content="LAN Download"
-                       Appearance="Secondary"
-                       Click="LanDownload_Click"/>
+            <!-- WiFi Status Panel -->
+            <StackPanel Grid.Column="3" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,8,0">
+                <ui:ProgressRing IsIndeterminate="True" 
+                                 Width="16" 
+                                 Height="16" 
+                                 Margin="0,0,8,0"
+                                 Visibility="{Binding IsLanScanning, RelativeSource={RelativeSource AncestorType={x:Type local:MainWindow}}, Converter={StaticResource BooleanToVisibilityConverter}}"/>
+                <ui:SymbolIcon Symbol="Wifi224" 
+                               Margin="0,0,6,0"
+                               Foreground="{DynamicResource TextFillColorSecondaryBrush}"/>
+                <TextBlock FontSize="13" 
+                           VerticalAlignment="Center"
+                           Foreground="{DynamicResource TextFillColorSecondaryBrush}">
+                    <Run Text="{Binding LanPeersCount, RelativeSource={RelativeSource AncestorType={x:Type local:MainWindow}}, Mode=OneWay}"/>
+                    <Run Text=" peers"/>
+                </TextBlock>
+            </StackPanel>
             <ui:Button x:Name="SettingsButton"
                        Grid.Column="5"
                        Content="Settings"
@@ -106,17 +120,28 @@
                     <ItemsControl.ItemTemplate>
                         <DataTemplate DataType="{x:Type local:GameEntry}">
                             <ui:Card Width="180" Height="265" Margin="6" Padding="0">
-                                <ui:Card.ContextMenu>
-                                    <ContextMenu>
-                                        <MenuItem Header="Generate for Armoury Crate" Click="ContextGenerateAC_Click"/>
-                                        <MenuItem Header="Add to Steam" Click="ContextAddToSteam_Click"/>
-                                        <Separator/>
-                                        <MenuItem Header="Open Game Folder" Click="ContextOpenFolder_Click"/>
-                                        <MenuItem Header="Set Game Folder (LAN Share)" Click="ContextSetFolder_Click"/>
-                                        <Separator/>
-                                        <MenuItem Header="Remove from Library" Click="ContextRemove_Click"/>
-                                    </ContextMenu>
-                                </ui:Card.ContextMenu>
+                                <ui:Card.Style>
+                                    <Style TargetType="ui:Card" BasedOn="{StaticResource {x:Type ui:Card}}">
+                                        <Setter Property="ContextMenu">
+                                            <Setter.Value>
+                                                <ContextMenu>
+                                                    <MenuItem Header="Generate for Armoury Crate" Click="ContextGenerateAC_Click"/>
+                                                    <MenuItem Header="Add to Steam" Click="ContextAddToSteam_Click"/>
+                                                    <Separator/>
+                                                    <MenuItem Header="Open Game Folder" Click="ContextOpenFolder_Click"/>
+                                                    <MenuItem Header="Set Game Folder (LAN Share)" Click="ContextSetFolder_Click"/>
+                                                    <Separator/>
+                                                    <MenuItem Header="Remove from Library" Click="ContextRemove_Click"/>
+                                                </ContextMenu>
+                                            </Setter.Value>
+                                        </Setter>
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding IsLanCard}" Value="True">
+                                                <Setter Property="ContextMenu" Value="{x:Null}"/>
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </ui:Card.Style>
                                 <Grid>
                                     <Grid.RowDefinitions>
                                         <RowDefinition Height="*"/>
@@ -161,12 +186,20 @@
                                                        VerticalAlignment="Center"
                                                        Foreground="{Binding SyncStatus, Converter={StaticResource SyncStatusToBrushConverter}}"/>
                                         </StackPanel>
-                                        <ui:Button Grid.Row="2"
-                                                   Content="Play"
-                                                   Icon="{ui:SymbolIcon Symbol=Play24}"
-                                                   Appearance="Primary"
-                                                   HorizontalAlignment="Stretch"
-                                                   Click="Play_Click"/>
+                                        <Grid Grid.Row="2">
+                                            <ui:Button Content="Play"
+                                                       Icon="{ui:SymbolIcon Symbol=Play24}"
+                                                       Appearance="Primary"
+                                                       HorizontalAlignment="Stretch"
+                                                       Click="Play_Click"
+                                                       Visibility="{Binding IsLanCard, Converter={StaticResource InverseBooleanToVisibilityConverter}}"/>
+                                            <ui:Button Content="Download"
+                                                       Icon="{ui:SymbolIcon Symbol=ArrowDownload24}"
+                                                       Appearance="Secondary"
+                                                       HorizontalAlignment="Stretch"
+                                                       Click="DownloadCard_Click"
+                                                       Visibility="{Binding IsLanCard, Converter={StaticResource BooleanToVisibilityConverter}}"/>
+                                        </Grid>
                                     </Grid>
                                 </Grid>
                             </ui:Card>

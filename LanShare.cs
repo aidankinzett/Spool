@@ -281,6 +281,10 @@ namespace LudusaviWrap
                 {
                     await ServeCancelCheckAsync(stream, segments[1], ct);
                 }
+                else if (segments.Length == 3 && segments[0] == "games" && segments[2] == "cover")
+                {
+                    await ServeCoverAsync(stream, segments[1], ct);
+                }
                 else if (segments.Length >= 4 && segments[0] == "games" && segments[2] == "files")
                 {
                     string relPath = string.Join("/", segments.Skip(3));
@@ -347,6 +351,37 @@ namespace LudusaviWrap
             }
             string response = cancelled ? "cancelled" : "active";
             await SendResponseAsync(stream, 200, "text/plain", Encoding.UTF8.GetBytes(response), ct);
+        }
+
+        private async Task ServeCoverAsync(NetworkStream stream, string gameName, CancellationToken ct)
+        {
+            var entry = _gameSource!().FirstOrDefault(g =>
+                string.Equals(g.GameName, gameName, StringComparison.OrdinalIgnoreCase));
+
+            if (entry == null || string.IsNullOrEmpty(entry.CoverImagePath) || !File.Exists(entry.CoverImagePath))
+            {
+                await SendResponseAsync(stream, 404, "text/plain", "Cover not found"u8.ToArray(), ct);
+                return;
+            }
+
+            try
+            {
+                byte[] imgBytes = await File.ReadAllBytesAsync(entry.CoverImagePath, ct);
+                string ext = Path.GetExtension(entry.CoverImagePath).ToLowerInvariant();
+                string mimeType = ext switch
+                {
+                    ".png" => "image/png",
+                    ".webp" => "image/webp",
+                    ".gif" => "image/gif",
+                    _ => "image/jpeg"
+                };
+                await SendResponseAsync(stream, 200, mimeType, imgBytes, ct);
+            }
+            catch (Exception ex)
+            {
+                App.Log($"Error serving cover: {ex.Message}");
+                await SendResponseAsync(stream, 500, "text/plain", "Internal server error"u8.ToArray(), ct);
+            }
         }
 
         private async Task ServeManifestAsync(NetworkStream stream, string gameName, CancellationToken ct)

@@ -21,6 +21,22 @@ namespace LudusaviWrap
         private string? _coverImagePath;
         private DateTime? _lastPlayedAt;
         private SyncStatus _syncStatus;
+        private bool _isLanCard;
+        private List<LanPeer>? _lanPeers;
+
+        [JsonIgnore]
+        public bool IsLanCard
+        {
+            get => _isLanCard;
+            set { _isLanCard = value; OnPropertyChanged(); }
+        }
+
+        [JsonIgnore]
+        public List<LanPeer>? LanPeers
+        {
+            get => _lanPeers;
+            set { _lanPeers = value; OnPropertyChanged(); }
+        }
 
         [JsonPropertyName("id")]
         public string Id { get; set; } = Guid.NewGuid().ToString();
