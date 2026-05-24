@@ -124,7 +124,7 @@
                 <ItemsControl x:Name="GamesGrid">
                     <ItemsControl.ItemsPanel>
                         <ItemsPanelTemplate>
-                            <WrapPanel/>
+                            <WrapPanel ItemWidth="192" ItemHeight="392"/>
                         </ItemsPanelTemplate>
                     </ItemsControl.ItemsPanel>
                     <ItemsControl.ItemTemplate>
@@ -143,7 +143,7 @@
                                 <Grid>
                                     <Grid.RowDefinitions>
                                         <RowDefinition Height="270"/>
-                                        <RowDefinition Height="*"/>
+                                        <RowDefinition Height="110"/>
                                     </Grid.RowDefinitions>
 
                                     <!-- Cover image -->
