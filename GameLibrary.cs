@@ -8,10 +8,19 @@ using System.Text.Json.Serialization;
 
 namespace LudusaviWrap
 {
+    public enum SyncStatus
+    {
+        Unknown = 0,
+        Synced = 1,
+        LocalNotSynced = 2,
+        CloudNotSynced = 3
+    }
+
     public class GameEntry : INotifyPropertyChanged
     {
         private string? _coverImagePath;
         private DateTime? _lastPlayedAt;
+        private SyncStatus _syncStatus;
 
         [JsonPropertyName("id")]
         public string Id { get; set; } = Guid.NewGuid().ToString();
@@ -44,6 +53,13 @@ namespace LudusaviWrap
 
         [JsonPropertyName("launcher_exe_path")]
         public string? LauncherExePath { get; set; }
+
+        [JsonPropertyName("sync_status")]
+        public SyncStatus SyncStatus
+        {
+            get => _syncStatus;
+            set { _syncStatus = value; OnPropertyChanged(); }
+        }
 
         public event PropertyChangedEventHandler? PropertyChanged;
         private void OnPropertyChanged([CallerMemberName] string? name = null)

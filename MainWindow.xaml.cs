@@ -25,6 +25,46 @@ namespace LudusaviWrap
     [JsonSerializable(typeof(LudusaviFindResponse))]
     internal partial class MainSourceGenerationContext : JsonSerializerContext { }
 
+    public class SyncStatusToBrushConverter : IValueConverter
+    {
+        public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
+        {
+            return (SyncStatus)value switch
+            {
+                SyncStatus.Synced          => new SolidColorBrush(Color.FromRgb(0x4C, 0xAF, 0x50)),
+                SyncStatus.LocalNotSynced  => new SolidColorBrush(Color.FromRgb(0xFF, 0x98, 0x00)),
+                SyncStatus.CloudNotSynced  => new SolidColorBrush(Color.FromRgb(0x21, 0x96, 0xF3)),
+                _                          => new SolidColorBrush(Colors.Transparent)
+            };
+        }
+        public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
+            => throw new NotImplementedException();
+    }
+
+    public class SyncStatusToLabelConverter : IValueConverter
+    {
+        public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
+        {
+            return (SyncStatus)value switch
+            {
+                SyncStatus.Synced          => "Synced",
+                SyncStatus.LocalNotSynced  => "Local not synced",
+                SyncStatus.CloudNotSynced  => "Cloud not synced",
+                _                          => ""
+            };
+        }
+        public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
+            => throw new NotImplementedException();
+    }
+
+    public class SyncStatusToVisibilityConverter : IValueConverter
+    {
+        public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
+            => (SyncStatus)value == SyncStatus.Unknown ? Visibility.Collapsed : Visibility.Visible;
+        public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
+            => throw new NotImplementedException();
+    }
+
     public class StringToImageConverter : IValueConverter
     {
         public object? Convert(object value, Type targetType, object parameter, CultureInfo culture)
@@ -148,7 +188,7 @@ namespace LudusaviWrap
             entry.LastPlayedAt = DateTime.UtcNow;
             _library.Update(entry);
 
-            var runWindow = new RunWindow(entry.GameName, entry.ExePath, exitAppOnFinish: false);
+            var runWindow = new RunWindow(entry.GameName, entry.ExePath, exitAppOnFinish: false, entry: entry, library: _library);
             runWindow.Owner = this;
             Hide();
             runWindow.Show();

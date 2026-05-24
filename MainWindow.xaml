@@ -13,6 +13,9 @@
 
     <Window.Resources>
         <local:StringToImageConverter x:Key="StringToImageConverter"/>
+        <local:SyncStatusToBrushConverter x:Key="SyncStatusToBrushConverter"/>
+        <local:SyncStatusToLabelConverter x:Key="SyncStatusToLabelConverter"/>
+        <local:SyncStatusToVisibilityConverter x:Key="SyncStatusToVisibilityConverter"/>
     </Window.Resources>
 
     <Grid>
@@ -104,7 +107,7 @@
                                 <Grid>
                                     <Grid.RowDefinitions>
                                         <RowDefinition Height="*"/>
-                                        <RowDefinition Height="70"/>
+                                        <RowDefinition Height="Auto"/>
                                     </Grid.RowDefinitions>
 
                                     <!-- Cover image -->
@@ -117,9 +120,10 @@
                                     </Border>
 
                                     <!-- Info area -->
-                                    <Grid Grid.Row="1" Margin="10,8,10,10">
+                                    <Grid Grid.Row="1" Margin="10,6,10,8">
                                         <Grid.RowDefinitions>
                                             <RowDefinition Height="*"/>
+                                            <RowDefinition Height="Auto"/>
                                             <RowDefinition Height="Auto"/>
                                         </Grid.RowDefinitions>
                                         <TextBlock Grid.Row="0"
@@ -129,8 +133,22 @@
                                                    TextTrimming="CharacterEllipsis"
                                                    ToolTip="{Binding GameName}"
                                                    VerticalAlignment="Center"
-                                                   Margin="0,0,0,4"/>
-                                        <ui:Button Grid.Row="1"
+                                                   Margin="0,0,0,2"/>
+                                        <StackPanel Grid.Row="1"
+                                                    Orientation="Horizontal"
+                                                    Margin="0,0,0,4"
+                                                    Visibility="{Binding SyncStatus, Converter={StaticResource SyncStatusToVisibilityConverter}}"
+                                                    ToolTip="{Binding SyncStatus, Converter={StaticResource SyncStatusToLabelConverter}}">
+                                            <Ellipse Width="6" Height="6"
+                                                     VerticalAlignment="Center"
+                                                     Margin="0,0,4,0"
+                                                     Fill="{Binding SyncStatus, Converter={StaticResource SyncStatusToBrushConverter}}"/>
+                                            <TextBlock Text="{Binding SyncStatus, Converter={StaticResource SyncStatusToLabelConverter}}"
+                                                       FontSize="10"
+                                                       VerticalAlignment="Center"
+                                                       Foreground="{Binding SyncStatus, Converter={StaticResource SyncStatusToBrushConverter}}"/>
+                                        </StackPanel>
+                                        <ui:Button Grid.Row="2"
                                                    Content="Play"
                                                    Icon="{ui:SymbolIcon Symbol=Play24}"
                                                    Appearance="Primary"

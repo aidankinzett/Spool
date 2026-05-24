@@ -16,13 +16,17 @@ namespace LudusaviWrap
         private readonly Config _config;
         private PlayStateLockClient? _lockClient;
         private readonly bool _exitAppOnFinish;
+        private readonly GameEntry? _entry;
+        private readonly GameLibrary? _library;
 
-        public RunWindow(string gameName, string gameExe, bool exitAppOnFinish = true)
+        public RunWindow(string gameName, string gameExe, bool exitAppOnFinish = true, GameEntry? entry = null, GameLibrary? library = null)
         {
             InitializeComponent();
             _gameName = gameName;
             _gameExe = gameExe;
             _exitAppOnFinish = exitAppOnFinish;
+            _entry = entry;
+            _library = library;
             _config = new Config();
 
             if (_config.Data.SyncServerEnabled && !string.IsNullOrEmpty(_config.Data.SyncServerUrl))
@@ -111,6 +115,7 @@ namespace LudusaviWrap
             string combinedOutput = restoreResult.Output + restoreResult.Error;
             if (combinedOutput.Contains("cloudConflict") || combinedOutput.Contains("cloudSyncFailed"))
             {
+                UpdateSyncStatus(SyncStatus.CloudNotSynced);
                 var ans = MessageBox.Show($"Cloud sync conflict detected for '{_gameName}'. Open Ludusavi to resolve?",
                                           "Ludusavi - Cloud Sync Conflict", MessageBoxButton.YesNo, MessageBoxImage.Warning);
                 if (ans == MessageBoxResult.Yes)
@@ -203,24 +208,55 @@ namespace LudusaviWrap
                 string backupCombined = backupResult.Output + backupResult.Error;
                 if (backupCombined.Contains("cloudConflict") || backupCombined.Contains("cloudSyncFailed"))
                 {
+                    UpdateSyncStatus(SyncStatus.LocalNotSynced);
                     MessageBox.Show($"Cloud sync conflict detected during backup for '{_gameName}'. Your saves are backed up locally but may not be synced to the cloud. Open Ludusavi to resolve.",
                                     "Ludusavi - Cloud Sync Warning", MessageBoxButton.OK, MessageBoxImage.Warning);
                 }
                 else if (backupResult.ExitCode != 0)
                 {
+                    UpdateSyncStatus(SyncStatus.LocalNotSynced);
                     string details = string.IsNullOrWhiteSpace(backupResult.Error) ? backupResult.Output : backupResult.Error;
                     MessageBox.Show($"Ludusavi backup failed. Your saves may not have been backed up.\n\nDetails:\n{details.Trim()}",
                                     "Ludusavi Warning", MessageBoxButton.OK, MessageBoxImage.Warning);
                 }
+                else
+                {
+                    UpdateSyncStatus(SyncStatus.Synced);
+                }
             }
             catch (Exception ex)
             {
+                UpdateSyncStatus(SyncStatus.LocalNotSynced);
                 MessageBox.Show($"Failed to run Ludusavi backup:\n{ex.Message}", "Ludusavi Warning", MessageBoxButton.OK, MessageBoxImage.Warning);
             }
 
             // 5. Release play state lock (fire-and-forget)
             if (_lockClient != null)
                 _ = _lockClient.ReleaseLockAsync(_gameName);
+        }
+
+        private void UpdateSyncStatus(SyncStatus status)
+        {
+            if (_entry != null && _library != null)
+            {
+                _entry.SyncStatus = status;
+                _library.Update(_entry);
+                return;
+            }
+            try
+            {
+                var lib = new GameLibrary();
+                var e = lib.FindByName(_gameName);
+                if (e != null)
+                {
+                    e.SyncStatus = status;
+                    lib.Update(e);
+                }
+            }
+            catch (Exception ex)
+            {
+                App.Log($"UpdateSyncStatus failed: {ex.Message}");
+            }
         }
 
         private async Task<ProcessResult> RunProcessAsync(string filename, string arguments)
