@@ -788,29 +788,29 @@ namespace LudusaviWrap
 
             Exception? lastEx = null;
             bool success = false;
-            foreach (var peer in peers)
-            {
-                if (ct.IsCancellationRequested) break;
-                try
-                {
-                    App.Log($"Attempting LAN download from peer: {peer.DeviceName} ({peer.IPAddress}:{peer.Port})");
-                    await _lanClient.DownloadGameAsync(peer, gameName, destFolder, progress, ct);
-                    success = true;
-                    break;
-                }
-                catch (OperationCanceledException)
-                {
-                    throw; // Propagate cancellation immediately
-                }
-                catch (Exception ex)
-                {
-                    App.Log($"Download from peer {peer.DeviceName} failed: {ex.Message}");
-                    lastEx = ex;
-                }
-            }
-
             try
             {
+                foreach (var peer in peers)
+                {
+                    if (ct.IsCancellationRequested) break;
+                    try
+                    {
+                        App.Log($"Attempting LAN download from peer: {peer.DeviceName} ({peer.IPAddress}:{peer.Port})");
+                        await _lanClient.DownloadGameAsync(peer, gameName, destFolder, progress, ct);
+                        success = true;
+                        break;
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        throw;
+                    }
+                    catch (Exception ex)
+                    {
+                        App.Log($"Download from peer {peer.DeviceName} failed: {ex.Message}");
+                        lastEx = ex;
+                    }
+                }
+
                 if (success)
                 {
                     DownloadTitleText.Text = "Download complete";
