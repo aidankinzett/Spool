@@ -1,0 +1,582 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Net;
+using System.Net.Http;
+using System.Net.Sockets;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
+using System.Text.Json.Serialization;
+using System.Threading;
+using System.Threading.Tasks;
+
+namespace LudusaviWrap
+{
+    // ── JSON DTOs ─────────────────────────────────────────────────────────────
+
+    public class LanAnnounce
+    {
+        [JsonPropertyName("type")]       public string Type       { get; set; } = "announce";
+        [JsonPropertyName("deviceName")] public string DeviceName { get; set; } = "";
+        [JsonPropertyName("deviceId")]   public string DeviceId   { get; set; } = "";
+        [JsonPropertyName("port")]       public int    Port       { get; set; }
+        [JsonPropertyName("games")]      public List<string> Games { get; set; } = new();
+    }
+
+    public class LanQuery
+    {
+        [JsonPropertyName("type")] public string Type { get; set; } = "query";
+    }
+
+    public class LanFileEntry
+    {
+        [JsonPropertyName("path")]   public string RelativePath { get; set; } = "";
+        [JsonPropertyName("size")]   public long   Size         { get; set; }
+        [JsonPropertyName("sha256")] public string Sha256       { get; set; } = "";
+    }
+
+    public class LanPeer
+    {
+        public string DeviceName  { get; set; } = "";
+        public string DeviceId    { get; set; } = "";
+        public string IPAddress   { get; set; } = "";
+        public int    Port        { get; set; }
+        public List<string> Games { get; set; } = new();
+        public override string ToString() => $"{DeviceName} ({IPAddress})";
+    }
+
+    public class LanDownloadProgress
+    {
+        public string CurrentFile       { get; set; } = "";
+        public int    FilesCompleted    { get; set; }
+        public int    TotalFiles        { get; set; }
+        public long   BytesTransferred  { get; set; }
+        public long   TotalBytes        { get; set; }
+        public double SpeedBytesPerSec  { get; set; }
+    }
+
+    [JsonSourceGenerationOptions]
+    [JsonSerializable(typeof(LanAnnounce))]
+    [JsonSerializable(typeof(LanQuery))]
+    [JsonSerializable(typeof(List<LanFileEntry>))]
+    [JsonSerializable(typeof(List<string>))]
+    internal partial class LanJsonContext : JsonSerializerContext { }
+
+    // ── Server ────────────────────────────────────────────────────────────────
+
+    public class LanShareServer : IDisposable
+    {
+        private const int BufferSize = 512 * 1024;
+
+        private readonly string _deviceName;
+        private readonly string _deviceId;
+        private Func<IEnumerable<GameEntry>>? _gameSource;
+        private int _port;
+        private int _discoveryPort;
+
+        private TcpListener?  _listener;
+        private UdpClient?    _udpServer;
+        private CancellationTokenSource? _cts;
+
+        // manifest cache: gameName → list of entries (built once per game, cleared on stop)
+        private readonly Dictionary<string, List<LanFileEntry>> _manifestCache = new();
+        private readonly object _cacheLock = new();
+
+        public bool IsRunning { get; private set; }
+
+        public LanShareServer(string deviceName, string deviceId)
+        {
+            _deviceName = deviceName;
+            _deviceId   = deviceId;
+        }
+
+        public void Start(Func<IEnumerable<GameEntry>> gameSource, int port)
+        {
+            if (IsRunning) Stop();
+
+            _gameSource     = gameSource;
+            _port           = port;
+            _discoveryPort  = port - 1;
+            _cts            = new CancellationTokenSource();
+            var ct          = _cts.Token;
+
+            _listener = new TcpListener(System.Net.IPAddress.Any, _port);
+            _listener.Start();
+
+            _udpServer = new UdpClient(_discoveryPort);
+            _udpServer.EnableBroadcast = true;
+
+            IsRunning = true;
+
+            _ = AcceptLoopAsync(ct);
+            _ = UdpListenLoopAsync(ct);
+            _ = AnnounceLoopAsync(ct);
+
+            App.Log($"LanShareServer started on port {_port}");
+        }
+
+        public void Stop()
+        {
+            _cts?.Cancel();
+            _listener?.Stop();
+            _udpServer?.Dispose();
+            _udpServer = null;
+            lock (_cacheLock) _manifestCache.Clear();
+            IsRunning = false;
+            App.Log("LanShareServer stopped");
+        }
+
+        public void InvalidateManifestCache()
+        {
+            lock (_cacheLock) _manifestCache.Clear();
+        }
+
+        private async Task AcceptLoopAsync(CancellationToken ct)
+        {
+            while (!ct.IsCancellationRequested)
+            {
+                try
+                {
+                    var client = await _listener!.AcceptTcpClientAsync(ct);
+                    client.ReceiveBufferSize = 256 * 1024;
+                    client.SendBufferSize    = 256 * 1024;
+                    _ = HandleClientAsync(client, ct);
+                }
+                catch (OperationCanceledException) { break; }
+                catch (Exception ex) { App.Log($"LanShareServer accept error: {ex.Message}"); }
+            }
+        }
+
+        private async Task HandleClientAsync(TcpClient client, CancellationToken ct)
+        {
+            try
+            {
+                using var stream = client.GetStream();
+                // Read until \r\n\r\n (end of HTTP headers), max 8 KB
+                var headerBuf = new byte[8192];
+                int total = 0;
+                while (total < headerBuf.Length)
+                {
+                    int n = await stream.ReadAsync(headerBuf.AsMemory(total, headerBuf.Length - total), ct);
+                    if (n == 0) return;
+                    total += n;
+                    // Check for end of headers
+                    int idx = IndexOf(headerBuf, total, "\r\n\r\n"u8);
+                    if (idx >= 0) break;
+                }
+
+                string header = Encoding.ASCII.GetString(headerBuf, 0, total);
+                string firstLine = header.Split('\n')[0].Trim();
+                // "GET /path HTTP/1.1"
+                string[] parts = firstLine.Split(' ');
+                if (parts.Length < 2 || parts[0] != "GET")
+                {
+                    await SendResponseAsync(stream, 400, "text/plain", "Bad Request"u8.ToArray(), ct);
+                    return;
+                }
+
+                string rawPath = parts[1];
+                string path = Uri.UnescapeDataString(rawPath);
+                string[] segments = path.TrimStart('/').Split('/');
+
+                if (segments.Length == 1 && segments[0] == "games")
+                {
+                    await ServeGameListAsync(stream, ct);
+                }
+                else if (segments.Length == 3 && segments[0] == "games" && segments[2] == "manifest")
+                {
+                    await ServeManifestAsync(stream, segments[1], ct);
+                }
+                else if (segments.Length >= 4 && segments[0] == "games" && segments[2] == "files")
+                {
+                    string relPath = string.Join("/", segments.Skip(3));
+                    await ServeFileAsync(stream, segments[1], relPath, ct);
+                }
+                else
+                {
+                    await SendResponseAsync(stream, 404, "text/plain", "Not Found"u8.ToArray(), ct);
+                }
+            }
+            catch (Exception ex)
+            {
+                App.Log($"LanShareServer client error: {ex.Message}");
+            }
+            finally
+            {
+                client.Dispose();
+            }
+        }
+
+        private async Task ServeGameListAsync(NetworkStream stream, CancellationToken ct)
+        {
+            var names = _gameSource!()
+                .Where(g => !string.IsNullOrEmpty(g.GameFolderPath) && Directory.Exists(g.GameFolderPath))
+                .Select(g => g.GameName)
+                .ToList();
+            byte[] json = JsonSerializer.SerializeToUtf8Bytes(names, LanJsonContext.Default.ListString);
+            await SendResponseAsync(stream, 200, "application/json", json, ct);
+        }
+
+        private async Task ServeManifestAsync(NetworkStream stream, string gameName, CancellationToken ct)
+        {
+            var entry = _gameSource!().FirstOrDefault(g =>
+                string.Equals(g.GameName, gameName, StringComparison.OrdinalIgnoreCase));
+
+            if (entry == null || string.IsNullOrEmpty(entry.GameFolderPath) || !Directory.Exists(entry.GameFolderPath))
+            {
+                await SendResponseAsync(stream, 404, "text/plain", "Game not found"u8.ToArray(), ct);
+                return;
+            }
+
+            List<LanFileEntry> manifest;
+            lock (_cacheLock)
+            {
+                if (!_manifestCache.TryGetValue(gameName, out manifest!))
+                    manifest = null!;
+            }
+
+            if (manifest == null)
+            {
+                manifest = await BuildManifestAsync(entry.GameFolderPath, ct);
+                lock (_cacheLock) _manifestCache[gameName] = manifest;
+            }
+
+            byte[] json = JsonSerializer.SerializeToUtf8Bytes(manifest, LanJsonContext.Default.ListLanFileEntry);
+            await SendResponseAsync(stream, 200, "application/json", json, ct);
+        }
+
+        private static async Task<List<LanFileEntry>> BuildManifestAsync(string folderPath, CancellationToken ct)
+        {
+            var entries = new List<LanFileEntry>();
+            var files = Directory.GetFiles(folderPath, "*", SearchOption.AllDirectories);
+            foreach (var file in files)
+            {
+                ct.ThrowIfCancellationRequested();
+                string rel = Path.GetRelativePath(folderPath, file).Replace('\\', '/');
+                long size = new FileInfo(file).Length;
+                string sha256 = await ComputeSha256Async(file, ct);
+                entries.Add(new LanFileEntry { RelativePath = rel, Size = size, Sha256 = sha256 });
+            }
+            return entries;
+        }
+
+        private async Task ServeFileAsync(NetworkStream stream, string gameName, string relPath, CancellationToken ct)
+        {
+            var entry = _gameSource!().FirstOrDefault(g =>
+                string.Equals(g.GameName, gameName, StringComparison.OrdinalIgnoreCase));
+
+            if (entry == null || string.IsNullOrEmpty(entry.GameFolderPath))
+            {
+                await SendResponseAsync(stream, 404, "text/plain", "Game not found"u8.ToArray(), ct);
+                return;
+            }
+
+            // Prevent path traversal
+            string safePath = relPath.Replace('/', Path.DirectorySeparatorChar);
+            string fullPath = Path.GetFullPath(Path.Combine(entry.GameFolderPath, safePath));
+            if (!fullPath.StartsWith(Path.GetFullPath(entry.GameFolderPath), StringComparison.OrdinalIgnoreCase))
+            {
+                await SendResponseAsync(stream, 403, "text/plain", "Forbidden"u8.ToArray(), ct);
+                return;
+            }
+
+            if (!File.Exists(fullPath))
+            {
+                await SendResponseAsync(stream, 404, "text/plain", "File not found"u8.ToArray(), ct);
+                return;
+            }
+
+            long fileSize = new FileInfo(fullPath).Length;
+            string statusLine = "HTTP/1.1 200 OK\r\n";
+            string headers = $"Content-Type: application/octet-stream\r\nContent-Length: {fileSize}\r\nConnection: close\r\n\r\n";
+            await stream.WriteAsync(Encoding.ASCII.GetBytes(statusLine + headers), ct);
+
+            using var fs = new FileStream(fullPath, FileMode.Open, FileAccess.Read, FileShare.Read,
+                BufferSize, FileOptions.SequentialScan | FileOptions.Asynchronous);
+            var buf = new byte[BufferSize];
+            int read;
+            while ((read = await fs.ReadAsync(buf, ct)) > 0)
+                await stream.WriteAsync(buf.AsMemory(0, read), ct);
+        }
+
+        private static async Task SendResponseAsync(NetworkStream stream, int code, string contentType, byte[] body, CancellationToken ct)
+        {
+            string status = code == 200 ? "OK" : code == 404 ? "Not Found" : code == 403 ? "Forbidden" : "Bad Request";
+            string header = $"HTTP/1.1 {code} {status}\r\nContent-Type: {contentType}\r\nContent-Length: {body.Length}\r\nConnection: close\r\n\r\n";
+            await stream.WriteAsync(Encoding.ASCII.GetBytes(header), ct);
+            await stream.WriteAsync(body, ct);
+        }
+
+        private static int IndexOf(byte[] haystack, int length, ReadOnlySpan<byte> needle)
+        {
+            for (int i = 0; i <= length - needle.Length; i++)
+                if (haystack.AsSpan(i, needle.Length).SequenceEqual(needle))
+                    return i;
+            return -1;
+        }
+
+        // ── UDP discovery ──────────────────────────────────────────────────────
+
+        private async Task UdpListenLoopAsync(CancellationToken ct)
+        {
+            while (!ct.IsCancellationRequested)
+            {
+                try
+                {
+                    var result = await _udpServer!.ReceiveAsync(ct);
+                    string json = Encoding.UTF8.GetString(result.Buffer);
+
+                    // If it's a query, respond with our announce
+                    if (json.Contains("\"query\""))
+                        await SendAnnounceAsync(result.RemoteEndPoint.Address, ct);
+                }
+                catch (OperationCanceledException) { break; }
+                catch { /* ignore malformed datagrams */ }
+            }
+        }
+
+        private async Task AnnounceLoopAsync(CancellationToken ct)
+        {
+            while (!ct.IsCancellationRequested)
+            {
+                try
+                {
+                    await BroadcastAnnounceAsync(ct);
+                    await Task.Delay(TimeSpan.FromSeconds(30), ct);
+                }
+                catch (OperationCanceledException) { break; }
+                catch { }
+            }
+        }
+
+        private async Task BroadcastAnnounceAsync(CancellationToken ct)
+        {
+            var announce = BuildAnnounce();
+            byte[] data = JsonSerializer.SerializeToUtf8Bytes(announce, LanJsonContext.Default.LanAnnounce);
+            using var udp = new UdpClient();
+            udp.EnableBroadcast = true;
+            await udp.SendAsync(data, new IPEndPoint(System.Net.IPAddress.Broadcast, _discoveryPort), ct);
+        }
+
+        private async Task SendAnnounceAsync(System.Net.IPAddress target, CancellationToken ct)
+        {
+            var announce = BuildAnnounce();
+            byte[] data = JsonSerializer.SerializeToUtf8Bytes(announce, LanJsonContext.Default.LanAnnounce);
+            using var udp = new UdpClient();
+            await udp.SendAsync(data, new IPEndPoint(target, _discoveryPort), ct);
+        }
+
+        private LanAnnounce BuildAnnounce()
+        {
+            var games = _gameSource!()
+                .Where(g => !string.IsNullOrEmpty(g.GameFolderPath) && Directory.Exists(g.GameFolderPath))
+                .Select(g => g.GameName)
+                .ToList();
+
+            return new LanAnnounce
+            {
+                DeviceName = _deviceName,
+                DeviceId   = _deviceId,
+                Port       = _port,
+                Games      = games
+            };
+        }
+
+        // ── Helpers ────────────────────────────────────────────────────────────
+
+        internal static async Task<string> ComputeSha256Async(string filePath, CancellationToken ct)
+        {
+            using var fs = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read,
+                512 * 1024, FileOptions.SequentialScan | FileOptions.Asynchronous);
+            using var sha = SHA256.Create();
+            byte[] hash = await sha.ComputeHashAsync(fs, ct);
+            return Convert.ToHexString(hash).ToLowerInvariant();
+        }
+
+        public void Dispose() => Stop();
+    }
+
+    // ── Client ────────────────────────────────────────────────────────────────
+
+    public class LanShareClient
+    {
+        private const int BufferSize    = 512 * 1024;
+        private const int MaxParallel   = 4;
+
+        private readonly string _deviceName;
+        private readonly string _deviceId;
+
+        public LanShareClient(string deviceName, string deviceId)
+        {
+            _deviceName = deviceName;
+            _deviceId   = deviceId;
+        }
+
+        // Broadcast a query and collect peer announces for ~2 seconds.
+        public async Task<List<LanPeer>> DiscoverPeersAsync(int discoveryPort, CancellationToken ct = default)
+        {
+            var peers = new Dictionary<string, LanPeer>(); // keyed by deviceId
+            var udp   = new UdpClient(0); // bind to any port
+            udp.EnableBroadcast = true;
+
+            // Listen for incoming datagrams concurrently
+            var listenTask = Task.Run(async () =>
+            {
+                var deadline = DateTime.UtcNow.AddSeconds(2.5);
+                while (DateTime.UtcNow < deadline && !ct.IsCancellationRequested)
+                {
+                    udp.Client.ReceiveTimeout = 300;
+                    try
+                    {
+                        var result = await udp.ReceiveAsync(ct);
+                        var json = Encoding.UTF8.GetString(result.Buffer);
+                        if (!json.Contains("\"announce\"")) continue;
+
+                        var announce = JsonSerializer.Deserialize(json, LanJsonContext.Default.LanAnnounce);
+                        if (announce == null || announce.DeviceId == _deviceId) continue; // skip self
+
+                        lock (peers)
+                        {
+                            peers[announce.DeviceId] = new LanPeer
+                            {
+                                DeviceName = announce.DeviceName,
+                                DeviceId   = announce.DeviceId,
+                                IPAddress  = result.RemoteEndPoint.Address.ToString(),
+                                Port       = announce.Port,
+                                Games      = announce.Games
+                            };
+                        }
+                    }
+                    catch (OperationCanceledException) { break; }
+                    catch { /* timeout or bad datagram */ }
+                }
+            }, ct);
+
+            // Send query broadcast
+            var query = new LanQuery();
+            byte[] queryBytes = JsonSerializer.SerializeToUtf8Bytes(query, LanJsonContext.Default.LanQuery);
+            await udp.SendAsync(queryBytes, new IPEndPoint(System.Net.IPAddress.Broadcast, discoveryPort), ct);
+
+            await Task.WhenAny(listenTask, Task.Delay(2200, ct));
+            udp.Dispose();
+
+            lock (peers) return peers.Values.ToList();
+        }
+
+        public async Task<List<LanFileEntry>> GetManifestAsync(LanPeer peer, string gameName, CancellationToken ct = default)
+        {
+            using var http = MakeHttpClient(peer);
+            string url = $"http://{peer.IPAddress}:{peer.Port}/games/{Uri.EscapeDataString(gameName)}/manifest";
+            string json = await http.GetStringAsync(url, ct);
+            return JsonSerializer.Deserialize(json, LanJsonContext.Default.ListLanFileEntry) ?? new();
+        }
+
+        public async Task DownloadGameAsync(
+            LanPeer peer,
+            string gameName,
+            string destFolder,
+            IProgress<LanDownloadProgress>? progress,
+            CancellationToken ct)
+        {
+            var manifest = await GetManifestAsync(peer, gameName, ct);
+            Directory.CreateDirectory(destFolder);
+
+            // Determine which files need downloading (skip if local hash matches)
+            var toDownload = new List<LanFileEntry>();
+            long totalBytes = 0;
+
+            foreach (var entry in manifest)
+            {
+                string localPath = Path.Combine(destFolder, entry.RelativePath.Replace('/', Path.DirectorySeparatorChar));
+                bool skip = false;
+                if (File.Exists(localPath) && new FileInfo(localPath).Length == entry.Size)
+                {
+                    string localHash = await LanShareServer.ComputeSha256Async(localPath, ct);
+                    skip = string.Equals(localHash, entry.Sha256, StringComparison.OrdinalIgnoreCase);
+                }
+                if (!skip)
+                {
+                    toDownload.Add(entry);
+                    totalBytes += entry.Size;
+                }
+            }
+
+            int filesCompleted = 0;
+            long bytesTransferred = 0;
+            var startTime = DateTime.UtcNow;
+            var sem = new SemaphoreSlim(MaxParallel);
+
+            var prog = new LanDownloadProgress
+            {
+                TotalFiles = toDownload.Count,
+                TotalBytes = totalBytes
+            };
+
+            var tasks = toDownload.Select(async entry =>
+            {
+                await sem.WaitAsync(ct);
+                try
+                {
+                    prog.CurrentFile = entry.RelativePath;
+                    progress?.Report(prog);
+
+                    string localPath = Path.Combine(destFolder, entry.RelativePath.Replace('/', Path.DirectorySeparatorChar));
+                    Directory.CreateDirectory(Path.GetDirectoryName(localPath)!);
+                    string tmpPath = localPath + ".lanpart";
+
+                    using var http = MakeHttpClient(peer);
+                    string url = $"http://{peer.IPAddress}:{peer.Port}/games/{Uri.EscapeDataString(gameName)}/files/{Uri.EscapeDataString(entry.RelativePath)}";
+
+                    using var response = await http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct);
+                    response.EnsureSuccessStatusCode();
+
+                    using var responseStream = await response.Content.ReadAsStreamAsync(ct);
+                    using var fs = new FileStream(tmpPath, FileMode.Create, FileAccess.Write, FileShare.None,
+                        BufferSize, FileOptions.Asynchronous);
+
+                    var buf = new byte[BufferSize];
+                    int read;
+                    while ((read = await responseStream.ReadAsync(buf, ct)) > 0)
+                    {
+                        await fs.WriteAsync(buf.AsMemory(0, read), ct);
+                        long newTotal = Interlocked.Add(ref bytesTransferred, read);
+                        double elapsed = (DateTime.UtcNow - startTime).TotalSeconds;
+                        prog.BytesTransferred = newTotal;
+                        prog.SpeedBytesPerSec = elapsed > 0 ? newTotal / elapsed : 0;
+                        progress?.Report(prog);
+                    }
+
+                    await fs.FlushAsync(ct);
+                    fs.Dispose();
+
+                    if (File.Exists(localPath)) File.Delete(localPath);
+                    File.Move(tmpPath, localPath);
+
+                    prog.FilesCompleted = Interlocked.Increment(ref filesCompleted);
+                    progress?.Report(prog);
+                }
+                finally
+                {
+                    sem.Release();
+                }
+            });
+
+            await Task.WhenAll(tasks);
+        }
+
+        private static HttpClient MakeHttpClient(LanPeer peer)
+        {
+            var handler = new SocketsHttpHandler
+            {
+                ConnectTimeout = TimeSpan.FromSeconds(5),
+                ResponseDrainTimeout = TimeSpan.FromMinutes(30),
+                InitialHttp2StreamWindowSize = 256 * 1024
+            };
+            var client = new HttpClient(handler);
+            client.Timeout = TimeSpan.FromMinutes(60);
+            return client;
+        }
+    }
+}

@@ -46,7 +46,21 @@ namespace LudusaviWrap
                     string rawName = filename.Replace("_", " ").Replace("-", " ");
                     GameNameTextBox.Text = System.Globalization.CultureInfo.CurrentCulture.TextInfo.ToTitleCase(rawName);
                 }
+                // Auto-populate game folder from exe directory if not already set
+                if (string.IsNullOrEmpty(FolderPathTextBox.Text))
+                    FolderPathTextBox.Text = Path.GetDirectoryName(dialog.FileName) ?? "";
             }
+        }
+
+        private void BrowseFolder_Click(object sender, RoutedEventArgs e)
+        {
+            var dialog = new OpenFolderDialog
+            {
+                Title = "Select the root folder of the game installation",
+                Multiselect = false
+            };
+            if (dialog.ShowDialog() == true)
+                FolderPathTextBox.Text = dialog.FolderName;
         }
 
         private void TextBox_GotFocus(object sender, RoutedEventArgs e) => ShowTouchKeyboard();
@@ -201,10 +215,11 @@ namespace LudusaviWrap
 
                 var entry = new GameEntry
                 {
-                    GameName = name,
-                    ExePath = exe,
-                    SafeName = safe,
-                    AddedAt = DateTime.UtcNow
+                    GameName       = name,
+                    ExePath        = exe,
+                    SafeName       = safe,
+                    GameFolderPath = FolderPathTextBox.Text.Trim().Length > 0 ? FolderPathTextBox.Text.Trim() : null,
+                    AddedAt        = DateTime.UtcNow
                 };
                 _library.Add(entry);
 
@@ -265,7 +280,9 @@ namespace LudusaviWrap
                 try
                 {
                     var existing = _library.FindByName(name);
-                    entry = existing ?? new GameEntry { GameName = name, ExePath = exe, SafeName = safe, AddedAt = DateTime.UtcNow };
+                    entry = existing ?? new GameEntry { GameName = name, ExePath = exe, SafeName = safe, GameFolderPath = FolderPathTextBox.Text.Trim().Length > 0 ? FolderPathTextBox.Text.Trim() : null, AddedAt = DateTime.UtcNow };
+                    if (existing != null && string.IsNullOrEmpty(existing.GameFolderPath) && FolderPathTextBox.Text.Trim().Length > 0)
+                        entry.GameFolderPath = FolderPathTextBox.Text.Trim();
                     launcherExePath = await LauncherGenerator.GenerateLauncherExeAsync(entry, _config);
                     entry.LauncherExePath = launcherExePath;
                     if (existing == null) _library.Add(entry); else _library.Update(entry);
@@ -336,7 +353,9 @@ namespace LudusaviWrap
                 try
                 {
                     var existing = _library.FindByName(name);
-                    entry = existing ?? new GameEntry { GameName = name, ExePath = exe, SafeName = safe, AddedAt = DateTime.UtcNow };
+                    entry = existing ?? new GameEntry { GameName = name, ExePath = exe, SafeName = safe, GameFolderPath = FolderPathTextBox.Text.Trim().Length > 0 ? FolderPathTextBox.Text.Trim() : null, AddedAt = DateTime.UtcNow };
+                    if (existing != null && string.IsNullOrEmpty(existing.GameFolderPath) && FolderPathTextBox.Text.Trim().Length > 0)
+                        entry.GameFolderPath = FolderPathTextBox.Text.Trim();
                     launcherExePath = await LauncherGenerator.GenerateLauncherExeAsync(entry, _config);
                     entry.LauncherExePath = launcherExePath;
                     if (existing == null) _library.Add(entry); else _library.Update(entry);

@@ -60,6 +60,30 @@
                                Grid.Column="2"/>
                 </Grid>
 
+                <!-- Game folder row (for LAN sharing) -->
+                <Grid Margin="0,0,0,12">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="110"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBlock VerticalAlignment="Center" Grid.Column="0">
+                        <Run Text="Game Folder"/>
+                        <LineBreak/>
+                        <Run Text="(for LAN share)" FontSize="10"
+                             Foreground="{DynamicResource TextFillColorSecondaryBrush}"/>
+                    </TextBlock>
+                    <ui:TextBox x:Name="FolderPathTextBox"
+                                IsReadOnly="True"
+                                PlaceholderText="Optional — root folder of game installation"
+                                Margin="0,0,8,0"
+                                Grid.Column="1"/>
+                    <ui:Button Content="Browse"
+                               Appearance="Secondary"
+                               Click="BrowseFolder_Click"
+                               Grid.Column="2"/>
+                </Grid>
+
                 <!-- Game name row -->
                 <Grid Margin="0,0,0,4">
                     <Grid.ColumnDefinitions>

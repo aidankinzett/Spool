@@ -45,6 +45,9 @@ namespace LudusaviWrap
         [JsonPropertyName("launcher_exe_path")]
         public string? LauncherExePath { get; set; }
 
+        [JsonPropertyName("game_folder_path")]
+        public string? GameFolderPath { get; set; }
+
         public event PropertyChangedEventHandler? PropertyChanged;
         private void OnPropertyChanged([CallerMemberName] string? name = null)
             => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));

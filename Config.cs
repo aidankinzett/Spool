@@ -36,6 +36,15 @@ namespace LudusaviWrap
 
         [JsonPropertyName("device_name")]
         public string DeviceName { get; set; } = "";
+
+        [JsonPropertyName("lan_share_enabled")]
+        public bool LanShareEnabled { get; set; } = true;
+
+        [JsonPropertyName("lan_share_port")]
+        public int LanSharePort { get; set; } = 47632;
+
+        [JsonPropertyName("lan_install_dir")]
+        public string LanInstallDir { get; set; } = "";
     }
 
     [JsonSourceGenerationOptions(WriteIndented = true)]
