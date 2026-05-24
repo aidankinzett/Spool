@@ -330,7 +330,7 @@ namespace LudusaviWrap
 
                     // If it's a query, respond with our announce
                     if (json.Contains("\"query\""))
-                        await SendAnnounceAsync(result.RemoteEndPoint.Address, ct);
+                        await SendAnnounceAsync(result.RemoteEndPoint, ct);
                 }
                 catch (OperationCanceledException) { break; }
                 catch { /* ignore malformed datagrams */ }
@@ -360,12 +360,12 @@ namespace LudusaviWrap
             await udp.SendAsync(data, new IPEndPoint(System.Net.IPAddress.Broadcast, _discoveryPort), ct);
         }
 
-        private async Task SendAnnounceAsync(System.Net.IPAddress target, CancellationToken ct)
+        private async Task SendAnnounceAsync(IPEndPoint target, CancellationToken ct)
         {
             var announce = BuildAnnounce();
             byte[] data = JsonSerializer.SerializeToUtf8Bytes(announce, LanJsonContext.Default.LanAnnounce);
             using var udp = new UdpClient();
-            await udp.SendAsync(data, new IPEndPoint(target, _discoveryPort), ct);
+            await udp.SendAsync(data, target, ct);
         }
 
         private LanAnnounce BuildAnnounce()
