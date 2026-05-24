@@ -806,6 +806,7 @@ namespace LudusaviWrap
 
             Exception? lastEx = null;
             bool success = false;
+            LanPeer? successPeer = null;
             try
             {
                 foreach (var peer in peers)
@@ -816,6 +817,7 @@ namespace LudusaviWrap
                         App.Log($"Attempting LAN download from peer: {peer.DeviceName} ({peer.IPAddress}:{peer.Port})");
                         await _lanClient.DownloadGameAsync(peer, gameName, destFolder, progress, ct);
                         success = true;
+                        successPeer = peer;
                         break;
                     }
                     catch (OperationCanceledException)
@@ -837,7 +839,7 @@ namespace LudusaviWrap
                     DownloadSpeedText.Text = "";
                     DownloadBytesText.Text = "";
 
-                    OfferAddToLibrary(gameName, destFolder);
+                    OfferAddToLibrary(gameName, destFolder, successPeer);
                 }
                 else if (ct.IsCancellationRequested)
                 {
@@ -895,11 +897,10 @@ namespace LudusaviWrap
             }
         }
 
-        private void OfferAddToLibrary(string gameName, string destFolder)
+        private void OfferAddToLibrary(string gameName, string destFolder, LanPeer? sourcePeer = null)
         {
-            // Try to find an exe in the destination folder
             string? exePath = Directory.GetFiles(destFolder, "*.exe", SearchOption.AllDirectories)
-                .OrderBy(f => Path.GetDirectoryName(f)?.Length) // prefer shallower
+                .OrderBy(f => Path.GetDirectoryName(f)?.Length)
                 .FirstOrDefault();
 
             var ans = MessageBox.Show(
@@ -928,6 +929,68 @@ namespace LudusaviWrap
                 });
             }
             LoadGames();
+
+            var entry = _library.FindByName(gameName);
+            if (entry != null && string.IsNullOrEmpty(entry.CoverImagePath))
+                _ = Task.Run(() => FetchCoverForLanEntryAsync(entry, sourcePeer));
+        }
+
+        private async Task FetchCoverForLanEntryAsync(GameEntry entry, LanPeer? peer)
+        {
+            string coversDir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "ludusavi-wrap", "covers");
+            Directory.CreateDirectory(coversDir);
+
+            // Try pulling the cover directly from the peer that served the game files.
+            if (peer != null)
+            {
+                try
+                {
+                    using var http = new System.Net.Http.HttpClient { Timeout = TimeSpan.FromSeconds(15) };
+                    string url = $"http://{peer.IPAddress}:{peer.Port}/games/{Uri.EscapeDataString(entry.GameName)}/cover";
+                    using var response = await http.GetAsync(url);
+                    if (response.IsSuccessStatusCode)
+                    {
+                        string ext = response.Content.Headers.ContentType?.MediaType switch
+                        {
+                            "image/png"  => ".png",
+                            "image/webp" => ".webp",
+                            "image/gif"  => ".gif",
+                            _            => ".jpg"
+                        };
+                        string imagePath = Path.Combine(coversDir, entry.SafeName + "_p" + ext);
+                        byte[] bytes = await response.Content.ReadAsByteArrayAsync();
+                        await File.WriteAllBytesAsync(imagePath, bytes);
+                        Dispatcher.Invoke(() => { entry.CoverImagePath = imagePath; _library.Update(entry); });
+                        App.Log($"Downloaded cover from LAN peer for '{entry.GameName}'");
+                        return;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    App.Log($"LAN cover fetch failed for '{entry.GameName}': {ex.Message}");
+                }
+            }
+
+            // Fall back to SteamGridDB if configured.
+            if (!_config.Data.SteamGridDbEnabled || string.IsNullOrEmpty(_config.Data.SteamGridDbApiKey)) return;
+            try
+            {
+                var sgdb = new SteamGridDbClient(_config.Data.SteamGridDbApiKey);
+                var results = await sgdb.SearchGameAsync(entry.GameName);
+                if (results.Count == 0) return;
+
+                string destBase = Path.Combine(coversDir, entry.SafeName);
+                string? imagePath = await sgdb.DownloadPortraitAsync(results[0].Id, destBase + "_p");
+                imagePath ??= await sgdb.DownloadGridImageAsync(results[0].Id, entry.SafeName, coversDir);
+                if (imagePath != null)
+                    Dispatcher.Invoke(() => { entry.CoverImagePath = imagePath; _library.Update(entry); });
+            }
+            catch (Exception ex)
+            {
+                App.Log($"SteamGridDB cover fetch failed for '{entry.GameName}': {ex.Message}");
+            }
         }
 
         private void CancelDownload_Click(object sender, RoutedEventArgs e)
