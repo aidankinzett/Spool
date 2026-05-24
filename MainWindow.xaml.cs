@@ -90,7 +90,11 @@ namespace LudusaviWrap
                 bi.Freeze();
                 return bi;
             }
-            catch { return null; }
+            catch (Exception ex)
+            {
+                App.Log($"StringToImageConverter exception for '{path}': {ex.Message}");
+                return null;
+            }
         }
 
         public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
