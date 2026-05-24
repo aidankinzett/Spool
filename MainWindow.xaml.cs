@@ -236,6 +236,7 @@ namespace LudusaviWrap
 
             AutoUpdaterDotNET.AutoUpdater.ShowSkipButton = false;
             AutoUpdaterDotNET.AutoUpdater.ShowRemindLaterButton = false;
+            AutoUpdaterDotNET.AutoUpdater.RunUpdateAsAdmin = false;
             AutoUpdaterDotNET.AutoUpdater.SetOwner(this);
 
             if (!_updateCheckSubscribed)
@@ -243,9 +244,27 @@ namespace LudusaviWrap
                 _updateCheckSubscribed = true;
                 AutoUpdaterDotNET.AutoUpdater.CheckForUpdateEvent += (args) =>
                 {
-                    if (args.Error != null) return;
-                    if (args.IsUpdateAvailable)
-                        AutoUpdaterDotNET.AutoUpdater.ShowUpdateForm(args);
+                    if (args.Error != null || !args.IsUpdateAvailable) return;
+
+                    var result = MessageBox.Show(
+                        $"Version {args.CurrentVersion} is available (you have {args.InstalledVersion}).\n\nInstall now? The app will restart automatically.",
+                        "Update Available",
+                        MessageBoxButton.YesNo,
+                        MessageBoxImage.Information);
+
+                    if (result != MessageBoxResult.Yes) return;
+
+                    try
+                    {
+                        args.InstallerArgs = "/VERYSILENT /SUPPRESSMSGBOXES";
+                        if (AutoUpdaterDotNET.AutoUpdater.DownloadUpdate(args))
+                            Application.Current.Shutdown();
+                    }
+                    catch (Exception ex)
+                    {
+                        MessageBox.Show($"Update failed: {ex.Message}", "Update Error",
+                            MessageBoxButton.OK, MessageBoxImage.Error);
+                    }
                 };
             }
 

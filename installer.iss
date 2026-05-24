@@ -30,4 +30,7 @@ Name: "{userdesktop}\Ludusavi Wrap"; Filename: "{app}\ludusavi-wrap.exe"; Tasks:
 Name: "desktopicon"; Description: "Create a &desktop icon"; GroupDescription: "Additional icons:"; Flags: unchecked
 
 [Run]
-Filename: "{app}\ludusavi-wrap.exe"; Description: "Launch Ludusavi Wrap"; Flags: postinstall nowait
+; Shown as checkbox on finish page for manual installs; skipped during silent auto-update
+Filename: "{app}\ludusavi-wrap.exe"; Description: "Launch Ludusavi Wrap"; Flags: postinstall nowait skipifsilent
+; Relaunch automatically after a silent auto-update
+Filename: "{app}\ludusavi-wrap.exe"; Flags: nowait; Check: WizardSilent
