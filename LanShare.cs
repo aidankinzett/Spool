@@ -497,7 +497,7 @@ namespace LudusaviWrap
 
             long totalBytes = totalBytesParam > 0 ? totalBytesParam : fileSize;
 
-            ActiveUpload upload;
+            ActiveUpload? upload;
             lock (_uploadsLock)
             {
                 upload = _activeUploads.FirstOrDefault(u => u.Guid == sessionIdParam);
