@@ -122,8 +122,15 @@ namespace LudusaviWrap
         private readonly HashSet<string> _cancelledGames = new();
         private readonly object _cancelledLock = new();
 
+        private long _lastNotifyTicks = 0;
+
         private void NotifyUploadsChanged()
         {
+            // Throttle to avoid flooding the dispatcher on fast transfers (~10x per second is plenty)
+            var now = DateTime.UtcNow.Ticks;
+            var last = Interlocked.Read(ref _lastNotifyTicks);
+            if (now - last < TimeSpan.TicksPerMillisecond * 100) return;
+            Interlocked.Exchange(ref _lastNotifyTicks, now);
             UploadsChanged?.Invoke(this, EventArgs.Empty);
         }
 
@@ -150,17 +157,18 @@ namespace LudusaviWrap
 
         public void CancelAllUploads()
         {
+            List<ActiveUpload> snapshot;
             lock (_uploadsLock)
             {
-                foreach (var upload in _activeUploads)
-                {
-                    lock (_cancelledLock)
-                    {
-                        _cancelledGames.Add(upload.GameName);
-                    }
-                    try { upload.Cts.Cancel(); } catch { }
-                }
+                snapshot = _activeUploads.ToList();
             }
+            lock (_cancelledLock)
+            {
+                foreach (var upload in snapshot)
+                    _cancelledGames.Add(upload.GameName);
+            }
+            foreach (var upload in snapshot)
+                try { upload.Cts.Cancel(); } catch { }
         }
 
         public bool IsRunning { get; private set; }
