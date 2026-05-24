@@ -129,7 +129,7 @@
                     </ItemsControl.ItemsPanel>
                     <ItemsControl.ItemTemplate>
                         <DataTemplate DataType="{x:Type local:GameEntry}">
-                            <ui:Card Width="180" Height="360" Margin="6" Padding="0">
+                            <ui:Card Width="180" Height="380" Margin="6" Padding="0">
                                 <ui:Card.Style>
                                     <Style TargetType="ui:Card" BasedOn="{StaticResource {x:Type ui:Card}}">
                                         <Setter Property="ContextMenu" Value="{StaticResource GameCardContextMenu}"/>
@@ -152,7 +152,7 @@
                                             CornerRadius="4,4,0,0"
                                             Background="{DynamicResource ControlFillColorDefaultBrush}">
                                         <Image Source="{Binding CoverImagePath, Converter={StaticResource StringToImageConverter}}"
-                                               Stretch="UniformToFill"/>
+                                               Stretch="Uniform"/>
                                     </Border>
 
                                     <!-- Info area -->
@@ -166,8 +166,10 @@
                                             <TextBlock Text="{Binding GameName}"
                                                        FontSize="12"
                                                        FontWeight="SemiBold"
+                                                       TextWrapping="Wrap"
                                                        TextTrimming="CharacterEllipsis"
                                                        ToolTip="{Binding GameName}"
+                                                       Height="34"
                                                        Margin="0,0,0,2"/>
                                             <StackPanel Orientation="Horizontal"
                                                         Margin="0,0,0,4"
