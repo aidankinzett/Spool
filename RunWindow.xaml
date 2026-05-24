@@ -3,7 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
         Title="Ludusavi Wrap"
-        Width="420"
+        Width="360"
         SizeToContent="Height"
         ResizeMode="NoResize"
         WindowStartupLocation="CenterScreen"
@@ -20,7 +20,7 @@
                      ShowMinimize="False"
                      Grid.Row="0"/>
 
-        <Grid VerticalAlignment="Center" Margin="40,24" Grid.Row="1">
+        <Grid VerticalAlignment="Center" Margin="32,20" Grid.Row="1">
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto"/>
                 <RowDefinition Height="Auto"/>
