@@ -60,12 +60,14 @@ namespace LudusaviWrap
 
     public class ActiveUpload
     {
-        public string Guid { get; } = System.Guid.NewGuid().ToString();
+        public string Guid { get; set; } = System.Guid.NewGuid().ToString();
         public string GameName { get; }
-        public string RelativePath { get; }
-        public long TotalBytes { get; }
+        public string RelativePath { get; set; } = "";
+        public long TotalBytes { get; set; }
         public long BytesSent { get; set; }
         public CancellationTokenSource Cts { get; }
+        public int ActiveCount { get; set; }
+        public DateTime LastActive { get; set; } = DateTime.UtcNow;
 
         public ActiveUpload(string gameName, string relativePath, long totalBytes, CancellationTokenSource cts)
         {
@@ -126,8 +128,14 @@ namespace LudusaviWrap
 
         public List<ActiveUploadSnapshot> GetActiveUploads()
         {
+            var now = DateTime.UtcNow;
             lock (_uploadsLock)
             {
+                // Clean up stale sessions:
+                // - ActiveCount == 0 and inactive for > 3 seconds
+                // - OR cancellation has been requested
+                _activeUploads.RemoveAll(u => u.Cts.IsCancellationRequested || (u.ActiveCount == 0 && (now - u.LastActive).TotalSeconds > 3));
+
                 return _activeUploads.Select(u => new ActiveUploadSnapshot
                 {
                     Guid = u.Guid,
@@ -249,6 +257,16 @@ namespace LudusaviWrap
 
                 string rawPath = parts[1];
                 string path = Uri.UnescapeDataString(rawPath);
+
+                // Separate query string
+                string query = "";
+                int qIdx = path.IndexOf('?');
+                if (qIdx >= 0)
+                {
+                    query = path.Substring(qIdx + 1);
+                    path = path.Substring(0, qIdx);
+                }
+
                 string[] segments = path.TrimStart('/').Split('/');
 
                 if (segments.Length == 1 && segments[0] == "games")
@@ -266,7 +284,34 @@ namespace LudusaviWrap
                 else if (segments.Length >= 4 && segments[0] == "games" && segments[2] == "files")
                 {
                     string relPath = string.Join("/", segments.Skip(3));
-                    await ServeFileAsync(stream, segments[1], relPath, ct);
+
+                    long totalBytesParam = 0;
+                    string sessionIdParam = "";
+                    if (!string.IsNullOrEmpty(query))
+                    {
+                        var qParts = query.Split('&');
+                        foreach (var qp in qParts)
+                        {
+                            var kv = qp.Split('=');
+                            if (kv.Length == 2)
+                            {
+                                if (kv[0] == "totalBytes" && long.TryParse(kv[1], out long tb))
+                                {
+                                    totalBytesParam = tb;
+                                }
+                                else if (kv[0] == "sessionId")
+                                {
+                                    sessionIdParam = kv[1];
+                                }
+                            }
+                        }
+                    }
+                    if (string.IsNullOrEmpty(sessionIdParam))
+                    {
+                        sessionIdParam = $"fallback-{segments[1]}";
+                    }
+
+                    await ServeFileAsync(stream, segments[1], relPath, totalBytesParam, sessionIdParam, ct);
                 }
                 else
                 {
@@ -352,7 +397,7 @@ namespace LudusaviWrap
             return entries;
         }
 
-        private async Task ServeFileAsync(NetworkStream stream, string gameName, string relPath, CancellationToken ct)
+        private async Task ServeFileAsync(NetworkStream stream, string gameName, string relPath, long totalBytesParam, string sessionIdParam, CancellationToken ct)
         {
             bool isCancelled;
             lock (_cancelledLock)
@@ -393,15 +438,30 @@ namespace LudusaviWrap
             string statusLine = "HTTP/1.1 200 OK\r\n";
             string headers = $"Content-Type: application/octet-stream\r\nContent-Length: {fileSize}\r\nConnection: close\r\n\r\n";
 
-            using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            var linkedCt = linkedCts.Token;
+            long totalBytes = totalBytesParam > 0 ? totalBytesParam : fileSize;
 
-            var upload = new ActiveUpload(gameName, relPath, fileSize, linkedCts);
+            ActiveUpload upload;
             lock (_uploadsLock)
             {
-                _activeUploads.Add(upload);
+                upload = _activeUploads.FirstOrDefault(u => u.Guid == sessionIdParam)!;
+                if (upload == null)
+                {
+                    var sessionCts = new CancellationTokenSource();
+                    upload = new ActiveUpload(gameName, relPath, totalBytes, sessionCts)
+                    {
+                        Guid = sessionIdParam,
+                        ActiveCount = 0
+                    };
+                    _activeUploads.Add(upload);
+                }
+                upload.ActiveCount++;
+                upload.LastActive = DateTime.UtcNow;
+                upload.RelativePath = relPath;
             }
             NotifyUploadsChanged();
+
+            using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct, upload.Cts.Token);
+            var linkedCt = linkedCts.Token;
 
             try
             {
@@ -414,7 +474,11 @@ namespace LudusaviWrap
                 while ((read = await fs.ReadAsync(buf, linkedCt)) > 0)
                 {
                     await stream.WriteAsync(buf.AsMemory(0, read), linkedCt);
-                    upload.BytesSent += read;
+                    lock (_uploadsLock)
+                    {
+                        upload.BytesSent += read;
+                        upload.LastActive = DateTime.UtcNow;
+                    }
                     NotifyUploadsChanged();
                 }
             }
@@ -422,7 +486,8 @@ namespace LudusaviWrap
             {
                 lock (_uploadsLock)
                 {
-                    _activeUploads.Remove(upload);
+                    upload.ActiveCount = Math.Max(0, upload.ActiveCount - 1);
+                    upload.LastActive = DateTime.UtcNow;
                 }
                 linkedCts.Dispose();
                 NotifyUploadsChanged();
@@ -608,6 +673,7 @@ namespace LudusaviWrap
             IProgress<LanDownloadProgress>? progress,
             CancellationToken ct)
         {
+            string sessionId = System.Guid.NewGuid().ToString();
             progress?.Report(new LanDownloadProgress { Status = "Requesting game file list..." });
 
             var manifest = await GetManifestAsync(peer, gameName, ct);
@@ -681,7 +747,7 @@ namespace LudusaviWrap
                     string tmpPath = localPath + ".lanpart";
 
                     using var http = MakeHttpClient(peer);
-                    string url = $"http://{peer.IPAddress}:{peer.Port}/games/{Uri.EscapeDataString(gameName)}/files/{Uri.EscapeDataString(entry.RelativePath)}";
+                    string url = $"http://{peer.IPAddress}:{peer.Port}/games/{Uri.EscapeDataString(gameName)}/files/{Uri.EscapeDataString(entry.RelativePath)}?sessionId={sessionId}&totalBytes={totalBytes}";
 
                     using var response = await http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, queueCt);
                     response.EnsureSuccessStatusCode();

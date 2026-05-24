@@ -429,7 +429,10 @@ namespace LudusaviWrap
 
         private void LanServer_UploadsChanged(object? sender, EventArgs e)
         {
-            Dispatcher.BeginInvoke(new Action(UpdateUploadProgress));
+            if (_uploadTimer == null)
+            {
+                Dispatcher.BeginInvoke(new Action(UpdateUploadProgress));
+            }
         }
 
         private void UpdateUploadProgress()
@@ -445,6 +448,7 @@ namespace LudusaviWrap
                 UploadSeparator.Visibility = Visibility.Collapsed;
                 UploadBarGrid.Visibility = Visibility.Collapsed;
                 _lastBytesSent = 0;
+                _lastUploadTick = DateTime.MinValue;
                 return;
             }
 
@@ -453,7 +457,7 @@ namespace LudusaviWrap
             {
                 _uploadTimer = new System.Windows.Threading.DispatcherTimer
                 {
-                    Interval = TimeSpan.FromSeconds(1)
+                    Interval = TimeSpan.FromMilliseconds(500)
                 };
                 _uploadTimer.Tick += (s, e) => UpdateUploadProgress();
                 _uploadTimer.Start();
@@ -492,7 +496,7 @@ namespace LudusaviWrap
             // Speed calculation
             double speed = 0;
             var now = DateTime.UtcNow;
-            if (_lastUploadTick != DateTime.MinValue && _lastBytesSent > 0)
+            if (_lastUploadTick != DateTime.MinValue && bytesSent >= _lastBytesSent)
             {
                 double elapsed = (now - _lastUploadTick).TotalSeconds;
                 if (elapsed > 0)
