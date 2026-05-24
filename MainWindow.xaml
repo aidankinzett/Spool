@@ -37,6 +37,8 @@
                 <ColumnDefinition Width="Auto"/>
                 <ColumnDefinition Width="8"/>
                 <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="8"/>
+                <ColumnDefinition Width="Auto"/>
             </Grid.ColumnDefinitions>
             <TextBlock Text="My Library"
                        FontSize="20"
@@ -48,8 +50,13 @@
                        Content="Add Game"
                        Appearance="Primary"
                        Click="AddGame_Click"/>
-            <ui:Button x:Name="SettingsButton"
+            <ui:Button x:Name="LanDownloadButton"
                        Grid.Column="3"
+                       Content="LAN Download"
+                       Appearance="Secondary"
+                       Click="LanDownload_Click"/>
+            <ui:Button x:Name="SettingsButton"
+                       Grid.Column="5"
                        Content="Settings"
                        Appearance="Secondary"
                        Click="Settings_Click"/>
@@ -101,6 +108,8 @@
                                         <MenuItem Header="Add to Steam" Click="ContextAddToSteam_Click"/>
                                         <Separator/>
                                         <MenuItem Header="Open Game Folder" Click="ContextOpenFolder_Click"/>
+                                        <MenuItem Header="Set Game Folder (LAN Share)" Click="ContextSetFolder_Click"/>
+                                        <Separator/>
                                         <MenuItem Header="Remove from Library" Click="ContextRemove_Click"/>
                                     </ContextMenu>
                                 </ui:Card.ContextMenu>

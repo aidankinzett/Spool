@@ -38,6 +38,10 @@ namespace LudusaviWrap
             SyncApiKeyBox.Password  = _config.Data.SyncServerApiKey;
             DeviceNameTextBox.Text  = _config.Data.DeviceName;
 
+            LanSwitch.IsChecked        = _config.Data.LanShareEnabled;
+            LanPortTextBox.Text        = _config.Data.LanSharePort.ToString();
+            LanInstallDirTextBox.Text  = _config.Data.LanInstallDir;
+
             // Populate theme ComboBox
             SelectThemeComboItem(_config.Data.Theme);
             _themeComboInitialized = true;
@@ -45,6 +49,7 @@ namespace LudusaviWrap
             // Update UI state based on switches
             UpdateSgdbUiState();
             UpdateSyncUiState();
+            UpdateLanUiState();
         }
 
         private void SelectThemeComboItem(string theme)
@@ -98,6 +103,28 @@ namespace LudusaviWrap
             if (SyncFieldsGrid == null) return;
             bool enabled = SyncSwitch.IsChecked ?? false;
             SyncFieldsGrid.IsEnabled = enabled;
+        }
+
+        private void LanSwitch_Changed(object sender, RoutedEventArgs e)
+        {
+            UpdateLanUiState();
+        }
+
+        private void UpdateLanUiState()
+        {
+            if (LanFieldsGrid == null) return;
+            LanFieldsGrid.IsEnabled = LanSwitch.IsChecked ?? false;
+        }
+
+        private void BrowseLanInstallDir_Click(object sender, RoutedEventArgs e)
+        {
+            var dialog = new OpenFolderDialog
+            {
+                Title = "Select default folder for LAN game downloads",
+                Multiselect = false
+            };
+            if (dialog.ShowDialog() == true)
+                LanInstallDirTextBox.Text = dialog.FolderName;
         }
 
         private void BrowseLudusavi_Click(object sender, RoutedEventArgs e)
@@ -157,6 +184,13 @@ namespace LudusaviWrap
                 themeValue = tag;
             }
 
+            // Validate LAN port
+            if (!int.TryParse(LanPortTextBox.Text.Trim(), out int lanPort) || lanPort < 1024 || lanPort > 65534)
+            {
+                ShowError("LAN port must be a number between 1024 and 65534.");
+                return;
+            }
+
             // Save back to configuration
             _config.Data.LudusaviPath       = path;
             _config.Data.SteamGridDbEnabled = sgdbEnabled;
@@ -167,6 +201,9 @@ namespace LudusaviWrap
             _config.Data.SyncServerApiKey   = SyncApiKeyBox.Password.Trim();
             if (!string.IsNullOrWhiteSpace(DeviceNameTextBox.Text))
                 _config.Data.DeviceName     = DeviceNameTextBox.Text.Trim();
+            _config.Data.LanShareEnabled    = LanSwitch.IsChecked ?? false;
+            _config.Data.LanSharePort       = lanPort;
+            _config.Data.LanInstallDir      = LanInstallDirTextBox.Text.Trim();
             _config.Save();
 
             DialogResult = true;

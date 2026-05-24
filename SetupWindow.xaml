@@ -26,6 +26,7 @@
                 <RowDefinition Height="Auto"/> <!-- SteamGridDB card -->
                 <RowDefinition Height="Auto"/> <!-- Appearance card -->
                 <RowDefinition Height="Auto"/> <!-- Sync Server card -->
+                <RowDefinition Height="Auto"/> <!-- LAN Share card -->
                 <RowDefinition Height="Auto"/> <!-- Error label -->
                 <RowDefinition Height="Auto"/> <!-- Action buttons -->
             </Grid.RowDefinitions>
@@ -188,6 +189,67 @@
                 </StackPanel>
             </ui:Card>
 
+            <!-- LAN Share card -->
+            <ui:Card Margin="0,0,0,12" Grid.Row="4">
+                <StackPanel>
+                    <Grid Margin="0,0,0,4">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="LAN Game Transfer"
+                                   FontWeight="SemiBold"
+                                   Grid.Column="0"
+                                   VerticalAlignment="Center"/>
+                        <ui:ToggleSwitch x:Name="LanSwitch"
+                                         Checked="LanSwitch_Changed"
+                                         Unchecked="LanSwitch_Changed"
+                                         Grid.Column="1"
+                                         VerticalAlignment="Center"/>
+                    </Grid>
+
+                    <TextBlock Text="Share game files with other devices on your local network."
+                               Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                               FontSize="11"
+                               Margin="0,0,0,12"/>
+
+                    <Grid x:Name="LanFieldsGrid">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                        </Grid.RowDefinitions>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+
+                        <TextBlock Text="Port:"
+                                   VerticalAlignment="Center"
+                                   Margin="0,0,8,8"
+                                   Grid.Row="0" Grid.Column="0"/>
+                        <ui:TextBox x:Name="LanPortTextBox"
+                                    PlaceholderText="47632"
+                                    Margin="0,0,0,8"
+                                    Grid.Row="0" Grid.Column="1" Grid.ColumnSpan="2"/>
+
+                        <TextBlock Text="Default install dir:"
+                                   VerticalAlignment="Center"
+                                   Margin="0,0,8,0"
+                                   Grid.Row="1" Grid.Column="0"/>
+                        <ui:TextBox x:Name="LanInstallDirTextBox"
+                                    IsReadOnly="True"
+                                    PlaceholderText="Where downloads go by default..."
+                                    Margin="0,0,8,0"
+                                    Grid.Row="1" Grid.Column="1"/>
+                        <ui:Button Content="Browse"
+                                   Appearance="Secondary"
+                                   Click="BrowseLanInstallDir_Click"
+                                   Grid.Row="1" Grid.Column="2"/>
+                    </Grid>
+                </StackPanel>
+            </ui:Card>
+
             <!-- Error label -->
             <TextBlock x:Name="ErrorLabel"
                        Foreground="#FF5F5F"
@@ -195,12 +257,12 @@
                        FontWeight="SemiBold"
                        Margin="0,0,0,12"
                        Visibility="Collapsed"
-                       Grid.Row="4"/>
+                       Grid.Row="5"/>
 
             <!-- Action buttons -->
             <StackPanel Orientation="Horizontal"
                         HorizontalAlignment="Center"
-                        Grid.Row="5">
+                        Grid.Row="6">
                 <ui:Button Content="Save &amp; Continue"
                            Appearance="Primary"
                            Width="160"

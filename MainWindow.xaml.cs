@@ -98,6 +98,7 @@ namespace LudusaviWrap
         private readonly ObservableCollection<GameEntry> _games = new();
         private SuccessWindow? _successWindow;
         private bool _updateCheckSubscribed = false;
+        private readonly LanShareServer _lanServer;
 
         public MainWindow(Config config, GameLibrary library)
         {
@@ -106,9 +107,12 @@ namespace LudusaviWrap
             _library = library;
             Title = $"Ludusavi Wrap v{Version}";
 
+            _lanServer = new LanShareServer(config.Data.DeviceName, config.Data.DeviceId);
+
             GamesGrid.ItemsSource = _games;
             LoadGames();
-            Loaded += MainWindow_Loaded;
+            Loaded  += MainWindow_Loaded;
+            Closing += MainWindow_Closing;
         }
 
         private void LoadGames()
@@ -126,8 +130,28 @@ namespace LudusaviWrap
             LibraryScrollViewer.Visibility = empty ? Visibility.Collapsed : Visibility.Visible;
         }
 
+        private void MainWindow_Closing(object? sender, System.ComponentModel.CancelEventArgs e)
+        {
+            _lanServer.Stop();
+        }
+
+        private void StartLanServerIfEnabled()
+        {
+            if (!_config.Data.LanShareEnabled) return;
+            try
+            {
+                _lanServer.Start(() => _library.Entries, _config.Data.LanSharePort);
+            }
+            catch (Exception ex)
+            {
+                App.Log($"LAN server failed to start: {ex.Message}");
+            }
+        }
+
         private void MainWindow_Loaded(object sender, RoutedEventArgs e)
         {
+            StartLanServerIfEnabled();
+
             if (System.Version.TryParse(Version, out var parsedVersion))
                 AutoUpdaterDotNET.AutoUpdater.InstalledVersion = parsedVersion;
 
@@ -345,7 +369,38 @@ namespace LudusaviWrap
             _library.Remove(entry.Id);
             var toRemove = _games.FirstOrDefault(g => g.Id == entry.Id);
             if (toRemove != null) _games.Remove(toRemove);
+            _lanServer.InvalidateManifestCache();
             UpdateEmptyState();
+        }
+
+        private void ContextSetFolder_Click(object sender, RoutedEventArgs e)
+        {
+            var entry = GetEntryFromContextMenu(sender);
+            if (entry == null) return;
+
+            var dialog = new Microsoft.Win32.OpenFolderDialog
+            {
+                Title = $"Select game folder for \"{entry.GameName}\" (used for LAN sharing)",
+                Multiselect = false
+            };
+            if (dialog.ShowDialog() != true) return;
+
+            entry.GameFolderPath = dialog.FolderName;
+            _library.Update(entry);
+            _lanServer.InvalidateManifestCache();
+
+            MessageBox.Show($"Game folder set.\n{entry.GameName} is now shared on LAN.",
+                "LAN Share", MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+
+        private void LanDownload_Click(object sender, RoutedEventArgs e)
+        {
+            var dlg = new LanDownloadWindow(_config, _library);
+            dlg.Owner = this;
+            dlg.ShowDialog();
+
+            // Refresh library in case user added a game during download
+            LoadGames();
         }
     }
 }

@@ -61,6 +61,9 @@ namespace LudusaviWrap
             set { _syncStatus = value; OnPropertyChanged(); }
         }
 
+        [JsonPropertyName("game_folder_path")]
+        public string? GameFolderPath { get; set; }
+
         public event PropertyChangedEventHandler? PropertyChanged;
         private void OnPropertyChanged([CallerMemberName] string? name = null)
             => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
