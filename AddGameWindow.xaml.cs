@@ -347,14 +347,14 @@ namespace LudusaviWrap
                     return;
                 }
 
-                string? steamPath = SteamIntegration.GetSteamInstallPath();
+                string? steamPath = await Task.Run(() => SteamIntegration.GetSteamInstallPath());
                 if (steamPath == null)
                 {
                     ShowStatus("Steam installation not found. Is Steam installed?", success: false);
                     return;
                 }
 
-                var users = SteamIntegration.GetSteamUsers(steamPath);
+                var users = await Task.Run(() => SteamIntegration.GetSteamUsers(steamPath));
                 if (users.Count == 0)
                 {
                     ShowStatus("No Steam user profiles found. Launch Steam at least once to create your profile.", success: false);
@@ -374,7 +374,7 @@ namespace LudusaviWrap
                 VDFParser.Models.VDFEntry[] entries;
                 try
                 {
-                    entries = SteamIntegration.ReadShortcuts(targetUser.ShortcutsPath);
+                    entries = await Task.Run(() => SteamIntegration.ReadShortcuts(targetUser.ShortcutsPath));
                 }
                 catch (Exception ex)
                 {
@@ -387,7 +387,7 @@ namespace LudusaviWrap
 
                 try
                 {
-                    SteamIntegration.WriteShortcuts(targetUser.ShortcutsPath, entries);
+                    await Task.Run(() => SteamIntegration.WriteShortcuts(targetUser.ShortcutsPath, entries));
                 }
                 catch (Exception ex)
                 {

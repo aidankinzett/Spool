@@ -81,7 +81,10 @@ namespace LudusaviWrap
                         Entries = loaded;
                 }
             }
-            catch { }
+            catch (Exception ex)
+            {
+                App.Log($"GameLibrary.Load failed: {ex.Message}");
+            }
         }
 
         public void Save()
@@ -97,7 +100,10 @@ namespace LudusaviWrap
                 else
                     File.Move(tmpPath, LibraryPath);
             }
-            catch { }
+            catch (Exception ex)
+            {
+                App.Log($"GameLibrary.Save failed: {ex.Message}");
+            }
         }
 
         public void Add(GameEntry entry)

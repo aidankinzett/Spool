@@ -216,7 +216,7 @@ namespace LudusaviWrap
                 return;
             }
 
-            string? steamPath = SteamIntegration.GetSteamInstallPath();
+            string? steamPath = await Task.Run(() => SteamIntegration.GetSteamInstallPath());
             if (steamPath == null)
             {
                 MessageBox.Show("Steam installation not found. Is Steam installed?",
@@ -224,7 +224,7 @@ namespace LudusaviWrap
                 return;
             }
 
-            var users = SteamIntegration.GetSteamUsers(steamPath);
+            var users = await Task.Run(() => SteamIntegration.GetSteamUsers(steamPath));
             if (users.Count == 0)
             {
                 MessageBox.Show("No Steam user profiles found. Launch Steam at least once to create your profile.",
@@ -245,7 +245,7 @@ namespace LudusaviWrap
             VDFParser.Models.VDFEntry[] entries;
             try
             {
-                entries = SteamIntegration.ReadShortcuts(targetUser.ShortcutsPath);
+                entries = await Task.Run(() => SteamIntegration.ReadShortcuts(targetUser.ShortcutsPath));
             }
             catch (Exception ex)
             {
@@ -259,7 +259,7 @@ namespace LudusaviWrap
 
             try
             {
-                SteamIntegration.WriteShortcuts(targetUser.ShortcutsPath, entries);
+                await Task.Run(() => SteamIntegration.WriteShortcuts(targetUser.ShortcutsPath, entries));
             }
             catch (Exception ex)
             {
