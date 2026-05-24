@@ -246,18 +246,14 @@ namespace LudusaviWrap
 
             process.OutputDataReceived += (sender, e) =>
             {
-                if (e.Data is null)
-                    outputClosedTcs.TrySetResult(true);
-                else
-                    outputBuilder.AppendLine(e.Data);
+                if (e.Data is null) outputClosedTcs.TrySetResult(true);
+                else outputBuilder.AppendLine(e.Data);
             };
 
             process.ErrorDataReceived += (sender, e) =>
             {
-                if (e.Data is null)
-                    errorClosedTcs.TrySetResult(true);
-                else
-                    errorBuilder.AppendLine(e.Data);
+                if (e.Data is null) errorClosedTcs.TrySetResult(true);
+                else errorBuilder.AppendLine(e.Data);
             };
 
             process.Start();
