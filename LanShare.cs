@@ -117,6 +117,7 @@ namespace LudusaviWrap
         private readonly List<ActiveUpload> _activeUploads = new();
         private readonly object _uploadsLock = new();
         public event EventHandler? UploadsChanged;
+        public event EventHandler? PeerActivityDetected;
 
         private readonly HashSet<string> _cancelledGames = new();
         private readonly object _cancelledLock = new();
@@ -556,9 +557,19 @@ namespace LudusaviWrap
                     var result = await _udpServer!.ReceiveAsync(ct);
                     string json = Encoding.UTF8.GetString(result.Buffer);
 
-                    // If it's a query, respond with our announce
                     if (json.Contains("\"query\""))
+                    {
                         await SendAnnounceAsync(result.RemoteEndPoint, ct);
+                        PeerActivityDetected?.Invoke(this, EventArgs.Empty);
+                    }
+                    else if (json.Contains("\"announce\""))
+                    {
+                        var announce = JsonSerializer.Deserialize(json, LanJsonContext.Default.LanAnnounce);
+                        if (announce != null && announce.DeviceId != _deviceId)
+                        {
+                            PeerActivityDetected?.Invoke(this, EventArgs.Empty);
+                        }
+                    }
                 }
                 catch (OperationCanceledException) { break; }
                 catch { /* ignore malformed datagrams */ }

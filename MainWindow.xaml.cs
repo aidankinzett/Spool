@@ -140,6 +140,7 @@ namespace LudusaviWrap
         private readonly LanShareServer _lanServer;
         private readonly LanShareClient _lanClient;
         private CancellationTokenSource? _scanCts;
+        private DateTime _lastScanTime = DateTime.MinValue;
 
         public static readonly DependencyProperty IsLanScanningProperty =
             DependencyProperty.Register(nameof(IsLanScanning), typeof(bool), typeof(MainWindow), new PropertyMetadata(false));
@@ -168,6 +169,7 @@ namespace LudusaviWrap
 
             _lanServer = new LanShareServer(config.Data.DeviceName, config.Data.DeviceId);
             _lanServer.UploadsChanged += LanServer_UploadsChanged;
+            _lanServer.PeerActivityDetected += LanServer_PeerActivityDetected;
             _lanClient = new LanShareClient(config.Data.DeviceName, config.Data.DeviceId);
 
             GamesGrid.ItemsSource = _games;
@@ -272,6 +274,7 @@ namespace LudusaviWrap
 
         private async Task ScanLanPeersAsync()
         {
+            _lastScanTime = DateTime.UtcNow;
             Dispatcher.Invoke(() => IsLanScanning = true);
             try
             {
@@ -287,6 +290,15 @@ namespace LudusaviWrap
             finally
             {
                 Dispatcher.Invoke(() => IsLanScanning = false);
+            }
+        }
+
+        private void LanServer_PeerActivityDetected(object? sender, EventArgs e)
+        {
+            // Rate limit auto-scans to once every 10 seconds to avoid UDP scan storms
+            if ((DateTime.UtcNow - _lastScanTime).TotalSeconds > 10)
+            {
+                _ = Dispatcher.BeginInvoke(new Action(async () => await ScanLanPeersAsync()));
             }
         }
 
