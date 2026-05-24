@@ -5,14 +5,16 @@
         xmlns:local="clr-namespace:LudusaviWrap"
         Title="Settings"
         Width="880"
-        SizeToContent="Height"
-        ResizeMode="NoResize"
+        Height="650"
+        MinHeight="450"
+        MinWidth="800"
+        ResizeMode="CanResize"
         WindowStartupLocation="CenterScreen">
 
     <Grid>
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
-            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
         </Grid.RowDefinitions>
 
         <ui:TitleBar Title="Settings"
@@ -22,13 +24,17 @@
 
         <Grid Grid.Row="1" Margin="24,12,24,24">
             <Grid.RowDefinitions>
-                <RowDefinition Height="Auto"/> <!-- Columns container -->
+                <RowDefinition Height="*"/> <!-- Columns container -->
                 <RowDefinition Height="Auto"/> <!-- Error label -->
                 <RowDefinition Height="Auto"/> <!-- Action buttons -->
             </Grid.RowDefinitions>
 
-            <!-- Columns container -->
-            <Grid Grid.Row="0" Margin="0,0,0,16">
+            <!-- Columns container wrapped in ScrollViewer -->
+            <ScrollViewer Grid.Row="0"
+                          VerticalScrollBarVisibility="Auto"
+                          HorizontalScrollBarVisibility="Disabled"
+                          Margin="0,0,0,16">
+                <Grid Margin="0,0,12,0">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*"/>
                     <ColumnDefinition Width="16"/>
@@ -373,6 +379,7 @@
                     </ui:Card>
                 </StackPanel>
             </Grid>
+            </ScrollViewer>
 
             <!-- Error label -->
             <TextBlock x:Name="ErrorLabel"
