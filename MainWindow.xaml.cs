@@ -203,6 +203,8 @@ namespace LudusaviWrap
         private void MainWindow_Closing(object? sender, System.ComponentModel.CancelEventArgs e)
         {
             _scanCts?.Cancel();
+            _scanCts?.Dispose();
+            _downloadCts?.Dispose();
             _lanServer.Stop();
         }
 
@@ -745,6 +747,7 @@ namespace LudusaviWrap
             DownloadBytesText.Text = "";
             DownloadProgressBar.Value = 0;
 
+            _downloadCts?.Dispose();
             _downloadCts = new CancellationTokenSource();
             var ct = _downloadCts.Token;
 

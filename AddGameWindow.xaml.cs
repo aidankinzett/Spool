@@ -213,12 +213,13 @@ namespace LudusaviWrap
                     return;
                 }
 
+                string folder = FolderPathTextBox.Text.Trim();
                 var entry = new GameEntry
                 {
                     GameName       = name,
                     ExePath        = exe,
                     SafeName       = safe,
-                    GameFolderPath = FolderPathTextBox.Text.Trim().Length > 0 ? FolderPathTextBox.Text.Trim() : null,
+                    GameFolderPath = folder.Length > 0 ? folder : null,
                     AddedAt        = DateTime.UtcNow
                 };
                 _library.Add(entry);
@@ -282,10 +283,11 @@ namespace LudusaviWrap
                 string launcherExePath;
                 try
                 {
+                    string folder = FolderPathTextBox.Text.Trim();
                     var existing = _library.FindByName(name);
-                    entry = existing ?? new GameEntry { GameName = name, ExePath = exe, SafeName = safe, GameFolderPath = FolderPathTextBox.Text.Trim().Length > 0 ? FolderPathTextBox.Text.Trim() : null, AddedAt = DateTime.UtcNow };
-                    if (existing != null && string.IsNullOrEmpty(existing.GameFolderPath) && FolderPathTextBox.Text.Trim().Length > 0)
-                        entry.GameFolderPath = FolderPathTextBox.Text.Trim();
+                    entry = existing ?? new GameEntry { GameName = name, ExePath = exe, SafeName = safe, GameFolderPath = folder.Length > 0 ? folder : null, AddedAt = DateTime.UtcNow };
+                    if (existing != null && string.IsNullOrEmpty(existing.GameFolderPath) && folder.Length > 0)
+                        entry.GameFolderPath = folder;
                     launcherExePath = await LauncherGenerator.GenerateLauncherExeAsync(entry, _config);
                     entry.LauncherExePath = launcherExePath;
                     if (existing == null) _library.Add(entry); else _library.Update(entry);
@@ -356,10 +358,11 @@ namespace LudusaviWrap
                 string launcherExePath;
                 try
                 {
+                    string folder = FolderPathTextBox.Text.Trim();
                     var existing = _library.FindByName(name);
-                    entry = existing ?? new GameEntry { GameName = name, ExePath = exe, SafeName = safe, GameFolderPath = FolderPathTextBox.Text.Trim().Length > 0 ? FolderPathTextBox.Text.Trim() : null, AddedAt = DateTime.UtcNow };
-                    if (existing != null && string.IsNullOrEmpty(existing.GameFolderPath) && FolderPathTextBox.Text.Trim().Length > 0)
-                        entry.GameFolderPath = FolderPathTextBox.Text.Trim();
+                    entry = existing ?? new GameEntry { GameName = name, ExePath = exe, SafeName = safe, GameFolderPath = folder.Length > 0 ? folder : null, AddedAt = DateTime.UtcNow };
+                    if (existing != null && string.IsNullOrEmpty(existing.GameFolderPath) && folder.Length > 0)
+                        entry.GameFolderPath = folder;
                     launcherExePath = await LauncherGenerator.GenerateLauncherExeAsync(entry, _config);
                     entry.LauncherExePath = launcherExePath;
                     if (existing == null) _library.Add(entry); else _library.Update(entry);

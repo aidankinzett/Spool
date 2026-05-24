@@ -500,7 +500,7 @@ namespace LudusaviWrap
             ActiveUpload upload;
             lock (_uploadsLock)
             {
-                upload = _activeUploads.FirstOrDefault(u => u.Guid == sessionIdParam)!;
+                upload = _activeUploads.FirstOrDefault(u => u.Guid == sessionIdParam);
                 if (upload == null)
                 {
                     var sessionCts = new CancellationTokenSource();
