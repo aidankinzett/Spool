@@ -2,7 +2,7 @@
 ; To build: iscc installer.iss
 
 #define AppExe "bin\Release\net9.0-windows\win-x64\publish\ludusavi-wrap.exe"
-#define AppVersion GetFileVersion(AppExe)
+#define AppVersion GetVersionNumbersString(AppExe)
 
 [Setup]
 AppName=Ludusavi Wrap
