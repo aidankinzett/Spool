@@ -13,9 +13,6 @@
 
     <Window.Resources>
         <local:StringToImageConverter x:Key="StringToImageConverter"/>
-        <local:SyncStatusToBrushConverter x:Key="SyncStatusToBrushConverter"/>
-        <local:SyncStatusToLabelConverter x:Key="SyncStatusToLabelConverter"/>
-        <local:SyncStatusToVisibilityConverter x:Key="SyncStatusToVisibilityConverter"/>
         <local:BooleanToVisibilityConverter x:Key="BooleanToVisibilityConverter"/>
         <local:InverseBooleanToVisibilityConverter x:Key="InverseBooleanToVisibilityConverter"/>
 
@@ -181,19 +178,6 @@
                                                        ToolTip="{Binding GameName}"
                                                        Height="34"
                                                        Margin="0,0,0,2"/>
-                                            <StackPanel Orientation="Horizontal"
-                                                        Margin="0,0,0,4"
-                                                        Visibility="{Binding SyncStatus, Converter={StaticResource SyncStatusToVisibilityConverter}}"
-                                                        ToolTip="{Binding SyncStatus, Converter={StaticResource SyncStatusToLabelConverter}}">
-                                                <Ellipse Width="6" Height="6"
-                                                         VerticalAlignment="Center"
-                                                         Margin="0,0,4,0"
-                                                         Fill="{Binding SyncStatus, Converter={StaticResource SyncStatusToBrushConverter}}"/>
-                                                <TextBlock Text="{Binding SyncStatus, Converter={StaticResource SyncStatusToLabelConverter}}"
-                                                           FontSize="10"
-                                                           VerticalAlignment="Center"
-                                                           Foreground="{Binding SyncStatus, Converter={StaticResource SyncStatusToBrushConverter}}"/>
-                                            </StackPanel>
                                         </StackPanel>
 
                                         <Grid Grid.Row="1" VerticalAlignment="Bottom">

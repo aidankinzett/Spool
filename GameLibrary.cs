@@ -8,19 +8,10 @@ using System.Text.Json.Serialization;
 
 namespace LudusaviWrap
 {
-    public enum SyncStatus
-    {
-        Unknown = 0,
-        Synced = 1,
-        LocalNotSynced = 2,
-        CloudNotSynced = 3
-    }
-
     public class GameEntry : INotifyPropertyChanged
     {
         private string? _coverImagePath;
         private DateTime? _lastPlayedAt;
-        private SyncStatus _syncStatus;
         private bool _isLanCard;
         private List<LanPeer>? _lanPeers;
         private bool _runAsAdmin;
@@ -70,13 +61,6 @@ namespace LudusaviWrap
 
         [JsonPropertyName("launcher_exe_path")]
         public string? LauncherExePath { get; set; }
-
-        [JsonPropertyName("sync_status")]
-        public SyncStatus SyncStatus
-        {
-            get => _syncStatus;
-            set { _syncStatus = value; OnPropertyChanged(); }
-        }
 
         [JsonPropertyName("game_folder_path")]
         public string? GameFolderPath { get; set; }

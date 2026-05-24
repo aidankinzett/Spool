@@ -128,7 +128,6 @@ namespace LudusaviWrap
             if (combinedOutput.Contains("cloudConflict") || combinedOutput.Contains("cloudSyncFailed"))
             {
                 DismissProgressToast();
-                UpdateSyncStatus(SyncStatus.CloudNotSynced);
                 var ans = MessageBox.Show($"Cloud sync conflict detected for '{_gameName}'. Open Ludusavi to resolve?",
                                           "Ludusavi - Cloud Sync Conflict", MessageBoxButton.YesNo, MessageBoxImage.Warning);
                 if (ans == MessageBoxResult.Yes)
@@ -234,7 +233,6 @@ namespace LudusaviWrap
                 {
                     DismissProgressToast();
                     App.Log($"Ludusavi backup cloud conflict for '{_gameName}': {backupCombined.Trim()}");
-                    UpdateSyncStatus(SyncStatus.LocalNotSynced);
                     MessageBox.Show($"Cloud sync conflict detected during backup for '{_gameName}'. Your saves are backed up locally but may not be synced to the cloud. Open Ludusavi to resolve.",
                                     "Ludusavi - Cloud Sync Warning", MessageBoxButton.OK, MessageBoxImage.Warning);
                 }
@@ -243,14 +241,12 @@ namespace LudusaviWrap
                     DismissProgressToast();
                     string details = string.IsNullOrWhiteSpace(backupResult.Error) ? backupResult.Output : backupResult.Error;
                     App.Log($"Ludusavi backup failed for '{_gameName}' (exit {backupResult.ExitCode}): {details.Trim()}");
-                    UpdateSyncStatus(SyncStatus.LocalNotSynced);
                     MessageBox.Show($"Ludusavi backup failed. Your saves may not have been backed up.\n\nDetails:\n{details.Trim()}",
                                     "Ludusavi Warning", MessageBoxButton.OK, MessageBoxImage.Warning);
                 }
                 else
                 {
                     DismissProgressToast();
-                    UpdateSyncStatus(SyncStatus.Synced);
                     ShowToast("Saves Backed Up", $"{_gameName} saves backed up successfully.");
                 }
             }
@@ -258,7 +254,6 @@ namespace LudusaviWrap
             {
                 DismissProgressToast();
                 App.Log($"Failed to run Ludusavi backup for '{_gameName}': {ex}");
-                UpdateSyncStatus(SyncStatus.LocalNotSynced);
                 MessageBox.Show($"Failed to run Ludusavi backup:\n{ex.Message}", "Ludusavi Warning", MessageBoxButton.OK, MessageBoxImage.Warning);
             }
 
@@ -267,29 +262,6 @@ namespace LudusaviWrap
                 _ = _lockClient.ReleaseLockAsync(_gameName);
         }
 
-        private void UpdateSyncStatus(SyncStatus status)
-        {
-            if (_entry != null && _library != null)
-            {
-                _entry.SyncStatus = status;
-                _library.Update(_entry);
-                return;
-            }
-            try
-            {
-                var lib = new GameLibrary();
-                var e = lib.FindByName(_gameName);
-                if (e != null)
-                {
-                    e.SyncStatus = status;
-                    lib.Update(e);
-                }
-            }
-            catch (Exception ex)
-            {
-                App.Log($"UpdateSyncStatus failed: {ex.Message}");
-            }
-        }
 
         private void ShowOrUpdateProgressToast(string status)
         {
