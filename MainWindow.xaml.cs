@@ -144,6 +144,7 @@ namespace LudusaviWrap
         private readonly LanShareServer _lanServer;
         private readonly LanShareClient _lanClient;
         private CancellationTokenSource? _scanCts;
+        private CancellationTokenSource? _uiCleanupCts;
         private long _lastScanTimeTicks = DateTime.MinValue.Ticks;
 
         public static readonly DependencyProperty IsLanScanningProperty =
@@ -204,6 +205,8 @@ namespace LudusaviWrap
         {
             _scanCts?.Cancel();
             _scanCts?.Dispose();
+            _uiCleanupCts?.Cancel();
+            _uiCleanupCts?.Dispose();
             _downloadCts?.Dispose();
             _lanServer.Stop();
         }
@@ -855,14 +858,22 @@ namespace LudusaviWrap
             {
                 _isDownloading = false;
                 CancelDownloadButton.Visibility = Visibility.Collapsed;
-                _ = Task.Delay(TimeSpan.FromSeconds(5)).ContinueWith(_ => Dispatcher.Invoke(() =>
+                _uiCleanupCts?.Cancel();
+                _uiCleanupCts?.Dispose();
+                _uiCleanupCts = new CancellationTokenSource();
+                var cleanupToken = _uiCleanupCts.Token;
+                _ = Task.Delay(TimeSpan.FromSeconds(5), cleanupToken).ContinueWith(t =>
                 {
-                    if (!_isDownloading)
+                    if (cleanupToken.IsCancellationRequested) return;
+                    Dispatcher.Invoke(() =>
                     {
-                        DownloadSeparator.Visibility = Visibility.Collapsed;
-                        DownloadBarGrid.Visibility = Visibility.Collapsed;
-                    }
-                }));
+                        if (!_isDownloading)
+                        {
+                            DownloadSeparator.Visibility = Visibility.Collapsed;
+                            DownloadBarGrid.Visibility = Visibility.Collapsed;
+                        }
+                    });
+                }, TaskScheduler.Default);
             }
         }
 
