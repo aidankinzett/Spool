@@ -32,9 +32,10 @@ namespace LudusaviWrap
 
     public class LanFileEntry
     {
-        [JsonPropertyName("path")]   public string RelativePath { get; set; } = "";
-        [JsonPropertyName("size")]   public long   Size         { get; set; }
-        [JsonPropertyName("sha256")] public string Sha256       { get; set; } = "";
+        [JsonPropertyName("path")]     public string RelativePath { get; set; } = "";
+        [JsonPropertyName("size")]     public long   Size         { get; set; }
+        [JsonPropertyName("sha256")]   public string Sha256       { get; set; } = "";
+        [JsonPropertyName("modified")] public long   LastModified { get; set; }
     }
 
     public class LanPeer
@@ -441,15 +442,17 @@ namespace LudusaviWrap
 
         private static async Task<List<LanFileEntry>> BuildManifestAsync(string folderPath, CancellationToken ct)
         {
+            await Task.Yield();
             var entries = new List<LanFileEntry>();
             var files = Directory.GetFiles(folderPath, "*", SearchOption.AllDirectories);
             foreach (var file in files)
             {
                 ct.ThrowIfCancellationRequested();
                 string rel = Path.GetRelativePath(folderPath, file).Replace('\\', '/');
-                long size = new FileInfo(file).Length;
-                string sha256 = await ComputeSha256Async(file, ct);
-                entries.Add(new LanFileEntry { RelativePath = rel, Size = size, Sha256 = sha256 });
+                var fi = new FileInfo(file);
+                long size = fi.Length;
+                long lastModified = new DateTimeOffset(fi.LastWriteTimeUtc).ToUnixTimeMilliseconds();
+                entries.Add(new LanFileEntry { RelativePath = rel, Size = size, LastModified = lastModified });
             }
             return entries;
         }
@@ -764,10 +767,15 @@ namespace LudusaviWrap
 
                 string localPath = Path.Combine(destFolder, entry.RelativePath.Replace('/', Path.DirectorySeparatorChar));
                 bool skip = false;
-                if (File.Exists(localPath) && new FileInfo(localPath).Length == entry.Size)
+                if (File.Exists(localPath))
                 {
-                    string localHash = await LanShareServer.ComputeSha256Async(localPath, ct);
-                    skip = string.Equals(localHash, entry.Sha256, StringComparison.OrdinalIgnoreCase);
+                    var fi = new FileInfo(localPath);
+                    if (fi.Length == entry.Size)
+                    {
+                        long localModified = new DateTimeOffset(fi.LastWriteTimeUtc).ToUnixTimeMilliseconds();
+                        // Allow a small tolerance of 2 seconds (2000 ms) for filesystem timestamp resolution differences
+                        skip = Math.Abs(localModified - entry.LastModified) < 2000;
+                    }
                 }
                 if (!skip)
                 {
@@ -840,6 +848,16 @@ namespace LudusaviWrap
 
                     if (File.Exists(localPath)) File.Delete(localPath);
                     File.Move(tmpPath, localPath);
+
+                    try
+                    {
+                        var destDateTime = DateTimeOffset.FromUnixTimeMilliseconds(entry.LastModified).UtcDateTime;
+                        File.SetLastWriteTimeUtc(localPath, destDateTime);
+                    }
+                    catch (Exception ex)
+                    {
+                        App.Log($"Failed to set LastWriteTime on {localPath}: {ex.Message}");
+                    }
 
                     prog.FilesCompleted = Interlocked.Increment(ref filesCompleted);
                     progress?.Report(prog);
