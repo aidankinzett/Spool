@@ -43,6 +43,21 @@ namespace LudusaviWrap
         public string? DeviceName { get; set; }
     }
 
+    public class LatestBackupResponse
+    {
+        [JsonPropertyName("found")]
+        public bool Found { get; set; }
+
+        [JsonPropertyName("device_id")]
+        public string? DeviceId { get; set; }
+
+        [JsonPropertyName("device_name")]
+        public string? DeviceName { get; set; }
+
+        [JsonPropertyName("occurred_at")]
+        public string? OccurredAt { get; set; }
+    }
+
     public class HealthResponse
     {
         [JsonPropertyName("ok")]
@@ -71,6 +86,7 @@ namespace LudusaviWrap
     [JsonSerializable(typeof(RegisterRequest))]
     [JsonSerializable(typeof(RegisterResponse))]
     [JsonSerializable(typeof(HealthResponse))]
+    [JsonSerializable(typeof(LatestBackupResponse))]
     internal partial class LockSourceGenerationContext : JsonSerializerContext
     {
     }
@@ -170,6 +186,56 @@ namespace LudusaviWrap
             catch
             {
                 // Fire-and-forget; swallow all errors
+            }
+        }
+
+        public async Task<LatestBackupResponse?> GetLatestBackupEventAsync(string gameName)
+        {
+            try
+            {
+                using var req = BuildRequest(HttpMethod.Get, $"/events/{Uri.EscapeDataString(gameName)}/latest-backup");
+                using var resp = await HttpClient.SendAsync(req);
+                if (!resp.IsSuccessStatusCode) return null;
+                var json = await resp.Content.ReadAsStringAsync();
+                return JsonSerializer.Deserialize(json, LockSourceGenerationContext.Default.LatestBackupResponse);
+            }
+            catch (Exception ex)
+            {
+                App.Log($"GetLatestBackupEventAsync failed for '{gameName}': {ex.Message}");
+                return null;
+            }
+        }
+
+        private HttpRequestMessage BuildEventRequest(string path)
+        {
+            var req = BuildRequest(HttpMethod.Post, path);
+            req.Headers.Add("X-Device-Name", _deviceName);
+            return req;
+        }
+
+        public async Task RecordBackupAsync(string gameName)
+        {
+            try
+            {
+                using var req = BuildEventRequest($"/events/{Uri.EscapeDataString(gameName)}/backup");
+                await HttpClient.SendAsync(req);
+            }
+            catch (Exception ex)
+            {
+                App.Log($"RecordBackupAsync failed for '{gameName}': {ex.Message}");
+            }
+        }
+
+        public async Task RecordRestoreAsync(string gameName)
+        {
+            try
+            {
+                using var req = BuildEventRequest($"/events/{Uri.EscapeDataString(gameName)}/restore");
+                await HttpClient.SendAsync(req);
+            }
+            catch (Exception ex)
+            {
+                App.Log($"RecordRestoreAsync failed for '{gameName}': {ex.Message}");
             }
         }
 

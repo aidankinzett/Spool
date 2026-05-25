@@ -102,16 +102,30 @@ namespace LudusaviWrap
             {
                 ShowOrUpdateProgressToast($"Checking play state for '{_gameName}'...");
                 var lockStatus = await _lockClient.CheckLockAsync(_gameName);
-                if (lockStatus != null && lockStatus.Locked && !lockStatus.Stale &&
-                    lockStatus.DeviceId != _config.Data.DeviceId)
+                if (lockStatus != null && lockStatus.Locked && lockStatus.DeviceId != _config.Data.DeviceId)
                 {
                     string device = lockStatus.DeviceName ?? "another device";
                     DismissProgressToast();
-                    var ans = MessageBox.Show(
-                        $"{device} is currently playing '{_gameName}'.\n\nLaunch anyway?",
-                        "Game Already Running", MessageBoxButton.YesNo, MessageBoxImage.Warning);
-                    if (ans == MessageBoxResult.No)
-                        return;
+
+                    if (!lockStatus.Stale)
+                    {
+                        var ans = MessageBox.Show(
+                            $"{device} is currently playing '{_gameName}'.\n\nLaunch anyway?",
+                            "Game Already Running", MessageBoxButton.YesNo, MessageBoxImage.Warning);
+                        if (ans == MessageBoxResult.No)
+                            return;
+                    }
+                    else
+                    {
+                        // Stale lock — fetch last backup to show how fresh the saves might be
+                        var lastBackup = await _lockClient.GetLatestBackupEventAsync(_gameName);
+                        string backupDetail = lastBackup?.Found == true
+                            ? $"\n\nLast backup: {FormatTimeAgo(lastBackup.OccurredAt)} from {lastBackup.DeviceName}."
+                            : "";
+                        MessageBox.Show(
+                            $"{device}'s session appears to have ended without releasing the lock.{backupDetail}\n\nProceeding with restore.",
+                            "Stale Lock Detected", MessageBoxButton.OK, MessageBoxImage.Information);
+                    }
                 }
             }
 
@@ -163,6 +177,10 @@ namespace LudusaviWrap
                                 "Ludusavi Error", MessageBoxButton.OK, MessageBoxImage.Error);
                 return;
             }
+
+            // Record that this device restored saves for this game
+            if (_lockClient != null)
+                _ = _lockClient.RecordRestoreAsync(_gameName);
 
             // 2. Acquire play state lock before launching
             if (_lockClient != null)
@@ -237,6 +255,8 @@ namespace LudusaviWrap
 
                 if (backupOutput?.Errors?.CloudConflict != null)
                 {
+                    // Local backup succeeded even though cloud conflicted — record it
+                    if (_lockClient != null) _ = _lockClient.RecordBackupAsync(_gameName);
                     DismissProgressToast();
                     App.Log($"Ludusavi backup cloud conflict for '{_gameName}'");
                     var ans = MessageBox.Show($"Cloud sync conflict detected during backup for '{_gameName}'. Your saves are backed up locally. Open Ludusavi to resolve?",
@@ -246,6 +266,8 @@ namespace LudusaviWrap
                 }
                 else if (backupOutput?.Errors?.CloudSyncFailed != null)
                 {
+                    // Local backup succeeded — record it
+                    if (_lockClient != null) _ = _lockClient.RecordBackupAsync(_gameName);
                     DismissProgressToast();
                     App.Log($"Ludusavi backup cloud sync failed for '{_gameName}'");
                     ShowToast("Cloud Sync Failed", $"{_gameName} backed up locally but cloud sync failed.");
@@ -260,6 +282,7 @@ namespace LudusaviWrap
                 }
                 else if (backupOutput?.Overall?.TotalGames > 0)
                 {
+                    if (_lockClient != null) _ = _lockClient.RecordBackupAsync(_gameName);
                     DismissProgressToast();
                     ShowToast("Saves Backed Up", $"{_gameName} saves backed up successfully.");
                 }
@@ -399,6 +422,19 @@ namespace LudusaviWrap
             {
                 return null;
             }
+        }
+
+        private static string FormatTimeAgo(string? isoTimestamp)
+        {
+            if (string.IsNullOrEmpty(isoTimestamp) ||
+                !DateTimeOffset.TryParse(isoTimestamp, out var dt))
+                return "unknown time ago";
+
+            var elapsed = DateTimeOffset.UtcNow - dt.ToUniversalTime();
+            if (elapsed.TotalMinutes < 2)  return "just now";
+            if (elapsed.TotalMinutes < 60) return $"{(int)elapsed.TotalMinutes}m ago";
+            if (elapsed.TotalHours   < 24) return $"{(int)elapsed.TotalHours}h ago";
+            return $"{(int)elapsed.TotalDays}d ago";
         }
 
         private void TryOpenLudusaviGui(string ludusaviPath)

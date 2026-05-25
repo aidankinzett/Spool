@@ -25,6 +25,19 @@ db.exec(`
     last_heartbeat TEXT NOT NULL,
     UNIQUE(user_id, game_name)
   );
+
+  CREATE TABLE IF NOT EXISTS backup_events (
+    id          TEXT PRIMARY KEY,
+    user_id     TEXT NOT NULL REFERENCES users(id),
+    game_name   TEXT NOT NULL,
+    device_id   TEXT NOT NULL,
+    device_name TEXT NOT NULL,
+    event_type  TEXT NOT NULL,
+    occurred_at TEXT NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_backup_events_lookup
+    ON backup_events (user_id, game_name, event_type, occurred_at DESC);
 `);
 
 export interface User {
@@ -32,6 +45,16 @@ export interface User {
   username: string;
   api_key: string;
   created_at: string;
+}
+
+export interface BackupEvent {
+  id: string;
+  user_id: string;
+  game_name: string;
+  device_id: string;
+  device_name: string;
+  event_type: "backup" | "restore";
+  occurred_at: string;
 }
 
 export interface Lock {
@@ -78,5 +101,14 @@ export const queries = {
   ),
   deleteLock: db.prepare(
     "DELETE FROM locks WHERE user_id = ? AND game_name = ? AND device_id = ?"
+  ),
+  insertBackupEvent: db.prepare(
+    `INSERT INTO backup_events (id, user_id, game_name, device_id, device_name, event_type, occurred_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`
+  ),
+  getLatestBackupEvent: db.prepare<[string, string], BackupEvent>(
+    `SELECT * FROM backup_events
+     WHERE user_id = ? AND game_name = ? AND event_type = 'backup'
+     ORDER BY occurred_at DESC LIMIT 1`
   ),
 };
