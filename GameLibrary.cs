@@ -11,6 +11,7 @@ namespace LudusaviWrap
     public class GameEntry : INotifyPropertyChanged
     {
         private string? _coverImagePath;
+        private string? _heroImagePath;
         private DateTime? _lastPlayedAt;
         private bool _isLanCard;
         private List<LanPeer>? _lanPeers;
@@ -47,11 +48,32 @@ namespace LudusaviWrap
         [JsonPropertyName("safe_name")]
         public string SafeName { get; set; } = "";
 
+        private string? MigratePath(string? path)
+        {
+            if (string.IsNullOrEmpty(path)) return path;
+            if (path.Contains("ludusavi-wrap", StringComparison.OrdinalIgnoreCase))
+            {
+                string migrated = path.Replace("ludusavi-wrap", "Spool", StringComparison.OrdinalIgnoreCase);
+                if (File.Exists(migrated))
+                {
+                    return migrated;
+                }
+            }
+            return path;
+        }
+
         [JsonPropertyName("cover_image_path")]
         public string? CoverImagePath
         {
-            get => _coverImagePath;
+            get => MigratePath(_coverImagePath);
             set { _coverImagePath = value; OnPropertyChanged(); }
+        }
+
+        [JsonPropertyName("hero_image_path")]
+        public string? HeroImagePath
+        {
+            get => MigratePath(_heroImagePath);
+            set { _heroImagePath = value; OnPropertyChanged(); }
         }
 
         [JsonPropertyName("added_at")]

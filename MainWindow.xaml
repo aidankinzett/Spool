@@ -11,6 +11,7 @@
 
     <Window.Resources>
         <local:StringToImageConverter x:Key="StringToImageConverter"/>
+        <local:CoverToBackgroundBrushConverter x:Key="CoverToBackgroundBrushConverter"/>
         <local:BooleanToVisibilityConverter x:Key="BoolToVis"/>
         <local:InverseBooleanToVisibilityConverter x:Key="InvBoolToVis"/>
         <local:NullToVisibilityConverter x:Key="NullToVis"/>
@@ -317,7 +318,7 @@
                         </Style>
                     </Ellipse.Style>
                 </Ellipse>
-                <ui:SymbolIcon Symbol="Wifi224" FontSize="10"
+                <ui:SymbolIcon Symbol="Wifi224" FontSize="12"
                                Foreground="{DynamicResource TextFillColorSecondaryBrush}"
                                Margin="0,0,5,0"/>
                 <TextBlock FontSize="11" VerticalAlignment="Center"
@@ -455,7 +456,7 @@
                                                            Margin="0,0,4,0"/>
                                             <TextBlock Text="{Binding LastPlayedAt, Converter={StaticResource RelDate}}"
                                                        FontSize="11" Foreground="#80FFFFFF" VerticalAlignment="Center"/>
-                                            <ui:SymbolIcon Symbol="Wifi224" FontSize="10"
+                                            <ui:SymbolIcon Symbol="Wifi224" FontSize="12"
                                                            Foreground="#7EE2A4" VerticalAlignment="Center"
                                                            Margin="6,0,0,0"
                                                            Visibility="{Binding LanShared, Converter={StaticResource BoolToVis}}"/>
@@ -566,17 +567,13 @@
                         <RowDefinition Height="*"/>
                     </Grid.RowDefinitions>
 
-                    <!-- Hero -->
                     <Grid Grid.Row="0" ClipToBounds="True">
                         <Rectangle>
                             <Rectangle.Fill>
-                                <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
-                                    <GradientStop Color="#3C1A0D" Offset="0"/>
-                                    <GradientStop Color="#08030A" Offset="1"/>
-                                </LinearGradientBrush>
+                                <Binding Path="CoverImagePath" Converter="{StaticResource CoverToBackgroundBrushConverter}"/>
                             </Rectangle.Fill>
                         </Rectangle>
-                        <Image Source="{Binding CoverImagePath, Converter={StaticResource StringToImageConverter}}"
+                        <Image Source="{Binding HeroImagePath, Converter={StaticResource StringToImageConverter}}"
                                Stretch="UniformToFill" Opacity="0.35"/>
                         <Rectangle>
                             <Rectangle.Fill>
@@ -725,12 +722,20 @@
                                                 <TextBlock Text="Armoury Crate" VerticalAlignment="Center"/>
                                             </StackPanel>
                                         </Button>
-                                        <Button Style="{StaticResource ActionBtn}"
+                                        <Button Style="{StaticResource ActionBtn}" Margin="0,0,8,0"
                                                 Click="DetailAddToSteam_Click"
                                                 Visibility="{Binding IsLanCard, Converter={StaticResource InvBoolToVis}}">
                                             <StackPanel Orientation="Horizontal">
                                                 <ui:SymbolIcon Symbol="ArrowExportLtr24" FontSize="14" Margin="0,0,6,0"/>
                                                 <TextBlock Text="Add to Steam" VerticalAlignment="Center"/>
+                                            </StackPanel>
+                                        </Button>
+                                        <Button Style="{StaticResource ActionBtn}"
+                                                Click="DetailRefetchArtwork_Click"
+                                                Visibility="{Binding IsLanCard, Converter={StaticResource InvBoolToVis}}">
+                                            <StackPanel Orientation="Horizontal">
+                                                <ui:SymbolIcon Symbol="Image24" FontSize="14" Margin="0,0,6,0"/>
+                                                <TextBlock Text="Refetch artwork" VerticalAlignment="Center"/>
                                             </StackPanel>
                                         </Button>
                                     </StackPanel>

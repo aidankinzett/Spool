@@ -264,18 +264,26 @@ namespace LudusaviWrap
                 if (results.Count == 0) return;
 
                 int gameId = results[0].Id;
-                // Portrait preferred for library cards, fall back to horizontal grid
                 string destBase = Path.Combine(coversDir, entry.SafeName);
-                string? imagePath = await sgdb.DownloadPortraitAsync(gameId, destBase + "_p");
-                imagePath ??= await sgdb.DownloadGridImageAsync(gameId, entry.SafeName, coversDir);
+                
+                // Fetch both Portrait and Hero image in parallel
+                var tPortrait = sgdb.DownloadPortraitAsync(gameId, destBase + "_p");
+                var tHero = sgdb.DownloadHeroAsync(gameId, destBase + "_hero");
+                await Task.WhenAll(tPortrait, tHero);
 
-                if (imagePath != null)
+                string? imagePath = tPortrait.Result;
+                imagePath ??= await sgdb.DownloadGridImageAsync(gameId, entry.SafeName, coversDir);
+                string? heroPath = tHero.Result;
+
+                if (imagePath != null || heroPath != null)
                 {
                     Application.Current?.Dispatcher.Invoke(() =>
                     {
-                        entry.CoverImagePath = imagePath;
+                        if (imagePath != null) entry.CoverImagePath = imagePath;
+                        if (heroPath != null) entry.HeroImagePath = heroPath;
                         _library.Update(entry);
-                        OnCoverArtFetched?.Invoke(entry, imagePath);
+                        if (imagePath != null)
+                            OnCoverArtFetched?.Invoke(entry, imagePath);
                     });
                 }
             }

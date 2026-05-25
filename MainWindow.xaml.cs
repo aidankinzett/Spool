@@ -66,6 +66,65 @@ namespace LudusaviWrap
             => throw new NotImplementedException();
     }
 
+    public class CoverToBackgroundBrushConverter : IValueConverter
+    {
+        private static readonly Brush DefaultBrush;
+
+        static CoverToBackgroundBrushConverter()
+        {
+            var brush = new LinearGradientBrush(
+                Color.FromRgb(0x1F, 0x2E, 0x3D),
+                Color.FromRgb(0x0A, 0x0F, 0x14),
+                new Point(0, 0),
+                new Point(1, 1)
+            );
+            brush.Freeze();
+            DefaultBrush = brush;
+        }
+
+        public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
+        {
+            if (value is not string path || string.IsNullOrEmpty(path) || !File.Exists(path))
+                return DefaultBrush;
+
+            try
+            {
+                using (var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read))
+                {
+                    var decoder = BitmapDecoder.Create(stream, BitmapCreateOptions.None, BitmapCacheOption.OnLoad);
+                    var frame = decoder.Frames[0];
+                    
+                    // Scale to 2x2
+                    var scaled = new TransformedBitmap(frame, new ScaleTransform(2.0 / frame.PixelWidth, 2.0 / frame.PixelHeight));
+                    var bmp = new WriteableBitmap(scaled);
+                    
+                    byte[] pixels = new byte[16];
+                    bmp.CopyPixels(pixels, 8, 0);
+
+                    // BGRA format
+                    var color1 = Color.FromRgb(pixels[2], pixels[1], pixels[0]);
+                    var color2 = Color.FromRgb(pixels[14], pixels[13], pixels[12]);
+
+                    // Darken to make suitable for background
+                    var c1 = Color.FromRgb((byte)(color1.R * 0.4), (byte)(color1.G * 0.4), (byte)(color1.B * 0.4));
+                    var c2 = Color.FromRgb((byte)(color2.R * 0.25), (byte)(color2.G * 0.25), (byte)(color2.B * 0.25));
+
+                    var brush = new LinearGradientBrush(c1, c2, new Point(0, 0), new Point(1, 1));
+                    brush.Freeze();
+                    return brush;
+                }
+            }
+            catch (Exception ex)
+            {
+                App.Log($"CoverToBackgroundBrushConverter exception for '{path}': {ex.Message}");
+                return DefaultBrush;
+            }
+        }
+
+        public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
+            => throw new NotImplementedException();
+    }
+
     public class BooleanToVisibilityConverter : IValueConverter
     {
         public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
@@ -691,6 +750,67 @@ namespace LudusaviWrap
                 await StartDownloadWithPeersAsync(entry.LanPeers, entry.GameName, dlg.DestFolder);
         }
 
+        private async void DetailRefetchArtwork_Click(object sender, RoutedEventArgs e)
+        {
+            var entry = SelectedGame;
+            if (entry == null) return;
+
+            if (!_config.Data.SteamGridDbEnabled || string.IsNullOrEmpty(_config.Data.SteamGridDbApiKey))
+            {
+                MessageBox.Show("SteamGridDB is not enabled or API key is missing. Please configure it in Settings.",
+                    "SteamGridDB Required", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            var button = (Button)sender;
+            button.IsEnabled = false;
+
+            try
+            {
+                var sgdb = new SteamGridDbClient(_config.Data.SteamGridDbApiKey);
+                var results = await sgdb.SearchGameAsync(entry.GameName);
+                if (results.Count == 0)
+                {
+                    MessageBox.Show($"Could not find '{entry.GameName}' on SteamGridDB.", "Game Not Found", MessageBoxButton.OK, MessageBoxImage.Information);
+                    return;
+                }
+
+                int gameId = results[0].Id;
+                string coversDir = Path.Combine(Config.AppDataFolder, "covers");
+                Directory.CreateDirectory(coversDir);
+
+                string destBase = Path.Combine(coversDir, entry.SafeName);
+
+                var tPortrait = sgdb.DownloadPortraitAsync(gameId, destBase + "_p");
+                var tHero = sgdb.DownloadHeroAsync(gameId, destBase + "_hero");
+                await Task.WhenAll(tPortrait, tHero);
+
+                string? imagePath = tPortrait.Result;
+                imagePath ??= await sgdb.DownloadGridImageAsync(gameId, entry.SafeName, coversDir);
+                string? heroPath = tHero.Result;
+
+                if (imagePath != null || heroPath != null)
+                {
+                    if (imagePath != null) entry.CoverImagePath = imagePath;
+                    if (heroPath != null) entry.HeroImagePath = heroPath;
+                    _library.Update(entry);
+                    MessageBox.Show("Artwork successfully updated!", "Success", MessageBoxButton.OK, MessageBoxImage.Information);
+                }
+                else
+                {
+                    MessageBox.Show("Failed to download artwork from SteamGridDB.", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Failed to fetch artwork: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+            finally
+            {
+                button.IsEnabled = true;
+            }
+        }
+
         // ── Game settings ────────────────────────────────────────────────────────
 
         private void RunAsAdmin_Checked(object sender, RoutedEventArgs e)
@@ -920,10 +1040,23 @@ namespace LudusaviWrap
                 if (results.Count == 0) return;
 
                 string destBase = Path.Combine(coversDir, entry.SafeName);
-                string? imagePath = await sgdb.DownloadPortraitAsync(results[0].Id, destBase + "_p");
+                var tPortrait = sgdb.DownloadPortraitAsync(results[0].Id, destBase + "_p");
+                var tHero = sgdb.DownloadHeroAsync(results[0].Id, destBase + "_hero");
+                await Task.WhenAll(tPortrait, tHero);
+
+                string? imagePath = tPortrait.Result;
                 imagePath ??= await sgdb.DownloadGridImageAsync(results[0].Id, entry.SafeName, coversDir);
-                if (imagePath != null)
-                    Dispatcher.Invoke(() => { entry.CoverImagePath = imagePath; _library.Update(entry); });
+                string? heroPath = tHero.Result;
+
+                if (imagePath != null || heroPath != null)
+                {
+                    Dispatcher.Invoke(() =>
+                    {
+                        if (imagePath != null) entry.CoverImagePath = imagePath;
+                        if (heroPath != null) entry.HeroImagePath = heroPath;
+                        _library.Update(entry);
+                    });
+                }
             }
             catch (Exception ex)
             {
