@@ -8,7 +8,7 @@ Lightweight sync server that prevents two devices from playing the same game sim
 
 ```bash
 # 1. Download the compose file
-curl -O https://raw.githubusercontent.com/akinz/ludusavi-wrap/master/server/docker-compose.yml
+curl -O https://raw.githubusercontent.com/aidankinzett/ludusavi-wrap/master/server/docker-compose.yml
 
 # 2. Set a strong admin secret (used once to register accounts)
 #    Edit docker-compose.yml and replace "changeme" with a real secret.
