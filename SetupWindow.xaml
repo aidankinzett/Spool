@@ -167,10 +167,13 @@
                                     <RowDefinition Height="Auto"/>
                                     <RowDefinition Height="Auto"/>
                                     <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
                                 </Grid.RowDefinitions>
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="Auto"/>
                                     <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
                                 </Grid.ColumnDefinitions>
 
                                 <TextBlock Text="Server URL:"
@@ -178,25 +181,94 @@
                                            Margin="0,0,8,8"
                                            Grid.Row="0" Grid.Column="0"/>
                                 <ui:TextBox x:Name="SyncUrlTextBox"
-                                            PlaceholderText="https://your-server.fly.dev"
-                                            Margin="0,0,0,8"
+                                            PlaceholderText="http://raspberrypi.local:3000"
+                                            Margin="0,0,8,8"
                                             Grid.Row="0" Grid.Column="1"/>
+                                <ui:Button x:Name="ScanLanButton"
+                                           Content="Scan LAN"
+                                           Appearance="Secondary"
+                                           Margin="0,0,0,8"
+                                           Click="ScanLan_Click"
+                                           Grid.Row="0" Grid.Column="2"/>
+
+                                <!-- Server version status (shown after a health check) -->
+                                <TextBlock x:Name="ServerVersionLabel"
+                                           Visibility="Collapsed"
+                                           FontSize="11"
+                                           Margin="0,0,0,8"
+                                           Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="2"/>
 
                                 <TextBlock Text="API Key:"
                                            VerticalAlignment="Center"
                                            Margin="0,0,8,8"
-                                           Grid.Row="1" Grid.Column="0"/>
+                                           Grid.Row="2" Grid.Column="0"/>
                                 <PasswordBox x:Name="SyncApiKeyBox"
-                                             Margin="0,0,0,8"
-                                             Grid.Row="1" Grid.Column="1"/>
+                                             Margin="0,0,8,8"
+                                             Grid.Row="2" Grid.Column="1"/>
+                                <ui:Button Content="Register..."
+                                           Appearance="Secondary"
+                                           Margin="0,0,0,8"
+                                           Click="RegisterPanel_Toggle"
+                                           Grid.Row="2" Grid.Column="2"/>
 
                                 <TextBlock Text="Device Name:"
                                            VerticalAlignment="Center"
-                                           Margin="0,0,8,0"
-                                           Grid.Row="2" Grid.Column="0"/>
+                                           Margin="0,0,8,8"
+                                           Grid.Row="3" Grid.Column="0"/>
                                 <ui:TextBox x:Name="DeviceNameTextBox"
                                             PlaceholderText="PC name shown to other devices"
-                                            Grid.Row="2" Grid.Column="1"/>
+                                            Margin="0,0,0,8"
+                                            Grid.Row="3" Grid.Column="1" Grid.ColumnSpan="2"/>
+
+                                <!-- Inline registration panel (hidden until Register... is clicked) -->
+                                <Border x:Name="RegisterPanel"
+                                        Grid.Row="4" Grid.Column="0" Grid.ColumnSpan="3"
+                                        Visibility="Collapsed"
+                                        Background="{DynamicResource ControlFillColorDefaultBrush}"
+                                        CornerRadius="4"
+                                        Padding="12,10"
+                                        Margin="0,0,0,4">
+                                    <Grid>
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto"/>
+                                            <RowDefinition Height="Auto"/>
+                                            <RowDefinition Height="Auto"/>
+                                        </Grid.RowDefinitions>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto"/>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+
+                                        <TextBlock Text="Admin Secret:"
+                                                   VerticalAlignment="Center"
+                                                   Margin="0,0,8,8"
+                                                   Grid.Row="0" Grid.Column="0"/>
+                                        <PasswordBox x:Name="RegisterAdminSecretBox"
+                                                     Margin="0,0,8,8"
+                                                     Grid.Row="0" Grid.Column="1"/>
+                                        <ui:Button Content="Register"
+                                                   Appearance="Primary"
+                                                   Margin="0,0,0,8"
+                                                   Click="Register_Click"
+                                                   Grid.Row="0" Grid.Column="2"/>
+
+                                        <TextBlock Text="Username:"
+                                                   VerticalAlignment="Center"
+                                                   Margin="0,0,8,0"
+                                                   Grid.Row="1" Grid.Column="0"/>
+                                        <ui:TextBox x:Name="RegisterUsernameBox"
+                                                    Margin="0,0,8,0"
+                                                    Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="2"/>
+
+                                        <TextBlock x:Name="RegisterErrorLabel"
+                                                   Foreground="#FF5F5F"
+                                                   FontSize="11"
+                                                   Margin="0,6,0,0"
+                                                   Visibility="Collapsed"
+                                                   Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="3"/>
+                                    </Grid>
+                                </Border>
                             </Grid>
                         </StackPanel>
                     </ui:Card>

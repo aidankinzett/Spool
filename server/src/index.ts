@@ -8,7 +8,9 @@ const app = new Hono();
 app.route("/auth", authRouter);
 app.route("/locks", locksRouter);
 
-app.get("/health", (c) => c.json({ ok: true }));
+const serverVersion = (process.env.APP_VERSION ?? "dev").replace(/^v/, "");
+
+app.get("/health", (c) => c.json({ ok: true, version: serverVersion }));
 
 const port = parseInt(process.env.PORT ?? "3000", 10);
 serve({ fetch: app.fetch, port }, () => {

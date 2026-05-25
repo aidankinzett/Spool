@@ -16,8 +16,13 @@ WORKDIR /app
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/dist ./dist
 
+ARG APP_VERSION=dev
 ENV NODE_ENV=production
 ENV PORT=3000
+ENV DATABASE_PATH=/data/ludusavi.db
+ENV APP_VERSION=$APP_VERSION
+
+RUN mkdir -p /data
 
 EXPOSE 3000
 

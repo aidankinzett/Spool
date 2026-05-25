@@ -1,7 +1,11 @@
 using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using System.Net.Sockets;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Threading;
@@ -39,10 +43,34 @@ namespace LudusaviWrap
         public string? DeviceName { get; set; }
     }
 
+    public class HealthResponse
+    {
+        [JsonPropertyName("ok")]
+        public bool Ok { get; set; }
+
+        [JsonPropertyName("version")]
+        public string? Version { get; set; }
+    }
+
+    public class RegisterRequest
+    {
+        [JsonPropertyName("username")]
+        public string Username { get; set; } = "";
+    }
+
+    public class RegisterResponse
+    {
+        [JsonPropertyName("api_key")]
+        public string? ApiKey { get; set; }
+    }
+
     [JsonSourceGenerationOptions(WriteIndented = false)]
     [JsonSerializable(typeof(LockStatusResponse))]
     [JsonSerializable(typeof(AcquireRequest))]
     [JsonSerializable(typeof(AcquireConflictResponse))]
+    [JsonSerializable(typeof(RegisterRequest))]
+    [JsonSerializable(typeof(RegisterResponse))]
+    [JsonSerializable(typeof(HealthResponse))]
     internal partial class LockSourceGenerationContext : JsonSerializerContext
     {
     }
@@ -167,6 +195,108 @@ namespace LudusaviWrap
             catch (OperationCanceledException)
             {
                 // Normal shutdown
+            }
+        }
+
+        // Fetches the server's health and version. No auth required.
+        public static async Task<HealthResponse?> CheckHealthAsync(string serverUrl)
+        {
+            try
+            {
+                using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+                var resp = await http.GetAsync(serverUrl.TrimEnd('/') + "/health");
+                if (!resp.IsSuccessStatusCode) return null;
+                var json = await resp.Content.ReadAsStringAsync();
+                return JsonSerializer.Deserialize(json, LockSourceGenerationContext.Default.HealthResponse);
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        // Probes the LAN for a running ludusavi-wrap server.
+        // Tries the well-known mDNS hostname plus every address in the local /24 subnet.
+        // Returns URLs of all responding servers (typically just one).
+        public static async Task<List<string>> ScanLanAsync()
+        {
+            var candidates = new List<string> { "http://ludusavi-lock.local:3000" };
+
+            try
+            {
+                var hostEntry = Dns.GetHostEntry(Dns.GetHostName());
+                var localIp = hostEntry.AddressList
+                    .FirstOrDefault(a => a.AddressFamily == AddressFamily.InterNetwork
+                                      && !IPAddress.IsLoopback(a));
+                if (localIp != null)
+                {
+                    var bytes = localIp.GetAddressBytes();
+                    var subnet = $"{bytes[0]}.{bytes[1]}.{bytes[2]}";
+                    for (int i = 1; i <= 254; i++)
+                        candidates.Add($"http://{subnet}.{i}:3000");
+                }
+            }
+            catch { }
+
+            using var http = new HttpClient { Timeout = TimeSpan.FromMilliseconds(700) };
+            var tasks = candidates.Select(async url =>
+            {
+                try
+                {
+                    var resp = await http.GetAsync(url + "/health");
+                    if (resp.IsSuccessStatusCode)
+                    {
+                        var body = await resp.Content.ReadAsStringAsync();
+                        return body.Contains("\"ok\"") ? url : null;
+                    }
+                }
+                catch { }
+                return null;
+            });
+
+            var results = await Task.WhenAll(tasks);
+            return results.Where(r => r != null).Select(r => r!).Distinct().ToList();
+        }
+
+        // Registers a new account on the server using the admin secret.
+        // Returns the generated API key on success, null on failure.
+        // errorMessage is set to a human-readable reason on failure.
+        public static async Task<(string? ApiKey, string? Error)> RegisterAsync(
+            string serverUrl, string adminSecret, string username)
+        {
+            try
+            {
+                using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
+                using var req = new HttpRequestMessage(HttpMethod.Post, serverUrl.TrimEnd('/') + "/auth/register");
+                req.Headers.Add("X-Admin-Secret", adminSecret);
+                var body = new RegisterRequest { Username = username };
+                req.Content = JsonContent.Create(body, LockSourceGenerationContext.Default.RegisterRequest);
+
+                using var resp = await http.SendAsync(req);
+                var json = await resp.Content.ReadAsStringAsync();
+
+                if (resp.IsSuccessStatusCode)
+                {
+                    var parsed = JsonSerializer.Deserialize(json, LockSourceGenerationContext.Default.RegisterResponse);
+                    return parsed?.ApiKey is { Length: > 0 } key
+                        ? (key, null)
+                        : (null, "Server returned an empty API key.");
+                }
+
+                if ((int)resp.StatusCode == 409)
+                    return (null, "That username is already taken.");
+                if ((int)resp.StatusCode == 403)
+                    return (null, "Admin secret is incorrect.");
+
+                return (null, $"Server returned {(int)resp.StatusCode}.");
+            }
+            catch (HttpRequestException)
+            {
+                return (null, "Could not reach the server. Check the URL and try again.");
+            }
+            catch (TaskCanceledException)
+            {
+                return (null, "Request timed out.");
             }
         }
     }

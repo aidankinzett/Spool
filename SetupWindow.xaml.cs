@@ -61,6 +61,10 @@ namespace LudusaviWrap
             UpdateSyncUiState();
             UpdateLanUiState();
             UpdateTorBoxUiState();
+
+            // Fire-and-forget version check if sync is already configured
+            if (_config.Data.SyncServerEnabled && !string.IsNullOrEmpty(_config.Data.SyncServerUrl))
+                _ = CheckAndShowServerVersionAsync(_config.Data.SyncServerUrl);
         }
 
         private void SelectThemeComboItem(string theme)
@@ -290,6 +294,134 @@ namespace LudusaviWrap
             ThemeManager.ApplyTheme(_config.Data.Theme);
             DialogResult = false;
             Close();
+        }
+
+        private static string GetAppVersion() =>
+            typeof(SetupWindow).Assembly.GetName().Version?.ToString(3) ?? "unknown";
+
+        private async Task CheckAndShowServerVersionAsync(string serverUrl)
+        {
+            var health = await PlayStateLockClient.CheckHealthAsync(serverUrl);
+            if (health == null)
+            {
+                ServerVersionLabel.Text = "Server unreachable";
+                ServerVersionLabel.Foreground = System.Windows.Media.Brushes.Gray;
+                ServerVersionLabel.Visibility = Visibility.Visible;
+                return;
+            }
+
+            string serverVer = health.Version ?? "unknown";
+            string appVer = GetAppVersion();
+
+            if (serverVer == "dev" || appVer == "1.0.0")
+            {
+                // Dev build on either end — show version without a warning
+                ServerVersionLabel.Text = $"Server version: {serverVer}";
+                ServerVersionLabel.Foreground = System.Windows.Media.Brushes.Gray;
+            }
+            else if (serverVer == appVer)
+            {
+                ServerVersionLabel.Text = $"Server v{serverVer} — up to date";
+                ServerVersionLabel.Foreground = new System.Windows.Media.SolidColorBrush(
+                    System.Windows.Media.Color.FromRgb(0x4C, 0xAF, 0x50));
+            }
+            else
+            {
+                ServerVersionLabel.Text = $"Server v{serverVer} — app is v{appVer}, consider updating the server";
+                ServerVersionLabel.Foreground = new System.Windows.Media.SolidColorBrush(
+                    System.Windows.Media.Color.FromRgb(0xFF, 0xA0, 0x26));
+            }
+
+            ServerVersionLabel.Visibility = Visibility.Visible;
+        }
+
+        private async void ScanLan_Click(object sender, RoutedEventArgs e)
+        {
+            ScanLanButton.IsEnabled = false;
+            ScanLanButton.Content = "Scanning...";
+            ErrorLabel.Visibility = Visibility.Collapsed;
+            ServerVersionLabel.Visibility = Visibility.Collapsed;
+
+            try
+            {
+                var found = await PlayStateLockClient.ScanLanAsync();
+                if (found.Count == 0)
+                {
+                    ShowError("No sync server found on the local network.");
+                }
+                else
+                {
+                    SyncUrlTextBox.Text = found[0];
+                    if (found.Count > 1)
+                        ShowError($"Found {found.Count} servers — selected the first one.");
+                    await CheckAndShowServerVersionAsync(found[0]);
+                }
+            }
+            finally
+            {
+                ScanLanButton.IsEnabled = true;
+                ScanLanButton.Content = "Scan LAN";
+            }
+        }
+
+        private void RegisterPanel_Toggle(object sender, RoutedEventArgs e)
+        {
+            bool visible = RegisterPanel.Visibility == Visibility.Visible;
+            RegisterPanel.Visibility = visible ? Visibility.Collapsed : Visibility.Visible;
+            if (!visible && string.IsNullOrEmpty(RegisterUsernameBox.Text))
+                RegisterUsernameBox.Text = _config.Data.DeviceName;
+        }
+
+        private async void Register_Click(object sender, RoutedEventArgs e)
+        {
+            string url = SyncUrlTextBox.Text.Trim();
+            string adminSecret = RegisterAdminSecretBox.Password.Trim();
+            string username = RegisterUsernameBox.Text.Trim();
+
+            if (string.IsNullOrEmpty(url))
+            {
+                RegisterErrorLabel.Text = "Enter the server URL first.";
+                RegisterErrorLabel.Visibility = Visibility.Visible;
+                return;
+            }
+            if (string.IsNullOrEmpty(adminSecret))
+            {
+                RegisterErrorLabel.Text = "Admin secret is required.";
+                RegisterErrorLabel.Visibility = Visibility.Visible;
+                return;
+            }
+            if (string.IsNullOrEmpty(username))
+            {
+                RegisterErrorLabel.Text = "Username is required.";
+                RegisterErrorLabel.Visibility = Visibility.Visible;
+                return;
+            }
+
+            RegisterErrorLabel.Visibility = Visibility.Collapsed;
+            var registerBtn = (Wpf.Ui.Controls.Button)sender;
+            registerBtn.IsEnabled = false;
+            registerBtn.Content = "Registering...";
+
+            try
+            {
+                var (apiKey, error) = await PlayStateLockClient.RegisterAsync(url, adminSecret, username);
+                if (apiKey != null)
+                {
+                    SyncApiKeyBox.Password = apiKey;
+                    RegisterPanel.Visibility = Visibility.Collapsed;
+                    RegisterAdminSecretBox.Clear();
+                }
+                else
+                {
+                    RegisterErrorLabel.Text = error ?? "Registration failed.";
+                    RegisterErrorLabel.Visibility = Visibility.Visible;
+                }
+            }
+            finally
+            {
+                registerBtn.IsEnabled = true;
+                registerBtn.Content = "Register";
+            }
         }
 
         private void ShowError(string message)
