@@ -1,6 +1,6 @@
 services:
   ludusavi-lock:
-    image: ghcr.io/akinz/ludusavi-wrap-server:latest
+    image: ghcr.io/aidankinzett/ludusavi-wrap-server:latest
     hostname: ludusavi-lock
     ports:
       - "3000:3000"
