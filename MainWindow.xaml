@@ -252,86 +252,81 @@
         <!-- ═══ Title bar ═══ -->
         <ui:TitleBar Grid.Row="0" ShowMaximize="True" Height="40" Title=" ">
             <ui:TitleBar.Header>
-                <!-- Two columns: branding left | LAN pill centered in remaining space -->
-                <Grid VerticalAlignment="Stretch">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="Auto"/>
-                        <ColumnDefinition Width="*"/>
-                    </Grid.ColumnDefinitions>
-
-                    <!-- Branding -->
-                    <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center" Margin="4,0,0,0">
-                        <Viewbox Width="16" Height="16" VerticalAlignment="Center">
-                            <Canvas Width="64" Height="64">
-                                <Rectangle Canvas.Left="8" Canvas.Top="16" Width="48" Height="32"
-                                           RadiusX="4" RadiusY="4"
-                                           Stroke="White" StrokeThickness="3.5" Fill="Transparent"/>
-                                <Ellipse Canvas.Left="18" Canvas.Top="24" Width="8" Height="8" Fill="White"/>
-                                <Ellipse Canvas.Left="38" Canvas.Top="24" Width="8" Height="8" Fill="White"/>
-                                <Line X1="14" Y1="42" X2="50" Y2="42"
-                                      Stroke="White" StrokeThickness="3"
-                                      StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
-                            </Canvas>
-                        </Viewbox>
-                        <TextBlock Text="Spool" FontSize="12" FontWeight="SemiBold"
-                                   VerticalAlignment="Center" Margin="7,0,0,0"
-                                   Foreground="{DynamicResource TextFillColorPrimaryBrush}"/>
-                    </StackPanel>
-
-                    <!-- LAN peers pill — centred in the remaining space -->
-                    <Border Grid.Column="1" HorizontalAlignment="Center" VerticalAlignment="Center"
-                            CornerRadius="10" Padding="10,3"
-                            Background="#0AFFFFFF" BorderBrush="#0FFFFFFF" BorderThickness="1">
-                        <StackPanel Orientation="Horizontal">
-                            <ui:ProgressRing IsIndeterminate="True" Width="10" Height="10"
-                                             Margin="0,0,6,0"
-                                             Visibility="{Binding IsLanScanning, RelativeSource={RelativeSource AncestorType={x:Type local:MainWindow}}, Converter={StaticResource BoolToVis}}"/>
-                            <Ellipse Width="6" Height="6" VerticalAlignment="Center" Margin="0,0,6,0"
-                                     Visibility="{Binding IsLanScanning, RelativeSource={RelativeSource AncestorType={x:Type local:MainWindow}}, Converter={StaticResource InvBoolToVis}}">
-                                <Ellipse.Style>
-                                    <Style TargetType="Ellipse">
-                                        <Setter Property="Fill" Value="#4D4D4D"/>
-                                        <Style.Triggers>
-                                            <DataTrigger Binding="{Binding LanPeersCount, RelativeSource={RelativeSource AncestorType={x:Type local:MainWindow}}}" Value="0">
-                                                <Setter Property="Fill" Value="#4D4D4D"/>
-                                            </DataTrigger>
-                                        </Style.Triggers>
-                                    </Style>
-                                </Ellipse.Style>
-                            </Ellipse>
-                            <ui:SymbolIcon Symbol="Wifi224" FontSize="10"
-                                           Foreground="{DynamicResource TextFillColorSecondaryBrush}"
-                                           Margin="0,0,5,0"/>
-                            <TextBlock FontSize="11" VerticalAlignment="Center"
-                                       Foreground="{DynamicResource TextFillColorSecondaryBrush}">
-                                <Run Text="{Binding LanPeersCount, RelativeSource={RelativeSource AncestorType={x:Type local:MainWindow}}, Mode=OneWay}"/>
-                                <Run Text=" peers on LAN"/>
-                            </TextBlock>
-                        </StackPanel>
-                    </Border>
-                </Grid>
+                <!-- Branding -->
+                <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="-16,0,0,0">
+                    <Viewbox Width="16" Height="16" VerticalAlignment="Center">
+                        <Canvas Width="64" Height="64">
+                            <Rectangle Canvas.Left="8" Canvas.Top="16" Width="48" Height="32"
+                                       RadiusX="4" RadiusY="4"
+                                       Stroke="White" StrokeThickness="3.5" Fill="Transparent"/>
+                            <Ellipse Canvas.Left="18" Canvas.Top="24" Width="8" Height="8" Fill="White"/>
+                            <Ellipse Canvas.Left="38" Canvas.Top="24" Width="8" Height="8" Fill="White"/>
+                            <Line X1="14" Y1="42" X2="50" Y2="42"
+                                  Stroke="White" StrokeThickness="3"
+                                  StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
+                        </Canvas>
+                    </Viewbox>
+                    <TextBlock Text="Spool" FontSize="12" FontWeight="SemiBold"
+                               VerticalAlignment="Center" Margin="7,0,0,0"
+                               Foreground="{DynamicResource TextFillColorPrimaryBrush}"/>
+                </StackPanel>
             </ui:TitleBar.Header>
             <ui:TitleBar.TrailingContent>
                 <!-- Settings button only — window controls follow automatically -->
                 <Button x:Name="SettingsButton" Click="Settings_Click"
-                        Width="38" Height="40" Cursor="Hand" ToolTip="Settings">
+                        Width="46" Height="32" VerticalAlignment="Center" Cursor="Hand" ToolTip="Settings">
                     <Button.Template>
                         <ControlTemplate TargetType="Button">
-                            <Border x:Name="Bd" Background="Transparent">
+                            <Border x:Name="Bd" Background="Transparent" CornerRadius="4">
                                 <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
                             </Border>
                             <ControlTemplate.Triggers>
                                 <Trigger Property="IsMouseOver" Value="True">
-                                    <Setter TargetName="Bd" Property="Background" Value="#0FFFFFFF"/>
+                                    <Setter TargetName="Bd" Property="Background" Value="{DynamicResource SubtleFillColorSecondaryBrush}"/>
+                                </Trigger>
+                                <Trigger Property="IsPressed" Value="True">
+                                    <Setter TargetName="Bd" Property="Background" Value="{DynamicResource SubtleFillColorTertiaryBrush}"/>
                                 </Trigger>
                             </ControlTemplate.Triggers>
                         </ControlTemplate>
                     </Button.Template>
-                    <ui:SymbolIcon Symbol="Settings24" FontSize="13"
+                    <ui:SymbolIcon Symbol="Settings20" FontSize="14"
                                    Foreground="{DynamicResource TextFillColorSecondaryBrush}"/>
                 </Button>
             </ui:TitleBar.TrailingContent>
         </ui:TitleBar>
+
+        <!-- LAN peers pill — centred in the window title bar -->
+        <Border Grid.Row="0" HorizontalAlignment="Center" VerticalAlignment="Center" IsHitTestVisible="False"
+                CornerRadius="10" Padding="10,3"
+                Background="#0AFFFFFF" BorderBrush="#0FFFFFFF" BorderThickness="1">
+            <StackPanel Orientation="Horizontal">
+                <ui:ProgressRing IsIndeterminate="True" Width="10" Height="10"
+                                 Margin="0,0,6,0"
+                                 Visibility="{Binding IsLanScanning, RelativeSource={RelativeSource AncestorType={x:Type local:MainWindow}}, Converter={StaticResource BoolToVis}}"/>
+                <Ellipse Width="6" Height="6" VerticalAlignment="Center" Margin="0,0,6,0"
+                         Visibility="{Binding IsLanScanning, RelativeSource={RelativeSource AncestorType={x:Type local:MainWindow}}, Converter={StaticResource InvBoolToVis}}">
+                    <Ellipse.Style>
+                        <Style TargetType="Ellipse">
+                            <Setter Property="Fill" Value="#4D4D4D"/>
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding LanPeersCount, RelativeSource={RelativeSource AncestorType={x:Type local:MainWindow}}}" Value="0">
+                                    <Setter Property="Fill" Value="#4D4D4D"/>
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </Ellipse.Style>
+                </Ellipse>
+                <ui:SymbolIcon Symbol="Wifi224" FontSize="10"
+                               Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                               Margin="0,0,5,0"/>
+                <TextBlock FontSize="11" VerticalAlignment="Center"
+                           Foreground="{DynamicResource TextFillColorSecondaryBrush}">
+                    <Run Text="{Binding LanPeersCount, RelativeSource={RelativeSource AncestorType={x:Type local:MainWindow}}, Mode=OneWay}"/>
+                    <Run Text=" peers on LAN"/>
+                </TextBlock>
+            </StackPanel>
+        </Border>
 
         <!-- ═══ Two-pane layout ═══ -->
         <Grid Grid.Row="1">
