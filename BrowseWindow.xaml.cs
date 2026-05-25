@@ -17,6 +17,17 @@ namespace LudusaviWrap
         private ICollectionView? _view;
         private readonly DispatcherTimer _searchTimer;
         private string _searchText = "";
+        private string? _currentSortProperty;
+        private ListSortDirection _currentSortDir = ListSortDirection.Ascending;
+        private GridViewColumnHeader? _lastSortedHeader;
+
+        private static readonly Dictionary<string, string> ColumnToProperty = new(StringComparer.Ordinal)
+        {
+            ["Title"]  = "Title",
+            ["Size"]   = "FileSize",
+            ["Date"]   = "UploadDateParsed",
+            ["Source"] = "SourceName",
+        };
 
         public HydraDownloadEntry? SelectedDownload { get; private set; }
 
@@ -57,6 +68,9 @@ namespace LudusaviWrap
 
             var cv = CollectionViewSource.GetDefaultView(_allEntries);
             cv.Filter = FilterEntry;
+            _currentSortProperty = "UploadDateParsed";
+            _currentSortDir = ListSortDirection.Descending;
+            cv.SortDescriptions.Add(new SortDescription("UploadDateParsed", ListSortDirection.Descending));
             _view = cv;
             ResultsView.ItemsSource = cv;
 
@@ -141,6 +155,43 @@ namespace LudusaviWrap
             SelectedDownload = entry;
             DialogResult = true;
             Close();
+        }
+
+        private void ColumnHeader_Click(object sender, RoutedEventArgs e)
+        {
+            if (e.OriginalSource is not GridViewColumnHeader header || header.Role == GridViewColumnHeaderRole.Padding)
+                return;
+
+            string cleanText = GetCleanHeaderText(header);
+            if (!ColumnToProperty.TryGetValue(cleanText, out string? property))
+                return;
+
+            if (property == _currentSortProperty)
+                _currentSortDir = _currentSortDir == ListSortDirection.Ascending
+                    ? ListSortDirection.Descending
+                    : ListSortDirection.Ascending;
+            else
+            {
+                _currentSortDir = ListSortDirection.Ascending;
+                _currentSortProperty = property;
+            }
+
+            if (_lastSortedHeader != null)
+                _lastSortedHeader.Content = GetCleanHeaderText(_lastSortedHeader);
+            header.Content = cleanText + (_currentSortDir == ListSortDirection.Ascending ? " ▲" : " ▼");
+            _lastSortedHeader = header;
+
+            ApplySort();
+        }
+
+        private static string GetCleanHeaderText(GridViewColumnHeader header)
+            => (header.Content?.ToString() ?? "").Replace(" ▲", "").Replace(" ▼", "").Trim();
+
+        private void ApplySort()
+        {
+            if (_view == null || _currentSortProperty == null) return;
+            _view.SortDescriptions.Clear();
+            _view.SortDescriptions.Add(new SortDescription(_currentSortProperty, _currentSortDir));
         }
     }
 }

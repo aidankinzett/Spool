@@ -68,6 +68,7 @@
                      BorderThickness="0"
                      SelectionChanged="ResultsView_SelectionChanged"
                      MouseDoubleClick="ResultsView_MouseDoubleClick"
+                     GridViewColumnHeader.Click="ColumnHeader_Click"
                      VirtualizingPanel.IsVirtualizing="True"
                      VirtualizingPanel.VirtualizationMode="Recycling"
                      ScrollViewer.HorizontalScrollBarVisibility="Disabled">

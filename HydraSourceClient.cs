@@ -29,6 +29,10 @@ namespace LudusaviWrap
             DateTime.TryParse(UploadDate, out var dt)
                 ? dt.ToString("yyyy-MM-dd")
                 : UploadDate.Length >= 10 ? UploadDate[..10] : UploadDate;
+
+        [JsonIgnore]
+        public DateTime UploadDateParsed =>
+            DateTime.TryParse(UploadDate, out var dt) ? dt : DateTime.MinValue;
     }
 
     public class HydraSourceFile
