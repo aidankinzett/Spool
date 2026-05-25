@@ -83,8 +83,25 @@ namespace LudusaviWrap
                     string gameName = args[1];
                     string gameExe  = args[2];
                     Log($"--run mode: game='{gameName}' exe='{gameExe}'");
-                    var runWindow = new RunWindow(gameName, gameExe);
-                    runWindow.Show();
+
+                    ShutdownMode = ShutdownMode.OnExplicitShutdown;
+                    Dispatcher.InvokeAsync(async () =>
+                    {
+                        try
+                        {
+                            await new RunWorkflow(gameName, gameExe).ExecuteAsync();
+                        }
+                        catch (Exception ex)
+                        {
+                            Log($"RunWorkflow unexpected error for '{gameName}': {ex}");
+                            MessageBox.Show($"An unexpected error occurred: {ex.Message}",
+                                "Ludusavi Wrap Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                        }
+                        finally
+                        {
+                            Shutdown();
+                        }
+                    });
                 }
                 else
                 {

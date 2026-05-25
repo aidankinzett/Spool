@@ -386,7 +386,7 @@ namespace LudusaviWrap
             }
         }
 
-        private void Play_Click(object sender, RoutedEventArgs e)
+        private async void Play_Click(object sender, RoutedEventArgs e)
         {
             if ((sender as Button)?.DataContext is not GameEntry entry) return;
 
@@ -400,10 +400,21 @@ namespace LudusaviWrap
             entry.LastPlayedAt = DateTime.UtcNow;
             _library.Update(entry);
 
-            var runWindow = new RunWindow(entry.GameName, entry.ExePath, exitAppOnFinish: false, entry: entry, library: _library);
-            runWindow.Owner = this;
             Hide();
-            runWindow.Show();
+            try
+            {
+                await new RunWorkflow(entry.GameName, entry.ExePath, entry: entry, library: _library).ExecuteAsync();
+            }
+            catch (Exception ex)
+            {
+                App.Log($"RunWorkflow unexpected error for '{entry.GameName}': {ex}");
+                MessageBox.Show($"An unexpected error occurred: {ex.Message}",
+                    "Ludusavi Wrap Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+            finally
+            {
+                Show();
+            }
         }
 
         private GameEntry? GetEntryFromContextMenu(object sender)
