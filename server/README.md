@@ -1,4 +1,4 @@
-# ludusavi-wrap Lock Server
+# Spool Lock Server
 
 Lightweight sync server that prevents two devices from playing the same game simultaneously. Self-host it on a Raspberry Pi, home server, or any Linux box.
 
@@ -8,7 +8,7 @@ Lightweight sync server that prevents two devices from playing the same game sim
 
 ```bash
 # 1. Download the compose file
-curl -O https://raw.githubusercontent.com/aidankinzett/ludusavi-wrap/master/server/docker-compose.yml
+curl -O https://raw.githubusercontent.com/aidankinzett/Spool/master/server/docker-compose.yml
 
 # 2. Generate a strong admin secret and set it in docker-compose.yml
 openssl rand -base64 32
@@ -26,7 +26,7 @@ The database is persisted in `./data/ludusavi.db` on your host machine.
 
 ## Register an account
 
-Open ludusavi-wrap on any of your PCs, go to **Settings → Sync Server**, enable the toggle, enter the server URL (e.g. `http://raspberrypi.local:47633`), and click **Register...**. Enter your admin secret and a username, then click **Register** — the API key is filled in automatically.
+Open Spool on any of your PCs, go to **Settings → Sync Server**, enable the toggle, enter the server URL (e.g. `http://raspberrypi.local:47633`), and click **Register...**. Enter your admin secret and a username, then click **Register** — the API key is filled in automatically.
 
 Alternatively, via curl:
 
@@ -40,7 +40,7 @@ curl -X POST http://your-server:47633/auth/register \
 
 Copy the `api_key` into the API Key field in Settings.
 
-## Connect from ludusavi-wrap
+## Connect from Spool
 
 1. Open **Settings → Sync Server**
 2. Toggle it on
