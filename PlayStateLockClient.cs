@@ -286,7 +286,7 @@ namespace LudusaviWrap
         // Returns URLs of all responding servers (typically just one).
         public static async Task<List<string>> ScanLanAsync()
         {
-            var candidates = new List<string> { "http://ludusavi-lock.local:3000" };
+            var candidates = new List<string> { "http://ludusavi-lock.local:47633" };
 
             try
             {
@@ -299,7 +299,7 @@ namespace LudusaviWrap
                     var bytes = localIp.GetAddressBytes();
                     var subnet = $"{bytes[0]}.{bytes[1]}.{bytes[2]}";
                     for (int i = 1; i <= 254; i++)
-                        candidates.Add($"http://{subnet}.{i}:3000");
+                        candidates.Add($"http://{subnet}.{i}:47633");
                 }
             }
             catch { }

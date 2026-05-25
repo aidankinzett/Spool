@@ -3,16 +3,16 @@ services:
     image: ghcr.io/aidankinzett/ludusavi-wrap-server:latest
     hostname: ludusavi-lock
     ports:
-      - "3000:3000"
+      - "47633:47633"
     environment:
       - ADMIN_SECRET=changeme   # REQUIRED: set a strong secret before use
-      - PORT=3000
+      - PORT=47633
       - DATABASE_PATH=/data/ludusavi.db
     volumes:
       - ./data:/data
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:3000/health"]
+      test: ["CMD", "wget", "-qO-", "http://localhost:47633/health"]
       interval: 30s
       timeout: 10s
       retries: 3

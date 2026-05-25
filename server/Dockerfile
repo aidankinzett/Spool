@@ -18,12 +18,12 @@ COPY --from=builder /app/dist ./dist
 
 ARG APP_VERSION=dev
 ENV NODE_ENV=production
-ENV PORT=3000
+ENV PORT=47633
 ENV DATABASE_PATH=/data/ludusavi.db
 ENV APP_VERSION=$APP_VERSION
 
 RUN mkdir -p /data
 
-EXPOSE 3000
+EXPOSE 47633
 
 CMD ["node", "dist/index.js"]
