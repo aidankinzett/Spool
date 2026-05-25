@@ -1096,6 +1096,47 @@ namespace LudusaviWrap
             }
         }
 
+        private static bool IsFitGirlRepack(HydraDownloadEntry download, string destDir)
+        {
+            if (download.SourceName.Contains("fitgirl", StringComparison.OrdinalIgnoreCase))
+                return true;
+            return File.Exists(Path.Combine(destDir, "setup.exe")) &&
+                   Directory.GetFiles(destDir, "fg-*.bin").Length > 0;
+        }
+
+        private void HandleFitGirlRepack(string title, string destDir)
+        {
+            string setupExe = Path.Combine(destDir, "setup.exe");
+            if (!File.Exists(setupExe))
+            {
+                MessageBox.Show(
+                    $"FitGirl repack detected for \"{title}\" but setup.exe was not found in the download folder.\n\n{destDir}",
+                    "Setup Not Found", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            var result = MessageBox.Show(
+                $"FitGirl repack detected for \"{title}\".\n\nRun setup.exe as administrator to install the game?",
+                "Install Game", MessageBoxButton.YesNo, MessageBoxImage.Question);
+
+            if (result != MessageBoxResult.Yes) return;
+
+            try
+            {
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = setupExe,
+                    UseShellExecute = true,
+                    Verb = "runas"
+                });
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Failed to launch setup.exe: {ex.Message}", "Error",
+                    MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
         private void CancelDownload_Click(object sender, RoutedEventArgs e)
         {
             _downloadCts?.Cancel();
@@ -1266,7 +1307,10 @@ namespace LudusaviWrap
                 DownloadBytesText.Text = "";
                 DownloadProgressBar.Value = 100;
 
-                OfferAddToLibrary(download.Title, destDir);
+                if (destDir != null && IsFitGirlRepack(download, destDir))
+                    HandleFitGirlRepack(download.Title, destDir);
+                else
+                    OfferAddToLibrary(download.Title, destDir!);
             }
             catch (OperationCanceledException)
             {
