@@ -208,8 +208,8 @@ Requires the [.NET 9.0 SDK](https://dotnet.microsoft.com/download/dotnet/9.0) (W
 
 1. Clone the repository:
    ```cmd
-   git clone https://github.com/aidankinzett/ludusavi-wrap
-   cd ludusavi-wrap
+   git clone https://github.com/aidankinzett/Spool
+   cd Spool
    ```
 2. Run the application from source:
    ```cmd
