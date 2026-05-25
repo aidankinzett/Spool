@@ -83,6 +83,7 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git fetch origin master
           git checkout -f master
+          git reset --hard origin/master
           Set-Content update.xml $xmlContent -Encoding utf8 -NoNewline
           git add update.xml
           git commit -m "chore: bump update.xml to ${{ github.ref_name }}"
