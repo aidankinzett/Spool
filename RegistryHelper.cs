@@ -1,4 +1,5 @@
 using System;
+using System.Text.RegularExpressions;
 using Microsoft.Win32;
 
 namespace LudusaviWrap
@@ -7,40 +8,21 @@ namespace LudusaviWrap
     {
         private const string AppCompatLayersKey = @"Software\Microsoft\Windows NT\CurrentVersion\AppCompatFlags\Layers";
 
-        /// <summary>
-        /// Checks whether the RUNASADMIN compatibility flag is set for the specified executable path,
-        /// checking both Current User and Local Machine layers.
-        /// </summary>
         public static bool GetCompatFlagRunAsAdmin(string exePath)
         {
             if (string.IsNullOrEmpty(exePath)) return false;
             try
             {
-                // Check Current User AppCompatFlags
-                using (var key = Registry.CurrentUser.OpenSubKey(AppCompatLayersKey))
-                {
-                    if (key != null)
-                    {
-                        var value = key.GetValue(exePath) as string;
-                        if (value != null && value.Contains("RUNASADMIN", StringComparison.OrdinalIgnoreCase))
-                        {
-                            return true;
-                        }
-                    }
-                }
+                using var cuKey = Registry.CurrentUser.OpenSubKey(AppCompatLayersKey);
+                if (cuKey?.GetValue(exePath) is string cuVal &&
+                    cuVal.Contains("RUNASADMIN", StringComparison.OrdinalIgnoreCase))
+                    return true;
 
-                // Check Local Machine AppCompatFlags (often set for all users)
-                using (var key = Registry.LocalMachine.OpenSubKey(AppCompatLayersKey))
-                {
-                    if (key != null)
-                    {
-                        var value = key.GetValue(exePath) as string;
-                        if (value != null && value.Contains("RUNASADMIN", StringComparison.OrdinalIgnoreCase))
-                        {
-                            return true;
-                        }
-                    }
-                }
+                // Also check HKLM — some games are flagged for all users
+                using var lmKey = Registry.LocalMachine.OpenSubKey(AppCompatLayersKey);
+                if (lmKey?.GetValue(exePath) is string lmVal &&
+                    lmVal.Contains("RUNASADMIN", StringComparison.OrdinalIgnoreCase))
+                    return true;
             }
             catch (Exception ex)
             {
@@ -49,29 +31,18 @@ namespace LudusaviWrap
             return false;
         }
 
-        /// <summary>
-        /// Sets the RUNASADMIN compatibility flag for the specified executable in Current User.
-        /// </summary>
         public static void SetCompatFlagRunAsAdmin(string exePath)
         {
             if (string.IsNullOrEmpty(exePath)) return;
             try
             {
-                using (var key = Registry.CurrentUser.CreateSubKey(AppCompatLayersKey))
-                {
-                    if (key != null)
-                    {
-                        var value = key.GetValue(exePath) as string;
-                        if (value == null)
-                        {
-                            key.SetValue(exePath, "~ RUNASADMIN");
-                        }
-                        else if (!value.Contains("RUNASADMIN", StringComparison.OrdinalIgnoreCase))
-                        {
-                            key.SetValue(exePath, value + " RUNASADMIN");
-                        }
-                    }
-                }
+                using var key = Registry.CurrentUser.CreateSubKey(AppCompatLayersKey);
+                if (key == null) return;
+                var value = key.GetValue(exePath) as string;
+                if (value == null)
+                    key.SetValue(exePath, "~ RUNASADMIN");
+                else if (!value.Contains("RUNASADMIN", StringComparison.OrdinalIgnoreCase))
+                    key.SetValue(exePath, value + " RUNASADMIN");
             }
             catch (Exception ex)
             {
@@ -79,39 +50,33 @@ namespace LudusaviWrap
             }
         }
 
-        /// <summary>
-        /// Removes the RUNASADMIN compatibility flag for the specified executable in Current User.
-        /// </summary>
         public static void RemoveCompatFlagRunAsAdmin(string exePath)
         {
             if (string.IsNullOrEmpty(exePath)) return;
             try
             {
-                using (var key = Registry.CurrentUser.OpenSubKey(AppCompatLayersKey, writable: true))
-                {
-                    if (key != null)
-                    {
-                        var value = key.GetValue(exePath) as string;
-                        if (value != null)
-                        {
-                            if (value.Contains("RUNASADMIN", StringComparison.OrdinalIgnoreCase))
-                            {
-                                // Remove RUNASADMIN, and clean up the value
-                                string newValue = value.Replace("RUNASADMIN", "", StringComparison.OrdinalIgnoreCase)
-                                                       .Replace("~", "")
-                                                       .Trim();
+                using var key = Registry.CurrentUser.OpenSubKey(AppCompatLayersKey, writable: true);
+                if (key == null) return;
+                var value = key.GetValue(exePath) as string;
+                if (value == null || !value.Contains("RUNASADMIN", StringComparison.OrdinalIgnoreCase))
+                    return;
 
-                                if (string.IsNullOrEmpty(newValue))
-                                {
-                                    key.DeleteValue(exePath, throwOnMissingValue: false);
-                                }
-                                else
-                                {
-                                    key.SetValue(exePath, "~ " + newValue);
-                                }
-                            }
-                        }
-                    }
+                // Remove the RUNASADMIN token only, preserving other flags and the leading ~ marker
+                string stripped = Regex.Replace(value, @"\bRUNASADMIN\b", "", RegexOptions.IgnoreCase).Trim();
+
+                // Collapse any runs of whitespace left by the removal
+                stripped = Regex.Replace(stripped, @"\s+", " ").Trim();
+
+                if (string.IsNullOrEmpty(stripped) || stripped == "~")
+                {
+                    key.DeleteValue(exePath, throwOnMissingValue: false);
+                }
+                else
+                {
+                    // Ensure the ~ marker is present for the remaining flags
+                    if (!stripped.StartsWith("~"))
+                        stripped = "~ " + stripped;
+                    key.SetValue(exePath, stripped);
                 }
             }
             catch (Exception ex)

@@ -629,7 +629,7 @@ namespace LudusaviWrap
                 if (registryAdmin != entry.RunAsAdmin)
                 {
                     entry.RunAsAdmin = registryAdmin;
-                    _library.Update(entry);
+                    _library.Save();
                 }
                 mi.IsChecked = entry.RunAsAdmin;
             }
@@ -945,6 +945,18 @@ namespace LudusaviWrap
         }
 
         private async void OfferAddToLibrary(string gameName, string destFolder, LanPeer? sourcePeer = null)
+        {
+            try
+            {
+                await OfferAddToLibraryAsync(gameName, destFolder, sourcePeer);
+            }
+            catch (Exception ex)
+            {
+                App.Log($"OfferAddToLibrary failed for '{gameName}': {ex}");
+            }
+        }
+
+        private async Task OfferAddToLibraryAsync(string gameName, string destFolder, LanPeer? sourcePeer)
         {
             bool runAsAdmin = false;
             string? relativeExePath = null;

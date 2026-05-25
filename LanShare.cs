@@ -5,7 +5,6 @@ using System.Linq;
 using System.Net;
 using System.Net.Http;
 using System.Net.Sockets;
-using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -41,7 +40,6 @@ namespace LudusaviWrap
     {
         [JsonPropertyName("path")]     public string RelativePath { get; set; } = "";
         [JsonPropertyName("size")]     public long   Size         { get; set; }
-        [JsonPropertyName("sha256")]   public string Sha256       { get; set; } = "";
         [JsonPropertyName("modified")] public long   LastModified { get; set; }
     }
 
@@ -484,9 +482,9 @@ namespace LudusaviWrap
             await SendResponseAsync(stream, 200, "application/json", json, ct);
         }
 
-        private static async Task<List<LanFileEntry>> BuildManifestAsync(string folderPath, CancellationToken ct)
+        private static Task<List<LanFileEntry>> BuildManifestAsync(string folderPath, CancellationToken ct)
+            => Task.Run(() =>
         {
-            await Task.Yield();
             var entries = new List<LanFileEntry>();
             var files = Directory.GetFiles(folderPath, "*", SearchOption.AllDirectories);
             foreach (var file in files)
@@ -499,7 +497,7 @@ namespace LudusaviWrap
                 entries.Add(new LanFileEntry { RelativePath = rel, Size = size, LastModified = lastModified });
             }
             return entries;
-        }
+        });
 
         private async Task ServeFileAsync(NetworkStream stream, string gameName, string relPath, long totalBytesParam, string sessionIdParam, CancellationToken ct)
         {
@@ -689,17 +687,6 @@ namespace LudusaviWrap
                 Port       = _port,
                 Games      = games
             };
-        }
-
-        // ── Helpers ────────────────────────────────────────────────────────────
-
-        internal static async Task<string> ComputeSha256Async(string filePath, CancellationToken ct)
-        {
-            using var fs = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read,
-                512 * 1024, FileOptions.SequentialScan | FileOptions.Asynchronous);
-            using var sha = SHA256.Create();
-            byte[] hash = await sha.ComputeHashAsync(fs, ct);
-            return Convert.ToHexString(hash).ToLowerInvariant();
         }
 
         public void Dispose() => Stop();

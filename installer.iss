@@ -1,7 +1,8 @@
 ; Inno Setup Compiler script for Ludusavi Wrap
 ; To build: iscc installer.iss
 
-#define AppExe "bin\Release\net9.0-windows10.0.17763.0\win-x64\publish\ludusavi-wrap.exe"
+#define BuildDir "bin\Release\net9.0-windows10.0.17763.0\win-x64\publish"
+#define AppExe BuildDir + "\ludusavi-wrap.exe"
 #define AppVersion GetVersionNumbersString(AppExe)
 
 [Setup]
@@ -20,7 +21,7 @@ DisableDirPage=auto
 DisableReadyPage=yes
 
 [Files]
-Source: "bin\Release\net9.0-windows10.0.17763.0\win-x64\publish\ludusavi-wrap.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#AppExe}"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\Ludusavi Wrap"; Filename: "{app}\ludusavi-wrap.exe"

@@ -10,37 +10,7 @@
         ResizeMode="NoResize"
         WindowStartupLocation="CenterScreen">
 
-    <Grid>
-        <Grid.RowDefinitions>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="Auto"/>
-        </Grid.RowDefinitions>
+    <!-- Intentionally headless: workflow runs silently and communicates via toast notifications -->
+    <Grid/>
 
-        <ui:TitleBar Title="Ludusavi Wrap"
-                     ShowMaximize="False"
-                     ShowMinimize="False"
-                     Grid.Row="0"/>
-
-        <Grid VerticalAlignment="Center" Margin="32,20" Grid.Row="1">
-            <Grid.RowDefinitions>
-                <RowDefinition Height="Auto"/>
-                <RowDefinition Height="Auto"/>
-            </Grid.RowDefinitions>
-
-            <TextBlock x:Name="StatusLabel"
-                       Text="Initializing..."
-                       FontSize="13"
-                       FontWeight="SemiBold"
-                       HorizontalAlignment="Center"
-                       TextWrapping="Wrap"
-                       TextAlignment="Center"
-                       Margin="0,0,0,16"
-                       Grid.Row="0"/>
-
-            <ProgressBar x:Name="LoadProgress"
-                            Height="4"
-                            IsIndeterminate="True"
-                            Grid.Row="1"/>
-        </Grid>
-    </Grid>
 </ui:FluentWindow>
