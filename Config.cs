@@ -69,9 +69,9 @@ namespace LudusaviWrap
 
     public class Config
     {
-        private static readonly string AppDataFolder = Path.Combine(
+        public static readonly string AppDataFolder = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "ludusavi-wrap"
+            "Spool"
         );
 
         private static readonly string ConfigPath = Path.Combine(AppDataFolder, "config.json");

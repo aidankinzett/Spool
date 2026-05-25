@@ -40,9 +40,7 @@ namespace LudusaviWrap
 
     public partial class App : Application
     {
-        private static readonly string LogPath = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "ludusavi-wrap", "debug.log");
+        private static readonly string LogPath = Path.Combine(Config.AppDataFolder, "debug.log");
 
         internal static void Log(string message)
         {
@@ -54,16 +52,31 @@ namespace LudusaviWrap
             catch { }
         }
 
+        private static void MigrateAppData()
+        {
+            string localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+            string oldDir = Path.Combine(localAppData, "ludusavi-wrap");
+            string newDir = Config.AppDataFolder;
+
+            if (Directory.Exists(oldDir) && !Directory.Exists(newDir))
+            {
+                try { Directory.Move(oldDir, newDir); }
+                catch { }
+            }
+        }
+
         protected override void OnStartup(StartupEventArgs e)
         {
+            MigrateAppData();
+
             AppDomain.CurrentDomain.UnhandledException += (s, ex) =>
                 Log($"FATAL UnhandledException: {ex.ExceptionObject}");
             DispatcherUnhandledException += (s, ex) =>
             {
                 Log($"FATAL DispatcherUnhandledException: {ex.Exception}");
                 ex.Handled = true;
-                MessageBox.Show($"Unexpected error:\n{ex.Exception.Message}\n\nSee debug.log in %LOCALAPPDATA%\\ludusavi-wrap",
-                                "Ludusavi Wrap Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                MessageBox.Show($"Unexpected error:\n{ex.Exception.Message}\n\nSee debug.log in %LOCALAPPDATA%\\Spool",
+                                "Spool Error", MessageBoxButton.OK, MessageBoxImage.Error);
                 Shutdown();
             };
 
@@ -95,7 +108,7 @@ namespace LudusaviWrap
                         {
                             Log($"RunWorkflow unexpected error for '{gameName}': {ex}");
                             MessageBox.Show($"An unexpected error occurred: {ex.Message}",
-                                "Ludusavi Wrap Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                                "Spool Error", MessageBoxButton.OK, MessageBoxImage.Error);
                         }
                         finally
                         {
@@ -107,7 +120,7 @@ namespace LudusaviWrap
                 {
                     Log("--run mode: insufficient arguments");
                     MessageBox.Show("Invalid command-line arguments. Usage: --run <GameName> <GameExe>",
-                                    "Ludusavi Wrap Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                                    "Spool Error", MessageBoxButton.OK, MessageBoxImage.Error);
                     Shutdown();
                 }
                 return;
@@ -148,8 +161,8 @@ namespace LudusaviWrap
             catch (Exception ex)
             {
                 Log($"EXCEPTION creating/showing MainWindow: {ex}");
-                MessageBox.Show($"Failed to open main window:\n{ex.Message}\n\nSee debug.log in %LOCALAPPDATA%\\ludusavi-wrap",
-                                "Ludusavi Wrap Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                MessageBox.Show($"Failed to open main window:\n{ex.Message}\n\nSee debug.log in %LOCALAPPDATA%\\Spool",
+                                "Spool Error", MessageBoxButton.OK, MessageBoxImage.Error);
                 Shutdown();
             }
         }

@@ -68,18 +68,18 @@ class Launcher {
                 if (proc != null) {
                     proc.WaitForExit();
                 } else {
-                    MessageBox.Show("Failed to launch ludusavi-wrap process.", "Ludusavi Wrap Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    MessageBox.Show("Failed to launch Spool process.", "Spool Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
                 }
             }
         } catch (Exception ex) {
-            MessageBox.Show("An unexpected error occurred in the launcher shortcut: " + ex.Message, "Ludusavi Wrap Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            MessageBox.Show("An unexpected error occurred in the launcher shortcut: " + ex.Message, "Spool Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
     }
 
     static void GetWrapExeFromConfig(ref string wrapExe) {
         try {
             string appData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-            string configPath = Path.Combine(appData, "ludusavi-wrap", "config.json");
+            string configPath = Path.Combine(appData, "Spool", "config.json");
             if (!File.Exists(configPath)) return;
 
             string json = File.ReadAllText(configPath);

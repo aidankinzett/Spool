@@ -9,9 +9,7 @@ namespace LudusaviWrap
 {
     public static class LauncherGenerator
     {
-        private static readonly string LaunchersDir = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "ludusavi-wrap", "launchers");
+        private static readonly string LaunchersDir = Path.Combine(Config.AppDataFolder, "launchers");
 
         public static string MakeSafeFilename(string name)
         {

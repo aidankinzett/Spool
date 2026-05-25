@@ -256,8 +256,7 @@ namespace LudusaviWrap
         {
             try
             {
-                string appData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-                string coversDir = Path.Combine(appData, "ludusavi-wrap", "covers");
+                string coversDir = Path.Combine(Config.AppDataFolder, "covers");
                 Directory.CreateDirectory(coversDir);
 
                 var sgdb = new SteamGridDbClient(_config.Data.SteamGridDbApiKey);
@@ -335,8 +334,7 @@ namespace LudusaviWrap
 
         private async Task FetchCoverArtForACAsync(string gameName, string safeName)
         {
-            string appData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-            string coversDir = Path.Combine(appData, "ludusavi-wrap", "covers");
+            string coversDir = Path.Combine(Config.AppDataFolder, "covers");
 
             try
             {
@@ -471,8 +469,7 @@ namespace LudusaviWrap
             uint appId,
             string multiUserNote)
         {
-            string appData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-            string coversDir = Path.Combine(appData, "ludusavi-wrap", "covers");
+            string coversDir = Path.Combine(Config.AppDataFolder, "covers");
             string gridDir = Path.Combine(steamPath, "userdata", userId, "config", "grid");
 
             try

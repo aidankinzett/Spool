@@ -123,7 +123,7 @@ namespace LudusaviWrap
                 Devkit = 0,
                 DevkitGameID = "",
                 LastPlayTime = 0,
-                Tags = new[] { "ludusavi-wrap" }
+                Tags = new[] { "Spool" }
             };
 
             Array.Resize(ref entries, entries.Length + 1);

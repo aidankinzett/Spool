@@ -462,9 +462,7 @@ namespace LudusaviWrap
 
         private async Task FetchCoverArtForACAsync(string gameName, string safeName)
         {
-            string coversDir = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "ludusavi-wrap", "covers");
+            string coversDir = Path.Combine(Config.AppDataFolder, "covers");
 
             try
             {
@@ -1051,9 +1049,7 @@ namespace LudusaviWrap
 
         private async Task FetchCoverForLanEntryAsync(GameEntry entry, LanPeer? peer)
         {
-            string coversDir = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "ludusavi-wrap", "covers");
+            string coversDir = Path.Combine(Config.AppDataFolder, "covers");
             Directory.CreateDirectory(coversDir);
 
             // Try pulling the cover directly from the peer that served the game files.

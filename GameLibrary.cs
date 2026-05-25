@@ -83,9 +83,7 @@ namespace LudusaviWrap
 
     public class GameLibrary
     {
-        private static readonly string AppDataFolder = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "ludusavi-wrap");
+        private static readonly string AppDataFolder = Config.AppDataFolder;
 
         private static readonly string LibraryPath = Path.Combine(AppDataFolder, "library.json");
 
