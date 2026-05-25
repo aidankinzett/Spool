@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Media;
 using Microsoft.Win32;
 using Wpf.Ui.Appearance;
 
@@ -14,58 +15,293 @@ namespace LudusaviWrap
         private readonly Config _config;
         private readonly bool _isFirstRun;
         private bool _themeComboInitialized = false;
+        private bool _dirty = false;
+        private bool _closeConfirmed = false;
         private readonly ObservableCollection<string> _sources = new();
 
         public SetupWindow(Config config, bool isFirstRun = false)
         {
-            // Must be called before InitializeComponent so the window backdrop and
-            // DWM dark-mode attribute are set before the visual tree is rendered.
             SystemThemeWatcher.Watch(this);
-
             InitializeComponent();
-
-            // Re-apply the configured app theme so dialogs follow the user's preference
-            // rather than the Windows system theme (they may differ).
             ThemeManager.ApplyTheme(config.Data.Theme);
             _config = config;
             _isFirstRun = isFirstRun;
 
-            // Load values from configuration
-            LudusaviPathTextBox.Text = _config.Data.LudusaviPath;
-            SgdbSwitch.IsChecked = _config.Data.SteamGridDbEnabled;
-            ApiKeyTextBox.Text = _config.Data.SteamGridDbApiKey;
+            // Populate fields
+            LudusaviPathTextBox.Text      = _config.Data.LudusaviPath;
+            SgdbSwitch.IsChecked          = _config.Data.SteamGridDbEnabled;
+            ApiKeyTextBox.Text            = _config.Data.SteamGridDbApiKey;
 
-            SyncSwitch.IsChecked    = _config.Data.SyncServerEnabled;
-            SyncUrlTextBox.Text     = _config.Data.SyncServerUrl;
-            SyncApiKeyBox.Password  = _config.Data.SyncServerApiKey;
-            DeviceNameTextBox.Text  = _config.Data.DeviceName;
+            SyncSwitch.IsChecked          = _config.Data.SyncServerEnabled;
+            SyncUrlTextBox.Text           = _config.Data.SyncServerUrl;
+            SyncApiKeyBox.Password        = _config.Data.SyncServerApiKey;
+            DeviceNameTextBox.Text        = _config.Data.DeviceName;
 
-            LanSwitch.IsChecked        = _config.Data.LanShareEnabled;
-            LanPortTextBox.Text        = _config.Data.LanSharePort.ToString();
-            LanInstallDirTextBox.Text  = _config.Data.LanInstallDir;
+            LanSwitch.IsChecked           = _config.Data.LanShareEnabled;
+            LanPortTextBox.Text           = _config.Data.LanSharePort.ToString();
+            LanInstallDirTextBox.Text     = _config.Data.LanInstallDir;
 
-            TorBoxSwitch.IsChecked       = _config.Data.TorBoxEnabled;
-            TorBoxApiKeyBox.Password     = _config.Data.TorBoxApiKey;
+            TorBoxSwitch.IsChecked        = _config.Data.TorBoxEnabled;
+            TorBoxApiKeyBox.Password      = _config.Data.TorBoxApiKey;
             TorBoxDownloadDirTextBox.Text = _config.Data.DownloadDir;
 
             foreach (var url in _config.Data.DownloadSources)
                 _sources.Add(url);
             SourcesListBox.ItemsSource = _sources;
+            UpdateSourcesCount();
 
-            // Populate theme ComboBox
             SelectThemeComboItem(_config.Data.Theme);
             _themeComboInitialized = true;
 
-            // Update UI state based on switches
-            UpdateSgdbUiState();
-            UpdateSyncUiState();
-            UpdateLanUiState();
-            UpdateTorBoxUiState();
+            AboutVersionText.Text = $"Ludusavi Wrap v{GetAppVersion()} · Up to date";
 
-            // Fire-and-forget version check if sync is already configured
+            // Expand cards whose services are already enabled
+            UpdateSgdbExpander();
+            UpdateSyncExpander();
+            UpdateLanExpander();
+            UpdateTorBoxExpander();
+
+            // Status pills
+            UpdateLudusaviPill();
+            UpdateSgdbPill();
+            UpdateLanPill();
+            UpdateSyncPill();
+            UpdateTorBoxPill();
+
+            // Start on Cloud sync section (mirrors the design mock default)
+            NavList.SelectedItem = NavSync;
+
+            SetDirty(false);
+
             if (_config.Data.SyncServerEnabled && !string.IsNullOrEmpty(_config.Data.SyncServerUrl))
                 _ = CheckAndShowServerVersionAsync(_config.Data.SyncServerUrl);
         }
+
+        // ─────────────────────────────────────────────────────────────────────
+        // Navigation
+        // ─────────────────────────────────────────────────────────────────────
+
+        private void NavList_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            if (NavList.SelectedItem is not ListBoxItem item) return;
+            var tag = item.Tag?.ToString() ?? "";
+            ShowSection(tag);
+            UpdateNavPills(tag);
+        }
+
+        private void SearchBox_TextChanged(object sender, TextChangedEventArgs e)
+        {
+            string q = SearchBox.Text.Trim().ToLowerInvariant();
+            // Show/hide nav items based on label match
+            foreach (ListBoxItem item in NavList.Items)
+            {
+                if (item.Content is Grid g &&
+                    g.Children.Count > 2 &&
+                    g.Children[2] is TextBlock tb)
+                {
+                    item.Visibility = string.IsNullOrEmpty(q) || tb.Text.ToLowerInvariant().Contains(q)
+                        ? Visibility.Visible
+                        : Visibility.Collapsed;
+                }
+            }
+        }
+
+        private void ShowSection(string tag)
+        {
+            SectionGeneral.Visibility   = tag == "general"   ? Visibility.Visible : Visibility.Collapsed;
+            SectionArtwork.Visibility   = tag == "artwork"   ? Visibility.Visible : Visibility.Collapsed;
+            SectionSources.Visibility   = tag == "sources"   ? Visibility.Visible : Visibility.Collapsed;
+            SectionLan.Visibility       = tag == "lan"       ? Visibility.Visible : Visibility.Collapsed;
+            SectionSync.Visibility      = tag == "sync"      ? Visibility.Visible : Visibility.Collapsed;
+            SectionDownloads.Visibility = tag == "downloads" ? Visibility.Visible : Visibility.Collapsed;
+        }
+
+        private void UpdateNavPills(string activeTag)
+        {
+            SetNavPill(NavGeneralPill,   "general",   activeTag);
+            SetNavPill(NavArtworkPill,   "artwork",   activeTag);
+            SetNavPill(NavSourcesPill,   "sources",   activeTag);
+            SetNavPill(NavLanPill,       "lan",       activeTag);
+            SetNavPill(NavSyncPill,      "sync",      activeTag);
+            SetNavPill(NavDownloadsPill, "downloads", activeTag);
+        }
+
+        private static void SetNavPill(Border? pill, string tag, string activeTag)
+        {
+            if (pill == null) return;
+            pill.Visibility = tag == activeTag ? Visibility.Visible : Visibility.Hidden;
+        }
+
+        // ─────────────────────────────────────────────────────────────────────
+        // Expandable cards
+        // ─────────────────────────────────────────────────────────────────────
+
+        private void SgdbCard_Click(object sender, System.Windows.Input.MouseButtonEventArgs e)
+        {
+            bool nowExpanded = SgdbBody.Visibility != Visibility.Visible;
+            SgdbBody.Visibility = nowExpanded ? Visibility.Visible : Visibility.Collapsed;
+        }
+
+        private void SgdbSwitch_PreviewClick(object sender, System.Windows.Input.MouseButtonEventArgs e)
+        {
+            // Prevent the card row click handler from toggling expansion when toggling the switch
+            e.Handled = false;
+        }
+
+        private void LanCard_Click(object sender, System.Windows.Input.MouseButtonEventArgs e)
+        {
+            bool nowExpanded = LanBody.Visibility != Visibility.Visible;
+            LanBody.Visibility = nowExpanded ? Visibility.Visible : Visibility.Collapsed;
+        }
+
+        private void LanSwitch_PreviewClick(object sender, System.Windows.Input.MouseButtonEventArgs e)
+        {
+            e.Handled = false;
+        }
+
+        private void SyncCard_Click(object sender, System.Windows.Input.MouseButtonEventArgs e)
+        {
+            bool nowExpanded = SyncBody.Visibility != Visibility.Visible;
+            SyncBody.Visibility = nowExpanded ? Visibility.Visible : Visibility.Collapsed;
+        }
+
+        private void SyncSwitch_PreviewClick(object sender, System.Windows.Input.MouseButtonEventArgs e)
+        {
+            e.Handled = false;
+        }
+
+        private void TorBoxCard_Click(object sender, System.Windows.Input.MouseButtonEventArgs e)
+        {
+            bool nowExpanded = TorBoxBody.Visibility != Visibility.Visible;
+            TorBoxBody.Visibility = nowExpanded ? Visibility.Visible : Visibility.Collapsed;
+        }
+
+        private void TorBoxSwitch_PreviewClick(object sender, System.Windows.Input.MouseButtonEventArgs e)
+        {
+            e.Handled = false;
+        }
+
+        // Sync expander open state with switch state on load
+        private void UpdateSgdbExpander()
+        {
+            if (SgdbBody == null) return;
+            SgdbBody.Visibility = (SgdbSwitch.IsChecked ?? false) ? Visibility.Visible : Visibility.Collapsed;
+        }
+
+        private void UpdateSyncExpander()
+        {
+            if (SyncBody == null) return;
+            SyncBody.Visibility = (SyncSwitch.IsChecked ?? false) ? Visibility.Visible : Visibility.Collapsed;
+        }
+
+        private void UpdateLanExpander()
+        {
+            if (LanBody == null) return;
+            LanBody.Visibility = (LanSwitch.IsChecked ?? false) ? Visibility.Visible : Visibility.Collapsed;
+        }
+
+        private void UpdateTorBoxExpander()
+        {
+            if (TorBoxBody == null) return;
+            TorBoxBody.Visibility = (TorBoxSwitch.IsChecked ?? false) ? Visibility.Visible : Visibility.Collapsed;
+        }
+
+        // ─────────────────────────────────────────────────────────────────────
+        // Status pills
+        // ─────────────────────────────────────────────────────────────────────
+
+        private void UpdateLudusaviPill()
+        {
+            bool found = !string.IsNullOrEmpty(LudusaviPathTextBox.Text) &&
+                         File.Exists(LudusaviPathTextBox.Text.Trim());
+            LudusaviPill.Visibility = found ? Visibility.Visible : Visibility.Collapsed;
+        }
+
+        private void UpdateSgdbPill()
+        {
+            bool show = (SgdbSwitch.IsChecked ?? false) && !string.IsNullOrEmpty(ApiKeyTextBox.Text);
+            SgdbPill.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
+        }
+
+        private void UpdateLanPill()
+        {
+            bool show = LanSwitch.IsChecked ?? false;
+            LanPill.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
+            if (show)
+                LanPillText.Text = $"Listening :{LanPortTextBox.Text.Trim()}";
+        }
+
+        private void UpdateSyncPill()
+        {
+            bool show = (SyncSwitch.IsChecked ?? false) && !string.IsNullOrEmpty(SyncUrlTextBox.Text);
+            SyncPill.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
+        }
+
+        private void UpdateTorBoxPill()
+        {
+            bool show = (TorBoxSwitch.IsChecked ?? false) && TorBoxApiKeyBox.Password.Length > 0;
+            TorBoxPill.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
+        }
+
+        // ─────────────────────────────────────────────────────────────────────
+        // Dirty state
+        // ─────────────────────────────────────────────────────────────────────
+
+        private void SetDirty(bool dirty)
+        {
+            _dirty = dirty;
+            if (dirty)
+            {
+                DirtyDot.Fill = new SolidColorBrush(Color.FromRgb(0xFF, 0xC2, 0x78));
+                DirtyLabel.Text = "Unsaved changes";
+                DirtyLabel.Foreground = new SolidColorBrush(Color.FromRgb(0xFF, 0xC2, 0x78));
+            }
+            else
+            {
+                DirtyDot.Fill = new SolidColorBrush(Color.FromRgb(0x7E, 0xE2, 0xA4));
+                DirtyLabel.Text = "All changes saved";
+                DirtyLabel.SetResourceReference(System.Windows.Controls.TextBlock.ForegroundProperty,
+                    "TextFillColorTertiaryBrush");
+            }
+        }
+
+        // ─────────────────────────────────────────────────────────────────────
+        // Switch handlers
+        // ─────────────────────────────────────────────────────────────────────
+
+        private void SgdbSwitch_Changed(object sender, RoutedEventArgs e)
+        {
+            UpdateSgdbPill();
+            SetDirty(true);
+        }
+
+        private void SyncSwitch_Changed(object sender, RoutedEventArgs e)
+        {
+            UpdateSyncPill();
+            SetDirty(true);
+        }
+
+        private void LanSwitch_Changed(object sender, RoutedEventArgs e)
+        {
+            UpdateLanPill();
+            SetDirty(true);
+        }
+
+        private void TorBoxSwitch_Changed(object sender, RoutedEventArgs e)
+        {
+            UpdateTorBoxPill();
+            SetDirty(true);
+        }
+
+        private void LudusaviPath_TextChanged(object sender, TextChangedEventArgs e)
+        {
+            UpdateLudusaviPill();
+            SetDirty(true);
+        }
+
+        // ─────────────────────────────────────────────────────────────────────
+        // Theme
+        // ─────────────────────────────────────────────────────────────────────
 
         private void SelectThemeComboItem(string theme)
         {
@@ -77,97 +313,23 @@ namespace LudusaviWrap
                     return;
                 }
             }
-            // Fallback to system
             ThemeComboBox.SelectedIndex = 0;
         }
 
         private void ThemeComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
         {
-            // Guard against firing during InitializeComponent
             if (!_themeComboInitialized) return;
-
             if (ThemeComboBox.SelectedItem is ComboBoxItem selected &&
                 selected.Tag?.ToString() is string tag)
             {
-                // Live preview — apply immediately without saving
                 ThemeManager.ApplyTheme(tag);
+                SetDirty(true);
             }
         }
 
-        private void SgdbSwitch_Changed(object sender, RoutedEventArgs e)
-        {
-            UpdateSgdbUiState();
-        }
-
-        private void UpdateSgdbUiState()
-        {
-            if (ApiKeyGrid != null && ApiKeyTextBox != null)
-            {
-                bool enabled = SgdbSwitch.IsChecked ?? false;
-                ApiKeyTextBox.IsEnabled = enabled;
-            }
-        }
-
-        private void SyncSwitch_Changed(object sender, RoutedEventArgs e)
-        {
-            UpdateSyncUiState();
-        }
-
-        private void UpdateSyncUiState()
-        {
-            if (SyncFieldsGrid == null) return;
-            bool enabled = SyncSwitch.IsChecked ?? false;
-            SyncFieldsGrid.IsEnabled = enabled;
-        }
-
-        private void LanSwitch_Changed(object sender, RoutedEventArgs e)
-        {
-            UpdateLanUiState();
-        }
-
-        private void UpdateLanUiState()
-        {
-            if (LanFieldsGrid == null) return;
-            LanFieldsGrid.IsEnabled = LanSwitch.IsChecked ?? false;
-        }
-
-        private void TorBoxSwitch_Changed(object sender, RoutedEventArgs e)
-        {
-            UpdateTorBoxUiState();
-        }
-
-        private void UpdateTorBoxUiState()
-        {
-            if (TorBoxFieldsGrid == null) return;
-            TorBoxFieldsGrid.IsEnabled = TorBoxSwitch.IsChecked ?? false;
-        }
-
-        private void TorBoxGetKey_Click(object sender, RoutedEventArgs e)
-        {
-            try
-            {
-                Process.Start(new ProcessStartInfo
-                {
-                    FileName = "https://torbox.app/settings",
-                    UseShellExecute = true
-                });
-            }
-            catch (Exception ex)
-            {
-                ShowError($"Could not open website: {ex.Message}");
-            }
-        }
-
-        private void BrowseTorBoxDir_Click(object sender, RoutedEventArgs e)
-        {
-            var dialog = new OpenFolderDialog
-            {
-                Title = "Select default folder for TorBox downloads",
-                Multiselect = false
-            };
-            if (dialog.ShowDialog() == true)
-                TorBoxDownloadDirTextBox.Text = dialog.FolderName;
-        }
+        // ─────────────────────────────────────────────────────────────────────
+        // Sources
+        // ─────────────────────────────────────────────────────────────────────
 
         private void AddSource_Click(object sender, RoutedEventArgs e)
         {
@@ -179,15 +341,53 @@ namespace LudusaviWrap
                 return;
             }
             if (!_sources.Contains(url))
+            {
                 _sources.Add(url);
+                SetDirty(true);
+            }
             NewSourceUrlTextBox.Text = "";
             ErrorLabel.Visibility = Visibility.Collapsed;
+            UpdateSourcesCount();
         }
 
         private void RemoveSource_Click(object sender, RoutedEventArgs e)
         {
-            if (SourcesListBox.SelectedItem is string selected)
-                _sources.Remove(selected);
+            string? url = null;
+            if (sender is Button btn && btn.Tag is string tag)
+                url = tag;
+            else if (SourcesListBox.SelectedItem is string selected)
+                url = selected;
+
+            if (url != null)
+            {
+                _sources.Remove(url);
+                SetDirty(true);
+                UpdateSourcesCount();
+            }
+        }
+
+        private void UpdateSourcesCount()
+        {
+            SourcesCountLabel.Text = $"{_sources.Count} source{(_sources.Count == 1 ? "" : "s")} configured";
+        }
+
+        // ─────────────────────────────────────────────────────────────────────
+        // Browse dialogs
+        // ─────────────────────────────────────────────────────────────────────
+
+        private void BrowseLudusavi_Click(object sender, RoutedEventArgs e)
+        {
+            var dialog = new OpenFileDialog
+            {
+                Title = "Select ludusavi.exe",
+                Filter = "ludusavi.exe|ludusavi.exe|Executables (*.exe)|*.exe",
+                RestoreDirectory = true
+            };
+            if (dialog.ShowDialog() == true)
+            {
+                LudusaviPathTextBox.Text = dialog.FileName;
+                SetDirty(true);
+            }
         }
 
         private void BrowseLanInstallDir_Click(object sender, RoutedEventArgs e)
@@ -198,39 +398,206 @@ namespace LudusaviWrap
                 Multiselect = false
             };
             if (dialog.ShowDialog() == true)
+            {
                 LanInstallDirTextBox.Text = dialog.FolderName;
-        }
-
-        private void BrowseLudusavi_Click(object sender, RoutedEventArgs e)
-        {
-            var dialog = new OpenFileDialog
-            {
-                Title = "Select ludusavi.exe",
-                Filter = "ludusavi.exe|ludusavi.exe|Executables (*.exe)|*.exe",
-                RestoreDirectory = true
-            };
-
-            if (dialog.ShowDialog() == true)
-            {
-                LudusaviPathTextBox.Text = dialog.FileName;
+                SetDirty(true);
             }
         }
 
+        private void BrowseTorBoxDir_Click(object sender, RoutedEventArgs e)
+        {
+            var dialog = new OpenFolderDialog
+            {
+                Title = "Select default folder for TorBox downloads",
+                Multiselect = false
+            };
+            if (dialog.ShowDialog() == true)
+            {
+                TorBoxDownloadDirTextBox.Text = dialog.FolderName;
+                SetDirty(true);
+            }
+        }
+
+        // ─────────────────────────────────────────────────────────────────────
+        // External links
+        // ─────────────────────────────────────────────────────────────────────
+
         private void GetKey_Click(object sender, RoutedEventArgs e)
+            => OpenUrl("https://www.steamgriddb.com/profile/preferences/api");
+
+        private void TorBoxGetKey_Click(object sender, RoutedEventArgs e)
+            => OpenUrl("https://torbox.app/settings");
+
+        private void ReleaseNotes_Click(object sender, RoutedEventArgs e)
+            => OpenUrl("https://github.com/aidankinzett/ludusavi-wrap/releases");
+
+        private void OpenUrl(string url)
         {
             try
             {
-                Process.Start(new ProcessStartInfo
-                {
-                    FileName = "https://www.steamgriddb.com/profile/preferences/api",
-                    UseShellExecute = true
-                });
+                Process.Start(new ProcessStartInfo { FileName = url, UseShellExecute = true });
             }
             catch (Exception ex)
             {
                 ShowError($"Could not open website: {ex.Message}");
             }
         }
+
+        // ─────────────────────────────────────────────────────────────────────
+        // Sync — Scan LAN + server version
+        // ─────────────────────────────────────────────────────────────────────
+
+        private async void ScanLan_Click(object sender, RoutedEventArgs e)
+        {
+            ScanLanButton.IsEnabled = false;
+            ScanLanButton.Content = "Scanning…";
+            ErrorLabel.Visibility = Visibility.Collapsed;
+            ServerVersionLabel.Visibility = Visibility.Collapsed;
+
+            try
+            {
+                var found = await PlayStateLockClient.ScanLanAsync();
+                if (found.Count == 0)
+                {
+                    ShowError("No sync server found on the local network.");
+                }
+                else
+                {
+                    SyncUrlTextBox.Text = found[0];
+                    SetDirty(true);
+                    if (found.Count > 1)
+                        ShowError($"Found {found.Count} servers — selected the first one.");
+                    await CheckAndShowServerVersionAsync(found[0]);
+                }
+            }
+            finally
+            {
+                ScanLanButton.IsEnabled = true;
+                ScanLanButton.Content = "Scan LAN";
+            }
+        }
+
+        private async Task CheckAndShowServerVersionAsync(string serverUrl)
+        {
+            var health = await PlayStateLockClient.CheckHealthAsync(serverUrl);
+            if (health == null)
+            {
+                ServerVersionLabel.Text = "Server unreachable";
+                ServerVersionLabel.Foreground = Brushes.Gray;
+                ServerVersionLabel.Visibility = Visibility.Visible;
+                return;
+            }
+
+            string serverVer = health.Version ?? "unknown";
+            string appVer = GetAppVersion();
+
+            if (serverVer == "dev" || appVer == "1.0.0")
+            {
+                ServerVersionLabel.Text = $"Server version: {serverVer}";
+                ServerVersionLabel.Foreground = Brushes.Gray;
+                SyncPillText.Text = $"{serverVer} · connected";
+            }
+            else if (serverVer == appVer)
+            {
+                ServerVersionLabel.Text = $"Server v{serverVer} — up to date";
+                ServerVersionLabel.Foreground = new SolidColorBrush(Color.FromRgb(0x4C, 0xAF, 0x50));
+                SyncPillText.Text = $"v{serverVer} · connected";
+            }
+            else
+            {
+                ServerVersionLabel.Text = $"Server v{serverVer} — app is v{appVer}, consider updating the server";
+                ServerVersionLabel.Foreground = new SolidColorBrush(Color.FromRgb(0xFF, 0xA0, 0x26));
+                SyncPillText.Text = $"v{serverVer} · outdated";
+            }
+
+            ServerVersionLabel.Visibility = Visibility.Visible;
+            SyncApiKeyHelper.Text = $"Server {serverVer} — up to date.";
+            UpdateSyncPill();
+        }
+
+        // ─────────────────────────────────────────────────────────────────────
+        // Register panel
+        // ─────────────────────────────────────────────────────────────────────
+
+        private void RegisterPanel_Toggle(object sender, RoutedEventArgs e)
+        {
+            bool visible = RegisterPanel.Visibility == Visibility.Visible;
+            RegisterPanel.Visibility = visible ? Visibility.Collapsed : Visibility.Visible;
+            if (!visible && string.IsNullOrEmpty(RegisterUsernameBox.Text))
+                RegisterUsernameBox.Text = _config.Data.DeviceName;
+        }
+
+        private void RegisterCancel_Click(object sender, RoutedEventArgs e)
+        {
+            RegisterPanel.Visibility = Visibility.Collapsed;
+            RegisterErrorLabel.Visibility = Visibility.Collapsed;
+        }
+
+        private async void Register_Click(object sender, RoutedEventArgs e)
+        {
+            string url = SyncUrlTextBox.Text.Trim();
+            string adminSecret = RegisterAdminSecretBox.Password.Trim();
+            string username = RegisterUsernameBox.Text.Trim();
+
+            if (string.IsNullOrEmpty(url))
+            {
+                ShowRegisterError("Enter the server URL first.");
+                return;
+            }
+            if (string.IsNullOrEmpty(adminSecret))
+            {
+                ShowRegisterError("Admin secret is required.");
+                return;
+            }
+            if (string.IsNullOrEmpty(username))
+            {
+                ShowRegisterError("Username is required.");
+                return;
+            }
+
+            RegisterErrorLabel.Visibility = Visibility.Collapsed;
+            RegisterButton.IsEnabled = false;
+            RegisterButton.Content = "Registering…";
+
+            try
+            {
+                var (apiKey, error) = await PlayStateLockClient.RegisterAsync(url, adminSecret, username);
+                if (apiKey != null)
+                {
+                    SyncApiKeyBox.Password = apiKey;
+                    RegisterAdminSecretBox.Clear();
+                    SetDirty(true);
+
+                    RegisterErrorLabel.Text = "Account created — API key filled in.";
+                    RegisterErrorLabel.Foreground = new SolidColorBrush(Color.FromRgb(0x4C, 0xAF, 0x50));
+                    RegisterErrorLabel.Visibility = Visibility.Visible;
+
+                    await Task.Delay(1800);
+                    RegisterPanel.Visibility = Visibility.Collapsed;
+                    RegisterErrorLabel.Foreground = new SolidColorBrush(Color.FromRgb(0xFF, 0x8A, 0x8A));
+                }
+                else
+                {
+                    ShowRegisterError(error ?? "Registration failed.");
+                }
+            }
+            finally
+            {
+                RegisterButton.IsEnabled = true;
+                RegisterButton.Content = "Register";
+            }
+        }
+
+        private void ShowRegisterError(string message)
+        {
+            RegisterErrorLabel.Text = message;
+            RegisterErrorLabel.Foreground = new SolidColorBrush(Color.FromRgb(0xFF, 0x8A, 0x8A));
+            RegisterErrorLabel.Visibility = Visibility.Visible;
+        }
+
+        // ─────────────────────────────────────────────────────────────────────
+        // Save / Cancel
+        // ─────────────────────────────────────────────────────────────────────
 
         private void Save_Click(object sender, RoutedEventArgs e)
         {
@@ -241,31 +608,30 @@ namespace LudusaviWrap
             if (string.IsNullOrEmpty(path) || !File.Exists(path))
             {
                 ShowError("Please select a valid ludusavi.exe file.");
+                NavList.SelectedItem = NavGeneral;
                 return;
             }
 
             if (sgdbEnabled && string.IsNullOrEmpty(apiKey))
             {
                 ShowError("API key is required when SteamGridDB is enabled.");
+                NavList.SelectedItem = NavArtwork;
                 return;
             }
 
-            // Persist theme selection
             string themeValue = "system";
             if (ThemeComboBox.SelectedItem is ComboBoxItem selectedTheme &&
                 selectedTheme.Tag?.ToString() is string tag)
-            {
                 themeValue = tag;
-            }
 
-            // Validate LAN port
-            if (!int.TryParse(LanPortTextBox.Text.Trim(), out int lanPort) || lanPort < 1024 || lanPort > 65534)
+            string lanPortText = LanPortTextBox.Text.Trim();
+            if (!int.TryParse(lanPortText, out int lanPort) || lanPort < 1024 || lanPort > 65534)
             {
                 ShowError("LAN port must be a number between 1024 and 65534.");
+                NavList.SelectedItem = NavLan;
                 return;
             }
 
-            // Save back to configuration
             _config.Data.LudusaviPath       = path;
             _config.Data.SteamGridDbEnabled = sgdbEnabled;
             _config.Data.SteamGridDbApiKey  = apiKey;
@@ -284,158 +650,61 @@ namespace LudusaviWrap
             _config.Data.DownloadSources    = new System.Collections.Generic.List<string>(_sources);
             _config.Save();
 
+            SetDirty(false);
+            _closeConfirmed = true;
             DialogResult = true;
-            Close();
         }
 
         private void Cancel_Click(object sender, RoutedEventArgs e)
         {
-            // Revert live preview to saved preference
             ThemeManager.ApplyTheme(_config.Data.Theme);
+            _closeConfirmed = true;
             DialogResult = false;
-            Close();
         }
 
-        private static string GetAppVersion() =>
-            typeof(SetupWindow).Assembly.GetName().Version?.ToString(3) ?? "unknown";
-
-        private async Task CheckAndShowServerVersionAsync(string serverUrl)
+        private void Window_Closing(object sender, System.ComponentModel.CancelEventArgs e)
         {
-            var health = await PlayStateLockClient.CheckHealthAsync(serverUrl);
-            if (health == null)
-            {
-                ServerVersionLabel.Text = "Server unreachable";
-                ServerVersionLabel.Foreground = System.Windows.Media.Brushes.Gray;
-                ServerVersionLabel.Visibility = Visibility.Visible;
-                return;
-            }
+            if (_closeConfirmed || !_dirty) return;
 
-            string serverVer = health.Version ?? "unknown";
-            string appVer = GetAppVersion();
+            var result = MessageBox.Show(
+                "You have unsaved changes. Save before closing?",
+                "Unsaved changes",
+                MessageBoxButton.YesNoCancel,
+                MessageBoxImage.Warning);
 
-            if (serverVer == "dev" || appVer == "1.0.0")
+            if (result == MessageBoxResult.Yes)
             {
-                // Dev build on either end — show version without a warning
-                ServerVersionLabel.Text = $"Server version: {serverVer}";
-                ServerVersionLabel.Foreground = System.Windows.Media.Brushes.Gray;
+                // Cancel the close, then attempt save after the handler returns.
+                // Deferring via BeginInvoke avoids calling DialogResult/Close
+                // while the window is still mid-close-event.
+                e.Cancel = true;
+                Dispatcher.BeginInvoke(new Action(() => Save_Click(this, new RoutedEventArgs())));
             }
-            else if (serverVer == appVer)
+            else if (result == MessageBoxResult.No)
             {
-                ServerVersionLabel.Text = $"Server v{serverVer} — up to date";
-                ServerVersionLabel.Foreground = new System.Windows.Media.SolidColorBrush(
-                    System.Windows.Media.Color.FromRgb(0x4C, 0xAF, 0x50));
+                // Discard — revert live theme preview
+                ThemeManager.ApplyTheme(_config.Data.Theme);
+                _closeConfirmed = true;
+                DialogResult = false;
             }
             else
             {
-                ServerVersionLabel.Text = $"Server v{serverVer} — app is v{appVer}, consider updating the server";
-                ServerVersionLabel.Foreground = new System.Windows.Media.SolidColorBrush(
-                    System.Windows.Media.Color.FromRgb(0xFF, 0xA0, 0x26));
-            }
-
-            ServerVersionLabel.Visibility = Visibility.Visible;
-        }
-
-        private async void ScanLan_Click(object sender, RoutedEventArgs e)
-        {
-            ScanLanButton.IsEnabled = false;
-            ScanLanButton.Content = "Scanning...";
-            ErrorLabel.Visibility = Visibility.Collapsed;
-            ServerVersionLabel.Visibility = Visibility.Collapsed;
-
-            try
-            {
-                var found = await PlayStateLockClient.ScanLanAsync();
-                if (found.Count == 0)
-                {
-                    ShowError("No sync server found on the local network.");
-                }
-                else
-                {
-                    SyncUrlTextBox.Text = found[0];
-                    if (found.Count > 1)
-                        ShowError($"Found {found.Count} servers — selected the first one.");
-                    await CheckAndShowServerVersionAsync(found[0]);
-                }
-            }
-            finally
-            {
-                ScanLanButton.IsEnabled = true;
-                ScanLanButton.Content = "Scan LAN";
+                // Cancel — stay in the window
+                e.Cancel = true;
             }
         }
 
-        private void RegisterPanel_Toggle(object sender, RoutedEventArgs e)
-        {
-            bool visible = RegisterPanel.Visibility == Visibility.Visible;
-            RegisterPanel.Visibility = visible ? Visibility.Collapsed : Visibility.Visible;
-            if (!visible && string.IsNullOrEmpty(RegisterUsernameBox.Text))
-                RegisterUsernameBox.Text = _config.Data.DeviceName;
-        }
-
-        private async void Register_Click(object sender, RoutedEventArgs e)
-        {
-            string url = SyncUrlTextBox.Text.Trim();
-            string adminSecret = RegisterAdminSecretBox.Password.Trim();
-            string username = RegisterUsernameBox.Text.Trim();
-
-            if (string.IsNullOrEmpty(url))
-            {
-                RegisterErrorLabel.Text = "Enter the server URL first.";
-                RegisterErrorLabel.Visibility = Visibility.Visible;
-                return;
-            }
-            if (string.IsNullOrEmpty(adminSecret))
-            {
-                RegisterErrorLabel.Text = "Admin secret is required.";
-                RegisterErrorLabel.Visibility = Visibility.Visible;
-                return;
-            }
-            if (string.IsNullOrEmpty(username))
-            {
-                RegisterErrorLabel.Text = "Username is required.";
-                RegisterErrorLabel.Visibility = Visibility.Visible;
-                return;
-            }
-
-            RegisterErrorLabel.Visibility = Visibility.Collapsed;
-            var registerBtn = (Wpf.Ui.Controls.Button)sender;
-            registerBtn.IsEnabled = false;
-            registerBtn.Content = "Registering...";
-
-            try
-            {
-                var (apiKey, error) = await PlayStateLockClient.RegisterAsync(url, adminSecret, username);
-                if (apiKey != null)
-                {
-                    SyncApiKeyBox.Password = apiKey;
-                    RegisterAdminSecretBox.Clear();
-
-                    RegisterErrorLabel.Text = "Account created — API key filled in.";
-                    RegisterErrorLabel.Foreground = new System.Windows.Media.SolidColorBrush(
-                        System.Windows.Media.Color.FromRgb(0x4C, 0xAF, 0x50));
-                    RegisterErrorLabel.Visibility = Visibility.Visible;
-
-                    await Task.Delay(1800);
-                    RegisterPanel.Visibility = Visibility.Collapsed;
-                    RegisterErrorLabel.Foreground = System.Windows.Media.Brushes.Red;
-                }
-                else
-                {
-                    RegisterErrorLabel.Text = error ?? "Registration failed.";
-                    RegisterErrorLabel.Visibility = Visibility.Visible;
-                }
-            }
-            finally
-            {
-                registerBtn.IsEnabled = true;
-                registerBtn.Content = "Register";
-            }
-        }
+        // ─────────────────────────────────────────────────────────────────────
+        // Helpers
+        // ─────────────────────────────────────────────────────────────────────
 
         private void ShowError(string message)
         {
             ErrorLabel.Text = message;
             ErrorLabel.Visibility = Visibility.Visible;
         }
+
+        private static string GetAppVersion() =>
+            typeof(SetupWindow).Assembly.GetName().Version?.ToString(3) ?? "unknown";
     }
 }

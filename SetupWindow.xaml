@@ -3,480 +3,1050 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
         xmlns:local="clr-namespace:LudusaviWrap"
-        Title="Settings"
-        Width="880"
-        Height="650"
-        MinHeight="450"
-        MinWidth="800"
+        Title="Settings — Ludusavi Wrap"
+        Closing="Window_Closing"
+        Width="1040"
+        Height="720"
+        MinHeight="560"
+        MinWidth="760"
         ResizeMode="CanResize"
         WindowStartupLocation="CenterScreen">
 
+    <Window.Resources>
+        <!-- Nav item style -->
+        <Style x:Key="NavItemStyle" TargetType="ListBoxItem">
+            <Setter Property="Padding" Value="12,9"/>
+            <Setter Property="Margin" Value="0,1"/>
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="BorderBrush" Value="Transparent"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ListBoxItem">
+                        <Border x:Name="Bd"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="4"
+                                Padding="{TemplateBinding Padding}">
+                            <ContentPresenter/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="{DynamicResource SubtleFillColorSecondaryBrush}"/>
+                            </Trigger>
+                            <Trigger Property="IsSelected" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="{DynamicResource SubtleFillColorTertiaryBrush}"/>
+                                <Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource ControlStrokeColorDefaultBrush}"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- Pill border style -->
+        <Style x:Key="StatusPillOk" TargetType="Border">
+            <Setter Property="Background" Value="#2350C878"/>
+            <Setter Property="CornerRadius" Value="9"/>
+            <Setter Property="Padding" Value="8,1"/>
+            <Setter Property="Height" Value="18"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+        </Style>
+        <Style x:Key="StatusPillWarn" TargetType="Border">
+            <Setter Property="Background" Value="#23FFB45A"/>
+            <Setter Property="CornerRadius" Value="9"/>
+            <Setter Property="Padding" Value="8,1"/>
+            <Setter Property="Height" Value="18"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+        </Style>
+
+        <!-- Card expander body style -->
+        <Style x:Key="ExpanderBody" TargetType="Border">
+            <Setter Property="Background" Value="{DynamicResource LayerFillColorDefaultBrush}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource ControlStrokeColorSecondaryBrush}"/>
+            <Setter Property="BorderThickness" Value="0,1,0,0"/>
+            <Setter Property="Padding" Value="16,14,16,16"/>
+        </Style>
+
+        <!-- Sub-label style -->
+        <Style x:Key="SubLabel" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="Foreground" Value="{DynamicResource TextFillColorSecondaryBrush}"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+        </Style>
+
+        <!-- Helper text style -->
+        <Style x:Key="HelperText" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="11"/>
+            <Setter Property="Foreground" Value="{DynamicResource TextFillColorTertiaryBrush}"/>
+            <Setter Property="Margin" Value="0,4,0,0"/>
+        </Style>
+
+        <!-- Section header title -->
+        <Style x:Key="SectionTitle" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="22"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Margin" Value="0,0,0,0"/>
+        </Style>
+
+        <!-- Section subtitle -->
+        <Style x:Key="SectionSubtitle" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="13"/>
+            <Setter Property="Foreground" Value="{DynamicResource TextFillColorSecondaryBrush}"/>
+            <Setter Property="Margin" Value="48,4,0,0"/>
+            <Setter Property="TextWrapping" Value="Wrap"/>
+        </Style>
+    </Window.Resources>
+
     <Grid>
         <Grid.RowDefinitions>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>  <!-- TitleBar -->
+            <RowDefinition Height="*"/>     <!-- Body -->
+            <RowDefinition Height="Auto"/>  <!-- Action bar -->
         </Grid.RowDefinitions>
 
-        <ui:TitleBar Title="Settings"
+        <!-- Title bar -->
+        <ui:TitleBar Title="Settings — Ludusavi Wrap"
                      ShowMaximize="False"
                      ShowMinimize="False"
                      Grid.Row="0"/>
 
-        <Grid Grid.Row="1" Margin="24,12,24,24">
-            <Grid.RowDefinitions>
-                <RowDefinition Height="*"/> <!-- Columns container -->
-                <RowDefinition Height="Auto"/> <!-- Error label -->
-                <RowDefinition Height="Auto"/> <!-- Action buttons -->
-            </Grid.RowDefinitions>
+        <!-- Body: sidebar + content -->
+        <Grid Grid.Row="1">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="240"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
 
-            <!-- Columns container wrapped in ScrollViewer -->
-            <ScrollViewer Grid.Row="0"
-                          VerticalScrollBarVisibility="Auto"
-                          HorizontalScrollBarVisibility="Disabled"
-                          Margin="0,0,0,16">
-                <Grid Margin="0,0,12,0">
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="*"/>
-                    <ColumnDefinition Width="16"/>
-                    <ColumnDefinition Width="*"/>
-                </Grid.ColumnDefinitions>
+            <!-- ── Sidebar ── -->
+            <Border Grid.Column="0"
+                    BorderBrush="{DynamicResource ControlStrokeColorDefaultBrush}"
+                    BorderThickness="0,0,1,0">
+                <DockPanel>
+                    <!-- Search box -->
+                    <Border DockPanel.Dock="Top" Padding="12,16,12,8">
+                        <ui:TextBox x:Name="SearchBox"
+                                    PlaceholderText="Find a setting"
+                                    TextChanged="SearchBox_TextChanged"/>
+                    </Border>
 
-                <!-- Left Column -->
-                <StackPanel Grid.Column="0">
-                    <!-- Ludusavi Path card -->
-                    <ui:Card Margin="0,0,0,12">
-                        <StackPanel>
-                            <TextBlock Text="Ludusavi Path"
-                                       FontWeight="SemiBold"
-                                       Margin="0,0,0,8"/>
-                            <Grid>
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="*"/>
-                                    <ColumnDefinition Width="Auto"/>
-                                </Grid.ColumnDefinitions>
-                                <ui:TextBox x:Name="LudusaviPathTextBox"
-                                            PlaceholderText="C:\Path\to\ludusavi.exe"
+                    <!-- Nav list -->
+                    <ListBox x:Name="NavList"
+                             Background="Transparent"
+                             BorderThickness="0"
+                             Padding="12,0,12,12"
+                             SelectionChanged="NavList_SelectionChanged"
+                             ItemContainerStyle="{StaticResource NavItemStyle}">
+                        <ListBox.Items>
+                            <!-- General -->
+                            <ListBoxItem x:Name="NavGeneral" Tag="general">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="16"/>
+                                        <ColumnDefinition Width="20"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <!-- Active indicator -->
+                                    <Border x:Name="NavGeneralPill"
                                             Grid.Column="0"
-                                            Margin="0,0,8,0"/>
-                                <ui:Button Content="Browse"
-                                           Appearance="Secondary"
-                                           Click="BrowseLudusavi_Click"
-                                           Grid.Column="1"/>
-                            </Grid>
-                        </StackPanel>
-                    </ui:Card>
+                                            Width="3" Height="18"
+                                            CornerRadius="2"
+                                            Background="#4CC2FF"
+                                            HorizontalAlignment="Left"
+                                            Visibility="Hidden"/>
+                                    <ui:SymbolIcon Grid.Column="1"
+                                                   Symbol="Settings20"
+                                                   FontSize="16"
+                                                   VerticalAlignment="Center"/>
+                                    <TextBlock Grid.Column="2"
+                                               Text="General"
+                                               FontSize="13"
+                                               VerticalAlignment="Center"
+                                               Margin="12,0,0,0"/>
+                                </Grid>
+                            </ListBoxItem>
+                            <!-- Artwork -->
+                            <ListBoxItem x:Name="NavArtwork" Tag="artwork">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="16"/>
+                                        <ColumnDefinition Width="20"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <Border x:Name="NavArtworkPill"
+                                            Grid.Column="0"
+                                            Width="3" Height="18"
+                                            CornerRadius="2"
+                                            Background="#4CC2FF"
+                                            HorizontalAlignment="Left"
+                                            Visibility="Hidden"/>
+                                    <ui:SymbolIcon Grid.Column="1"
+                                                   Symbol="Image20"
+                                                   FontSize="16"
+                                                   VerticalAlignment="Center"/>
+                                    <TextBlock Grid.Column="2"
+                                               Text="Artwork"
+                                               FontSize="13"
+                                               VerticalAlignment="Center"
+                                               Margin="12,0,0,0"/>
+                                </Grid>
+                            </ListBoxItem>
+                            <!-- Sources -->
+                            <ListBoxItem x:Name="NavSources" Tag="sources">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="16"/>
+                                        <ColumnDefinition Width="20"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <Border x:Name="NavSourcesPill"
+                                            Grid.Column="0"
+                                            Width="3" Height="18"
+                                            CornerRadius="2"
+                                            Background="#4CC2FF"
+                                            HorizontalAlignment="Left"
+                                            Visibility="Hidden"/>
+                                    <ui:SymbolIcon Grid.Column="1"
+                                                   Symbol="Link20"
+                                                   FontSize="16"
+                                                   VerticalAlignment="Center"/>
+                                    <TextBlock Grid.Column="2"
+                                               Text="Sources"
+                                               FontSize="13"
+                                               VerticalAlignment="Center"
+                                               Margin="12,0,0,0"/>
+                                </Grid>
+                            </ListBoxItem>
+                            <!-- LAN sharing -->
+                            <ListBoxItem x:Name="NavLan" Tag="lan">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="16"/>
+                                        <ColumnDefinition Width="20"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <Border x:Name="NavLanPill"
+                                            Grid.Column="0"
+                                            Width="3" Height="18"
+                                            CornerRadius="2"
+                                            Background="#4CC2FF"
+                                            HorizontalAlignment="Left"
+                                            Visibility="Hidden"/>
+                                    <ui:SymbolIcon Grid.Column="1"
+                                                   Symbol="DesktopTower20"
+                                                   FontSize="16"
+                                                   VerticalAlignment="Center"/>
+                                    <TextBlock Grid.Column="2"
+                                               Text="LAN sharing"
+                                               FontSize="13"
+                                               VerticalAlignment="Center"
+                                               Margin="12,0,0,0"/>
+                                </Grid>
+                            </ListBoxItem>
+                            <!-- Cloud sync -->
+                            <ListBoxItem x:Name="NavSync" Tag="sync">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="16"/>
+                                        <ColumnDefinition Width="20"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <Border x:Name="NavSyncPill"
+                                            Grid.Column="0"
+                                            Width="3" Height="18"
+                                            CornerRadius="2"
+                                            Background="#4CC2FF"
+                                            HorizontalAlignment="Left"
+                                            Visibility="Hidden"/>
+                                    <ui:SymbolIcon Grid.Column="1"
+                                                   Symbol="ArrowSync20"
+                                                   FontSize="16"
+                                                   VerticalAlignment="Center"/>
+                                    <TextBlock Grid.Column="2"
+                                               Text="Cloud sync"
+                                               FontSize="13"
+                                               VerticalAlignment="Center"
+                                               Margin="12,0,0,0"/>
+                                </Grid>
+                            </ListBoxItem>
+                            <!-- Downloads -->
+                            <ListBoxItem x:Name="NavDownloads" Tag="downloads">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="16"/>
+                                        <ColumnDefinition Width="20"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <Border x:Name="NavDownloadsPill"
+                                            Grid.Column="0"
+                                            Width="3" Height="18"
+                                            CornerRadius="2"
+                                            Background="#4CC2FF"
+                                            HorizontalAlignment="Left"
+                                            Visibility="Hidden"/>
+                                    <ui:SymbolIcon Grid.Column="1"
+                                                   Symbol="ArrowDownload20"
+                                                   FontSize="16"
+                                                   VerticalAlignment="Center"/>
+                                    <TextBlock Grid.Column="2"
+                                               Text="Downloads"
+                                               FontSize="13"
+                                               VerticalAlignment="Center"
+                                               Margin="12,0,0,0"/>
+                                </Grid>
+                            </ListBoxItem>
+                        </ListBox.Items>
+                    </ListBox>
+                </DockPanel>
+            </Border>
 
-                    <!-- SteamGridDB card -->
-                    <ui:Card Margin="0,0,0,12">
-                        <StackPanel>
-                            <Grid Margin="0,0,0,4">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="*"/>
-                                    <ColumnDefinition Width="Auto"/>
-                                </Grid.ColumnDefinitions>
-                                <TextBlock Text="SteamGridDB Artwork"
-                                           FontWeight="SemiBold"
-                                           Grid.Column="0"
-                                           VerticalAlignment="Center"/>
-                                <ui:ToggleSwitch x:Name="SgdbSwitch"
-                                                 Checked="SgdbSwitch_Changed"
-                                                 Unchecked="SgdbSwitch_Changed"
-                                                 Grid.Column="1"
-                                                 VerticalAlignment="Center"/>
-                            </Grid>
+            <!-- ── Content area ── -->
+            <ScrollViewer Grid.Column="1"
+                          VerticalScrollBarVisibility="Auto"
+                          HorizontalScrollBarVisibility="Disabled">
+                <Grid MaxWidth="720" Margin="32,26,32,32" HorizontalAlignment="Stretch">
 
-                            <TextBlock Text="Download cover images automatically when generating a wrapper."
-                                       Foreground="{DynamicResource TextFillColorSecondaryBrush}"
-                                       FontSize="11"
-                                       Margin="0,0,0,12"/>
-
-                            <Grid x:Name="ApiKeyGrid">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="Auto"/>
-                                    <ColumnDefinition Width="*"/>
-                                    <ColumnDefinition Width="Auto"/>
-                                </Grid.ColumnDefinitions>
-                                <TextBlock Text="API Key:"
-                                           VerticalAlignment="Center"
-                                           Margin="0,0,8,0"
-                                           Grid.Column="0"/>
-                                <ui:TextBox x:Name="ApiKeyTextBox"
-                                            PlaceholderText="Paste API Key here"
-                                            Margin="0,0,8,0"
-                                            Grid.Column="1"/>
-                                <ui:Button Content="Get Key"
-                                           Appearance="Secondary"
-                                           Click="GetKey_Click"
-                                           Grid.Column="2"/>
-                            </Grid>
-                        </StackPanel>
-                    </ui:Card>
-
-                    <!-- Appearance card -->
-                    <ui:Card Margin="0,0,0,12">
-                        <StackPanel>
-                            <TextBlock Text="Appearance"
-                                       FontWeight="SemiBold"
-                                       Margin="0,0,0,8"/>
-                            <Grid>
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="Auto"/>
-                                    <ColumnDefinition Width="*"/>
-                                </Grid.ColumnDefinitions>
-                                <TextBlock Text="Theme:"
-                                           VerticalAlignment="Center"
-                                           Margin="0,0,12,0"
-                                           Grid.Column="0"/>
-                                <ComboBox x:Name="ThemeComboBox"
-                                          SelectionChanged="ThemeComboBox_SelectionChanged"
-                                          Grid.Column="1">
-                                    <ComboBoxItem x:Name="ThemeSystem" Content="System default" Tag="system"/>
-                                    <ComboBoxItem x:Name="ThemeLight"  Content="Light"          Tag="light"/>
-                                    <ComboBoxItem x:Name="ThemeDark"   Content="Dark"           Tag="dark"/>
-                                </ComboBox>
-                            </Grid>
-                        </StackPanel>
-                    </ui:Card>
-
-                    <!-- Sync Server card -->
-                    <ui:Card Margin="0,0,0,12">
-                        <StackPanel>
-                            <Grid Margin="0,0,0,4">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="*"/>
-                                    <ColumnDefinition Width="Auto"/>
-                                </Grid.ColumnDefinitions>
-                                <TextBlock Text="Sync Server"
-                                           FontWeight="SemiBold"
-                                           Grid.Column="0"
-                                           VerticalAlignment="Center"/>
-                                <ui:ToggleSwitch x:Name="SyncSwitch"
-                                                 Checked="SyncSwitch_Changed"
-                                                 Unchecked="SyncSwitch_Changed"
-                                                 Grid.Column="1"
-                                                 VerticalAlignment="Center"/>
-                            </Grid>
-
-                            <TextBlock Text="Prevents launching a game that&#x2019;s already running on another device."
-                                       Foreground="{DynamicResource TextFillColorSecondaryBrush}"
-                                       FontSize="11"
-                                       Margin="0,0,0,12"/>
-
-                            <Grid x:Name="SyncFieldsGrid">
-                                <Grid.RowDefinitions>
-                                    <RowDefinition Height="Auto"/>
-                                    <RowDefinition Height="Auto"/>
-                                    <RowDefinition Height="Auto"/>
-                                    <RowDefinition Height="Auto"/>
-                                    <RowDefinition Height="Auto"/>
-                                </Grid.RowDefinitions>
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="Auto"/>
-                                    <ColumnDefinition Width="*"/>
-                                    <ColumnDefinition Width="Auto"/>
-                                </Grid.ColumnDefinitions>
-
-                                <TextBlock Text="Server URL:"
-                                           VerticalAlignment="Center"
-                                           Margin="0,0,8,8"
-                                           Grid.Row="0" Grid.Column="0"/>
-                                <ui:TextBox x:Name="SyncUrlTextBox"
-                                            PlaceholderText="http://raspberrypi.local:47633"
-                                            Margin="0,0,8,8"
-                                            Grid.Row="0" Grid.Column="1"/>
-                                <ui:Button x:Name="ScanLanButton"
-                                           Content="Scan LAN"
-                                           Appearance="Secondary"
-                                           Margin="0,0,0,8"
-                                           Click="ScanLan_Click"
-                                           Grid.Row="0" Grid.Column="2"/>
-
-                                <!-- Server version status (shown after a health check) -->
-                                <TextBlock x:Name="ServerVersionLabel"
-                                           Visibility="Collapsed"
-                                           FontSize="11"
-                                           Margin="0,0,0,8"
-                                           Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="2"/>
-
-                                <TextBlock Text="API Key:"
-                                           VerticalAlignment="Center"
-                                           Margin="0,0,8,8"
-                                           Grid.Row="2" Grid.Column="0"/>
-                                <PasswordBox x:Name="SyncApiKeyBox"
-                                             Margin="0,0,8,8"
-                                             Grid.Row="2" Grid.Column="1"/>
-                                <ui:Button Content="Register..."
-                                           Appearance="Secondary"
-                                           Margin="0,0,0,8"
-                                           Click="RegisterPanel_Toggle"
-                                           Grid.Row="2" Grid.Column="2"/>
-
-                                <TextBlock Text="Device Name:"
-                                           VerticalAlignment="Center"
-                                           Margin="0,0,8,8"
-                                           Grid.Row="3" Grid.Column="0"/>
-                                <ui:TextBox x:Name="DeviceNameTextBox"
-                                            PlaceholderText="PC name shown to other devices"
-                                            Margin="0,0,0,8"
-                                            Grid.Row="3" Grid.Column="1" Grid.ColumnSpan="2"/>
-
-                                <!-- Inline registration panel (hidden until Register... is clicked) -->
-                                <Border x:Name="RegisterPanel"
-                                        Grid.Row="4" Grid.Column="0" Grid.ColumnSpan="3"
-                                        Visibility="Collapsed"
+                    <!-- ════ GENERAL ════ -->
+                    <StackPanel x:Name="SectionGeneral" Visibility="Collapsed">
+                        <!-- Header -->
+                        <StackPanel Margin="0,0,0,18">
+                            <StackPanel Orientation="Horizontal">
+                                <Border Width="36" Height="36" CornerRadius="8"
                                         Background="{DynamicResource ControlFillColorDefaultBrush}"
-                                        CornerRadius="4"
-                                        Padding="12,10"
-                                        Margin="0,0,0,4">
+                                        BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}" BorderThickness="1">
+                                    <ui:SymbolIcon Symbol="Settings20" FontSize="18" VerticalAlignment="Center" HorizontalAlignment="Center"/>
+                                </Border>
+                                <TextBlock Style="{StaticResource SectionTitle}" Text="General" Margin="12,0,0,0" VerticalAlignment="Center"/>
+                            </StackPanel>
+                            <TextBlock Style="{StaticResource SectionSubtitle}" Text="Core paths and app behaviour."/>
+                        </StackPanel>
+
+                        <StackPanel>
+                            <!-- Ludusavi executable card -->
+                            <Border Background="{DynamicResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}" BorderThickness="1" CornerRadius="6" Margin="0,0,0,8">
+                                <Grid Margin="16,14">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="32"/>
+                                        <ColumnDefinition Width="14"/>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <Border Grid.Column="0" Width="32" Height="32" CornerRadius="4"
+                                            Background="{DynamicResource ControlFillColorDefaultBrush}" BorderBrush="{DynamicResource ControlStrokeColorDefaultBrush}" BorderThickness="1">
+                                        <ui:SymbolIcon Symbol="Folder20" FontSize="16" VerticalAlignment="Center" HorizontalAlignment="Center"/>
+                                    </Border>
+                                    <StackPanel Grid.Column="2">
+                                        <StackPanel Orientation="Horizontal">
+                                            <TextBlock Text="Ludusavi executable" FontWeight="Medium" FontSize="13"/>
+                                            <Border x:Name="LudusaviPill" Style="{StaticResource StatusPillOk}" Margin="8,0,0,0" Visibility="Collapsed">
+                                                <StackPanel Orientation="Horizontal">
+                                                    <Ellipse Width="6" Height="6" Fill="#7EE2A4" VerticalAlignment="Center" Margin="0,0,5,0"/>
+                                                    <TextBlock x:Name="LudusaviPillText" Text="Detected" FontSize="11" FontWeight="Medium" Foreground="#7EE2A4"/>
+                                                </StackPanel>
+                                            </Border>
+                                        </StackPanel>
+                                        <TextBlock Text="Path to ludusavi.exe — used for save backup and restore."
+                                                   FontSize="12" Foreground="{DynamicResource TextFillColorSecondaryBrush}" Margin="0,2,0,0"/>
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="3" Orientation="Horizontal" VerticalAlignment="Center">
+                                        <ui:TextBox x:Name="LudusaviPathTextBox"
+                                                    PlaceholderText="C:\Path\to\ludusavi.exe"
+                                                    Width="260"
+                                                    FontFamily="Cascadia Code, Consolas, monospace"
+                                                    FontSize="12"
+                                                    Margin="0,0,6,0"
+                                                    TextChanged="LudusaviPath_TextChanged"/>
+                                        <ui:Button Content="Browse"
+                                                   Appearance="Secondary"
+                                                   Click="BrowseLudusavi_Click"/>
+                                    </StackPanel>
+                                </Grid>
+                            </Border>
+
+                            <!-- Theme card -->
+                            <Border Background="{DynamicResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}" BorderThickness="1" CornerRadius="6" Margin="0,0,0,8">
+                                <Grid Margin="16,14">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="32"/>
+                                        <ColumnDefinition Width="14"/>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <Border Grid.Column="0" Width="32" Height="32" CornerRadius="4"
+                                            Background="{DynamicResource ControlFillColorDefaultBrush}" BorderBrush="{DynamicResource ControlStrokeColorDefaultBrush}" BorderThickness="1">
+                                        <ui:SymbolIcon Symbol="DarkTheme20" FontSize="16" VerticalAlignment="Center" HorizontalAlignment="Center"/>
+                                    </Border>
+                                    <StackPanel Grid.Column="2">
+                                        <TextBlock Text="Theme" FontWeight="Medium" FontSize="13"/>
+                                        <TextBlock Text="Match Windows, or override with light or dark."
+                                                   FontSize="12" Foreground="{DynamicResource TextFillColorSecondaryBrush}" Margin="0,2,0,0"/>
+                                    </StackPanel>
+                                    <ComboBox x:Name="ThemeComboBox"
+                                              Grid.Column="3"
+                                              Width="180"
+                                              VerticalAlignment="Center"
+                                              SelectionChanged="ThemeComboBox_SelectionChanged">
+                                        <ComboBoxItem x:Name="ThemeSystem" Content="System default" Tag="system"/>
+                                        <ComboBoxItem x:Name="ThemeLight"  Content="Light"          Tag="light"/>
+                                        <ComboBoxItem x:Name="ThemeDark"   Content="Dark"           Tag="dark"/>
+                                    </ComboBox>
+                                </Grid>
+                            </Border>
+
+                            <!-- About card -->
+                            <Border Background="{DynamicResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}" BorderThickness="1" CornerRadius="6" Margin="0,0,0,8">
+                                <Grid Margin="16,14">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="32"/>
+                                        <ColumnDefinition Width="14"/>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <Border Grid.Column="0" Width="32" Height="32" CornerRadius="4"
+                                            Background="{DynamicResource ControlFillColorDefaultBrush}" BorderBrush="{DynamicResource ControlStrokeColorDefaultBrush}" BorderThickness="1">
+                                        <ui:SymbolIcon Symbol="Info20" FontSize="16" VerticalAlignment="Center" HorizontalAlignment="Center"/>
+                                    </Border>
+                                    <StackPanel Grid.Column="2">
+                                        <TextBlock Text="About" FontWeight="Medium" FontSize="13"/>
+                                        <TextBlock x:Name="AboutVersionText"
+                                                   FontSize="12" Foreground="{DynamicResource TextFillColorSecondaryBrush}" Margin="0,2,0,0"/>
+                                    </StackPanel>
+                                    <ui:Button x:Name="ReleaseNotesButton"
+                                               Grid.Column="3"
+                                               Content="Release notes"
+                                               Appearance="Secondary"
+                                               VerticalAlignment="Center"
+                                               Click="ReleaseNotes_Click"/>
+                                </Grid>
+                            </Border>
+                        </StackPanel>
+                    </StackPanel>
+
+                    <!-- ════ ARTWORK ════ -->
+                    <StackPanel x:Name="SectionArtwork" Visibility="Collapsed">
+                        <StackPanel Margin="0,0,0,18">
+                            <StackPanel Orientation="Horizontal">
+                                <Border Width="36" Height="36" CornerRadius="8"
+                                        Background="{DynamicResource ControlFillColorDefaultBrush}" BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}" BorderThickness="1">
+                                    <ui:SymbolIcon Symbol="Image20" FontSize="18" VerticalAlignment="Center" HorizontalAlignment="Center"/>
+                                </Border>
+                                <TextBlock Style="{StaticResource SectionTitle}" Text="Artwork" Margin="12,0,0,0" VerticalAlignment="Center"/>
+                            </StackPanel>
+                            <TextBlock Style="{StaticResource SectionSubtitle}" Text="Automatically fetch cover art for your library and launcher shortcuts."/>
+                        </StackPanel>
+
+                        <!-- SteamGridDB expandable card -->
+                        <Border Background="{DynamicResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}" BorderThickness="1" CornerRadius="6">
+                            <StackPanel>
+                                <!-- Row -->
+                                <Grid Margin="16,14" Cursor="Hand" MouseLeftButtonUp="SgdbCard_Click">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="32"/>
+                                        <ColumnDefinition Width="14"/>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <Border Grid.Column="0" Width="32" Height="32" CornerRadius="4"
+                                            Background="{DynamicResource ControlFillColorDefaultBrush}" BorderBrush="{DynamicResource ControlStrokeColorDefaultBrush}" BorderThickness="1">
+                                        <ui:SymbolIcon Symbol="Image20" FontSize="16" VerticalAlignment="Center" HorizontalAlignment="Center"/>
+                                    </Border>
+                                    <StackPanel Grid.Column="2">
+                                        <StackPanel Orientation="Horizontal">
+                                            <TextBlock Text="SteamGridDB" FontWeight="Medium" FontSize="13"/>
+                                            <Border x:Name="SgdbPill" Style="{StaticResource StatusPillOk}" Margin="8,0,0,0" Visibility="Collapsed">
+                                                <StackPanel Orientation="Horizontal">
+                                                    <Ellipse Width="6" Height="6" Fill="#7EE2A4" VerticalAlignment="Center" Margin="0,0,5,0"/>
+                                                    <TextBlock Text="Authenticated" FontSize="11" FontWeight="Medium" Foreground="#7EE2A4"/>
+                                                </StackPanel>
+                                            </Border>
+                                        </StackPanel>
+                                        <TextBlock Text="Download cover images automatically when generating a wrapper."
+                                                   FontSize="12" Foreground="{DynamicResource TextFillColorSecondaryBrush}" Margin="0,2,0,0"/>
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="3" Orientation="Horizontal" VerticalAlignment="Center">
+                                        <ui:ToggleSwitch x:Name="SgdbSwitch"
+                                                         Margin="0,0,10,0"
+                                                         Checked="SgdbSwitch_Changed"
+                                                         Unchecked="SgdbSwitch_Changed"
+                                                         PreviewMouseLeftButtonUp="SgdbSwitch_PreviewClick"/>
+                                        <ui:SymbolIcon x:Name="SgdbChevron" Symbol="ChevronDown20" FontSize="16" Foreground="{DynamicResource TextFillColorSecondaryBrush}"/>
+                                    </StackPanel>
+                                </Grid>
+                                <!-- Expanded body -->
+                                <Border x:Name="SgdbBody" Style="{StaticResource ExpanderBody}" Visibility="Collapsed">
                                     <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="120"/>
+                                            <ColumnDefinition Width="*"/>
+                                        </Grid.ColumnDefinitions>
                                         <Grid.RowDefinitions>
                                             <RowDefinition Height="Auto"/>
                                             <RowDefinition Height="Auto"/>
-                                            <RowDefinition Height="Auto"/>
                                         </Grid.RowDefinitions>
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="Auto"/>
-                                            <ColumnDefinition Width="*"/>
-                                            <ColumnDefinition Width="Auto"/>
-                                        </Grid.ColumnDefinitions>
-
-                                        <TextBlock Text="Admin Secret:"
-                                                   VerticalAlignment="Center"
-                                                   Margin="0,0,8,8"
-                                                   Grid.Row="0" Grid.Column="0"/>
-                                        <PasswordBox x:Name="RegisterAdminSecretBox"
-                                                     Margin="0,0,8,8"
-                                                     Grid.Row="0" Grid.Column="1"/>
-                                        <ui:Button Content="Register"
-                                                   Appearance="Primary"
-                                                   Margin="0,0,0,8"
-                                                   Click="Register_Click"
-                                                   Grid.Row="0" Grid.Column="2"/>
-
-                                        <TextBlock Text="Username:"
-                                                   VerticalAlignment="Center"
-                                                   Margin="0,0,8,0"
-                                                   Grid.Row="1" Grid.Column="0"/>
-                                        <ui:TextBox x:Name="RegisterUsernameBox"
-                                                    Margin="0,0,8,0"
-                                                    Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="2"/>
-
-                                        <TextBlock x:Name="RegisterErrorLabel"
-                                                   Foreground="#FF5F5F"
-                                                   FontSize="11"
-                                                   Margin="0,6,0,0"
-                                                   Visibility="Collapsed"
-                                                   Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="3"/>
+                                        <TextBlock Grid.Row="0" Grid.Column="0" Text="API Key" Style="{StaticResource SubLabel}"/>
+                                        <StackPanel Grid.Row="0" Grid.Column="1">
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*"/>
+                                                    <ColumnDefinition Width="Auto"/>
+                                                </Grid.ColumnDefinitions>
+                                                <ui:TextBox Grid.Column="0"
+                                                            x:Name="ApiKeyTextBox"
+                                                            PlaceholderText="Paste API key…"
+                                                            FontFamily="Cascadia Code, Consolas, monospace"
+                                                            FontSize="12"
+                                                            Margin="0,0,6,0"/>
+                                                <ui:Button Grid.Column="1"
+                                                           Content="Get key"
+                                                           Appearance="Secondary"
+                                                           Click="GetKey_Click"/>
+                                            </Grid>
+                                            <TextBlock Style="{StaticResource HelperText}"
+                                                       Text="Required to download cover, hero, and logo artwork."/>
+                                        </StackPanel>
                                     </Grid>
                                 </Border>
-                            </Grid>
+                            </StackPanel>
+                        </Border>
+                    </StackPanel>
+
+                    <!-- ════ SOURCES ════ -->
+                    <StackPanel x:Name="SectionSources" Visibility="Collapsed">
+                        <StackPanel Margin="0,0,0,18">
+                            <StackPanel Orientation="Horizontal">
+                                <Border Width="36" Height="36" CornerRadius="8"
+                                        Background="{DynamicResource ControlFillColorDefaultBrush}" BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}" BorderThickness="1">
+                                    <ui:SymbolIcon Symbol="Link20" FontSize="18" VerticalAlignment="Center" HorizontalAlignment="Center"/>
+                                </Border>
+                                <TextBlock Style="{StaticResource SectionTitle}" Text="Download sources" Margin="12,0,0,0" VerticalAlignment="Center"/>
+                            </StackPanel>
+                            <TextBlock Style="{StaticResource SectionSubtitle}" Text="Hydra-compatible JSON source URLs used by the Browse Games window."/>
                         </StackPanel>
-                    </ui:Card>
-                </StackPanel>
 
-                <!-- Right Column -->
-                <StackPanel Grid.Column="2">
+                        <Border Background="{DynamicResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}" BorderThickness="1" CornerRadius="6" Padding="12">
+                            <StackPanel>
+                                <!-- Add row -->
+                                <Grid Margin="0,0,0,10">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <ui:TextBox Grid.Column="0"
+                                                x:Name="NewSourceUrlTextBox"
+                                                PlaceholderText="https://example.com/source.json"
+                                                FontFamily="Cascadia Code, Consolas, monospace"
+                                                FontSize="12"
+                                                Margin="0,0,6,0"/>
+                                    <ui:Button Grid.Column="1"
+                                               Content="Add"
+                                               Appearance="Primary"
+                                               Click="AddSource_Click"/>
+                                </Grid>
 
-                    <!-- LAN Share card -->
-                    <ui:Card Margin="0,0,0,12">
-                        <StackPanel>
-                            <Grid Margin="0,0,0,4">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="*"/>
-                                    <ColumnDefinition Width="Auto"/>
-                                </Grid.ColumnDefinitions>
-                                <TextBlock Text="LAN Game Transfer"
-                                           FontWeight="SemiBold"
-                                           Grid.Column="0"
-                                           VerticalAlignment="Center"/>
-                                <ui:ToggleSwitch x:Name="LanSwitch"
-                                                 Checked="LanSwitch_Changed"
-                                                 Unchecked="LanSwitch_Changed"
-                                                 Grid.Column="1"
-                                                 VerticalAlignment="Center"/>
-                            </Grid>
+                                <!-- List -->
+                                <Border BorderBrush="{DynamicResource ControlStrokeColorDefaultBrush}" BorderThickness="1" CornerRadius="4"
+                                        Background="{DynamicResource ControlFillColorDefaultBrush}" MaxHeight="220">
+                                    <ListBox x:Name="SourcesListBox"
+                                             Background="Transparent"
+                                             BorderThickness="0"
+                                             ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                                        <ListBox.ItemTemplate>
+                                            <DataTemplate>
+                                                <Grid>
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="Auto"/>
+                                                        <ColumnDefinition Width="*"/>
+                                                        <ColumnDefinition Width="Auto"/>
+                                                    </Grid.ColumnDefinitions>
+                                                    <Ellipse Grid.Column="0" Width="6" Height="6" Fill="#7EE2A4"
+                                                             VerticalAlignment="Center" Margin="0,0,8,0"/>
+                                                    <TextBlock Grid.Column="1"
+                                                               Text="{Binding}"
+                                                               FontFamily="Cascadia Code, Consolas, monospace"
+                                                               FontSize="12"
+                                                               TextTrimming="CharacterEllipsis"
+                                                               VerticalAlignment="Center"
+                                                               ToolTip="{Binding}"/>
+                                                    <Button Grid.Column="2"
+                                                            Content="✕"
+                                                            Tag="{Binding}"
+                                                            Background="Transparent"
+                                                            BorderThickness="0"
+                                                            Foreground="{DynamicResource TextFillColorTertiaryBrush}"
+                                                            Cursor="Hand"
+                                                            FontSize="11"
+                                                            Padding="4,2"
+                                                            Click="RemoveSource_Click"
+                                                            VerticalAlignment="Center"/>
+                                                </Grid>
+                                            </DataTemplate>
+                                        </ListBox.ItemTemplate>
+                                        <ListBox.ItemContainerStyle>
+                                            <Style TargetType="ListBoxItem">
+                                                <Setter Property="Padding" Value="12,7"/>
+                                                <Setter Property="Background" Value="Transparent"/>
+                                                <Setter Property="BorderThickness" Value="2,0,0,0"/>
+                                                <Setter Property="BorderBrush" Value="Transparent"/>
+                                                <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+                                                <Style.Triggers>
+                                                    <Trigger Property="IsSelected" Value="True">
+                                                        <Setter Property="BorderBrush" Value="#4cc2ff"/>
+                                                        <Setter Property="Background" Value="#1F4CC2FF"/>
+                                                    </Trigger>
+                                                    <Trigger Property="IsMouseOver" Value="True">
+                                                        <Setter Property="Background" Value="#0AFFFFFF"/>
+                                                    </Trigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </ListBox.ItemContainerStyle>
+                                    </ListBox>
+                                </Border>
 
-                            <TextBlock Text="Share game files with other devices on your local network."
-                                       Foreground="{DynamicResource TextFillColorSecondaryBrush}"
-                                       FontSize="11"
-                                       Margin="0,0,0,12"/>
+                                <!-- Footer count -->
+                                <TextBlock x:Name="SourcesCountLabel"
+                                           FontSize="11" Foreground="{DynamicResource TextFillColorTertiaryBrush}"
+                                           Margin="0,8,0,0"/>
+                            </StackPanel>
+                        </Border>
+                    </StackPanel>
 
-                            <Grid x:Name="LanFieldsGrid">
-                                <Grid.RowDefinitions>
-                                    <RowDefinition Height="Auto"/>
-                                    <RowDefinition Height="Auto"/>
-                                </Grid.RowDefinitions>
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="Auto"/>
-                                    <ColumnDefinition Width="*"/>
-                                    <ColumnDefinition Width="Auto"/>
-                                </Grid.ColumnDefinitions>
-
-                                <TextBlock Text="Port:"
-                                           VerticalAlignment="Center"
-                                           Margin="0,0,8,8"
-                                           Grid.Row="0" Grid.Column="0"/>
-                                <ui:TextBox x:Name="LanPortTextBox"
-                                            PlaceholderText="47632"
-                                            Margin="0,0,0,8"
-                                            Grid.Row="0" Grid.Column="1" Grid.ColumnSpan="2"/>
-
-                                <TextBlock Text="Default install dir:"
-                                           VerticalAlignment="Center"
-                                           Margin="0,0,8,0"
-                                           Grid.Row="1" Grid.Column="0"/>
-                                <ui:TextBox x:Name="LanInstallDirTextBox"
-                                            IsReadOnly="True"
-                                            PlaceholderText="Where downloads go by default..."
-                                            Margin="0,0,8,0"
-                                            Grid.Row="1" Grid.Column="1"/>
-                                <ui:Button Content="Browse"
-                                           Appearance="Secondary"
-                                           Click="BrowseLanInstallDir_Click"
-                                           Grid.Row="1" Grid.Column="2"/>
-                            </Grid>
+                    <!-- ════ LAN SHARING ════ -->
+                    <StackPanel x:Name="SectionLan" Visibility="Collapsed">
+                        <StackPanel Margin="0,0,0,18">
+                            <StackPanel Orientation="Horizontal">
+                                <Border Width="36" Height="36" CornerRadius="8"
+                                        Background="{DynamicResource ControlFillColorDefaultBrush}" BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}" BorderThickness="1">
+                                    <ui:SymbolIcon Symbol="DesktopTower20" FontSize="18" VerticalAlignment="Center" HorizontalAlignment="Center"/>
+                                </Border>
+                                <TextBlock Style="{StaticResource SectionTitle}" Text="LAN sharing" Margin="12,0,0,0" VerticalAlignment="Center"/>
+                            </StackPanel>
+                            <TextBlock Style="{StaticResource SectionSubtitle}" Text="Share installed games with other devices on your local network."/>
                         </StackPanel>
-                    </ui:Card>
 
-                    <!-- TorBox card -->
-                    <ui:Card Margin="0,0,0,12">
-                        <StackPanel>
-                            <Grid Margin="0,0,0,4">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="*"/>
-                                    <ColumnDefinition Width="Auto"/>
-                                </Grid.ColumnDefinitions>
-                                <TextBlock Text="TorBox Downloader"
-                                           FontWeight="SemiBold"
-                                           Grid.Column="0"
-                                           VerticalAlignment="Center"/>
-                                <ui:ToggleSwitch x:Name="TorBoxSwitch"
-                                                 Checked="TorBoxSwitch_Changed"
-                                                 Unchecked="TorBoxSwitch_Changed"
-                                                 Grid.Column="1"
-                                                 VerticalAlignment="Center"/>
-                            </Grid>
+                        <Border Background="{DynamicResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}" BorderThickness="1" CornerRadius="6">
+                            <StackPanel>
+                                <Grid Margin="16,14" Cursor="Hand" MouseLeftButtonUp="LanCard_Click">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="32"/>
+                                        <ColumnDefinition Width="14"/>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <Border Grid.Column="0" Width="32" Height="32" CornerRadius="4"
+                                            Background="{DynamicResource ControlFillColorDefaultBrush}" BorderBrush="{DynamicResource ControlStrokeColorDefaultBrush}" BorderThickness="1">
+                                        <ui:SymbolIcon Symbol="DesktopTower20" FontSize="16" VerticalAlignment="Center" HorizontalAlignment="Center"/>
+                                    </Border>
+                                    <StackPanel Grid.Column="2">
+                                        <StackPanel Orientation="Horizontal">
+                                            <TextBlock Text="LAN game transfer" FontWeight="Medium" FontSize="13"/>
+                                            <Border x:Name="LanPill" Style="{StaticResource StatusPillOk}" Margin="8,0,0,0" Visibility="Collapsed">
+                                                <StackPanel Orientation="Horizontal">
+                                                    <Ellipse Width="6" Height="6" Fill="#7EE2A4" VerticalAlignment="Center" Margin="0,0,5,0"/>
+                                                    <TextBlock x:Name="LanPillText" FontSize="11" FontWeight="Medium" Foreground="#7EE2A4"/>
+                                                </StackPanel>
+                                            </Border>
+                                        </StackPanel>
+                                        <TextBlock Text="Other devices on the same network can browse and pull installs from this machine."
+                                                   FontSize="12" Foreground="{DynamicResource TextFillColorSecondaryBrush}" Margin="0,2,0,0" TextWrapping="Wrap"/>
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="3" Orientation="Horizontal" VerticalAlignment="Center">
+                                        <ui:ToggleSwitch x:Name="LanSwitch"
+                                                         Margin="0,0,10,0"
+                                                         Checked="LanSwitch_Changed"
+                                                         Unchecked="LanSwitch_Changed"
+                                                         PreviewMouseLeftButtonUp="LanSwitch_PreviewClick"/>
+                                        <ui:SymbolIcon x:Name="LanChevron" Symbol="ChevronDown20" FontSize="16" Foreground="{DynamicResource TextFillColorSecondaryBrush}"/>
+                                    </StackPanel>
+                                </Grid>
+                                <Border x:Name="LanBody" Style="{StaticResource ExpanderBody}" Visibility="Collapsed">
+                                    <StackPanel>
+                                        <Grid Margin="0,0,0,10">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="120"/>
+                                                <ColumnDefinition Width="*"/>
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Grid.Column="0" Text="Port" Style="{StaticResource SubLabel}"/>
+                                            <StackPanel Grid.Column="1">
+                                                <ui:TextBox x:Name="LanPortTextBox"
+                                                            PlaceholderText="47632"
+                                                            FontFamily="Cascadia Code, Consolas, monospace"
+                                                            FontSize="12"
+                                                            Width="140"
+                                                            HorizontalAlignment="Left"/>
+                                                <TextBlock Style="{StaticResource HelperText}"
+                                                           Text="TCP port that peers connect to. Default 47632."/>
+                                            </StackPanel>
+                                        </Grid>
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="120"/>
+                                                <ColumnDefinition Width="*"/>
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Grid.Column="0" Text="Default install dir" Style="{StaticResource SubLabel}"/>
+                                            <StackPanel Grid.Column="1">
+                                                <Grid>
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="*"/>
+                                                        <ColumnDefinition Width="Auto"/>
+                                                    </Grid.ColumnDefinitions>
+                                                    <ui:TextBox Grid.Column="0"
+                                                                x:Name="LanInstallDirTextBox"
+                                                                IsReadOnly="True"
+                                                                PlaceholderText="Where downloads go by default…"
+                                                                FontFamily="Cascadia Code, Consolas, monospace"
+                                                                FontSize="12"
+                                                                Margin="0,0,6,0"/>
+                                                    <ui:Button Grid.Column="1"
+                                                               Content="Browse"
+                                                               Appearance="Secondary"
+                                                               Click="BrowseLanInstallDir_Click"/>
+                                                </Grid>
+                                                <TextBlock Style="{StaticResource HelperText}"
+                                                           Text="Where downloads from peers land by default."/>
+                                            </StackPanel>
+                                        </Grid>
+                                    </StackPanel>
+                                </Border>
+                            </StackPanel>
+                        </Border>
+                    </StackPanel>
 
-                            <TextBlock Text="Download game files via TorBox debrid service."
-                                       Foreground="{DynamicResource TextFillColorSecondaryBrush}"
-                                       FontSize="11"
-                                       Margin="0,0,0,12"/>
-
-                            <Grid x:Name="TorBoxFieldsGrid">
-                                <Grid.RowDefinitions>
-                                    <RowDefinition Height="Auto"/>
-                                    <RowDefinition Height="Auto"/>
-                                </Grid.RowDefinitions>
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="Auto"/>
-                                    <ColumnDefinition Width="*"/>
-                                    <ColumnDefinition Width="Auto"/>
-                                </Grid.ColumnDefinitions>
-
-                                <TextBlock Text="API Key:"
-                                           VerticalAlignment="Center"
-                                           Margin="0,0,8,8"
-                                           Grid.Row="0" Grid.Column="0"/>
-                                <PasswordBox x:Name="TorBoxApiKeyBox"
-                                             Margin="0,0,8,8"
-                                             Grid.Row="0" Grid.Column="1"/>
-                                <ui:Button Content="Get Key"
-                                           Appearance="Secondary"
-                                           Click="TorBoxGetKey_Click"
-                                           Margin="0,0,0,8"
-                                           Grid.Row="0" Grid.Column="2"/>
-
-                                <TextBlock Text="Download to:"
-                                           VerticalAlignment="Center"
-                                           Margin="0,0,8,0"
-                                           Grid.Row="1" Grid.Column="0"/>
-                                <ui:TextBox x:Name="TorBoxDownloadDirTextBox"
-                                            IsReadOnly="True"
-                                            PlaceholderText="Default: ~/Downloads"
-                                            Margin="0,0,8,0"
-                                            Grid.Row="1" Grid.Column="1"/>
-                                <ui:Button Content="Browse"
-                                           Appearance="Secondary"
-                                           Click="BrowseTorBoxDir_Click"
-                                           Grid.Row="1" Grid.Column="2"/>
-                            </Grid>
+                    <!-- ════ CLOUD SYNC ════ -->
+                    <StackPanel x:Name="SectionSync" Visibility="Collapsed">
+                        <StackPanel Margin="0,0,0,18">
+                            <StackPanel Orientation="Horizontal">
+                                <Border Width="36" Height="36" CornerRadius="8"
+                                        Background="{DynamicResource ControlFillColorDefaultBrush}" BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}" BorderThickness="1">
+                                    <ui:SymbolIcon Symbol="ArrowSync20" FontSize="18" VerticalAlignment="Center" HorizontalAlignment="Center"/>
+                                </Border>
+                                <TextBlock Style="{StaticResource SectionTitle}" Text="Cloud sync" Margin="12,0,0,0" VerticalAlignment="Center"/>
+                            </StackPanel>
+                            <TextBlock Style="{StaticResource SectionSubtitle}" Text="Prevent launching a game that's already running on another device."/>
                         </StackPanel>
-                    </ui:Card>
 
-                    <!-- Download Sources card -->
-                    <ui:Card Margin="0,0,0,12">
-                        <StackPanel>
-                            <TextBlock Text="Download Sources"
-                                       FontWeight="SemiBold"
-                                       Margin="0,0,0,4"/>
-                            <TextBlock Text="Hydra-compatible JSON source URLs for browsing games."
-                                       Foreground="{DynamicResource TextFillColorSecondaryBrush}"
-                                       FontSize="11"
-                                       Margin="0,0,0,8"/>
+                        <Border Background="{DynamicResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}" BorderThickness="1" CornerRadius="6">
+                            <StackPanel>
+                                <Grid Margin="16,14" Cursor="Hand" MouseLeftButtonUp="SyncCard_Click">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="32"/>
+                                        <ColumnDefinition Width="14"/>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <Border Grid.Column="0" Width="32" Height="32" CornerRadius="4"
+                                            Background="{DynamicResource ControlFillColorDefaultBrush}" BorderBrush="{DynamicResource ControlStrokeColorDefaultBrush}" BorderThickness="1">
+                                        <ui:SymbolIcon Symbol="ArrowSync20" FontSize="16" VerticalAlignment="Center" HorizontalAlignment="Center"/>
+                                    </Border>
+                                    <StackPanel Grid.Column="2">
+                                        <StackPanel Orientation="Horizontal">
+                                            <TextBlock Text="Sync server" FontWeight="Medium" FontSize="13"/>
+                                            <Border x:Name="SyncPill" Style="{StaticResource StatusPillOk}" Margin="8,0,0,0" Visibility="Collapsed">
+                                                <StackPanel Orientation="Horizontal">
+                                                    <Ellipse Width="6" Height="6" Fill="#7EE2A4" VerticalAlignment="Center" Margin="0,0,5,0"/>
+                                                    <TextBlock x:Name="SyncPillText" FontSize="11" FontWeight="Medium" Foreground="#7EE2A4"/>
+                                                </StackPanel>
+                                            </Border>
+                                        </StackPanel>
+                                        <TextBlock Text="Coordinate game session locks across all your devices."
+                                                   FontSize="12" Foreground="{DynamicResource TextFillColorSecondaryBrush}" Margin="0,2,0,0"/>
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="3" Orientation="Horizontal" VerticalAlignment="Center">
+                                        <ui:ToggleSwitch x:Name="SyncSwitch"
+                                                         Margin="0,0,10,0"
+                                                         Checked="SyncSwitch_Changed"
+                                                         Unchecked="SyncSwitch_Changed"
+                                                         PreviewMouseLeftButtonUp="SyncSwitch_PreviewClick"/>
+                                        <ui:SymbolIcon x:Name="SyncChevron" Symbol="ChevronDown20" FontSize="16" Foreground="{DynamicResource TextFillColorSecondaryBrush}"/>
+                                    </StackPanel>
+                                </Grid>
+                                <Border x:Name="SyncBody" Style="{StaticResource ExpanderBody}" Visibility="Collapsed">
+                                    <StackPanel>
+                                        <!-- Server URL -->
+                                        <Grid Margin="0,0,0,10">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="120"/>
+                                                <ColumnDefinition Width="*"/>
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Grid.Column="0" Text="Server URL" Style="{StaticResource SubLabel}"/>
+                                            <StackPanel Grid.Column="1">
+                                                <Grid>
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="*"/>
+                                                        <ColumnDefinition Width="Auto"/>
+                                                    </Grid.ColumnDefinitions>
+                                                    <ui:TextBox Grid.Column="0"
+                                                                x:Name="SyncUrlTextBox"
+                                                                PlaceholderText="http://raspberrypi.local:47633"
+                                                                FontFamily="Cascadia Code, Consolas, monospace"
+                                                                FontSize="12"
+                                                                Margin="0,0,6,0"/>
+                                                    <ui:Button Grid.Column="1"
+                                                               x:Name="ScanLanButton"
+                                                               Content="Scan LAN"
+                                                               Appearance="Secondary"
+                                                               Click="ScanLan_Click"/>
+                                                </Grid>
+                                                <TextBlock Style="{StaticResource HelperText}"
+                                                           Text="HTTP endpoint of your sync server (LAN or remote)."/>
+                                                <TextBlock x:Name="ServerVersionLabel"
+                                                           FontSize="11"
+                                                           Margin="0,4,0,0"
+                                                           Visibility="Collapsed"/>
+                                            </StackPanel>
+                                        </Grid>
 
-                            <ListBox x:Name="SourcesListBox"
-                                     Height="88"
-                                     Margin="0,0,0,8"
-                                     Background="{DynamicResource ControlFillColorDefaultBrush}">
-                                <ListBox.ItemTemplate>
-                                    <DataTemplate>
-                                        <TextBlock Text="{Binding}"
-                                                   TextTrimming="CharacterEllipsis"
-                                                   FontSize="11"
-                                                   ToolTip="{Binding}"/>
-                                    </DataTemplate>
-                                </ListBox.ItemTemplate>
-                            </ListBox>
+                                        <!-- API key -->
+                                        <Grid Margin="0,0,0,10">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="120"/>
+                                                <ColumnDefinition Width="*"/>
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Grid.Column="0" Text="API key" Style="{StaticResource SubLabel}"/>
+                                            <StackPanel Grid.Column="1">
+                                                <Grid>
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="*"/>
+                                                        <ColumnDefinition Width="Auto"/>
+                                                    </Grid.ColumnDefinitions>
+                                                    <PasswordBox Grid.Column="0"
+                                                                 x:Name="SyncApiKeyBox"
+                                                                 FontFamily="Cascadia Code, Consolas, monospace"
+                                                                 FontSize="12"
+                                                                 Margin="0,0,6,0"/>
+                                                    <ui:Button Grid.Column="1"
+                                                               Content="Register…"
+                                                               Appearance="Secondary"
+                                                               Click="RegisterPanel_Toggle"/>
+                                                </Grid>
+                                                <TextBlock x:Name="SyncApiKeyHelper"
+                                                           Style="{StaticResource HelperText}"
+                                                           Text="Register a device to obtain an API key."/>
+                                            </StackPanel>
+                                        </Grid>
 
-                            <Grid>
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="*"/>
-                                    <ColumnDefinition Width="8"/>
-                                    <ColumnDefinition Width="Auto"/>
-                                    <ColumnDefinition Width="8"/>
-                                    <ColumnDefinition Width="Auto"/>
-                                </Grid.ColumnDefinitions>
-                                <ui:TextBox x:Name="NewSourceUrlTextBox"
-                                            PlaceholderText="https://example.com/source.json"
-                                            Grid.Column="0"/>
-                                <ui:Button Content="Add"
-                                           Appearance="Primary"
-                                           Click="AddSource_Click"
-                                           Grid.Column="2"/>
-                                <ui:Button Content="Remove"
-                                           Appearance="Secondary"
-                                           Click="RemoveSource_Click"
-                                           Grid.Column="4"/>
-                            </Grid>
+                                        <!-- Device name -->
+                                        <Grid Margin="0,0,0,0">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="120"/>
+                                                <ColumnDefinition Width="*"/>
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Grid.Column="0" Text="Device name" Style="{StaticResource SubLabel}"/>
+                                            <ui:TextBox Grid.Column="1"
+                                                        x:Name="DeviceNameTextBox"
+                                                        PlaceholderText="PC name shown to other devices"/>
+                                        </Grid>
+
+                                        <!-- Inline register panel -->
+                                        <Border x:Name="RegisterPanel"
+                                                Visibility="Collapsed"
+                                                Background="#0D4CC2FF"
+                                                BorderBrush="#334CC2FF"
+                                                BorderThickness="1"
+                                                CornerRadius="4"
+                                                Padding="12,10"
+                                                Margin="0,12,0,0">
+                                            <StackPanel>
+                                                <TextBlock Text="Register a new device with this server"
+                                                           FontSize="12" FontWeight="Medium"
+                                                           Foreground="#4CC2FF"
+                                                           Margin="0,0,0,10"/>
+                                                <Grid Margin="0,0,0,8">
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="120"/>
+                                                        <ColumnDefinition Width="*"/>
+                                                    </Grid.ColumnDefinitions>
+                                                    <TextBlock Grid.Column="0" Text="Admin secret" Style="{StaticResource SubLabel}"/>
+                                                    <PasswordBox Grid.Column="1"
+                                                                 x:Name="RegisterAdminSecretBox"
+                                                                 FontFamily="Cascadia Code, Consolas, monospace"
+                                                                 FontSize="12"/>
+                                                </Grid>
+                                                <Grid Margin="0,0,0,8">
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="120"/>
+                                                        <ColumnDefinition Width="*"/>
+                                                    </Grid.ColumnDefinitions>
+                                                    <TextBlock Grid.Column="0" Text="Username" Style="{StaticResource SubLabel}"/>
+                                                    <ui:TextBox Grid.Column="1"
+                                                                x:Name="RegisterUsernameBox"
+                                                                PlaceholderText="alex"/>
+                                                </Grid>
+                                                <TextBlock x:Name="RegisterErrorLabel"
+                                                           FontSize="11"
+                                                           Foreground="#FF8A8A"
+                                                           Margin="0,0,0,6"
+                                                           Visibility="Collapsed"
+                                                           TextWrapping="Wrap"/>
+                                                <StackPanel Orientation="Horizontal"
+                                                            HorizontalAlignment="Right">
+                                                    <ui:Button Content="Cancel"
+                                                               Appearance="Secondary"
+                                                               Margin="0,0,6,0"
+                                                               Click="RegisterCancel_Click"/>
+                                                    <ui:Button x:Name="RegisterButton"
+                                                               Content="Register"
+                                                               Appearance="Primary"
+                                                               Click="Register_Click"/>
+                                                </StackPanel>
+                                            </StackPanel>
+                                        </Border>
+                                    </StackPanel>
+                                </Border>
+                            </StackPanel>
+                        </Border>
+                    </StackPanel>
+
+                    <!-- ════ DOWNLOADS ════ -->
+                    <StackPanel x:Name="SectionDownloads" Visibility="Collapsed">
+                        <StackPanel Margin="0,0,0,18">
+                            <StackPanel Orientation="Horizontal">
+                                <Border Width="36" Height="36" CornerRadius="8"
+                                        Background="{DynamicResource ControlFillColorDefaultBrush}" BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}" BorderThickness="1">
+                                    <ui:SymbolIcon Symbol="ArrowDownload20" FontSize="18" VerticalAlignment="Center" HorizontalAlignment="Center"/>
+                                </Border>
+                                <TextBlock Style="{StaticResource SectionTitle}" Text="Downloads" Margin="12,0,0,0" VerticalAlignment="Center"/>
+                            </StackPanel>
+                            <TextBlock Style="{StaticResource SectionSubtitle}" Text="External download providers for fetching game files."/>
                         </StackPanel>
-                    </ui:Card>
-                </StackPanel>
-            </Grid>
+
+                        <Border Background="{DynamicResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}" BorderThickness="1" CornerRadius="6">
+                            <StackPanel>
+                                <Grid Margin="16,14" Cursor="Hand" MouseLeftButtonUp="TorBoxCard_Click">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="32"/>
+                                        <ColumnDefinition Width="14"/>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <Border Grid.Column="0" Width="32" Height="32" CornerRadius="4"
+                                            Background="{DynamicResource ControlFillColorDefaultBrush}" BorderBrush="{DynamicResource ControlStrokeColorDefaultBrush}" BorderThickness="1">
+                                        <ui:SymbolIcon Symbol="ArrowDownload20" FontSize="16" VerticalAlignment="Center" HorizontalAlignment="Center"/>
+                                    </Border>
+                                    <StackPanel Grid.Column="2">
+                                        <StackPanel Orientation="Horizontal">
+                                            <TextBlock Text="TorBox" FontWeight="Medium" FontSize="13"/>
+                                            <Border x:Name="TorBoxPill" Style="{StaticResource StatusPillOk}" Margin="8,0,0,0" Visibility="Collapsed">
+                                                <StackPanel Orientation="Horizontal">
+                                                    <Ellipse Width="6" Height="6" Fill="#7EE2A4" VerticalAlignment="Center" Margin="0,0,5,0"/>
+                                                    <TextBlock Text="Linked" FontSize="11" FontWeight="Medium" Foreground="#7EE2A4"/>
+                                                </StackPanel>
+                                            </Border>
+                                        </StackPanel>
+                                        <TextBlock Text="Download game files via the TorBox debrid service."
+                                                   FontSize="12" Foreground="{DynamicResource TextFillColorSecondaryBrush}" Margin="0,2,0,0"/>
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="3" Orientation="Horizontal" VerticalAlignment="Center">
+                                        <ui:ToggleSwitch x:Name="TorBoxSwitch"
+                                                         Margin="0,0,10,0"
+                                                         Checked="TorBoxSwitch_Changed"
+                                                         Unchecked="TorBoxSwitch_Changed"
+                                                         PreviewMouseLeftButtonUp="TorBoxSwitch_PreviewClick"/>
+                                        <ui:SymbolIcon x:Name="TorBoxChevron" Symbol="ChevronDown20" FontSize="16" Foreground="{DynamicResource TextFillColorSecondaryBrush}"/>
+                                    </StackPanel>
+                                </Grid>
+                                <Border x:Name="TorBoxBody" Style="{StaticResource ExpanderBody}" Visibility="Collapsed">
+                                    <StackPanel>
+                                        <Grid Margin="0,0,0,10">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="120"/>
+                                                <ColumnDefinition Width="*"/>
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Grid.Column="0" Text="API key" Style="{StaticResource SubLabel}"/>
+                                            <StackPanel Grid.Column="1">
+                                                <Grid>
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="*"/>
+                                                        <ColumnDefinition Width="Auto"/>
+                                                    </Grid.ColumnDefinitions>
+                                                    <PasswordBox Grid.Column="0"
+                                                                 x:Name="TorBoxApiKeyBox"
+                                                                 FontFamily="Cascadia Code, Consolas, monospace"
+                                                                 FontSize="12"
+                                                                 Margin="0,0,6,0"/>
+                                                    <ui:Button Grid.Column="1"
+                                                               Content="Get key"
+                                                               Appearance="Secondary"
+                                                               Click="TorBoxGetKey_Click"/>
+                                                </Grid>
+                                                <TextBlock Style="{StaticResource HelperText}"
+                                                           Text="Required to authorise download requests."/>
+                                            </StackPanel>
+                                        </Grid>
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="120"/>
+                                                <ColumnDefinition Width="*"/>
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Grid.Column="0" Text="Download to" Style="{StaticResource SubLabel}"/>
+                                            <StackPanel Grid.Column="1">
+                                                <Grid>
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="*"/>
+                                                        <ColumnDefinition Width="Auto"/>
+                                                    </Grid.ColumnDefinitions>
+                                                    <ui:TextBox Grid.Column="0"
+                                                                x:Name="TorBoxDownloadDirTextBox"
+                                                                IsReadOnly="True"
+                                                                PlaceholderText="Default: ~/Downloads"
+                                                                FontFamily="Cascadia Code, Consolas, monospace"
+                                                                FontSize="12"
+                                                                Margin="0,0,6,0"/>
+                                                    <ui:Button Grid.Column="1"
+                                                               Content="Browse"
+                                                               Appearance="Secondary"
+                                                               Click="BrowseTorBoxDir_Click"/>
+                                                </Grid>
+                                                <TextBlock Style="{StaticResource HelperText}"
+                                                           Text="Where TorBox-fetched files land."/>
+                                            </StackPanel>
+                                        </Grid>
+                                    </StackPanel>
+                                </Border>
+                            </StackPanel>
+                        </Border>
+                    </StackPanel>
+
+                </Grid>
             </ScrollViewer>
-
-            <!-- Error label -->
-            <TextBlock x:Name="ErrorLabel"
-                       Foreground="#FF5F5F"
-                       HorizontalAlignment="Center"
-                       FontWeight="SemiBold"
-                       Margin="0,0,0,12"
-                       Visibility="Collapsed"
-                       Grid.Row="1"/>
-
-            <!-- Action buttons -->
-            <StackPanel Orientation="Horizontal"
-                        HorizontalAlignment="Center"
-                        Grid.Row="2">
-                <ui:Button Content="Save &amp; Continue"
-                           Appearance="Primary"
-                           Width="160"
-                           Click="Save_Click"
-                           Margin="0,0,12,0"/>
-                <ui:Button Content="Cancel"
-                           Appearance="Secondary"
-                           Width="100"
-                           Click="Cancel_Click"/>
-            </StackPanel>
         </Grid>
+
+        <!-- ── Action bar ── -->
+        <Border Grid.Row="2"
+                BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
+                BorderThickness="0,1,0,0"
+                Background="{DynamicResource LayerFillColorDefaultBrush}"
+                Height="60">
+            <Grid Margin="24,0">
+                <!-- Unsaved indicator -->
+                <StackPanel Orientation="Horizontal" VerticalAlignment="Center" HorizontalAlignment="Left">
+                    <Ellipse x:Name="DirtyDot" Width="6" Height="6" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                    <TextBlock x:Name="DirtyLabel" FontSize="12" VerticalAlignment="Center"/>
+                </StackPanel>
+
+                <!-- Buttons -->
+                <StackPanel Orientation="Horizontal" VerticalAlignment="Center" HorizontalAlignment="Right">
+                    <ui:Button Content="Cancel"
+                               Appearance="Secondary"
+                               Width="100"
+                               Margin="0,0,8,0"
+                               Click="Cancel_Click"/>
+                    <ui:Button Content="Save &amp; Continue"
+                               Appearance="Primary"
+                               Width="160"
+                               Click="Save_Click"/>
+                </StackPanel>
+
+                <!-- Error label (centered) -->
+                <TextBlock x:Name="ErrorLabel"
+                           Foreground="#FF8A8A"
+                           HorizontalAlignment="Center"
+                           VerticalAlignment="Center"
+                           FontSize="12"
+                           Visibility="Collapsed"
+                           TextWrapping="Wrap"/>
+            </Grid>
+        </Border>
     </Grid>
 </ui:FluentWindow>
