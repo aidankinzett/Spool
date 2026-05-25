@@ -2,8 +2,6 @@ name: Publish Server Image
 
 on:
   push:
-    branches: [master]
-    paths: ["server/**"]
     tags: ["v*"]
 
 jobs:
