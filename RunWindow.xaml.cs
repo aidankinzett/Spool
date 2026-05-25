@@ -1,7 +1,10 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Text;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
@@ -128,34 +131,30 @@ namespace LudusaviWrap
                 return;
             }
 
-            // Check for cloud conflicts before exit code — a conflict may itself cause a non-zero exit
-            string combinedOutput = restoreResult.Output + restoreResult.Error;
-            if (combinedOutput.Contains("cloudConflict") || combinedOutput.Contains("cloudSyncFailed"))
+            var restoreOutput = ParseLudusaviOutput(restoreResult.Output);
+
+            if (restoreOutput?.Errors?.CloudConflict != null)
             {
                 DismissProgressToast();
+                App.Log($"Ludusavi restore cloud conflict for '{_gameName}'");
                 var ans = MessageBox.Show($"Cloud sync conflict detected for '{_gameName}'. Open Ludusavi to resolve?",
-                                          "Ludusavi - Cloud Sync Conflict", MessageBoxButton.YesNo, MessageBoxImage.Warning);
+                                          "Cloud Sync Conflict", MessageBoxButton.YesNo, MessageBoxImage.Warning);
                 if (ans == MessageBoxResult.Yes)
-                {
-                    try
-                    {
-                        Process.Start(new ProcessStartInfo
-                        {
-                            FileName = ludusavi,
-                            Arguments = "gui",
-                            UseShellExecute = true
-                        });
-                    }
-                    catch (Exception ex)
-                    {
-                        App.Log($"Failed to open Ludusavi GUI: {ex}");
-                        MessageBox.Show($"Failed to open Ludusavi GUI:\n{ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
-                    }
-                }
+                    TryOpenLudusaviGui(ludusavi);
                 return;
             }
 
-            if (restoreResult.ExitCode != 0)
+            if (restoreOutput?.Errors?.CloudSyncFailed != null)
+            {
+                App.Log($"Ludusavi restore cloud sync failed for '{_gameName}' — proceeding with local saves");
+                ShowToast("Cloud Sync Failed", $"Could not sync '{_gameName}' from cloud. Using local saves.");
+            }
+
+            // Unknown game (not in ludusavi DB) or no backups yet — not an error, just proceed
+            bool noSavesToRestore = restoreOutput?.Errors?.UnknownGames?.Count > 0
+                                    || restoreOutput?.Overall?.TotalGames == 0;
+
+            if (!noSavesToRestore && restoreResult.ExitCode != 0)
             {
                 DismissProgressToast();
                 string details = string.IsNullOrWhiteSpace(restoreResult.Error) ? restoreResult.Output : restoreResult.Error;
@@ -232,16 +231,26 @@ namespace LudusaviWrap
 
             try
             {
-                var backupResult = await RunProcessAsync(ludusavi, $"backup --force --cloud-sync \"{_gameName}\"");
-                string backupCombined = backupResult.Output + backupResult.Error;
-                if (backupCombined.Contains("cloudConflict") || backupCombined.Contains("cloudSyncFailed"))
+                var backupResult = await RunProcessAsync(ludusavi, $"backup --api --force --cloud-sync \"{_gameName}\"");
+                var backupOutput = ParseLudusaviOutput(backupResult.Output);
+                bool backupUnknownGame = backupOutput?.Errors?.UnknownGames?.Count > 0;
+
+                if (backupOutput?.Errors?.CloudConflict != null)
                 {
                     DismissProgressToast();
-                    App.Log($"Ludusavi backup cloud conflict for '{_gameName}': {backupCombined.Trim()}");
-                    MessageBox.Show($"Cloud sync conflict detected during backup for '{_gameName}'. Your saves are backed up locally but may not be synced to the cloud. Open Ludusavi to resolve.",
-                                    "Ludusavi - Cloud Sync Warning", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    App.Log($"Ludusavi backup cloud conflict for '{_gameName}'");
+                    var ans = MessageBox.Show($"Cloud sync conflict detected during backup for '{_gameName}'. Your saves are backed up locally. Open Ludusavi to resolve?",
+                                              "Cloud Sync Conflict", MessageBoxButton.YesNo, MessageBoxImage.Warning);
+                    if (ans == MessageBoxResult.Yes)
+                        TryOpenLudusaviGui(ludusavi);
                 }
-                else if (backupResult.ExitCode != 0)
+                else if (backupOutput?.Errors?.CloudSyncFailed != null)
+                {
+                    DismissProgressToast();
+                    App.Log($"Ludusavi backup cloud sync failed for '{_gameName}'");
+                    ShowToast("Cloud Sync Failed", $"{_gameName} backed up locally but cloud sync failed.");
+                }
+                else if (backupResult.ExitCode != 0 && !backupUnknownGame)
                 {
                     DismissProgressToast();
                     string details = string.IsNullOrWhiteSpace(backupResult.Error) ? backupResult.Output : backupResult.Error;
@@ -249,10 +258,15 @@ namespace LudusaviWrap
                     MessageBox.Show($"Ludusavi backup failed. Your saves may not have been backed up.\n\nDetails:\n{details.Trim()}",
                                     "Ludusavi Warning", MessageBoxButton.OK, MessageBoxImage.Warning);
                 }
-                else
+                else if (backupOutput?.Overall?.TotalGames > 0)
                 {
                     DismissProgressToast();
                     ShowToast("Saves Backed Up", $"{_gameName} saves backed up successfully.");
+                }
+                else
+                {
+                    DismissProgressToast();
+                    App.Log($"Ludusavi backup: no saves found for '{_gameName}'");
                 }
             }
             catch (Exception ex)
@@ -375,6 +389,36 @@ namespace LudusaviWrap
             return result;
         }
 
+        private static LudusaviApiOutput? ParseLudusaviOutput(string stdout)
+        {
+            try
+            {
+                return JsonSerializer.Deserialize(stdout, LudusaviOutputContext.Default.LudusaviApiOutput);
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private void TryOpenLudusaviGui(string ludusaviPath)
+        {
+            try
+            {
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = ludusaviPath,
+                    Arguments = "gui",
+                    UseShellExecute = true
+                });
+            }
+            catch (Exception ex)
+            {
+                App.Log($"Failed to open Ludusavi GUI: {ex}");
+                MessageBox.Show($"Failed to open Ludusavi GUI:\n{ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
         private async Task RunGameAsync(string exePath)
         {
             var tcs = new TaskCompletionSource<int>();
@@ -423,4 +467,35 @@ namespace LudusaviWrap
         public string Output { get; set; } = "";
         public string Error { get; set; } = "";
     }
+
+    public class LudusaviApiOutput
+    {
+        [JsonPropertyName("errors")]
+        public LudusaviApiErrors? Errors { get; set; }
+
+        [JsonPropertyName("overall")]
+        public LudusaviApiOverall? Overall { get; set; }
+    }
+
+    public class LudusaviApiErrors
+    {
+        [JsonPropertyName("unknownGames")]
+        public List<string>? UnknownGames { get; set; }
+
+        [JsonPropertyName("cloudConflict")]
+        public JsonElement? CloudConflict { get; set; }
+
+        [JsonPropertyName("cloudSyncFailed")]
+        public JsonElement? CloudSyncFailed { get; set; }
+    }
+
+    public class LudusaviApiOverall
+    {
+        [JsonPropertyName("totalGames")]
+        public int TotalGames { get; set; }
+    }
+
+    [JsonSourceGenerationOptions(WriteIndented = false)]
+    [JsonSerializable(typeof(LudusaviApiOutput))]
+    internal partial class LudusaviOutputContext : JsonSerializerContext { }
 }
