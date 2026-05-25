@@ -408,8 +408,16 @@ namespace LudusaviWrap
                 if (apiKey != null)
                 {
                     SyncApiKeyBox.Password = apiKey;
-                    RegisterPanel.Visibility = Visibility.Collapsed;
                     RegisterAdminSecretBox.Clear();
+
+                    RegisterErrorLabel.Text = "Account created — API key filled in.";
+                    RegisterErrorLabel.Foreground = new System.Windows.Media.SolidColorBrush(
+                        System.Windows.Media.Color.FromRgb(0x4C, 0xAF, 0x50));
+                    RegisterErrorLabel.Visibility = Visibility.Visible;
+
+                    await Task.Delay(1800);
+                    RegisterPanel.Visibility = Visibility.Collapsed;
+                    RegisterErrorLabel.Foreground = System.Windows.Media.Brushes.Red;
                 }
                 else
                 {
