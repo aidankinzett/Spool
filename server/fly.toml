@@ -1,16 +1,16 @@
-# fly.toml app configuration file for ludusavi-wrap-server
+# fly.toml app configuration file for spool-server
 
-app = 'ludusavi-wrap-server'
+app = 'spool-server'
 primary_region = 'syd'
 
 [build]
 
 [env]
-  DATABASE_PATH = '/data/ludusavi.db'
+  DATABASE_PATH = '/data/spool.db'
   PORT = '3000'
 
 [[mounts]]
-  source = 'ludusavi_wrap_data'
+  source = 'spool_data'
   destination = '/data'
 
 [http_service]

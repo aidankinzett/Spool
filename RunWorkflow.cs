@@ -49,8 +49,8 @@ namespace LudusaviWrap
             if (!_config.IsLudusaviOk)
             {
                 MessageBox.Show(
-                    $"Ludusavi executable not found at:\n{_config.Data.LudusaviPath}\n\nPlease open settings in Ludusavi Wrap to configure it.",
-                    "Ludusavi Wrap Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                    $"Ludusavi executable not found at:\n{_config.Data.LudusaviPath}\n\nPlease open settings in Spool to configure it.",
+                    "Spool Error", MessageBoxButton.OK, MessageBoxImage.Error);
                 return;
             }
 
@@ -277,7 +277,7 @@ namespace LudusaviWrap
                     <toast>
                       <visual>
                         <binding template="ToastGeneric">
-                          <text>Ludusavi Wrap</text>
+                          <text>Spool</text>
                           <text>{escapedName}</text>
                           <text>{escapedStatus}</text>
                         </binding>

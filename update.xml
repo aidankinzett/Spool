@@ -4,10 +4,10 @@
     <version>3.8.2</version>
     
     <!-- URL to the latest installer or executable file (typically hosted as a GitHub Release asset) -->
-    <url>https://github.com/aidankinzett/ludusavi-wrap/releases/download/v3.8.2/ludusavi-wrap-setup.exe</url>
+    <url>https://github.com/aidankinzett/Spool/releases/download/v3.8.2/spool-setup.exe</url>
     
     <!-- URL to the release changelog (or a markdown/HTML page summarizing the new features) -->
-    <changelog>https://github.com/aidankinzett/ludusavi-wrap/releases/latest</changelog>
+    <changelog>https://github.com/aidankinzett/Spool/releases/latest</changelog>
     
     <!-- If set to true, skips the Skip and Remind Later buttons and forces the update -->
     <mandatory>false</mandatory>

@@ -19,7 +19,7 @@ COPY --from=builder /app/dist ./dist
 ARG APP_VERSION=dev
 ENV NODE_ENV=production
 ENV PORT=47633
-ENV DATABASE_PATH=/data/ludusavi.db
+ENV DATABASE_PATH=/data/spool.db
 ENV APP_VERSION=$APP_VERSION
 
 RUN mkdir -p /data

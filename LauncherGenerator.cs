@@ -48,8 +48,8 @@ namespace LudusaviWrap
                 await stream.CopyToAsync(fileStream);
             }
 
-            string ludusaviWrapExe = config.Data.LudusaviWrapExe;
-            string payload = $"\r\nLUDUSAVI_WRAP_CFG_START\r\n{entry.GameName}\r\n{entry.ExePath}\r\n{ludusaviWrapExe}\r\nLUDUSAVI_WRAP_CFG_END\r\n";
+            string spoolExe = config.Data.SpoolExe;
+            string payload = $"\r\nLUDUSAVI_WRAP_CFG_START\r\n{entry.GameName}\r\n{entry.ExePath}\r\n{spoolExe}\r\nLUDUSAVI_WRAP_CFG_END\r\n";
 
             try
             {

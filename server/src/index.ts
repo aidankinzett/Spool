@@ -16,5 +16,5 @@ app.get("/health", (c) => c.json({ ok: true, version: serverVersion }));
 
 const port = parseInt(process.env.PORT ?? "47633", 10);
 serve({ fetch: app.fetch, port }, () => {
-  console.log(`ludusavi-wrap lock server listening on :${port}`);
+  console.log(`spool lock server listening on :${port}`);
 });

@@ -1,7 +1,7 @@
 {
-  "name": "ludusavi-wrap-server",
+  "name": "spool-server",
   "version": "1.0.0",
-  "description": "Cross-device play state lock server for ludusavi-wrap",
+  "description": "Cross-device play state lock server for Spool",
   "type": "module",
   "scripts": {
     "build": "tsc",

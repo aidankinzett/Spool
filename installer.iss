@@ -1,20 +1,20 @@
-; Inno Setup Compiler script for Ludusavi Wrap
+; Inno Setup Compiler script for Spool
 ; To build: iscc installer.iss
 
 #define BuildDir "bin\Release\net9.0-windows10.0.17763.0\win-x64\publish"
-#define AppExe BuildDir + "\ludusavi-wrap.exe"
+#define AppExe BuildDir + "\spool.exe"
 #define AppVersion GetVersionNumbersString(AppExe)
 
 [Setup]
-AppName=Ludusavi Wrap
+AppName=Spool
 AppVersion={#AppVersion}
-DefaultDirName={userpf}\Ludusavi Wrap
-DefaultGroupName=Ludusavi Wrap
-UninstallDisplayIcon={app}\ludusavi-wrap.exe
+DefaultDirName={userpf}\Spool
+DefaultGroupName=Spool
+UninstallDisplayIcon={app}\spool.exe
 Compression=lzma2
 SolidCompression=yes
 OutputDir=dist
-OutputBaseFilename=ludusavi-wrap-setup
+OutputBaseFilename=spool-setup
 PrivilegesRequired=lowest
 DisableProgramGroupPage=yes
 DisableDirPage=auto
@@ -24,14 +24,14 @@ DisableReadyPage=yes
 Source: "{#AppExe}"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
-Name: "{group}\Ludusavi Wrap"; Filename: "{app}\ludusavi-wrap.exe"
-Name: "{userdesktop}\Ludusavi Wrap"; Filename: "{app}\ludusavi-wrap.exe"; Tasks: desktopicon
+Name: "{group}\Spool"; Filename: "{app}\spool.exe"
+Name: "{userdesktop}\Spool"; Filename: "{app}\spool.exe"; Tasks: desktopicon
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a &desktop icon"; GroupDescription: "Additional icons:"; Flags: unchecked
 
 [Run]
 ; Shown as checkbox on finish page for manual installs; skipped during silent auto-update
-Filename: "{app}\ludusavi-wrap.exe"; Description: "Launch Ludusavi Wrap"; Flags: postinstall nowait skipifsilent
+Filename: "{app}\spool.exe"; Description: "Launch Spool"; Flags: postinstall nowait skipifsilent
 ; Relaunch automatically after a silent auto-update
-Filename: "{app}\ludusavi-wrap.exe"; Flags: nowait; Check: WizardSilent
+Filename: "{app}\spool.exe"; Flags: nowait; Check: WizardSilent

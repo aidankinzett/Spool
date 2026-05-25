@@ -17,8 +17,8 @@ namespace LudusaviWrap
         [JsonPropertyName("steamgriddb_api_key")]
         public string SteamGridDbApiKey { get; set; } = "";
 
-        [JsonPropertyName("ludusavi_wrap_exe")]
-        public string LudusaviWrapExe { get; set; } = "";
+        [JsonPropertyName("spool_exe")]
+        public string SpoolExe { get; set; } = "";
 
         [JsonPropertyName("theme")]
         public string Theme { get; set; } = "system";
@@ -177,7 +177,7 @@ namespace LudusaviWrap
                 string exePath = Environment.ProcessPath ?? "";
                 if (!string.IsNullOrEmpty(exePath))
                 {
-                    Data.LudusaviWrapExe = exePath;
+                    Data.SpoolExe = exePath;
                     Save();
                 }
             }

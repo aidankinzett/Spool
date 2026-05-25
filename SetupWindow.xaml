@@ -3,7 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
         xmlns:local="clr-namespace:LudusaviWrap"
-        Title="Settings — Ludusavi Wrap"
+        Title="Settings — Spool"
         Closing="Window_Closing"
         Width="1040"
         Height="720"
@@ -108,7 +108,7 @@
         </Grid.RowDefinitions>
 
         <!-- Title bar -->
-        <ui:TitleBar Title="Settings — Ludusavi Wrap"
+        <ui:TitleBar Title="Settings — Spool"
                      ShowMaximize="False"
                      ShowMinimize="False"
                      Grid.Row="0"/>

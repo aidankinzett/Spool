@@ -1,13 +1,13 @@
 services:
-  ludusavi-lock:
-    image: ghcr.io/aidankinzett/ludusavi-wrap-server:latest
-    hostname: ludusavi-lock
+  spool-lock:
+    image: ghcr.io/aidankinzett/spool-server:latest
+    hostname: spool-lock
     ports:
       - "47633:47633"
     environment:
       - ADMIN_SECRET=changeme   # REQUIRED: set a strong secret before use
       - PORT=47633
-      - DATABASE_PATH=/data/ludusavi.db
+      - DATABASE_PATH=/data/spool.db
     volumes:
       - ./data:/data
     restart: unless-stopped

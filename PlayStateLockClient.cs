@@ -281,12 +281,12 @@ namespace LudusaviWrap
             }
         }
 
-        // Probes the LAN for a running ludusavi-wrap server.
+        // Probes the LAN for a running spool server.
         // Tries the well-known mDNS hostname plus every address in the local /24 subnet.
         // Returns URLs of all responding servers (typically just one).
         public static async Task<List<string>> ScanLanAsync()
         {
-            var candidates = new List<string> { "http://ludusavi-lock.local:47633" };
+            var candidates = new List<string> { "http://spool-lock.local:47633" };
 
             try
             {

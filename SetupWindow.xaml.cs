@@ -53,7 +53,7 @@ namespace LudusaviWrap
             SelectThemeComboItem(_config.Data.Theme);
             _themeComboInitialized = true;
 
-            AboutVersionText.Text = $"Ludusavi Wrap v{GetAppVersion()} · Up to date";
+            AboutVersionText.Text = $"Spool v{GetAppVersion()} · Up to date";
 
             // Expand cards whose services are already enabled
             UpdateSgdbExpander();
@@ -429,7 +429,7 @@ namespace LudusaviWrap
             => OpenUrl("https://torbox.app/settings");
 
         private void ReleaseNotes_Click(object sender, RoutedEventArgs e)
-            => OpenUrl("https://github.com/aidankinzett/ludusavi-wrap/releases");
+            => OpenUrl("https://github.com/aidankinzett/Spool/releases");
 
         private void OpenUrl(string url)
         {

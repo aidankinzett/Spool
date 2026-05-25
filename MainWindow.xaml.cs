@@ -1623,7 +1623,7 @@ namespace LudusaviWrap
             }
 
             AutoUpdaterDotNET.AutoUpdater.Start(
-                "https://raw.githubusercontent.com/aidankinzett/ludusavi-wrap/master/update.xml");
+                "https://raw.githubusercontent.com/aidankinzett/Spool/master/update.xml");
         }
 
         private void MainWindow_Closing(object? sender, System.ComponentModel.CancelEventArgs e)

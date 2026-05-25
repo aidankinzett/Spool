@@ -48,7 +48,7 @@ jobs:
           $tag = "${{ github.ref_name }}"
           # Bump auto-updater manifest (the only file that needs a committed version string)
           (Get-Content update.xml) -replace '<version>.*</version>', "<version>$version</version>" | Set-Content update.xml -Encoding utf8
-          (Get-Content update.xml) -replace '<url>.*</url>', "<url>https://github.com/aidankinzett/ludusavi-wrap/releases/download/$tag/ludusavi-wrap-setup.exe</url>" | Set-Content update.xml -Encoding utf8
+          (Get-Content update.xml) -replace '<url>.*</url>', "<url>https://github.com/aidankinzett/Spool/releases/download/$tag/spool-setup.exe</url>" | Set-Content update.xml -Encoding utf8
 
       - name: Compile Launcher Stub
         shell: pwsh
@@ -71,8 +71,8 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            bin/Release/net9.0-windows10.0.17763.0/win-x64/publish/ludusavi-wrap.exe
-            dist/ludusavi-wrap-setup.exe
+            bin/Release/net9.0-windows10.0.17763.0/win-x64/publish/spool.exe
+            dist/spool-setup.exe
           body: ${{ steps.changelog.outputs.CHANGELOG }}
 
       - name: Commit update.xml to master

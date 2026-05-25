@@ -28,20 +28,20 @@ class Launcher {
             }
 
             if (startIdx == -1) {
-                MessageBox.Show("Configuration not found in launcher executable.", "Ludusavi Wrap Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                MessageBox.Show("Configuration not found in launcher executable.", "Spool Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
                 return;
             }
 
             int endIdx = fileStr.IndexOf(endMarker, startIdx);
             if (endIdx == -1) {
-                MessageBox.Show("Configuration end marker not found.", "Ludusavi Wrap Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                MessageBox.Show("Configuration end marker not found.", "Spool Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
                 return;
             }
 
             string configData = fileStr.Substring(startIdx + startMarker.Length, endIdx - (startIdx + startMarker.Length));
             string[] lines = configData.Split(new[] { "\r\n", "\n" }, StringSplitOptions.None);
             if (lines.Length < 3) {
-                MessageBox.Show("Invalid launcher configuration format.", "Ludusavi Wrap Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                MessageBox.Show("Invalid launcher configuration format.", "Spool Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
                 return;
             }
 
@@ -53,7 +53,7 @@ class Launcher {
             GetWrapExeFromConfig(ref wrapExe);
 
             if (!File.Exists(wrapExe)) {
-                MessageBox.Show("Ludusavi Wrap main executable not found at:\n" + wrapExe + "\n\nPlease run Ludusavi Wrap to update the configuration.", "Ludusavi Wrap Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                MessageBox.Show("Spool main executable not found at:\n" + wrapExe + "\n\nPlease run Spool to update the configuration.", "Spool Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
                 return;
             }
 
@@ -83,8 +83,12 @@ class Launcher {
             if (!File.Exists(configPath)) return;
 
             string json = File.ReadAllText(configPath);
-            string exeKey = "\"ludusavi_wrap_exe\":";
+            string exeKey = "\"spool_exe\":";
             int exeIdx = json.IndexOf(exeKey);
+            if (exeIdx == -1) {
+                exeKey = "\"ludusavi_wrap_exe\":";
+                exeIdx = json.IndexOf(exeKey);
+            }
             if (exeIdx == -1) return;
 
             int startQuote = json.IndexOf("\"", exeIdx + exeKey.Length);

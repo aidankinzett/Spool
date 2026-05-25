@@ -10,8 +10,8 @@
     <PublishSingleFile>true</PublishSingleFile>
     <SelfContained>true</SelfContained>
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
-    <ApplicationIcon>ludusavi-wrap.ico</ApplicationIcon>
-    <AssemblyName>ludusavi-wrap</AssemblyName>
+    <ApplicationIcon>brand\Spool.ico</ApplicationIcon>
+    <AssemblyName>spool</AssemblyName>
     <RootNamespace>LudusaviWrap</RootNamespace>
   </PropertyGroup>
 
