@@ -3,36 +3,244 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
         xmlns:local="clr-namespace:LudusaviWrap"
-        Title="Ludusavi Wrap"
-        Width="940"
-        MinWidth="700"
-        MinHeight="500"
-        Height="620"
+        Title="Spool"
+        Width="1260" Height="820"
+        MinWidth="900" MinHeight="600"
         ResizeMode="CanResize"
         WindowStartupLocation="CenterScreen">
 
     <Window.Resources>
         <local:StringToImageConverter x:Key="StringToImageConverter"/>
-        <local:BooleanToVisibilityConverter x:Key="BooleanToVisibilityConverter"/>
-        <local:InverseBooleanToVisibilityConverter x:Key="InverseBooleanToVisibilityConverter"/>
+        <local:BooleanToVisibilityConverter x:Key="BoolToVis"/>
+        <local:InverseBooleanToVisibilityConverter x:Key="InvBoolToVis"/>
+        <local:NullToVisibilityConverter x:Key="NullToVis"/>
+        <local:InverseNullToVisibilityConverter x:Key="InvNullToVis"/>
+        <local:EmptyStringToVisibilityConverter x:Key="EmptyStrToVis"/>
+        <local:InverseEmptyStringToVisibilityConverter x:Key="InvEmptyStrToVis"/>
+        <local:RelativeDateConverter x:Key="RelDate"/>
+        <local:PlaytimeConverter x:Key="PlaytimeConv"/>
+        <local:FileSizeMbConverter x:Key="SizeMbConv"/>
+        <local:GenreListConverter x:Key="GenreListConv"/>
+        <local:CoverInitialsConverter x:Key="InitialsConv"/>
+        <local:YearConverter x:Key="YearConv"/>
+        <local:PositiveIntToVisibilityConverter x:Key="PosIntToVis"/>
+        <local:AbsoluteDateConverter x:Key="AbsDate"/>
 
-        <ContextMenu x:Key="GameCardContextMenu" x:Shared="False">
-            <MenuItem Header="Generate for Armoury Crate" Click="ContextGenerateAC_Click"/>
-            <MenuItem Header="Add to Steam" Click="ContextAddToSteam_Click"/>
-            <Separator/>
-            <MenuItem Header="Open Game Folder" Click="ContextOpenFolder_Click"/>
-            <MenuItem Header="Set Game Folder (LAN Share)" Click="ContextSetFolder_Click"/>
-            <Separator/>
-            <MenuItem Header="Run as Administrator" IsCheckable="True" Click="ContextRunAsAdmin_Click" Loaded="ContextRunAsAdmin_Loaded"/>
-            <Separator/>
-            <MenuItem Header="Remove from Library" Click="ContextRemove_Click"/>
-        </ContextMenu>
+        <!-- Filter chip style -->
+        <Style x:Key="FilterChip" TargetType="ToggleButton">
+            <Setter Property="Height" Value="24"/>
+            <Setter Property="Padding" Value="10,0"/>
+            <Setter Property="FontSize" Value="11"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ToggleButton">
+                        <Border x:Name="Bd"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="12"
+                                Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+            <Style.Triggers>
+                <Trigger Property="IsChecked" Value="False">
+                    <Setter Property="Background" Value="Transparent"/>
+                    <Setter Property="BorderBrush" Value="#14FFFFFF"/>
+                    <Setter Property="Foreground" Value="{DynamicResource TextFillColorSecondaryBrush}"/>
+                </Trigger>
+                <Trigger Property="IsChecked" Value="True">
+                    <Setter Property="Background" Value="#284CC2FF"/>
+                    <Setter Property="BorderBrush" Value="#444CC2FF"/>
+                    <Setter Property="Foreground" Value="#4CC2FF"/>
+                    <Setter Property="FontWeight" Value="Medium"/>
+                </Trigger>
+                <MultiTrigger>
+                    <MultiTrigger.Conditions>
+                        <Condition Property="IsChecked" Value="False"/>
+                        <Condition Property="IsMouseOver" Value="True"/>
+                    </MultiTrigger.Conditions>
+                    <Setter Property="Background" Value="#0AFFFFFF"/>
+                </MultiTrigger>
+            </Style.Triggers>
+        </Style>
+
+        <!-- Toolbar action button -->
+        <Style x:Key="ActionBtn" TargetType="Button">
+            <Setter Property="Height" Value="32"/>
+            <Setter Property="Padding" Value="12,0"/>
+            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="Background" Value="#0FFFFFFF"/>
+            <Setter Property="BorderBrush" Value="#17FFFFFF"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Bd"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="4" Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="#1AFFFFFF"/>
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="#08FFFFFF"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- Danger button -->
+        <Style x:Key="DangerBtn" TargetType="Button" BasedOn="{StaticResource ActionBtn}">
+            <Setter Property="Background" Value="#1AFF5F5F"/>
+            <Setter Property="BorderBrush" Value="#33FF5F5F"/>
+            <Setter Property="Foreground" Value="#FF8A8A"/>
+            <Style.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter Property="Background" Value="#2EFF5F5F"/>
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+
+        <!-- Play button -->
+        <Style x:Key="PlayBtn" TargetType="Button">
+            <Setter Property="Height" Value="46"/>
+            <Setter Property="Padding" Value="24,0"/>
+            <Setter Property="FontSize" Value="15"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Foreground" Value="#000"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Bd" Background="#4CC2FF" CornerRadius="6"
+                                Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="#3DAEEB"/>
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="#2E9BD6"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- Download button (for LAN cards) -->
+        <Style x:Key="DownloadBtn" TargetType="Button" BasedOn="{StaticResource PlayBtn}">
+            <Setter Property="Foreground" Value="#000"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Bd" Background="#21D07A" CornerRadius="6"
+                                Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="#1ABC6E"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- Sort popup menu button -->
+        <Style x:Key="SortMenuItem" TargetType="Button">
+            <Setter Property="Height" Value="34"/>
+            <Setter Property="Padding" Value="10,0"/>
+            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="HorizontalContentAlignment" Value="Left"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Bd" Background="{TemplateBinding Background}"
+                                CornerRadius="4" Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                              VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="#0FFFFFFF"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- Card container -->
+        <Style x:Key="DetailCard" TargetType="Border">
+            <Setter Property="Background" Value="#08FFFFFF"/>
+            <Setter Property="BorderBrush" Value="#0DFFFFFF"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="CornerRadius" Value="8"/>
+            <Setter Property="Padding" Value="18,16"/>
+        </Style>
+
+        <!-- ListBoxItem style for game rows -->
+        <Style x:Key="GameRowItem" TargetType="ListBoxItem">
+            <Setter Property="Padding" Value="0"/>
+            <Setter Property="Margin" Value="0,0,0,1"/>
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ListBoxItem">
+                        <Grid>
+                            <Rectangle x:Name="ActiveBar" Width="3"
+                                       HorizontalAlignment="Left" VerticalAlignment="Center"
+                                       Height="22" RadiusX="2" RadiusY="2"
+                                       Fill="#4CC2FF" Visibility="Collapsed"/>
+                            <Border x:Name="Bd" Background="Transparent"
+                                    CornerRadius="4" Padding="14,8,12,8">
+                                <ContentPresenter/>
+                            </Border>
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsSelected" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="#0FFFFFFF"/>
+                                <Setter TargetName="ActiveBar" Property="Visibility" Value="Visible"/>
+                            </Trigger>
+                            <MultiTrigger>
+                                <MultiTrigger.Conditions>
+                                    <Condition Property="IsMouseOver" Value="True"/>
+                                    <Condition Property="IsSelected" Value="False"/>
+                                </MultiTrigger.Conditions>
+                                <Setter TargetName="Bd" Property="Background" Value="#06FFFFFF"/>
+                            </MultiTrigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
     </Window.Resources>
 
-    <Grid>
+    <Grid Background="Transparent">
         <Grid.RowDefinitions>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
             <RowDefinition Height="Auto"/>
@@ -41,225 +249,871 @@
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
-        <ui:TitleBar Title="Ludusavi Wrap"
-                     ShowMaximize="True"
-                     Grid.Row="0"/>
+        <!-- ═══ Title bar ═══ -->
+        <ui:TitleBar Grid.Row="0" ShowMaximize="True" Height="40" Title=" ">
+            <ui:TitleBar.Header>
+                <!-- Two columns: branding left | LAN pill centered in remaining space -->
+                <Grid VerticalAlignment="Stretch">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
 
-        <!-- Toolbar -->
-        <Grid Grid.Row="1" Margin="24,8,24,10">
-            <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="*"/>
-                <ColumnDefinition Width="Auto"/>
-                <ColumnDefinition Width="8"/>
-                <ColumnDefinition Width="Auto"/>
-                <ColumnDefinition Width="8"/>
-                <ColumnDefinition Width="Auto"/>
-                <ColumnDefinition Width="8"/>
-                <ColumnDefinition Width="Auto"/>
-            </Grid.ColumnDefinitions>
-            <TextBlock Text="My Library"
-                       FontSize="20"
-                       FontWeight="SemiBold"
-                       VerticalAlignment="Center"
-                       Grid.Column="0"/>
-            <!-- WiFi Status Panel -->
-            <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,8,0">
-                <ui:ProgressRing IsIndeterminate="True"
-                                 Width="16"
-                                 Height="16"
-                                 Margin="0,0,8,0"
-                                 Visibility="{Binding IsLanScanning, RelativeSource={RelativeSource AncestorType={x:Type local:MainWindow}}, Converter={StaticResource BooleanToVisibilityConverter}}"/>
-                <ui:SymbolIcon Symbol="Wifi224"
-                               Margin="0,0,6,0"
-                               Foreground="{DynamicResource TextFillColorSecondaryBrush}"/>
-                <TextBlock FontSize="13"
-                           VerticalAlignment="Center"
-                           Foreground="{DynamicResource TextFillColorSecondaryBrush}">
-                    <Run Text="{Binding LanPeersCount, RelativeSource={RelativeSource AncestorType={x:Type local:MainWindow}}, Mode=OneWay}"/>
-                    <Run Text=" peers"/>
-                </TextBlock>
-            </StackPanel>
-            <ui:Button x:Name="BrowseButton"
-                       Grid.Column="3"
-                       Content="Browse"
-                       Icon="{ui:SymbolIcon Symbol=Search24}"
-                       Appearance="Secondary"
-                       Click="Browse_Click"/>
-            <ui:Button x:Name="AddGameButton"
-                       Grid.Column="5"
-                       Content="Add Game"
-                       Appearance="Primary"
-                       Click="AddGame_Click"/>
-            <ui:Button x:Name="SettingsButton"
-                       Grid.Column="7"
-                       Content="Settings"
-                       Appearance="Secondary"
-                       Click="Settings_Click"/>
-        </Grid>
+                    <!-- Branding -->
+                    <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center" Margin="4,0,0,0">
+                        <Viewbox Width="16" Height="16" VerticalAlignment="Center">
+                            <Canvas Width="64" Height="64">
+                                <Rectangle Canvas.Left="8" Canvas.Top="16" Width="48" Height="32"
+                                           RadiusX="4" RadiusY="4"
+                                           Stroke="White" StrokeThickness="3.5" Fill="Transparent"/>
+                                <Ellipse Canvas.Left="18" Canvas.Top="24" Width="8" Height="8" Fill="White"/>
+                                <Ellipse Canvas.Left="38" Canvas.Top="24" Width="8" Height="8" Fill="White"/>
+                                <Line X1="14" Y1="42" X2="50" Y2="42"
+                                      Stroke="White" StrokeThickness="3"
+                                      StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
+                            </Canvas>
+                        </Viewbox>
+                        <TextBlock Text="Spool" FontSize="12" FontWeight="SemiBold"
+                                   VerticalAlignment="Center" Margin="7,0,0,0"
+                                   Foreground="{DynamicResource TextFillColorPrimaryBrush}"/>
+                    </StackPanel>
 
-        <!-- Separator -->
-        <Separator Grid.Row="2" Margin="0"/>
-
-        <!-- Content area -->
-        <Grid Grid.Row="3">
-
-            <!-- Empty state -->
-            <StackPanel x:Name="EmptyState"
-                        VerticalAlignment="Center"
-                        HorizontalAlignment="Center"
-                        Visibility="Collapsed">
-                <TextBlock Text="No games yet"
-                           FontSize="22"
-                           FontWeight="SemiBold"
-                           HorizontalAlignment="Center"
-                           Foreground="{DynamicResource TextFillColorSecondaryBrush}"/>
-                <TextBlock Text="Click Add Game to add your first game."
-                           Foreground="{DynamicResource TextFillColorSecondaryBrush}"
-                           HorizontalAlignment="Center"
-                           Margin="0,8,0,24"/>
-                <ui:Button Content="Add Game"
-                           Appearance="Primary"
-                           HorizontalAlignment="Center"
-                           Click="AddGame_Click"/>
-            </StackPanel>
-
-            <!-- Library scroll area -->
-            <ScrollViewer x:Name="LibraryScrollViewer"
-                          VerticalScrollBarVisibility="Auto"
-                          Padding="16,12,16,16"
-                          Visibility="Collapsed">
-                <ItemsControl x:Name="GamesGrid">
-                    <ItemsControl.ItemsPanel>
-                        <ItemsPanelTemplate>
-                            <WrapPanel ItemWidth="192" ItemHeight="392"/>
-                        </ItemsPanelTemplate>
-                    </ItemsControl.ItemsPanel>
-                    <ItemsControl.ItemTemplate>
-                        <DataTemplate DataType="{x:Type local:GameEntry}">
-                            <ui:Card Width="180" Height="380" Margin="6" Padding="0">
-                                <ui:Card.Style>
-                                    <Style TargetType="ui:Card" BasedOn="{StaticResource {x:Type ui:Card}}">
-                                        <Setter Property="ContextMenu" Value="{StaticResource GameCardContextMenu}"/>
+                    <!-- LAN peers pill — centred in the remaining space -->
+                    <Border Grid.Column="1" HorizontalAlignment="Center" VerticalAlignment="Center"
+                            CornerRadius="10" Padding="10,3"
+                            Background="#0AFFFFFF" BorderBrush="#0FFFFFFF" BorderThickness="1">
+                        <StackPanel Orientation="Horizontal">
+                            <ui:ProgressRing IsIndeterminate="True" Width="10" Height="10"
+                                             Margin="0,0,6,0"
+                                             Visibility="{Binding IsLanScanning, RelativeSource={RelativeSource AncestorType={x:Type local:MainWindow}}, Converter={StaticResource BoolToVis}}"/>
+                            <Ellipse Width="6" Height="6" VerticalAlignment="Center" Margin="0,0,6,0"
+                                     Visibility="{Binding IsLanScanning, RelativeSource={RelativeSource AncestorType={x:Type local:MainWindow}}, Converter={StaticResource InvBoolToVis}}">
+                                <Ellipse.Style>
+                                    <Style TargetType="Ellipse">
+                                        <Setter Property="Fill" Value="#4D4D4D"/>
                                         <Style.Triggers>
-                                            <DataTrigger Binding="{Binding IsLanCard}" Value="True">
-                                                <Setter Property="ContextMenu" Value="{x:Null}"/>
+                                            <DataTrigger Binding="{Binding LanPeersCount, RelativeSource={RelativeSource AncestorType={x:Type local:MainWindow}}}" Value="0">
+                                                <Setter Property="Fill" Value="#4D4D4D"/>
                                             </DataTrigger>
                                         </Style.Triggers>
                                     </Style>
-                                </ui:Card.Style>
+                                </Ellipse.Style>
+                            </Ellipse>
+                            <ui:SymbolIcon Symbol="Wifi224" FontSize="10"
+                                           Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                           Margin="0,0,5,0"/>
+                            <TextBlock FontSize="11" VerticalAlignment="Center"
+                                       Foreground="{DynamicResource TextFillColorSecondaryBrush}">
+                                <Run Text="{Binding LanPeersCount, RelativeSource={RelativeSource AncestorType={x:Type local:MainWindow}}, Mode=OneWay}"/>
+                                <Run Text=" peers on LAN"/>
+                            </TextBlock>
+                        </StackPanel>
+                    </Border>
+                </Grid>
+            </ui:TitleBar.Header>
+            <ui:TitleBar.TrailingContent>
+                <!-- Settings button only — window controls follow automatically -->
+                <Button x:Name="SettingsButton" Click="Settings_Click"
+                        Width="38" Height="40" Cursor="Hand" ToolTip="Settings">
+                    <Button.Template>
+                        <ControlTemplate TargetType="Button">
+                            <Border x:Name="Bd" Background="Transparent">
+                                <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                            </Border>
+                            <ControlTemplate.Triggers>
+                                <Trigger Property="IsMouseOver" Value="True">
+                                    <Setter TargetName="Bd" Property="Background" Value="#0FFFFFFF"/>
+                                </Trigger>
+                            </ControlTemplate.Triggers>
+                        </ControlTemplate>
+                    </Button.Template>
+                    <ui:SymbolIcon Symbol="Settings24" FontSize="13"
+                                   Foreground="{DynamicResource TextFillColorSecondaryBrush}"/>
+                </Button>
+            </ui:TitleBar.TrailingContent>
+        </ui:TitleBar>
+
+        <!-- ═══ Two-pane layout ═══ -->
+        <Grid Grid.Row="1">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="320"/>
+                <ColumnDefinition Width="1"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+
+            <!-- ── LEFT: Sidebar ── -->
+            <Grid Grid.Column="0" Background="#2E000000">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+
+                <!-- Search -->
+                <Grid Grid.Row="0" Margin="12,14,12,0">
+                    <ui:TextBox x:Name="SearchBox"
+                                PlaceholderText="Search library…"
+                                FontSize="13"
+                                TextChanged="SearchBox_TextChanged"/>
+                </Grid>
+
+                <!-- Filter pills + sort -->
+                <Grid Grid.Row="1" Margin="12,8,12,10">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <ToggleButton x:Name="FilterAll" Grid.Column="0" Content="All"
+                                  Style="{StaticResource FilterChip}" IsChecked="True"
+                                  Margin="0,0,4,0" Click="FilterChip_Click" Tag="all"/>
+                    <ToggleButton x:Name="FilterRecent" Grid.Column="1" Content="Recent"
+                                  Style="{StaticResource FilterChip}"
+                                  Margin="0,0,4,0" Click="FilterChip_Click" Tag="recent"/>
+                    <ToggleButton x:Name="FilterShared" Grid.Column="2" Content="On LAN"
+                                  Style="{StaticResource FilterChip}"
+                                  Margin="0,0,4,0" Click="FilterChip_Click" Tag="shared"/>
+                    <ToggleButton x:Name="FilterUnplayed" Grid.Column="3" Content="Unplayed"
+                                  Style="{StaticResource FilterChip}"
+                                  Click="FilterChip_Click" Tag="unplayed"/>
+                    <Button x:Name="SortButton" Grid.Column="5"
+                            Width="30" Height="24" Cursor="Hand" ToolTip="Sort"
+                            Click="SortButton_Click">
+                        <Button.Template>
+                            <ControlTemplate TargetType="Button">
+                                <Border x:Name="Bd" Background="Transparent"
+                                        BorderBrush="#14FFFFFF" BorderThickness="1" CornerRadius="4">
+                                    <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                </Border>
+                                <ControlTemplate.Triggers>
+                                    <Trigger Property="IsMouseOver" Value="True">
+                                        <Setter TargetName="Bd" Property="Background" Value="#0FFFFFFF"/>
+                                    </Trigger>
+                                </ControlTemplate.Triggers>
+                            </ControlTemplate>
+                        </Button.Template>
+                        <ui:SymbolIcon Symbol="ArrowSort24" FontSize="12"
+                                       Foreground="{DynamicResource TextFillColorSecondaryBrush}"/>
+                    </Button>
+                    <Popup x:Name="SortPopup" PlacementTarget="{Binding ElementName=SortButton}"
+                           Placement="Bottom" StaysOpen="False">
+                        <Border Background="#2C2C2C" BorderBrush="#1AFFFFFF" BorderThickness="1"
+                                CornerRadius="6" Padding="4" MinWidth="180">
+                            <Border.Effect>
+                                <DropShadowEffect Color="Black" BlurRadius="24" ShadowDepth="0" Opacity="0.4"/>
+                            </Border.Effect>
+                            <StackPanel>
+                                <Button Content="Recently played" Tag="recent"   Style="{StaticResource SortMenuItem}" Click="SortOption_Click"/>
+                                <Button Content="Name (A–Z)"       Tag="name"     Style="{StaticResource SortMenuItem}" Click="SortOption_Click"/>
+                                <Button Content="Date added"        Tag="added"    Style="{StaticResource SortMenuItem}" Click="SortOption_Click"/>
+                                <Button Content="Playtime"          Tag="playtime" Style="{StaticResource SortMenuItem}" Click="SortOption_Click"/>
+                                <Button Content="Install size"      Tag="size"     Style="{StaticResource SortMenuItem}" Click="SortOption_Click"/>
+                            </StackPanel>
+                        </Border>
+                    </Popup>
+                </Grid>
+
+                <!-- Game list -->
+                <Grid Grid.Row="2">
+                    <ListBox x:Name="GameListBox"
+                             ItemContainerStyle="{StaticResource GameRowItem}"
+                             SelectionChanged="GameListBox_SelectionChanged"
+                             ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                             Background="Transparent" BorderThickness="0"
+                             Padding="8,0,8,12"
+                             VirtualizingPanel.IsVirtualizing="True">
+                        <ListBox.ItemTemplate>
+                            <DataTemplate DataType="{x:Type local:GameEntry}">
                                 <Grid>
-                                    <Grid.RowDefinitions>
-                                        <RowDefinition Height="270"/>
-                                        <RowDefinition Height="110"/>
-                                    </Grid.RowDefinitions>
-
-                                    <!-- Cover image -->
-                                    <Border Grid.Row="0"
-                                            ClipToBounds="True"
-                                            CornerRadius="4,4,0,0"
-                                            Background="{DynamicResource ControlFillColorDefaultBrush}">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <!-- Cover thumbnail 30x43 -->
+                                    <Grid Grid.Column="0" Width="30" Height="43" Margin="0,0,10,0">
+                                        <Border CornerRadius="3" Background="#2A3A4A"
+                                                BorderBrush="#10FFFFFF" BorderThickness="1">
+                                            <TextBlock Text="{Binding GameName, Converter={StaticResource InitialsConv}}"
+                                                       FontSize="9" FontWeight="Bold" Foreground="White"
+                                                       HorizontalAlignment="Center" VerticalAlignment="Bottom"
+                                                       Margin="2,0,2,2"/>
+                                        </Border>
                                         <Image Source="{Binding CoverImagePath, Converter={StaticResource StringToImageConverter}}"
-                                               Stretch="Uniform"/>
-                                    </Border>
-
-                                    <!-- Info area -->
-                                    <Grid Grid.Row="1" Margin="8,6,8,8">
-                                        <Grid.RowDefinitions>
-                                            <RowDefinition Height="*"/>
-                                            <RowDefinition Height="Auto"/>
-                                        </Grid.RowDefinitions>
-                                        
-                                        <StackPanel Grid.Row="0" VerticalAlignment="Top">
-                                            <TextBlock Text="{Binding GameName}"
-                                                       FontSize="12"
-                                                       FontWeight="SemiBold"
-                                                       TextWrapping="Wrap"
-                                                       TextTrimming="CharacterEllipsis"
-                                                       ToolTip="{Binding GameName}"
-                                                       Height="34"
-                                                       Margin="0,0,0,2"/>
-                                        </StackPanel>
-
-                                        <Grid Grid.Row="1" VerticalAlignment="Bottom">
-                                            <ui:Button Content="Play"
-                                                       Icon="{ui:SymbolIcon Symbol=Play24}"
-                                                       Appearance="Primary"
-                                                       HorizontalAlignment="Stretch"
-                                                       Click="Play_Click"
-                                                       Visibility="{Binding IsLanCard, Converter={StaticResource InverseBooleanToVisibilityConverter}}"/>
-                                            <ui:Button Content="Download"
-                                                       Icon="{ui:SymbolIcon Symbol=ArrowDownload24}"
-                                                       Appearance="Secondary"
-                                                       HorizontalAlignment="Stretch"
-                                                       Click="DownloadCard_Click"
-                                                       Visibility="{Binding IsLanCard, Converter={StaticResource BooleanToVisibilityConverter}}"/>
-                                        </Grid>
+                                               Stretch="UniformToFill">
+                                            <Image.Clip>
+                                                <RectangleGeometry RadiusX="3" RadiusY="3" Rect="0,0,30,43"/>
+                                            </Image.Clip>
+                                        </Image>
                                     </Grid>
+                                    <!-- Name + meta -->
+                                    <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                        <TextBlock Text="{Binding GameName}"
+                                                   FontSize="13" Foreground="White"
+                                                   TextTrimming="CharacterEllipsis"/>
+                                        <StackPanel Orientation="Horizontal" Margin="0,2,0,0">
+                                            <ui:SymbolIcon Symbol="Clock24" FontSize="10"
+                                                           Foreground="#80FFFFFF" VerticalAlignment="Center"
+                                                           Margin="0,0,4,0"/>
+                                            <TextBlock Text="{Binding LastPlayedAt, Converter={StaticResource RelDate}}"
+                                                       FontSize="11" Foreground="#80FFFFFF" VerticalAlignment="Center"/>
+                                            <ui:SymbolIcon Symbol="Wifi224" FontSize="10"
+                                                           Foreground="#7EE2A4" VerticalAlignment="Center"
+                                                           Margin="6,0,0,0"
+                                                           Visibility="{Binding LanShared, Converter={StaticResource BoolToVis}}"/>
+                                        </StackPanel>
+                                    </StackPanel>
                                 </Grid>
-                            </ui:Card>
-                        </DataTemplate>
-                    </ItemsControl.ItemTemplate>
-                </ItemsControl>
-            </ScrollViewer>
+                            </DataTemplate>
+                        </ListBox.ItemTemplate>
+                    </ListBox>
 
+                    <!-- No results -->
+                    <TextBlock Text="No games match."
+                               FontSize="12" Foreground="#73FFFFFF"
+                               HorizontalAlignment="Center" VerticalAlignment="Center"
+                               Visibility="{Binding HasNoFilteredGames, RelativeSource={RelativeSource AncestorType={x:Type local:MainWindow}}, Converter={StaticResource BoolToVis}}"/>
+                </Grid>
+
+                <!-- Footer -->
+                <StackPanel Grid.Row="3" Margin="12,0,12,12">
+                    <Rectangle Height="1" Fill="#0DFFFFFF" Margin="0,0,0,8"/>
+                    <ui:Button x:Name="AddGameButton"
+                               Content="Add Game"
+                               Icon="{ui:SymbolIcon Symbol=Add24}"
+                               Appearance="Primary"
+                               HorizontalAlignment="Stretch"
+                               Margin="0,0,0,6"
+                               Click="AddGame_Click"/>
+                    <ui:Button x:Name="BrowseButton"
+                               Content="Browse Games"
+                               Icon="{ui:SymbolIcon Symbol=Search24}"
+                               Appearance="Secondary"
+                               HorizontalAlignment="Stretch"
+                               Margin="0,0,0,8"
+                               Click="Browse_Click"/>
+                    <TextBlock HorizontalAlignment="Center" FontSize="11" Foreground="#66FFFFFF">
+                        <Run Text="{Binding LibraryCount, RelativeSource={RelativeSource AncestorType={x:Type local:MainWindow}}, Mode=OneWay}"/>
+                        <Run Text=" games in library"/>
+                    </TextBlock>
+                </StackPanel>
+            </Grid>
+
+            <!-- Pane separator -->
+            <Rectangle Grid.Column="1" Fill="#0DFFFFFF"/>
+
+            <!-- ── RIGHT: Detail / empty pane ── -->
+            <Grid Grid.Column="2">
+
+                <!-- Empty state -->
+                <ScrollViewer VerticalScrollBarVisibility="Auto"
+                              Visibility="{Binding SelectedGame, RelativeSource={RelativeSource AncestorType={x:Type local:MainWindow}}, Converter={StaticResource InvNullToVis}}">
+                    <StackPanel Margin="32,32,32,40">
+                        <TextBlock Text="Your Library" FontSize="28" FontWeight="Bold"
+                                   Foreground="White" Margin="0,0,0,4"/>
+                        <TextBlock Text="Pick a game on the left, or add a new one."
+                                   FontSize="13" Foreground="#8CFFFFFF" Margin="0,0,0,28"/>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="8"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="8"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="8"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <Border Grid.Column="0" Style="{StaticResource DetailCard}" Padding="16,14">
+                                <StackPanel>
+                                    <TextBlock Text="GAMES" FontSize="10" Foreground="#80FFFFFF"
+                                               FontWeight="Medium" Margin="0,0,0,6"/>
+                                    <TextBlock FontSize="22" FontWeight="Bold" Foreground="White"
+                                               Text="{Binding LibraryCount, RelativeSource={RelativeSource AncestorType={x:Type local:MainWindow}}}"/>
+                                </StackPanel>
+                            </Border>
+                            <Border Grid.Column="2" Style="{StaticResource DetailCard}" Padding="16,14">
+                                <StackPanel>
+                                    <TextBlock Text="TOTAL PLAYTIME" FontSize="10" Foreground="#80FFFFFF"
+                                               FontWeight="Medium" Margin="0,0,0,6"/>
+                                    <TextBlock FontSize="22" FontWeight="Bold" Foreground="White"
+                                               Text="{Binding TotalPlaytime, RelativeSource={RelativeSource AncestorType={x:Type local:MainWindow}}}"/>
+                                </StackPanel>
+                            </Border>
+                            <Border Grid.Column="4" Style="{StaticResource DetailCard}" Padding="16,14">
+                                <StackPanel>
+                                    <TextBlock Text="SAVE BACKUPS" FontSize="10" Foreground="#80FFFFFF"
+                                               FontWeight="Medium" Margin="0,0,0,6"/>
+                                    <TextBlock FontSize="22" FontWeight="Bold" Foreground="White"
+                                               Text="{Binding TotalBackups, RelativeSource={RelativeSource AncestorType={x:Type local:MainWindow}}}"/>
+                                </StackPanel>
+                            </Border>
+                            <Border Grid.Column="6" Style="{StaticResource DetailCard}" Padding="16,14">
+                                <StackPanel>
+                                    <TextBlock Text="ON DISK" FontSize="10" Foreground="#80FFFFFF"
+                                               FontWeight="Medium" Margin="0,0,0,6"/>
+                                    <TextBlock FontSize="22" FontWeight="Bold" Foreground="White"
+                                               Text="{Binding TotalInstallSize, RelativeSource={RelativeSource AncestorType={x:Type local:MainWindow}}}"/>
+                                </StackPanel>
+                            </Border>
+                        </Grid>
+                    </StackPanel>
+                </ScrollViewer>
+
+                <!-- Game detail pane -->
+                <Grid x:Name="DetailPane"
+                      DataContext="{Binding SelectedGame, RelativeSource={RelativeSource AncestorType={x:Type local:MainWindow}}}"
+                      Visibility="{Binding SelectedGame, RelativeSource={RelativeSource AncestorType={x:Type local:MainWindow}}, Converter={StaticResource NullToVis}}">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="300"/>
+                        <RowDefinition Height="*"/>
+                    </Grid.RowDefinitions>
+
+                    <!-- Hero -->
+                    <Grid Grid.Row="0" ClipToBounds="True">
+                        <Rectangle>
+                            <Rectangle.Fill>
+                                <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
+                                    <GradientStop Color="#3C1A0D" Offset="0"/>
+                                    <GradientStop Color="#08030A" Offset="1"/>
+                                </LinearGradientBrush>
+                            </Rectangle.Fill>
+                        </Rectangle>
+                        <Image Source="{Binding CoverImagePath, Converter={StaticResource StringToImageConverter}}"
+                               Stretch="UniformToFill" Opacity="0.35"/>
+                        <Rectangle>
+                            <Rectangle.Fill>
+                                <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
+                                    <GradientStop Color="#00000000" Offset="0.3"/>
+                                    <GradientStop Color="#CC000000" Offset="1.0"/>
+                                </LinearGradientBrush>
+                            </Rectangle.Fill>
+                        </Rectangle>
+
+                        <!-- Bottom-left: cover + title -->
+                        <StackPanel Orientation="Horizontal" VerticalAlignment="Bottom" Margin="32,0,0,28">
+                            <!-- Cover card -->
+                            <Grid Width="96" Height="139">
+                                <Border CornerRadius="4" Background="#2A3A4A"
+                                        BorderBrush="#1AFFFFFF" BorderThickness="1">
+                                    <TextBlock Text="{Binding GameName, Converter={StaticResource InitialsConv}}"
+                                               FontSize="22" FontWeight="Bold" Foreground="White"
+                                               HorizontalAlignment="Center" VerticalAlignment="Bottom"
+                                               Margin="4,0,4,4"/>
+                                </Border>
+                                <Image Source="{Binding CoverImagePath, Converter={StaticResource StringToImageConverter}}"
+                                       Stretch="UniformToFill">
+                                    <Image.Clip>
+                                        <RectangleGeometry RadiusX="4" RadiusY="4" Rect="0,0,96,139"/>
+                                    </Image.Clip>
+                                </Image>
+                            </Grid>
+                            <!-- Title + meta -->
+                            <StackPanel VerticalAlignment="Bottom" Margin="20,0,0,4" MaxWidth="520">
+                                <TextBlock Text="{Binding GameName}"
+                                           FontSize="32" FontWeight="Bold" Foreground="White"
+                                           TextTrimming="CharacterEllipsis" TextWrapping="NoWrap"/>
+                                <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
+                                    <TextBlock Text="{Binding Developer}"
+                                               FontSize="12" Foreground="#C8FFFFFF" VerticalAlignment="Center"/>
+                                    <TextBlock Text=" · " FontSize="12" Foreground="#66FFFFFF" VerticalAlignment="Center"/>
+                                    <TextBlock Text="{Binding ReleaseDate, Converter={StaticResource YearConv}}"
+                                               FontSize="12" Foreground="#C8FFFFFF" VerticalAlignment="Center"/>
+                                    <TextBlock Text=" · " FontSize="12" Foreground="#66FFFFFF" VerticalAlignment="Center"/>
+                                    <TextBlock Text="{Binding Genres, Converter={StaticResource GenreListConv}}"
+                                               FontSize="11" Foreground="#D8FFFFFF" VerticalAlignment="Center"/>
+                                </StackPanel>
+                            </StackPanel>
+                        </StackPanel>
+
+                        <!-- Play / Download button -->
+                        <Button x:Name="HeroPlayBtn" Style="{StaticResource PlayBtn}"
+                                VerticalAlignment="Bottom" HorizontalAlignment="Right"
+                                Margin="0,0,28,28" Click="Play_Click"
+                                Visibility="{Binding IsLanCard, Converter={StaticResource InvBoolToVis}}">
+                            <StackPanel Orientation="Horizontal">
+                                <ui:SymbolIcon Symbol="Play24" FontSize="16" Margin="0,0,8,0"/>
+                                <TextBlock Text="Play" VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </Button>
+                        <Button Style="{StaticResource DownloadBtn}"
+                                VerticalAlignment="Bottom" HorizontalAlignment="Right"
+                                Margin="0,0,28,28" Click="DetailDownload_Click"
+                                Visibility="{Binding IsLanCard, Converter={StaticResource BoolToVis}}">
+                            <StackPanel Orientation="Horizontal">
+                                <ui:SymbolIcon Symbol="ArrowDownload24" FontSize="16" Margin="0,0,8,0"/>
+                                <TextBlock Text="Download" VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </Button>
+                    </Grid>
+
+                    <!-- Scrollable detail body -->
+                    <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+                        <StackPanel>
+
+                            <!-- Stats strip -->
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <Border Grid.Column="0" Padding="32,18,16,18"
+                                        BorderBrush="#0AFFFFFF" BorderThickness="0,0,1,1">
+                                    <StackPanel>
+                                        <TextBlock Text="LAST PLAYED" FontSize="10" FontWeight="Medium"
+                                                   Foreground="#80FFFFFF" Margin="0,0,0,4"/>
+                                        <TextBlock Text="{Binding LastPlayedAt, Converter={StaticResource RelDate}}"
+                                                   FontSize="17" FontWeight="SemiBold" Foreground="White"/>
+                                        <TextBlock Text="{Binding LastPlayedAt, Converter={StaticResource AbsDate}}"
+                                                   FontSize="11" Foreground="#73FFFFFF" Margin="0,2,0,0"/>
+                                    </StackPanel>
+                                </Border>
+                                <Border Grid.Column="1" Padding="16,18"
+                                        BorderBrush="#0AFFFFFF" BorderThickness="1,0,1,1">
+                                    <StackPanel>
+                                        <TextBlock Text="PLAYTIME" FontSize="10" FontWeight="Medium"
+                                                   Foreground="#80FFFFFF" Margin="0,0,0,4"/>
+                                        <TextBlock Text="{Binding PlaytimeMinutes, Converter={StaticResource PlaytimeConv}}"
+                                                   FontSize="17" FontWeight="SemiBold" Foreground="White"/>
+                                    </StackPanel>
+                                </Border>
+                                <Border Grid.Column="2" Padding="16,18"
+                                        BorderBrush="#0AFFFFFF" BorderThickness="0,0,1,1">
+                                    <StackPanel>
+                                        <TextBlock Text="INSTALL SIZE" FontSize="10" FontWeight="Medium"
+                                                   Foreground="#80FFFFFF" Margin="0,0,0,4"/>
+                                        <TextBlock Text="{Binding InstallSizeMb, Converter={StaticResource SizeMbConv}}"
+                                                   FontSize="17" FontWeight="SemiBold" Foreground="White"/>
+                                    </StackPanel>
+                                </Border>
+                                <Border Grid.Column="3" Padding="16,18"
+                                        BorderBrush="#0AFFFFFF" BorderThickness="0,0,0,1">
+                                    <StackPanel>
+                                        <TextBlock Text="LAN SHARE" FontSize="10" FontWeight="Medium"
+                                                   Foreground="#80FFFFFF" Margin="0,0,0,4"/>
+                                        <TextBlock FontSize="17" FontWeight="SemiBold" Foreground="White">
+                                            <TextBlock.Style>
+                                                <Style TargetType="TextBlock">
+                                                    <Setter Property="Text" Value="Local only"/>
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding LanShared}" Value="True">
+                                                            <Setter Property="Text" Value="Shared"/>
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </TextBlock.Style>
+                                        </TextBlock>
+                                    </StackPanel>
+                                </Border>
+                            </Grid>
+
+                            <!-- Action toolbar -->
+                            <Border BorderBrush="#0AFFFFFF" BorderThickness="0,0,0,1" Padding="32,16">
+                                <Grid>
+                                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Left">
+                                        <Button Style="{StaticResource ActionBtn}" Margin="0,0,8,0"
+                                                Click="DetailOpenFolder_Click">
+                                            <StackPanel Orientation="Horizontal">
+                                                <ui:SymbolIcon Symbol="Folder24" FontSize="14" Margin="0,0,6,0"/>
+                                                <TextBlock Text="Open folder" VerticalAlignment="Center"/>
+                                            </StackPanel>
+                                        </Button>
+                                        <Button Style="{StaticResource ActionBtn}" Margin="0,0,8,0"
+                                                Click="DetailArmouryCrate_Click"
+                                                Visibility="{Binding IsLanCard, Converter={StaticResource InvBoolToVis}}">
+                                            <StackPanel Orientation="Horizontal">
+                                                <ui:SymbolIcon Symbol="Flash24" FontSize="14" Margin="0,0,6,0"/>
+                                                <TextBlock Text="Armoury Crate" VerticalAlignment="Center"/>
+                                            </StackPanel>
+                                        </Button>
+                                        <Button Style="{StaticResource ActionBtn}"
+                                                Click="DetailAddToSteam_Click"
+                                                Visibility="{Binding IsLanCard, Converter={StaticResource InvBoolToVis}}">
+                                            <StackPanel Orientation="Horizontal">
+                                                <ui:SymbolIcon Symbol="ArrowExportLtr24" FontSize="14" Margin="0,0,6,0"/>
+                                                <TextBlock Text="Add to Steam" VerticalAlignment="Center"/>
+                                            </StackPanel>
+                                        </Button>
+                                    </StackPanel>
+                                    <Button Style="{StaticResource DangerBtn}" HorizontalAlignment="Right"
+                                            Visibility="{Binding IsLanCard, Converter={StaticResource InvBoolToVis}}"
+                                            Click="DetailRemove_Click">
+                                        <StackPanel Orientation="Horizontal">
+                                            <ui:SymbolIcon Symbol="Delete24" FontSize="13" Margin="0,0,6,0"/>
+                                            <TextBlock Text="Remove" VerticalAlignment="Center"/>
+                                        </StackPanel>
+                                    </Button>
+                                </Grid>
+                            </Border>
+
+                            <!-- Cards -->
+                            <StackPanel Margin="32,20,32,32">
+
+                                <!-- About -->
+                                <Border Style="{StaticResource DetailCard}" Margin="0,0,0,16">
+                                    <StackPanel>
+                                        <TextBlock Text="About" FontSize="13" FontWeight="SemiBold"
+                                                   Foreground="White" Margin="0,0,0,12"/>
+                                        <TextBlock Text="{Binding Description}"
+                                                   FontSize="13" LineHeight="21"
+                                                   Foreground="#D9FFFFFF" TextWrapping="Wrap"
+                                                   Visibility="{Binding Description, Converter={StaticResource InvEmptyStrToVis}}"/>
+                                        <TextBlock Text="No description. Import metadata via Settings to add game info."
+                                                   FontSize="13" Foreground="#66FFFFFF"
+                                                   TextWrapping="Wrap"
+                                                   Visibility="{Binding Description, Converter={StaticResource EmptyStrToVis}}"/>
+                                    </StackPanel>
+                                </Border>
+
+                                <!-- Game settings -->
+                                <Border Style="{StaticResource DetailCard}" Margin="0,0,0,16">
+                                    <StackPanel>
+                                        <TextBlock Text="Game settings" FontSize="13" FontWeight="SemiBold"
+                                                   Foreground="White" Margin="0,0,0,12"/>
+
+                                        <!-- Run as Administrator -->
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="32"/>
+                                                <ColumnDefinition Width="*"/>
+                                                <ColumnDefinition Width="Auto"/>
+                                            </Grid.ColumnDefinitions>
+                                            <Border Grid.Column="0" Width="32" Height="32" CornerRadius="4"
+                                                    Background="#0AFFFFFF" BorderBrush="#0DFFFFFF" BorderThickness="1">
+                                                <ui:SymbolIcon Symbol="Shield24" FontSize="16"
+                                                               Foreground="#D8FFFFFF"
+                                                               HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                            </Border>
+                                            <StackPanel Grid.Column="1" Margin="14,0,12,0" VerticalAlignment="Center">
+                                                <TextBlock Text="Run as administrator"
+                                                           FontSize="13" FontWeight="Medium" Foreground="White"/>
+                                                <TextBlock Text="Always elevate this game on launch."
+                                                           FontSize="12" Foreground="#99FFFFFF"/>
+                                            </StackPanel>
+                                            <ui:ToggleSwitch Grid.Column="2"
+                                                             x:Name="RunAsAdminToggle"
+                                                             IsChecked="{Binding RunAsAdmin, Mode=TwoWay}"
+                                                             Checked="RunAsAdmin_Checked"
+                                                             Unchecked="RunAsAdmin_Unchecked"
+                                                             VerticalAlignment="Center"/>
+                                        </Grid>
+
+                                        <Rectangle Height="1" Fill="#0DFFFFFF" Margin="0,10,0,10"/>
+
+                                        <!-- Share on LAN -->
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="32"/>
+                                                <ColumnDefinition Width="*"/>
+                                                <ColumnDefinition Width="Auto"/>
+                                            </Grid.ColumnDefinitions>
+                                            <Border Grid.Column="0" Width="32" Height="32" CornerRadius="4"
+                                                    Background="#0AFFFFFF" BorderBrush="#0DFFFFFF" BorderThickness="1">
+                                                <ui:SymbolIcon Symbol="Wifi224" FontSize="16"
+                                                               Foreground="#D8FFFFFF"
+                                                               HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                            </Border>
+                                            <StackPanel Grid.Column="1" Margin="14,0,12,0" VerticalAlignment="Center">
+                                                <TextBlock Text="Share on LAN"
+                                                           FontSize="13" FontWeight="Medium" Foreground="White"/>
+                                                <TextBlock Text="Make this install available to Spool peers."
+                                                           FontSize="12" Foreground="#99FFFFFF"/>
+                                            </StackPanel>
+                                            <ui:ToggleSwitch Grid.Column="2"
+                                                             x:Name="LanShareToggle"
+                                                             IsChecked="{Binding LanShared, Mode=TwoWay}"
+                                                             Checked="LanShare_Checked"
+                                                             Unchecked="LanShare_Unchecked"
+                                                             VerticalAlignment="Center"/>
+                                        </Grid>
+
+                                        <!-- Shared folder (shown when LanShared) -->
+                                        <Grid Margin="46,10,0,0"
+                                              Visibility="{Binding LanShared, Converter={StaticResource BoolToVis}}">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="110"/>
+                                                <ColumnDefinition Width="*"/>
+                                                <ColumnDefinition Width="Auto"/>
+                                            </Grid.ColumnDefinitions>
+                                            <StackPanel Grid.Column="0" VerticalAlignment="Center">
+                                                <TextBlock Text="Shared folder" FontSize="12" Foreground="#A6FFFFFF"/>
+                                                <TextBlock Text="Defaults to install dir" FontSize="10.5" Foreground="#66FFFFFF" Margin="0,1,0,0"/>
+                                            </StackPanel>
+                                            <ui:TextBox Grid.Column="1"
+                                                        x:Name="LanFolderBox"
+                                                        Text="{Binding GameFolderPath, Mode=OneWay}"
+                                                        IsReadOnly="True"
+                                                        FontFamily="Cascadia Code, Consolas, Courier New"
+                                                        FontSize="11"
+                                                        Margin="12,0,6,0"/>
+                                            <Button Grid.Column="2" Style="{StaticResource ActionBtn}"
+                                                    Click="LanFolderBrowse_Click">Browse</Button>
+                                        </Grid>
+                                    </StackPanel>
+                                </Border>
+
+                                <!-- Save management -->
+                                <Border Style="{StaticResource DetailCard}" Margin="0,0,0,16">
+                                    <StackPanel>
+                                        <!-- Header row -->
+                                        <Grid Margin="0,0,0,12">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*"/>
+                                                <ColumnDefinition Width="Auto"/>
+                                            </Grid.ColumnDefinitions>
+                                            <StackPanel Orientation="Horizontal" Grid.Column="0" VerticalAlignment="Center">
+                                                <TextBlock Text="Save management" FontSize="13" FontWeight="SemiBold"
+                                                           Foreground="White" VerticalAlignment="Center"/>
+                                                <!-- Backup badge -->
+                                                <Border CornerRadius="9" Padding="8,1" Margin="10,0,0,0" VerticalAlignment="Center">
+                                                    <Border.Style>
+                                                        <Style TargetType="Border">
+                                                            <Setter Property="Background" Value="#1AFFFFFF"/>
+                                                            <Style.Triggers>
+                                                                <DataTrigger Binding="{Binding SaveBackupCount, Converter={StaticResource PosIntToVis}}" Value="Visible">
+                                                                    <Setter Property="Background" Value="#1F7EE2A4"/>
+                                                                </DataTrigger>
+                                                            </Style.Triggers>
+                                                        </Style>
+                                                    </Border.Style>
+                                                    <StackPanel Orientation="Horizontal">
+                                                        <Ellipse Width="6" Height="6" VerticalAlignment="Center" Margin="0,0,6,0">
+                                                            <Ellipse.Style>
+                                                                <Style TargetType="Ellipse">
+                                                                    <Setter Property="Fill" Value="#66FFFFFF"/>
+                                                                    <Style.Triggers>
+                                                                        <DataTrigger Binding="{Binding SaveBackupCount, Converter={StaticResource PosIntToVis}}" Value="Visible">
+                                                                            <Setter Property="Fill" Value="#7EE2A4"/>
+                                                                        </DataTrigger>
+                                                                    </Style.Triggers>
+                                                                </Style>
+                                                            </Ellipse.Style>
+                                                        </Ellipse>
+                                                        <TextBlock FontSize="11" FontWeight="Medium" VerticalAlignment="Center">
+                                                            <TextBlock.Style>
+                                                                <Style TargetType="TextBlock">
+                                                                    <Setter Property="Foreground" Value="#8CFFFFFF"/>
+                                                                    <Style.Triggers>
+                                                                        <DataTrigger Binding="{Binding SaveBackupCount, Converter={StaticResource PosIntToVis}}" Value="Visible">
+                                                                            <Setter Property="Foreground" Value="#7EE2A4"/>
+                                                                        </DataTrigger>
+                                                                    </Style.Triggers>
+                                                                </Style>
+                                                            </TextBlock.Style>
+                                                            <Run Text="{Binding SaveBackupCount, Mode=OneWay}"/>
+                                                            <Run Text=" backups"/>
+                                                        </TextBlock>
+                                                    </StackPanel>
+                                                </Border>
+                                            </StackPanel>
+                                            <StackPanel Orientation="Horizontal" Grid.Column="1">
+                                                <Button Style="{StaticResource ActionBtn}" Height="26" Padding="10,0"
+                                                        FontSize="12" Margin="0,0,6,0" Click="SaveRestore_Click">
+                                                    <StackPanel Orientation="Horizontal">
+                                                        <ui:SymbolIcon Symbol="ArrowCounterclockwise24" FontSize="12" Margin="0,0,5,0"/>
+                                                        <TextBlock Text="Restore" VerticalAlignment="Center"/>
+                                                    </StackPanel>
+                                                </Button>
+                                                <Button Style="{StaticResource ActionBtn}" Height="26" Padding="10,0"
+                                                        FontSize="12" Click="SaveBackupNow_Click">
+                                                    <StackPanel Orientation="Horizontal">
+                                                        <ui:SymbolIcon Symbol="Save24" FontSize="12" Margin="0,0,5,0"/>
+                                                        <TextBlock Text="Back up now" VerticalAlignment="Center"/>
+                                                    </StackPanel>
+                                                </Button>
+                                            </StackPanel>
+                                        </Grid>
+
+                                        <!-- Save stats 3-col -->
+                                        <Grid Margin="0,0,0,0">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*"/>
+                                                <ColumnDefinition Width="*"/>
+                                                <ColumnDefinition Width="*"/>
+                                            </Grid.ColumnDefinitions>
+                                            <StackPanel Grid.Column="0">
+                                                <TextBlock Text="LAST BACKUP" FontSize="10" FontWeight="Medium"
+                                                           Foreground="#80FFFFFF" Margin="0,0,0,4"/>
+                                                <TextBlock Text="{Binding SaveLastBackedUpAt, Converter={StaticResource RelDate}}"
+                                                           FontSize="15" FontWeight="Medium" Foreground="White"/>
+                                            </StackPanel>
+                                            <StackPanel Grid.Column="1">
+                                                <TextBlock Text="SAVES FOUND" FontSize="10" FontWeight="Medium"
+                                                           Foreground="#80FFFFFF" Margin="0,0,0,4"/>
+                                                <TextBlock Text="{Binding SaveBackupCount}"
+                                                           FontSize="15" FontWeight="Medium" Foreground="White"/>
+                                            </StackPanel>
+                                            <StackPanel Grid.Column="2">
+                                                <TextBlock Text="TOTAL SIZE" FontSize="10" FontWeight="Medium"
+                                                           Foreground="#80FFFFFF" Margin="0,0,0,4"/>
+                                                <TextBlock Text="{Binding SaveBackupSizeMb, Converter={StaticResource SizeMbConv}}"
+                                                           FontSize="15" FontWeight="Medium" Foreground="White"/>
+                                            </StackPanel>
+                                        </Grid>
+
+                                        <!-- Ludusavi banner -->
+                                        <Border CornerRadius="4" Padding="12,10" Margin="0,14,0,0"
+                                                Background="#0F7EE2A4" BorderBrush="#267EE2A4" BorderThickness="1"
+                                                Visibility="{Binding SaveBackupCount, Converter={StaticResource PosIntToVis}}">
+                                            <StackPanel Orientation="Horizontal">
+                                                <ui:SymbolIcon Symbol="Checkmark24" FontSize="14"
+                                                               Foreground="#7EE2A4" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                                                <TextBlock Text="Saves restore automatically before launch and back up on exit via Ludusavi."
+                                                           FontSize="12" Foreground="#C8FFFFFF" TextWrapping="Wrap" VerticalAlignment="Center"/>
+                                            </StackPanel>
+                                        </Border>
+                                    </StackPanel>
+                                </Border>
+
+                                <!-- Details -->
+                                <Border Style="{StaticResource DetailCard}">
+                                    <StackPanel>
+                                        <TextBlock Text="Details" FontSize="13" FontWeight="SemiBold"
+                                                   Foreground="White" Margin="0,0,0,8"/>
+                                        <!-- Row: Developer -->
+                                        <Grid MinHeight="34">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="140"/>
+                                                <ColumnDefinition Width="*"/>
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Grid.Column="0" Text="Developer"
+                                                       FontSize="12" Foreground="#8CFFFFFF" VerticalAlignment="Center"/>
+                                            <TextBlock Grid.Column="1" Text="{Binding Developer}"
+                                                       FontSize="12.5" Foreground="#EBFFFFFF"
+                                                       VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
+                                        </Grid>
+                                        <Rectangle Height="1" Fill="#0AFFFFFF"/>
+                                        <!-- Publisher -->
+                                        <Grid MinHeight="34">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="140"/>
+                                                <ColumnDefinition Width="*"/>
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Grid.Column="0" Text="Publisher"
+                                                       FontSize="12" Foreground="#8CFFFFFF" VerticalAlignment="Center"/>
+                                            <TextBlock Grid.Column="1" Text="{Binding Publisher}"
+                                                       FontSize="12.5" Foreground="#EBFFFFFF"
+                                                       VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
+                                        </Grid>
+                                        <Rectangle Height="1" Fill="#0AFFFFFF"/>
+                                        <!-- Release date -->
+                                        <Grid MinHeight="34">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="140"/>
+                                                <ColumnDefinition Width="*"/>
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Grid.Column="0" Text="Release date"
+                                                       FontSize="12" Foreground="#8CFFFFFF" VerticalAlignment="Center"/>
+                                            <TextBlock Grid.Column="1" Text="{Binding ReleaseDate, Converter={StaticResource AbsDate}}"
+                                                       FontSize="12.5" Foreground="#EBFFFFFF" VerticalAlignment="Center"/>
+                                        </Grid>
+                                        <Rectangle Height="1" Fill="#0AFFFFFF"/>
+                                        <!-- Genres -->
+                                        <Grid MinHeight="34">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="140"/>
+                                                <ColumnDefinition Width="*"/>
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Grid.Column="0" Text="Genres"
+                                                       FontSize="12" Foreground="#8CFFFFFF" VerticalAlignment="Center"/>
+                                            <TextBlock Grid.Column="1" Text="{Binding Genres, Converter={StaticResource GenreListConv}}"
+                                                       FontSize="12.5" Foreground="#EBFFFFFF" VerticalAlignment="Center"/>
+                                        </Grid>
+                                        <Rectangle Height="1" Fill="#0AFFFFFF"/>
+                                        <!-- Added to library -->
+                                        <Grid MinHeight="34">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="140"/>
+                                                <ColumnDefinition Width="*"/>
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Grid.Column="0" Text="Added to library"
+                                                       FontSize="12" Foreground="#8CFFFFFF" VerticalAlignment="Center"/>
+                                            <TextBlock Grid.Column="1" Text="{Binding AddedAt, Converter={StaticResource AbsDate}}"
+                                                       FontSize="12.5" Foreground="#EBFFFFFF" VerticalAlignment="Center"/>
+                                        </Grid>
+                                        <Rectangle Height="1" Fill="#0AFFFFFF"/>
+                                        <!-- Executable -->
+                                        <Grid MinHeight="34">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="140"/>
+                                                <ColumnDefinition Width="*"/>
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Grid.Column="0" Text="Executable"
+                                                       FontSize="12" Foreground="#8CFFFFFF" VerticalAlignment="Center"/>
+                                            <TextBlock Grid.Column="1" Text="{Binding ExePath}"
+                                                       FontSize="12" Foreground="#EBFFFFFF" VerticalAlignment="Center"
+                                                       FontFamily="Cascadia Code, Consolas, Courier New"
+                                                       TextTrimming="CharacterEllipsis"/>
+                                        </Grid>
+                                        <Rectangle Height="1" Fill="#0AFFFFFF"/>
+                                        <!-- Install path -->
+                                        <Grid MinHeight="34">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="140"/>
+                                                <ColumnDefinition Width="*"/>
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Grid.Column="0" Text="Install path"
+                                                       FontSize="12" Foreground="#8CFFFFFF" VerticalAlignment="Center"/>
+                                            <TextBlock Grid.Column="1" Text="{Binding GameFolderPath}"
+                                                       FontSize="12" Foreground="#EBFFFFFF" VerticalAlignment="Center"
+                                                       FontFamily="Cascadia Code, Consolas, Courier New"
+                                                       TextTrimming="CharacterEllipsis"/>
+                                        </Grid>
+                                    </StackPanel>
+                                </Border>
+
+                            </StackPanel>
+                        </StackPanel>
+                    </ScrollViewer>
+                </Grid>
+            </Grid>
         </Grid>
 
-        <!-- Separator before upload bar (visible only when upload bar is visible) -->
-        <Separator x:Name="UploadSeparator" Grid.Row="4" Visibility="Collapsed" Margin="0"/>
-
-        <!-- Upload status bar -->
-        <Border x:Name="UploadBarGrid" Grid.Row="5" Background="{DynamicResource CardBackgroundFillBrushDefault}" Padding="24,12" Visibility="Collapsed">
+        <!-- ─── Upload bar ─── -->
+        <Separator x:Name="UploadSeparator" Grid.Row="2" Visibility="Collapsed" Margin="0"/>
+        <Border x:Name="UploadBarGrid" Grid.Row="3"
+                Background="{DynamicResource CardBackgroundFillBrushDefault}"
+                Padding="24,12" Visibility="Collapsed">
             <Grid>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*"/>
                     <ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
-
                 <StackPanel Grid.Column="0" VerticalAlignment="Center">
                     <Grid Margin="0,0,0,6">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*"/>
                             <ColumnDefinition Width="Auto"/>
                         </Grid.ColumnDefinitions>
-                        <TextBlock x:Name="UploadTitleText"
-                                   Text="Uploading Game..."
-                                   FontWeight="SemiBold"
-                                   FontSize="13"
-                                   Grid.Column="0"/>
+                        <TextBlock x:Name="UploadTitleText" Text="Uploading…"
+                                   FontWeight="SemiBold" FontSize="13" Grid.Column="0"/>
                         <TextBlock x:Name="UploadStatusText"
-                                   Text="0 KB/s - 0 MB of 0 MB"
                                    Foreground="{DynamicResource TextFillColorSecondaryBrush}"
-                                   FontSize="12"
-                                   Grid.Column="1"/>
+                                   FontSize="12" Grid.Column="1"/>
                     </Grid>
-                    <ProgressBar x:Name="UploadProgressBar"
-                                 Height="8"
-                                 Minimum="0"
-                                 Maximum="100"
-                                 Value="0"/>
+                    <ProgressBar x:Name="UploadProgressBar" Height="8" Minimum="0" Maximum="100" Value="0"/>
                 </StackPanel>
-
-                <ui:Button x:Name="CancelUploadButton"
-                           Grid.Column="1"
-                           Content="Cancel"
-                           Appearance="Danger"
-                           Margin="16,0,0,0"
-                           VerticalAlignment="Center"
+                <ui:Button x:Name="CancelUploadButton" Grid.Column="1"
+                           Content="Cancel" Appearance="Danger"
+                           Margin="16,0,0,0" VerticalAlignment="Center"
                            Click="CancelUpload_Click"/>
             </Grid>
         </Border>
 
-        <!-- Separator before download bar (visible only when download bar is visible) -->
-        <Separator x:Name="DownloadSeparator" Grid.Row="6" Visibility="Collapsed" Margin="0"/>
-
-        <!-- Download status bar -->
-        <Border x:Name="DownloadBarGrid" Grid.Row="7" Background="{DynamicResource CardBackgroundFillBrushDefault}" Padding="24,12" Visibility="Collapsed">
+        <!-- ─── Download bar ─── -->
+        <Separator x:Name="DownloadSeparator" Grid.Row="4" Visibility="Collapsed" Margin="0"/>
+        <Border x:Name="DownloadBarGrid" Grid.Row="5"
+                Background="{DynamicResource CardBackgroundFillBrushDefault}"
+                Padding="24,12" Visibility="Collapsed">
             <Grid>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*"/>
                     <ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
-
                 <StackPanel Grid.Column="0" VerticalAlignment="Center">
                     <Grid Margin="0,0,0,6">
                         <Grid.ColumnDefinitions>
@@ -267,38 +1121,26 @@
                             <ColumnDefinition Width="Auto"/>
                         </Grid.ColumnDefinitions>
                         <StackPanel Orientation="Horizontal" Grid.Column="0">
-                            <TextBlock x:Name="DownloadTitleText"
-                                       Text="Preparing..."
-                                       FontWeight="SemiBold"
-                                       FontSize="13"/>
-                            <TextBlock x:Name="DownloadCountText"
-                                       FontSize="12"
+                            <TextBlock x:Name="DownloadTitleText" Text="Preparing…"
+                                       FontWeight="SemiBold" FontSize="13"/>
+                            <TextBlock x:Name="DownloadCountText" FontSize="12"
                                        Foreground="{DynamicResource TextFillColorSecondaryBrush}"
                                        Margin="8,1,0,0"/>
                         </StackPanel>
                         <StackPanel Orientation="Horizontal" Grid.Column="1" VerticalAlignment="Bottom">
-                            <TextBlock x:Name="DownloadSpeedText"
-                                       FontSize="12"
+                            <TextBlock x:Name="DownloadSpeedText" FontSize="12"
                                        Foreground="{DynamicResource TextFillColorSecondaryBrush}"
                                        Margin="0,0,8,0"/>
-                            <TextBlock x:Name="DownloadBytesText"
-                                       FontSize="12"
+                            <TextBlock x:Name="DownloadBytesText" FontSize="12"
                                        Foreground="{DynamicResource TextFillColorSecondaryBrush}"/>
                         </StackPanel>
                     </Grid>
-                    <ProgressBar x:Name="DownloadProgressBar"
-                                 Height="8"
-                                 Minimum="0"
-                                 Maximum="100"
-                                 Value="0"/>
+                    <ProgressBar x:Name="DownloadProgressBar" Height="8" Minimum="0" Maximum="100" Value="0"/>
                 </StackPanel>
-
-                <ui:Button x:Name="CancelDownloadButton"
-                           Grid.Column="1"
-                           Content="Cancel"
-                           Appearance="Danger"
-                           Margin="16,0,0,0"
-                           VerticalAlignment="Center"
+                <ui:Button x:Name="CancelDownloadButton" Grid.Column="1"
+                           Content="Cancel" Appearance="Danger"
+                           Margin="16,0,0,0" VerticalAlignment="Center"
+                           Visibility="Collapsed"
                            Click="CancelDownload_Click"/>
             </Grid>
         </Border>

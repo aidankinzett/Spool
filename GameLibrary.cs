@@ -15,6 +15,11 @@ namespace LudusaviWrap
         private bool _isLanCard;
         private List<LanPeer>? _lanPeers;
         private bool _runAsAdmin;
+        private bool _lanShared;
+        private int _playtimeMinutes;
+        private int _saveBackupCount;
+        private DateTime? _saveLastBackedUpAt;
+        private double _saveBackupSizeMb;
 
         [JsonIgnore]
         public bool IsLanCard
@@ -72,13 +77,78 @@ namespace LudusaviWrap
             set { _runAsAdmin = value; OnPropertyChanged(); }
         }
 
+        // ── Metadata (populated from API at import time) ──────────────────────
+
+        [JsonPropertyName("description")]
+        public string Description { get; set; } = "";
+
+        [JsonPropertyName("developer")]
+        public string Developer { get; set; } = "";
+
+        [JsonPropertyName("publisher")]
+        public string Publisher { get; set; } = "";
+
+        [JsonPropertyName("genres")]
+        public List<string> Genres { get; set; } = new();
+
+        [JsonPropertyName("release_date")]
+        public DateTime? ReleaseDate { get; set; }
+
+        [JsonPropertyName("install_size_mb")]
+        public double InstallSizeMb { get; set; }
+
+        // ── Play tracking ──────────────────────────────────────────────────────
+
+        [JsonPropertyName("playtime_minutes")]
+        public int PlaytimeMinutes
+        {
+            get => _playtimeMinutes;
+            set { _playtimeMinutes = value; OnPropertyChanged(); }
+        }
+
+        // ── LAN sharing ───────────────────────────────────────────────────────
+
+        [JsonPropertyName("lan_shared")]
+        public bool LanShared
+        {
+            get => _lanShared;
+            set { _lanShared = value; OnPropertyChanged(); }
+        }
+
+        [JsonPropertyName("lan_share_folder")]
+        public string? LanShareFolder { get; set; }
+
+        // ── Save backup stats (updated by Ludusavi workflow) ──────────────────
+
+        [JsonPropertyName("save_backup_count")]
+        public int SaveBackupCount
+        {
+            get => _saveBackupCount;
+            set { _saveBackupCount = value; OnPropertyChanged(); }
+        }
+
+        [JsonPropertyName("save_last_backed_up_at")]
+        public DateTime? SaveLastBackedUpAt
+        {
+            get => _saveLastBackedUpAt;
+            set { _saveLastBackedUpAt = value; OnPropertyChanged(); }
+        }
+
+        [JsonPropertyName("save_backup_size_mb")]
+        public double SaveBackupSizeMb
+        {
+            get => _saveBackupSizeMb;
+            set { _saveBackupSizeMb = value; OnPropertyChanged(); }
+        }
+
         public event PropertyChangedEventHandler? PropertyChanged;
-        private void OnPropertyChanged([CallerMemberName] string? name = null)
+        protected void OnPropertyChanged([CallerMemberName] string? name = null)
             => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
     }
 
     [JsonSourceGenerationOptions(WriteIndented = true)]
     [JsonSerializable(typeof(List<GameEntry>))]
+    [JsonSerializable(typeof(List<string>))]
     internal partial class LibrarySourceGenerationContext : JsonSerializerContext { }
 
     public class GameLibrary

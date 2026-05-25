@@ -1,6 +1,6 @@
 using System;
+using System.Collections.Generic;
 using System.Collections.ObjectModel;
-using Microsoft.Toolkit.Uwp.Notifications;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
@@ -11,48 +11,49 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Data;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
+using Microsoft.Toolkit.Uwp.Notifications;
 
 namespace LudusaviWrap
 {
     public class LudusaviFindResponse
     {
         [JsonPropertyName("games")]
-        public System.Collections.Generic.Dictionary<string, object>? Games { get; set; }
+        public Dictionary<string, object>? Games { get; set; }
     }
 
     [JsonSourceGenerationOptions(WriteIndented = true)]
     [JsonSerializable(typeof(LudusaviFindResponse))]
     internal partial class MainSourceGenerationContext : JsonSerializerContext { }
 
+    // ── Value converters ────────────────────────────────────────────────────────
+
     public class StringToImageConverter : IValueConverter
     {
         public object? Convert(object value, Type targetType, object parameter, CultureInfo culture)
         {
-            if (value is not string path || string.IsNullOrEmpty(path))
-                return null;
+            if (value is not string path || string.IsNullOrEmpty(path)) return null;
             try
             {
                 var bi = new BitmapImage();
                 bi.BeginInit();
                 bi.UriSource = new Uri(path);
-                if (path.StartsWith("http://", StringComparison.OrdinalIgnoreCase) || path.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+                bool isHttp = path.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
+                           || path.StartsWith("https://", StringComparison.OrdinalIgnoreCase);
+                if (isHttp)
                 {
                     bi.CacheOption = BitmapCacheOption.Default;
                 }
                 else
                 {
-                    if (!File.Exists(path))
-                        return null;
+                    if (!File.Exists(path)) return null;
                     bi.CacheOption = BitmapCacheOption.OnLoad;
                 }
                 bi.EndInit();
-                if (!path.StartsWith("http://", StringComparison.OrdinalIgnoreCase) && !path.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
-                {
-                    bi.Freeze();
-                }
+                if (!isHttp) bi.Freeze();
                 return bi;
             }
             catch (Exception ex)
@@ -61,7 +62,6 @@ namespace LudusaviWrap
                 return null;
             }
         }
-
         public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
             => throw new NotImplementedException();
     }
@@ -69,12 +69,7 @@ namespace LudusaviWrap
     public class BooleanToVisibilityConverter : IValueConverter
     {
         public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
-        {
-            if (value is bool b)
-                return b ? Visibility.Visible : Visibility.Collapsed;
-            return Visibility.Collapsed;
-        }
-
+            => value is bool b && b ? Visibility.Visible : Visibility.Collapsed;
         public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
             => throw new NotImplementedException();
     }
@@ -82,50 +77,153 @@ namespace LudusaviWrap
     public class InverseBooleanToVisibilityConverter : IValueConverter
     {
         public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
-        {
-            if (value is bool b)
-                return b ? Visibility.Collapsed : Visibility.Visible;
-            return Visibility.Visible;
-        }
-
+            => value is bool b && b ? Visibility.Collapsed : Visibility.Visible;
         public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
             => throw new NotImplementedException();
     }
+
+    public class NullToVisibilityConverter : IValueConverter
+    {
+        public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
+            => value != null ? Visibility.Visible : Visibility.Collapsed;
+        public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
+            => throw new NotImplementedException();
+    }
+
+    public class InverseNullToVisibilityConverter : IValueConverter
+    {
+        public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
+            => value == null ? Visibility.Visible : Visibility.Collapsed;
+        public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
+            => throw new NotImplementedException();
+    }
+
+    public class EmptyStringToVisibilityConverter : IValueConverter
+    {
+        public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
+            => value is string s && string.IsNullOrEmpty(s) ? Visibility.Visible : Visibility.Collapsed;
+        public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
+            => throw new NotImplementedException();
+    }
+
+    public class InverseEmptyStringToVisibilityConverter : IValueConverter
+    {
+        public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
+            => value is string s && !string.IsNullOrEmpty(s) ? Visibility.Visible : Visibility.Collapsed;
+        public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
+            => throw new NotImplementedException();
+    }
+
+    public class RelativeDateConverter : IValueConverter
+    {
+        public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
+        {
+            if (value is not DateTime dt) return "Never";
+            var local = dt.Kind == DateTimeKind.Utc ? dt.ToLocalTime() : dt;
+            var elapsed = DateTime.Now - local;
+            if (elapsed.TotalMinutes < 2) return "Just now";
+            if (elapsed.TotalHours < 1) return $"{(int)elapsed.TotalMinutes} min ago";
+            if (elapsed.TotalHours < 24) return $"{(int)elapsed.TotalHours}h ago";
+            if (elapsed.TotalDays < 2) return "Yesterday";
+            if (elapsed.TotalDays < 7) return $"{(int)elapsed.TotalDays} days ago";
+            if (elapsed.TotalDays < 365) return local.ToString("MMM d");
+            return local.ToString("MMM d, yyyy");
+        }
+        public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
+            => throw new NotImplementedException();
+    }
+
+    public class AbsoluteDateConverter : IValueConverter
+    {
+        public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
+        {
+            if (value is DateTime dt)
+                return dt.ToString("MMMM d, yyyy");
+            return "—";
+        }
+        public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
+            => throw new NotImplementedException();
+    }
+
+    public class PlaytimeConverter : IValueConverter
+    {
+        public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
+        {
+            if (value is not int minutes || minutes <= 0) return "—";
+            int h = minutes / 60, m = minutes % 60;
+            if (h == 0) return $"{m} min";
+            return m == 0 ? $"{h} h" : $"{h} h {m} min";
+        }
+        public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
+            => throw new NotImplementedException();
+    }
+
+    public class FileSizeMbConverter : IValueConverter
+    {
+        public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
+        {
+            if (value is not double mb || mb <= 0) return "—";
+            if (mb < 1024) return $"{mb:0.0} MB";
+            if (mb < 1024 * 1024) return $"{mb / 1024:0.0} GB";
+            return $"{mb / (1024 * 1024):0.0} TB";
+        }
+        public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
+            => throw new NotImplementedException();
+    }
+
+    public class GenreListConverter : IValueConverter
+    {
+        public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
+        {
+            if (value is List<string> genres && genres.Count > 0)
+                return string.Join(" · ", genres);
+            return "—";
+        }
+        public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
+            => throw new NotImplementedException();
+    }
+
+    public class CoverInitialsConverter : IValueConverter
+    {
+        public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
+        {
+            if (value is not string name || string.IsNullOrEmpty(name)) return "";
+            var words = name.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            if (words.Length == 1)
+                return name.Length >= 2 ? name[..2].ToUpper() : name.ToUpper();
+            return $"{char.ToUpper(words[0][0])}{char.ToUpper(words[1][0])}";
+        }
+        public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
+            => throw new NotImplementedException();
+    }
+
+    public class YearConverter : IValueConverter
+    {
+        public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
+            => value is DateTime dt ? dt.Year.ToString() : "—";
+        public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
+            => throw new NotImplementedException();
+    }
+
+    public class PositiveIntToVisibilityConverter : IValueConverter
+    {
+        public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
+            => value is int n && n > 0 ? Visibility.Visible : Visibility.Collapsed;
+        public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
+            => throw new NotImplementedException();
+    }
+
+    // ── MainWindow ──────────────────────────────────────────────────────────────
 
     public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
     {
         public static readonly string Version =
             System.Reflection.Assembly.GetEntryAssembly()?.GetName().Version?.ToString(3) ?? "0.0.0";
 
-        private static void ShowToast(string title, string body)
-        {
-            try
-            {
-                new ToastContentBuilder()
-                    .AddText(title)
-                    .AddText(body)
-                    .Show();
-            }
-            catch (Exception ex)
-            {
-                App.Log($"Toast notification failed: {ex.Message}");
-            }
-        }
-
-        private readonly Config _config;
-        private readonly GameLibrary _library;
-        private readonly ObservableCollection<GameEntry> _games = new();
-        private SuccessWindow? _successWindow;
-        private bool _updateCheckSubscribed = false;
-        private readonly LanShareServer _lanServer;
-        private readonly LanShareClient _lanClient;
-        private CancellationTokenSource? _scanCts;
-        private CancellationTokenSource? _uiCleanupCts;
-        private int _scanInProgress = 0;
+        // ── DependencyProperties ────────────────────────────────────────────────
 
         public static readonly DependencyProperty IsLanScanningProperty =
             DependencyProperty.Register(nameof(IsLanScanning), typeof(bool), typeof(MainWindow), new PropertyMetadata(false));
-
         public bool IsLanScanning
         {
             get => (bool)GetValue(IsLanScanningProperty);
@@ -134,30 +232,99 @@ namespace LudusaviWrap
 
         public static readonly DependencyProperty LanPeersCountProperty =
             DependencyProperty.Register(nameof(LanPeersCount), typeof(int), typeof(MainWindow), new PropertyMetadata(0));
-
         public int LanPeersCount
         {
             get => (int)GetValue(LanPeersCountProperty);
             set => SetValue(LanPeersCountProperty, value);
         }
 
+        public static readonly DependencyProperty SelectedGameProperty =
+            DependencyProperty.Register(nameof(SelectedGame), typeof(GameEntry), typeof(MainWindow), new PropertyMetadata(null));
+        public GameEntry? SelectedGame
+        {
+            get => (GameEntry?)GetValue(SelectedGameProperty);
+            set => SetValue(SelectedGameProperty, value);
+        }
+
+        public static readonly DependencyProperty HasNoFilteredGamesProperty =
+            DependencyProperty.Register(nameof(HasNoFilteredGames), typeof(bool), typeof(MainWindow), new PropertyMetadata(false));
+        public bool HasNoFilteredGames
+        {
+            get => (bool)GetValue(HasNoFilteredGamesProperty);
+            set => SetValue(HasNoFilteredGamesProperty, value);
+        }
+
+        public static readonly DependencyProperty LibraryCountProperty =
+            DependencyProperty.Register(nameof(LibraryCount), typeof(int), typeof(MainWindow), new PropertyMetadata(0));
+        public int LibraryCount
+        {
+            get => (int)GetValue(LibraryCountProperty);
+            set => SetValue(LibraryCountProperty, value);
+        }
+
+        public static readonly DependencyProperty TotalPlaytimeProperty =
+            DependencyProperty.Register(nameof(TotalPlaytime), typeof(string), typeof(MainWindow), new PropertyMetadata("—"));
+        public string TotalPlaytime
+        {
+            get => (string)GetValue(TotalPlaytimeProperty);
+            set => SetValue(TotalPlaytimeProperty, value);
+        }
+
+        public static readonly DependencyProperty TotalBackupsProperty =
+            DependencyProperty.Register(nameof(TotalBackups), typeof(int), typeof(MainWindow), new PropertyMetadata(0));
+        public int TotalBackups
+        {
+            get => (int)GetValue(TotalBackupsProperty);
+            set => SetValue(TotalBackupsProperty, value);
+        }
+
+        public static readonly DependencyProperty TotalInstallSizeProperty =
+            DependencyProperty.Register(nameof(TotalInstallSize), typeof(string), typeof(MainWindow), new PropertyMetadata("—"));
+        public string TotalInstallSize
+        {
+            get => (string)GetValue(TotalInstallSizeProperty);
+            set => SetValue(TotalInstallSizeProperty, value);
+        }
+
+        // ── Fields ──────────────────────────────────────────────────────────────
+
+        private readonly Config _config;
+        private readonly GameLibrary _library;
+        private readonly ObservableCollection<GameEntry> _games = new();
+        private readonly ObservableCollection<GameEntry> _filteredGames = new();
+        private SuccessWindow? _successWindow;
+        private bool _updateCheckSubscribed = false;
+        private readonly LanShareServer _lanServer;
+        private readonly LanShareClient _lanClient;
+        private CancellationTokenSource? _scanCts;
+        private CancellationTokenSource? _uiCleanupCts;
+        private int _scanInProgress = 0;
+        private string _activeFilter = "all";
+        private string _sortOrder = "recent";
+        private string _searchQuery = "";
+        private bool _updatingDetail = false;
+
+        // ── Constructor ─────────────────────────────────────────────────────────
+
         public MainWindow(Config config, GameLibrary library)
         {
             InitializeComponent();
             _config = config;
             _library = library;
-            Title = $"Ludusavi Wrap v{Version}";
+            Title = $"Spool v{Version}";
 
             _lanServer = new LanShareServer(config.Data.DeviceName, config.Data.DeviceId);
             _lanServer.UploadsChanged += LanServer_UploadsChanged;
             _lanServer.PeerActivityDetected += LanServer_PeerActivityDetected;
             _lanClient = new LanShareClient(config.Data.DeviceName, config.Data.DeviceId);
 
-            GamesGrid.ItemsSource = _games;
+            GameListBox.ItemsSource = _filteredGames;
             LoadGames();
             Loaded  += MainWindow_Loaded;
             Closing += MainWindow_Closing;
         }
+
+        // ── Library management ──────────────────────────────────────────────────
 
         private void LoadGames()
         {
@@ -167,25 +334,604 @@ namespace LudusaviWrap
                 _games.Add(entry);
             foreach (var lanCard in lanCards)
                 _games.Add(lanCard);
-            UpdateEmptyState();
+            ApplyFilterSort();
         }
 
-        private void UpdateEmptyState()
+        private void ApplyFilterSort()
         {
-            bool empty = _games.Count == 0;
-            EmptyState.Visibility = empty ? Visibility.Visible : Visibility.Collapsed;
-            LibraryScrollViewer.Visibility = empty ? Visibility.Collapsed : Visibility.Visible;
+            _updatingDetail = true;
+            var prevId = SelectedGame?.Id;
+
+            var local = _library.Entries.AsEnumerable();
+
+            if (!string.IsNullOrEmpty(_searchQuery))
+                local = local.Where(e => e.GameName.Contains(_searchQuery, StringComparison.OrdinalIgnoreCase));
+
+            switch (_activeFilter)
+            {
+                case "recent":
+                    local = local.Where(e => e.LastPlayedAt.HasValue);
+                    break;
+                case "shared":
+                    local = local.Where(e => e.LanShared);
+                    break;
+                case "unplayed":
+                    local = local.Where(e => e.PlaytimeMinutes == 0 && !e.LastPlayedAt.HasValue);
+                    break;
+            }
+
+            local = _sortOrder switch
+            {
+                "name"     => local.OrderBy(e => e.GameName, StringComparer.OrdinalIgnoreCase),
+                "added"    => local.OrderByDescending(e => e.AddedAt),
+                "playtime" => local.OrderByDescending(e => e.PlaytimeMinutes),
+                "size"     => local.OrderByDescending(e => e.InstallSizeMb),
+                _          => local.OrderByDescending(e => e.LastPlayedAt ?? DateTime.MinValue),
+            };
+
+            var lanCards = _games.Where(g => g.IsLanCard).AsEnumerable();
+            if (!string.IsNullOrEmpty(_searchQuery))
+                lanCards = lanCards.Where(g => g.GameName.Contains(_searchQuery, StringComparison.OrdinalIgnoreCase));
+            if (_activeFilter != "all" && _activeFilter != "shared")
+                lanCards = Enumerable.Empty<GameEntry>();
+
+            _filteredGames.Clear();
+            foreach (var e in local)    _filteredGames.Add(e);
+            foreach (var e in lanCards) _filteredGames.Add(e);
+
+            if (prevId != null)
+            {
+                var match = _filteredGames.FirstOrDefault(g => g.Id == prevId);
+                GameListBox.SelectedItem = match;
+                if (match == null) SelectedGame = null;
+            }
+
+            Dispatcher.BeginInvoke(new Action(() => _updatingDetail = false));
+
+            HasNoFilteredGames = _filteredGames.Count == 0;
+            UpdateOverviewStats();
         }
 
-        private void MainWindow_Closing(object? sender, System.ComponentModel.CancelEventArgs e)
+        private void UpdateOverviewStats()
         {
-            _scanCts?.Cancel();
-            _scanCts?.Dispose();
-            _uiCleanupCts?.Cancel();
-            _uiCleanupCts?.Dispose();
-            _downloadCts?.Dispose();
-            _lanServer.Stop();
+            LibraryCount = _library.Entries.Count;
+            int totalMin = _library.Entries.Sum(e => e.PlaytimeMinutes);
+            int h = totalMin / 60, m = totalMin % 60;
+            TotalPlaytime = totalMin <= 0 ? "—" : (m == 0 ? $"{h} h" : $"{h} h {m} min");
+            TotalBackups = _library.Entries.Sum(e => e.SaveBackupCount);
+            double totalMb = _library.Entries.Sum(e => e.InstallSizeMb);
+            TotalInstallSize = totalMb <= 0 ? "—"
+                : totalMb < 1024 ? $"{totalMb:0.0} MB"
+                : $"{totalMb / 1024:0.0} GB";
         }
+
+        // ── Filter / sort / search ───────────────────────────────────────────────
+
+        private void SearchBox_TextChanged(object sender, TextChangedEventArgs e)
+        {
+            _searchQuery = SearchBox.Text ?? "";
+            ApplyFilterSort();
+        }
+
+        private void FilterChip_Click(object sender, RoutedEventArgs e)
+        {
+            if (sender is not ToggleButton clicked) return;
+            foreach (var chip in new[] { FilterAll, FilterRecent, FilterShared, FilterUnplayed })
+                chip.IsChecked = chip == clicked;
+            _activeFilter = clicked.Tag as string ?? "all";
+            ApplyFilterSort();
+        }
+
+        private void SortButton_Click(object sender, RoutedEventArgs e)
+        {
+            SortPopup.IsOpen = true;
+        }
+
+        private void SortOption_Click(object sender, RoutedEventArgs e)
+        {
+            if (sender is Button btn)
+            {
+                _sortOrder = btn.Tag as string ?? "recent";
+                SortPopup.IsOpen = false;
+                ApplyFilterSort();
+            }
+        }
+
+        // ── Game selection ───────────────────────────────────────────────────────
+
+        private void GameListBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            if (_updatingDetail) return;
+            _updatingDetail = true;
+            SelectedGame = GameListBox.SelectedItem as GameEntry;
+            Dispatcher.BeginInvoke(new Action(() => _updatingDetail = false));
+        }
+
+        // ── Play ─────────────────────────────────────────────────────────────────
+
+        private async void Play_Click(object sender, RoutedEventArgs e)
+        {
+            var entry = SelectedGame;
+            if (entry == null) return;
+
+            if (!File.Exists(entry.ExePath))
+            {
+                MessageBox.Show($"Game executable not found:\n{entry.ExePath}",
+                    "Game Not Found", MessageBoxButton.OK, MessageBoxImage.Error);
+                return;
+            }
+
+            entry.LastPlayedAt = DateTime.UtcNow;
+            _library.Update(entry);
+
+            Hide();
+            try
+            {
+                await new RunWorkflow(entry.GameName, entry.ExePath, entry: entry, library: _library).ExecuteAsync();
+            }
+            catch (Exception ex)
+            {
+                App.Log($"RunWorkflow unexpected error for '{entry.GameName}': {ex}");
+                MessageBox.Show($"An unexpected error occurred: {ex.Message}",
+                    "Spool Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+            finally
+            {
+                Show();
+            }
+        }
+
+        // ── Add game ──────────────────────────────────────────────────────────────
+
+        private void AddGame_Click(object sender, RoutedEventArgs e)
+        {
+            var dlg = new AddGameWindow(_config, _library);
+            dlg.Owner = this;
+            dlg.OnCoverArtFetched = (entry, _) => Dispatcher.Invoke(ApplyFilterSort);
+            if (dlg.ShowDialog() == true)
+            {
+                foreach (var entry in _library.Entries)
+                    if (!_games.Any(g => g.Id == entry.Id))
+                        _games.Add(entry);
+                ApplyFilterSort();
+                _lanServer.BroadcastAnnounce();
+            }
+        }
+
+        // ── Settings ──────────────────────────────────────────────────────────────
+
+        private void Settings_Click(object sender, RoutedEventArgs e)
+        {
+            var setup = new SetupWindow(_config);
+            setup.Owner = this;
+            if (setup.ShowDialog() == true)
+            {
+                _lanServer.Stop();
+                StartLanServerIfEnabled();
+                _ = ScanLanPeersAsync();
+            }
+        }
+
+        // ── Detail pane actions ───────────────────────────────────────────────────
+
+        private void DetailOpenFolder_Click(object sender, RoutedEventArgs e)
+        {
+            var entry = SelectedGame;
+            if (entry == null) return;
+            try
+            {
+                string? dir = string.IsNullOrEmpty(entry.ExePath)
+                    ? entry.GameFolderPath
+                    : Path.GetDirectoryName(entry.ExePath);
+                if (string.IsNullOrEmpty(dir) && !string.IsNullOrEmpty(entry.GameFolderPath))
+                    dir = entry.GameFolderPath;
+                if (dir != null && Directory.Exists(dir))
+                    Process.Start("explorer.exe", $"\"{dir}\"");
+                else
+                    MessageBox.Show("Game folder not found.", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Could not open folder: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        private async void DetailArmouryCrate_Click(object sender, RoutedEventArgs e)
+        {
+            var entry = SelectedGame;
+            if (entry == null || entry.IsLanCard) return;
+
+            if (!_config.IsLudusaviOk)
+            {
+                MessageBox.Show("Ludusavi not found - open Settings to configure it.",
+                    "Ludusavi Not Found", MessageBoxButton.OK, MessageBoxImage.Error);
+                return;
+            }
+
+            try
+            {
+                string launcherExePath = await LauncherGenerator.GenerateLauncherExeAsync(entry, _config);
+                entry.LauncherExePath = launcherExePath;
+                _library.Update(entry);
+
+                _successWindow = new SuccessWindow(this, entry.GameName, launcherExePath, SuccessMode.ArmouryCrate);
+                if (_config.Data.SteamGridDbEnabled && !string.IsNullOrEmpty(_config.Data.SteamGridDbApiKey))
+                {
+                    _successWindow.UpdateArtwork("Fetching cover image...", "#99FFFFFF");
+                    _ = Task.Run(() => FetchCoverArtForACAsync(entry.GameName, entry.SafeName));
+                }
+                _successWindow.ShowDialog();
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Failed to generate launcher: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        private async void DetailAddToSteam_Click(object sender, RoutedEventArgs e)
+        {
+            var entry = SelectedGame;
+            if (entry == null || entry.IsLanCard) return;
+
+            if (!_config.IsLudusaviOk)
+            {
+                MessageBox.Show("Ludusavi not found - open Settings to configure it.",
+                    "Ludusavi Not Found", MessageBoxButton.OK, MessageBoxImage.Error);
+                return;
+            }
+
+            string launcherExePath;
+            try
+            {
+                launcherExePath = await LauncherGenerator.GenerateLauncherExeAsync(entry, _config);
+                entry.LauncherExePath = launcherExePath;
+                _library.Update(entry);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Failed to generate launcher: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                return;
+            }
+
+            string? steamPath = await Task.Run(() => SteamIntegration.GetSteamInstallPath());
+            if (steamPath == null)
+            {
+                MessageBox.Show("Steam installation not found. Is Steam installed?",
+                    "Steam Not Found", MessageBoxButton.OK, MessageBoxImage.Error);
+                return;
+            }
+
+            var users = await Task.Run(() => SteamIntegration.GetSteamUsers(steamPath));
+            if (users.Count == 0)
+            {
+                MessageBox.Show("No Steam user profiles found. Launch Steam at least once to create your profile.",
+                    "No Steam Users", MessageBoxButton.OK, MessageBoxImage.Error);
+                return;
+            }
+
+            var targetUser = users.OrderByDescending(u => u.LastModified).First();
+
+            if (SteamIntegration.IsSteamRunning())
+            {
+                var answer = MessageBox.Show(
+                    "Steam is currently running. Writing to shortcuts.vdf while Steam is open may cause your changes to be overwritten when Steam exits.\n\nClose Steam first, or the shortcut may not appear.\n\nContinue anyway?",
+                    "Steam Is Running", MessageBoxButton.YesNo, MessageBoxImage.Warning);
+                if (answer == MessageBoxResult.No) return;
+            }
+
+            VDFParser.Models.VDFEntry[] entries;
+            try
+            {
+                entries = await Task.Run(() => SteamIntegration.ReadShortcuts(targetUser.ShortcutsPath));
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Failed to read shortcuts.vdf: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                return;
+            }
+
+            string startDir = Path.GetDirectoryName(launcherExePath) ?? "";
+            SteamIntegration.UpsertShortcut(ref entries, entry.GameName, launcherExePath, startDir);
+
+            try
+            {
+                await Task.Run(() => SteamIntegration.WriteShortcuts(targetUser.ShortcutsPath, entries));
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Failed to write shortcuts.vdf: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                return;
+            }
+
+            _successWindow = new SuccessWindow(this, entry.GameName, launcherExePath, SuccessMode.Steam);
+            if (users.Count > 1)
+                _successWindow.UpdateArtwork($"Added to Steam user {targetUser.UserId}", "#4CAF50");
+            _successWindow.ShowDialog();
+        }
+
+        private void DetailRemove_Click(object sender, RoutedEventArgs e)
+        {
+            var entry = SelectedGame;
+            if (entry == null || entry.IsLanCard) return;
+
+            var ans = MessageBox.Show($"Remove '{entry.GameName}' from your library?",
+                "Remove Game", MessageBoxButton.YesNo, MessageBoxImage.Question);
+            if (ans != MessageBoxResult.Yes) return;
+
+            _library.Remove(entry.Id);
+            var toRemove = _games.FirstOrDefault(g => g.Id == entry.Id);
+            if (toRemove != null) _games.Remove(toRemove);
+
+            _updatingDetail = true;
+            SelectedGame = null;
+            GameListBox.SelectedItem = null;
+            Dispatcher.BeginInvoke(new Action(() => _updatingDetail = false));
+
+            _lanServer.InvalidateManifestCache();
+            _lanServer.BroadcastAnnounce();
+            ApplyFilterSort();
+        }
+
+        private async void DetailDownload_Click(object sender, RoutedEventArgs e)
+        {
+            var entry = SelectedGame;
+            if (entry == null || !entry.IsLanCard || entry.LanPeers == null || entry.LanPeers.Count == 0)
+                return;
+
+            if (_isDownloading)
+            {
+                MessageBox.Show("A download is already in progress. Please wait for it to finish or cancel it first.",
+                    "Download in Progress", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
+            var dlg = new DownloadLocationWindow(_config, _library, entry.GameName);
+            dlg.Owner = this;
+            if (dlg.ShowDialog() == true && !string.IsNullOrEmpty(dlg.DestFolder))
+                await StartDownloadWithPeersAsync(entry.LanPeers, entry.GameName, dlg.DestFolder);
+        }
+
+        // ── Game settings ────────────────────────────────────────────────────────
+
+        private void RunAsAdmin_Checked(object sender, RoutedEventArgs e)
+        {
+            if (_updatingDetail) return;
+            var entry = SelectedGame;
+            if (entry == null) return;
+            RegistryHelper.SetCompatFlagRunAsAdmin(entry.ExePath);
+            _library.Update(entry);
+        }
+
+        private void RunAsAdmin_Unchecked(object sender, RoutedEventArgs e)
+        {
+            if (_updatingDetail) return;
+            var entry = SelectedGame;
+            if (entry == null) return;
+            RegistryHelper.RemoveCompatFlagRunAsAdmin(entry.ExePath);
+            _library.Update(entry);
+        }
+
+        private void LanShare_Checked(object sender, RoutedEventArgs e)
+        {
+            if (_updatingDetail) return;
+            var entry = SelectedGame;
+            if (entry == null) return;
+            if (string.IsNullOrEmpty(entry.GameFolderPath) && !string.IsNullOrEmpty(entry.ExePath))
+                entry.GameFolderPath = Path.GetDirectoryName(entry.ExePath);
+            _library.Update(entry);
+            _lanServer.InvalidateManifestCache();
+            _lanServer.BroadcastAnnounce();
+        }
+
+        private void LanShare_Unchecked(object sender, RoutedEventArgs e)
+        {
+            if (_updatingDetail) return;
+            var entry = SelectedGame;
+            if (entry == null) return;
+            _library.Update(entry);
+            _lanServer.InvalidateManifestCache();
+            _lanServer.BroadcastAnnounce();
+        }
+
+        private void LanFolderBrowse_Click(object sender, RoutedEventArgs e)
+        {
+            var entry = SelectedGame;
+            if (entry == null) return;
+
+            var dialog = new Microsoft.Win32.OpenFolderDialog
+            {
+                Title = $"Select shared folder for \"{entry.GameName}\"",
+                Multiselect = false
+            };
+            if (dialog.ShowDialog() != true) return;
+
+            entry.GameFolderPath = dialog.FolderName;
+            _library.Update(entry);
+            _lanServer.InvalidateManifestCache();
+            _lanServer.BroadcastAnnounce();
+        }
+
+        // ── Save management ──────────────────────────────────────────────────────
+
+        private async void SaveRestore_Click(object sender, RoutedEventArgs e)
+        {
+            var entry = SelectedGame;
+            if (entry == null) return;
+
+            if (!_config.IsLudusaviOk)
+            {
+                MessageBox.Show("Ludusavi not found - open Settings to configure it.",
+                    "Ludusavi Not Found", MessageBoxButton.OK, MessageBoxImage.Error);
+                return;
+            }
+
+            try
+            {
+                var psi = new ProcessStartInfo
+                {
+                    FileName = _config.Data.LudusaviPath,
+                    Arguments = $"restore --force \"{entry.GameName}\"",
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true
+                };
+                using var proc = new Process { StartInfo = psi };
+                proc.Start();
+                string stdout = await proc.StandardOutput.ReadToEndAsync();
+                string stderr = await proc.StandardError.ReadToEndAsync();
+                await proc.WaitForExitAsync();
+
+                if (proc.ExitCode == 0)
+                    MessageBox.Show($"Saves restored for '{entry.GameName}'.",
+                        "Restore Complete", MessageBoxButton.OK, MessageBoxImage.Information);
+                else
+                {
+                    string detail = string.IsNullOrWhiteSpace(stderr) ? stdout : stderr;
+                    MessageBox.Show($"Restore failed.\n{detail.Trim()}", "Restore Failed",
+                        MessageBoxButton.OK, MessageBoxImage.Error);
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Restore failed: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        private async void SaveBackupNow_Click(object sender, RoutedEventArgs e)
+        {
+            var entry = SelectedGame;
+            if (entry == null) return;
+
+            if (!_config.IsLudusaviOk)
+            {
+                MessageBox.Show("Ludusavi not found - open Settings to configure it.",
+                    "Ludusavi Not Found", MessageBoxButton.OK, MessageBoxImage.Error);
+                return;
+            }
+
+            try
+            {
+                var psi = new ProcessStartInfo
+                {
+                    FileName = _config.Data.LudusaviPath,
+                    Arguments = $"backup --force \"{entry.GameName}\"",
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true
+                };
+                using var proc = new Process { StartInfo = psi };
+                proc.Start();
+                string stdout = await proc.StandardOutput.ReadToEndAsync();
+                string stderr = await proc.StandardError.ReadToEndAsync();
+                await proc.WaitForExitAsync();
+
+                if (proc.ExitCode == 0)
+                {
+                    entry.SaveLastBackedUpAt = DateTime.UtcNow;
+                    entry.SaveBackupCount = Math.Max(1, entry.SaveBackupCount + 1);
+                    _library.Update(entry);
+                    UpdateOverviewStats();
+                    MessageBox.Show($"Saves backed up for '{entry.GameName}'.",
+                        "Backup Complete", MessageBoxButton.OK, MessageBoxImage.Information);
+                }
+                else
+                {
+                    string detail = string.IsNullOrWhiteSpace(stderr) ? stdout : stderr;
+                    MessageBox.Show($"Backup failed.\n{detail.Trim()}", "Backup Failed",
+                        MessageBoxButton.OK, MessageBoxImage.Error);
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Backup failed: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        // ── Cover art helpers ────────────────────────────────────────────────────
+
+        private async Task FetchCoverArtForACAsync(string gameName, string safeName)
+        {
+            string coversDir = Path.Combine(Config.AppDataFolder, "covers");
+            try
+            {
+                var sgdb = new SteamGridDbClient(_config.Data.SteamGridDbApiKey);
+                var results = await sgdb.SearchGameAsync(gameName);
+                if (results.Count == 0)
+                {
+                    Dispatcher.Invoke(() => _successWindow?.UpdateArtwork("⚠ Artwork: Game not found on SteamGridDB", "#FFC107"));
+                    return;
+                }
+                int gameId = results[0].Id;
+                string? imgPath = await sgdb.DownloadGridImageAsync(gameId, safeName, coversDir);
+                if (imgPath == null)
+                    Dispatcher.Invoke(() => _successWindow?.UpdateArtwork("⚠ Artwork: No horizontal grid images found on SteamGridDB", "#FFC107"));
+                else
+                    Dispatcher.Invoke(() => _successWindow?.UpdateArtwork($"Cover art: {imgPath}", "#4CAF50"));
+            }
+            catch (Exception ex)
+            {
+                App.Log($"[MainWindow] Failed to fetch cover art for Armoury Crate '{gameName}': {ex.Message}");
+                Dispatcher.Invoke(() => _successWindow?.UpdateArtwork($"⚠ Artwork error: {ex.Message}", "#FFC107"));
+            }
+        }
+
+        private async Task FetchCoverForLanEntryAsync(GameEntry entry, LanPeer? peer)
+        {
+            string coversDir = Path.Combine(Config.AppDataFolder, "covers");
+            Directory.CreateDirectory(coversDir);
+
+            if (peer != null)
+            {
+                try
+                {
+                    using var http = new System.Net.Http.HttpClient { Timeout = TimeSpan.FromSeconds(15) };
+                    string url = $"http://{peer.IPAddress}:{peer.Port}/games/{Uri.EscapeDataString(entry.GameName)}/cover";
+                    using var response = await http.GetAsync(url);
+                    if (response.IsSuccessStatusCode)
+                    {
+                        string ext = response.Content.Headers.ContentType?.MediaType switch
+                        {
+                            "image/png"  => ".png",
+                            "image/webp" => ".webp",
+                            "image/gif"  => ".gif",
+                            _            => ".jpg"
+                        };
+                        string imagePath = Path.Combine(coversDir, entry.SafeName + "_p" + ext);
+                        byte[] bytes = await response.Content.ReadAsByteArrayAsync();
+                        await File.WriteAllBytesAsync(imagePath, bytes);
+                        Dispatcher.Invoke(() => { entry.CoverImagePath = imagePath; _library.Update(entry); });
+                        App.Log($"Downloaded cover from LAN peer for '{entry.GameName}'");
+                        return;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    App.Log($"LAN cover fetch failed for '{entry.GameName}': {ex.Message}");
+                }
+            }
+
+            if (!_config.Data.SteamGridDbEnabled || string.IsNullOrEmpty(_config.Data.SteamGridDbApiKey)) return;
+            try
+            {
+                var sgdb = new SteamGridDbClient(_config.Data.SteamGridDbApiKey);
+                var results = await sgdb.SearchGameAsync(entry.GameName);
+                if (results.Count == 0) return;
+
+                string destBase = Path.Combine(coversDir, entry.SafeName);
+                string? imagePath = await sgdb.DownloadPortraitAsync(results[0].Id, destBase + "_p");
+                imagePath ??= await sgdb.DownloadGridImageAsync(results[0].Id, entry.SafeName, coversDir);
+                if (imagePath != null)
+                    Dispatcher.Invoke(() => { entry.CoverImagePath = imagePath; _library.Update(entry); });
+            }
+            catch (Exception ex)
+            {
+                App.Log($"SteamGridDB cover fetch failed for '{entry.GameName}': {ex.Message}");
+            }
+        }
+
+        // ── LAN server / scanning ────────────────────────────────────────────────
 
         private void StartLanServerIfEnabled()
         {
@@ -197,66 +943,6 @@ namespace LudusaviWrap
             catch (Exception ex)
             {
                 App.Log($"LAN server failed to start: {ex.Message}");
-            }
-        }
-
-        private void MainWindow_Loaded(object sender, RoutedEventArgs e)
-        {
-            StartLanServerIfEnabled();
-
-            _scanCts = new CancellationTokenSource();
-            _ = RunLanScanLoopAsync();
-
-            if (System.Version.TryParse(Version, out var parsedVersion))
-                AutoUpdaterDotNET.AutoUpdater.InstalledVersion = parsedVersion;
-
-            AutoUpdaterDotNET.AutoUpdater.ShowSkipButton = false;
-            AutoUpdaterDotNET.AutoUpdater.ShowRemindLaterButton = false;
-            AutoUpdaterDotNET.AutoUpdater.RunUpdateAsAdmin = false;
-            AutoUpdaterDotNET.AutoUpdater.SetOwner(this);
-
-            if (!_updateCheckSubscribed)
-            {
-                _updateCheckSubscribed = true;
-                AutoUpdaterDotNET.AutoUpdater.CheckForUpdateEvent += (args) =>
-                {
-                    if (args.Error != null || !args.IsUpdateAvailable) return;
-
-                    var result = MessageBox.Show(
-                        $"Version {args.CurrentVersion} is available (you have {args.InstalledVersion}).\n\nInstall now? The app will restart automatically.",
-                        "Update Available",
-                        MessageBoxButton.YesNo,
-                        MessageBoxImage.Information);
-
-                    if (result != MessageBoxResult.Yes) return;
-
-                    try
-                    {
-                        args.InstallerArgs = "/VERYSILENT /SUPPRESSMSGBOXES";
-                        if (AutoUpdaterDotNET.AutoUpdater.DownloadUpdate(args))
-                            Application.Current.Shutdown();
-                    }
-                    catch (Exception ex)
-                    {
-                        MessageBox.Show($"Update failed: {ex.Message}", "Update Error",
-                            MessageBoxButton.OK, MessageBoxImage.Error);
-                    }
-                };
-            }
-
-            AutoUpdaterDotNET.AutoUpdater.Start(
-                "https://raw.githubusercontent.com/aidankinzett/ludusavi-wrap/master/update.xml");
-        }
-
-        private void Settings_Click(object sender, RoutedEventArgs e)
-        {
-            var setup = new SetupWindow(_config);
-            setup.Owner = this;
-            if (setup.ShowDialog() == true)
-            {
-                _lanServer.Stop();
-                StartLanServerIfEnabled();
-                _ = ScanLanPeersAsync();
             }
         }
 
@@ -303,23 +989,21 @@ namespace LudusaviWrap
             _ = ScanLanPeersAsync();
         }
 
-        private void MergeLanGames(System.Collections.Generic.List<LanPeer> peers)
+        private void MergeLanGames(List<LanPeer> peers)
         {
-            var lanGames = new System.Collections.Generic.Dictionary<string, System.Collections.Generic.List<LanPeer>>(StringComparer.OrdinalIgnoreCase);
+            var lanGames = new Dictionary<string, List<LanPeer>>(StringComparer.OrdinalIgnoreCase);
             foreach (var peer in peers)
-            {
                 foreach (var gameName in peer.Games)
                 {
                     if (!lanGames.TryGetValue(gameName, out var peerList))
                     {
-                        peerList = new System.Collections.Generic.List<LanPeer>();
+                        peerList = new List<LanPeer>();
                         lanGames[gameName] = peerList;
                     }
                     peerList.Add(peer);
                 }
-            }
 
-            var localInstalledGames = _library.Entries
+            var localInstalled = _library.Entries
                 .Where(e => !string.IsNullOrEmpty(e.GameFolderPath) && Directory.Exists(e.GameFolderPath))
                 .Select(e => e.GameName)
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
@@ -327,29 +1011,24 @@ namespace LudusaviWrap
             Dispatcher.BeginInvoke(new Action(() =>
             {
                 var toRemove = _games
-                    .Where(g => g.IsLanCard && (!lanGames.ContainsKey(g.GameName) || localInstalledGames.Contains(g.GameName)))
+                    .Where(g => g.IsLanCard && (!lanGames.ContainsKey(g.GameName) || localInstalled.Contains(g.GameName)))
                     .ToList();
-                foreach (var g in toRemove)
-                {
-                    _games.Remove(g);
-                }
+                foreach (var g in toRemove) _games.Remove(g);
 
                 foreach (var kvp in lanGames)
                 {
                     string gameName = kvp.Key;
+                    if (localInstalled.Contains(gameName)) continue;
+
                     var gamePeers = kvp.Value;
-
-                    if (localInstalledGames.Contains(gameName))
-                        continue;
-
                     var firstPeer = gamePeers.First();
                     string coverUrl = $"http://{firstPeer.IPAddress}:{firstPeer.Port}/games/{Uri.EscapeDataString(gameName)}/cover";
 
-                    var existingCard = _games.FirstOrDefault(g => g.IsLanCard && string.Equals(g.GameName, gameName, StringComparison.OrdinalIgnoreCase));
-                    if (existingCard != null)
+                    var existing = _games.FirstOrDefault(g => g.IsLanCard && string.Equals(g.GameName, gameName, StringComparison.OrdinalIgnoreCase));
+                    if (existing != null)
                     {
-                        existingCard.LanPeers = gamePeers;
-                        existingCard.CoverImagePath = coverUrl;
+                        existing.LanPeers = gamePeers;
+                        existing.CoverImagePath = coverUrl;
                     }
                     else
                     {
@@ -364,324 +1043,11 @@ namespace LudusaviWrap
                     }
                 }
 
-                UpdateEmptyState();
+                ApplyFilterSort();
             }));
         }
 
-        private void AddGame_Click(object sender, RoutedEventArgs e)
-        {
-            var dlg = new AddGameWindow(_config, _library);
-            dlg.Owner = this;
-            dlg.OnCoverArtFetched = (entry, _) => UpdateEmptyState();
-            if (dlg.ShowDialog() == true)
-            {
-                // Sync newly added/updated entries from the library into the observable collection
-                foreach (var entry in _library.Entries)
-                {
-                    if (!_games.Any(g => g.Id == entry.Id))
-                        _games.Add(entry);
-                }
-                UpdateEmptyState();
-                _lanServer.BroadcastAnnounce();
-            }
-        }
-
-        private async void Play_Click(object sender, RoutedEventArgs e)
-        {
-            if ((sender as Button)?.DataContext is not GameEntry entry) return;
-
-            if (!File.Exists(entry.ExePath))
-            {
-                MessageBox.Show($"Game executable not found:\n{entry.ExePath}",
-                    "Game Not Found", MessageBoxButton.OK, MessageBoxImage.Error);
-                return;
-            }
-
-            entry.LastPlayedAt = DateTime.UtcNow;
-            _library.Update(entry);
-
-            Hide();
-            try
-            {
-                await new RunWorkflow(entry.GameName, entry.ExePath, entry: entry, library: _library).ExecuteAsync();
-            }
-            catch (Exception ex)
-            {
-                App.Log($"RunWorkflow unexpected error for '{entry.GameName}': {ex}");
-                MessageBox.Show($"An unexpected error occurred: {ex.Message}",
-                    "Ludusavi Wrap Error", MessageBoxButton.OK, MessageBoxImage.Error);
-            }
-            finally
-            {
-                Show();
-            }
-        }
-
-        private GameEntry? GetEntryFromContextMenu(object sender)
-        {
-            if (sender is MenuItem mi && mi.Parent is ContextMenu cm &&
-                cm.PlacementTarget is FrameworkElement fe && fe.DataContext is GameEntry entry)
-                return entry;
-            return null;
-        }
-
-        private async void ContextGenerateAC_Click(object sender, RoutedEventArgs e)
-        {
-            var entry = GetEntryFromContextMenu(sender);
-            if (entry == null) return;
-
-            if (!_config.IsLudusaviOk)
-            {
-                MessageBox.Show("Ludusavi not found - open Settings to configure it.",
-                    "Ludusavi Not Found", MessageBoxButton.OK, MessageBoxImage.Error);
-                return;
-            }
-
-            try
-            {
-                string launcherExePath = await LauncherGenerator.GenerateLauncherExeAsync(entry, _config);
-                entry.LauncherExePath = launcherExePath;
-                _library.Update(entry);
-
-                _successWindow = new SuccessWindow(this, entry.GameName, launcherExePath, SuccessMode.ArmouryCrate);
-
-                if (_config.Data.SteamGridDbEnabled && !string.IsNullOrEmpty(_config.Data.SteamGridDbApiKey))
-                {
-                    _successWindow.UpdateArtwork("Fetching cover image...", "#99FFFFFF");
-                    _ = Task.Run(() => FetchCoverArtForACAsync(entry.GameName, entry.SafeName));
-                }
-
-                _successWindow.ShowDialog();
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show($"Failed to generate launcher: {ex.Message}",
-                    "Error", MessageBoxButton.OK, MessageBoxImage.Error);
-            }
-        }
-
-        private async Task FetchCoverArtForACAsync(string gameName, string safeName)
-        {
-            string coversDir = Path.Combine(Config.AppDataFolder, "covers");
-
-            try
-            {
-                var sgdb = new SteamGridDbClient(_config.Data.SteamGridDbApiKey);
-                var results = await sgdb.SearchGameAsync(gameName);
-                if (results.Count == 0)
-                {
-                    Dispatcher.Invoke(() => _successWindow?.UpdateArtwork("⚠ Artwork: Game not found on SteamGridDB", "#FFC107"));
-                    return;
-                }
-
-                int gameId = results[0].Id;
-                string? imgPath = await sgdb.DownloadGridImageAsync(gameId, safeName, coversDir);
-                if (imgPath == null)
-                    Dispatcher.Invoke(() => _successWindow?.UpdateArtwork("⚠ Artwork: No horizontal grid images found on SteamGridDB", "#FFC107"));
-                else
-                    Dispatcher.Invoke(() => _successWindow?.UpdateArtwork($"Cover art: {imgPath}", "#4CAF50"));
-            }
-            catch (Exception ex)
-            {
-                App.Log($"[MainWindow] Failed to fetch cover art for Armoury Crate '{gameName}': {ex.Message}");
-                Dispatcher.Invoke(() => _successWindow?.UpdateArtwork($"⚠ Artwork error: {ex.Message}", "#FFC107"));
-            }
-        }
-
-        private async void ContextAddToSteam_Click(object sender, RoutedEventArgs e)
-        {
-            var entry = GetEntryFromContextMenu(sender);
-            if (entry == null) return;
-
-            if (!_config.IsLudusaviOk)
-            {
-                MessageBox.Show("Ludusavi not found - open Settings to configure it.",
-                    "Ludusavi Not Found", MessageBoxButton.OK, MessageBoxImage.Error);
-                return;
-            }
-
-            string launcherExePath;
-            try
-            {
-                launcherExePath = await LauncherGenerator.GenerateLauncherExeAsync(entry, _config);
-                entry.LauncherExePath = launcherExePath;
-                _library.Update(entry);
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show($"Failed to generate launcher: {ex.Message}",
-                    "Error", MessageBoxButton.OK, MessageBoxImage.Error);
-                return;
-            }
-
-            string? steamPath = await Task.Run(() => SteamIntegration.GetSteamInstallPath());
-            if (steamPath == null)
-            {
-                MessageBox.Show("Steam installation not found. Is Steam installed?",
-                    "Steam Not Found", MessageBoxButton.OK, MessageBoxImage.Error);
-                return;
-            }
-
-            var users = await Task.Run(() => SteamIntegration.GetSteamUsers(steamPath));
-            if (users.Count == 0)
-            {
-                MessageBox.Show("No Steam user profiles found. Launch Steam at least once to create your profile.",
-                    "No Steam Users", MessageBoxButton.OK, MessageBoxImage.Error);
-                return;
-            }
-
-            var targetUser = users.OrderByDescending(u => u.LastModified).First();
-
-            if (SteamIntegration.IsSteamRunning())
-            {
-                var answer = MessageBox.Show(
-                    "Steam is currently running. Writing to shortcuts.vdf while Steam is open may cause your changes to be overwritten when Steam exits.\n\nClose Steam first, or the shortcut may not appear.\n\nContinue anyway?",
-                    "Steam Is Running", MessageBoxButton.YesNo, MessageBoxImage.Warning);
-                if (answer == MessageBoxResult.No) return;
-            }
-
-            VDFParser.Models.VDFEntry[] entries;
-            try
-            {
-                entries = await Task.Run(() => SteamIntegration.ReadShortcuts(targetUser.ShortcutsPath));
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show($"Failed to read shortcuts.vdf: {ex.Message}",
-                    "Error", MessageBoxButton.OK, MessageBoxImage.Error);
-                return;
-            }
-
-            string startDir = Path.GetDirectoryName(launcherExePath) ?? "";
-            SteamIntegration.UpsertShortcut(ref entries, entry.GameName, launcherExePath, startDir);
-
-            try
-            {
-                await Task.Run(() => SteamIntegration.WriteShortcuts(targetUser.ShortcutsPath, entries));
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show($"Failed to write shortcuts.vdf: {ex.Message}",
-                    "Error", MessageBoxButton.OK, MessageBoxImage.Error);
-                return;
-            }
-
-            _successWindow = new SuccessWindow(this, entry.GameName, launcherExePath, SuccessMode.Steam);
-            if (users.Count > 1)
-                _successWindow.UpdateArtwork($"Added to Steam user {targetUser.UserId}", "#4CAF50");
-            _successWindow.ShowDialog();
-        }
-
-        private void ContextOpenFolder_Click(object sender, RoutedEventArgs e)
-        {
-            var entry = GetEntryFromContextMenu(sender);
-            if (entry == null) return;
-
-            try
-            {
-                string? dir = Path.GetDirectoryName(entry.ExePath);
-                if (dir != null && Directory.Exists(dir))
-                    Process.Start("explorer.exe", $"\"{dir}\"");
-                else
-                    MessageBox.Show("Game folder not found.", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show($"Could not open folder: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
-            }
-        }
-
-        private void ContextRemove_Click(object sender, RoutedEventArgs e)
-        {
-            var entry = GetEntryFromContextMenu(sender);
-            if (entry == null) return;
-
-            var ans = MessageBox.Show($"Remove '{entry.GameName}' from your library?",
-                "Remove Game", MessageBoxButton.YesNo, MessageBoxImage.Question);
-            if (ans != MessageBoxResult.Yes) return;
-
-            _library.Remove(entry.Id);
-            var toRemove = _games.FirstOrDefault(g => g.Id == entry.Id);
-            if (toRemove != null) _games.Remove(toRemove);
-            _lanServer.InvalidateManifestCache();
-            _lanServer.BroadcastAnnounce();
-            UpdateEmptyState();
-        }
-
-        private void ContextSetFolder_Click(object sender, RoutedEventArgs e)
-        {
-            var entry = GetEntryFromContextMenu(sender);
-            if (entry == null) return;
-
-            var dialog = new Microsoft.Win32.OpenFolderDialog
-            {
-                Title = $"Select game folder for \"{entry.GameName}\" (used for LAN sharing)",
-                Multiselect = false
-            };
-            if (dialog.ShowDialog() != true) return;
-
-            entry.GameFolderPath = dialog.FolderName;
-            _library.Update(entry);
-            _lanServer.InvalidateManifestCache();
-            _lanServer.BroadcastAnnounce();
-
-            MessageBox.Show($"Game folder set.\n{entry.GameName} is now shared on LAN.",
-                "LAN Share", MessageBoxButton.OK, MessageBoxImage.Information);
-        }
-
-        private void ContextRunAsAdmin_Loaded(object sender, RoutedEventArgs e)
-        {
-            if (sender is MenuItem mi && mi.Parent is ContextMenu cm &&
-                cm.PlacementTarget is FrameworkElement fe && fe.DataContext is GameEntry entry)
-            {
-                bool registryAdmin = RegistryHelper.GetCompatFlagRunAsAdmin(entry.ExePath);
-                if (registryAdmin != entry.RunAsAdmin)
-                {
-                    entry.RunAsAdmin = registryAdmin;
-                    _library.Save();
-                }
-                mi.IsChecked = entry.RunAsAdmin;
-            }
-        }
-
-        private void ContextRunAsAdmin_Click(object sender, RoutedEventArgs e)
-        {
-            if (sender is MenuItem mi && mi.Parent is ContextMenu cm &&
-                cm.PlacementTarget is FrameworkElement fe && fe.DataContext is GameEntry entry)
-            {
-                entry.RunAsAdmin = mi.IsChecked;
-                _library.Update(entry);
-
-                if (entry.RunAsAdmin)
-                {
-                    RegistryHelper.SetCompatFlagRunAsAdmin(entry.ExePath);
-                }
-                else
-                {
-                    RegistryHelper.RemoveCompatFlagRunAsAdmin(entry.ExePath);
-                }
-            }
-        }
-
-        private async void DownloadCard_Click(object sender, RoutedEventArgs e)
-        {
-            if (_isDownloading)
-            {
-                MessageBox.Show("A download is already in progress. Please wait for it to finish or cancel it first.",
-                    "Download in Progress", MessageBoxButton.OK, MessageBoxImage.Information);
-                return;
-            }
-
-            if ((sender as Button)?.DataContext is not GameEntry entry || !entry.IsLanCard || entry.LanPeers == null || entry.LanPeers.Count == 0)
-                return;
-
-            var dlg = new DownloadLocationWindow(_config, _library, entry.GameName);
-            dlg.Owner = this;
-            if (dlg.ShowDialog() == true && !string.IsNullOrEmpty(dlg.DestFolder))
-            {
-                await StartDownloadWithPeersAsync(entry.LanPeers, entry.GameName, dlg.DestFolder);
-            }
-        }
+        // ── Upload progress ──────────────────────────────────────────────────────
 
         private System.Windows.Threading.DispatcherTimer? _uploadTimer;
         private long _lastBytesSent = 0;
@@ -690,9 +1056,7 @@ namespace LudusaviWrap
         private void LanServer_UploadsChanged(object? sender, EventArgs e)
         {
             if (_uploadTimer == null)
-            {
                 Dispatcher.BeginInvoke(new Action(UpdateUploadProgress));
-            }
         }
 
         private void UpdateUploadProgress()
@@ -700,11 +1064,8 @@ namespace LudusaviWrap
             var uploads = _lanServer.GetActiveUploads();
             if (uploads.Count == 0)
             {
-                if (_uploadTimer != null)
-                {
-                    _uploadTimer.Stop();
-                    _uploadTimer = null;
-                }
+                _uploadTimer?.Stop();
+                _uploadTimer = null;
                 UploadSeparator.Visibility = Visibility.Collapsed;
                 UploadBarGrid.Visibility = Visibility.Collapsed;
                 _lastBytesSent = 0;
@@ -712,7 +1073,6 @@ namespace LudusaviWrap
                 return;
             }
 
-            // Make sure the timer is running
             if (_uploadTimer == null)
             {
                 _uploadTimer = new System.Windows.Threading.DispatcherTimer
@@ -725,82 +1085,35 @@ namespace LudusaviWrap
                 _lastBytesSent = 0;
             }
 
-            // Calculate total stats
-            long totalBytes = 0;
-            long bytesSent = 0;
+            long totalBytes = 0, bytesSent = 0;
             string gameName = "";
-
             foreach (var u in uploads)
             {
                 totalBytes += u.TotalBytes;
-                bytesSent += u.BytesSent;
-                if (string.IsNullOrEmpty(gameName))
-                    gameName = u.GameName;
+                bytesSent  += u.BytesSent;
+                if (string.IsNullOrEmpty(gameName)) gameName = u.GameName;
             }
 
-            // If multiple games are uploading, aggregate
             var gameNames = uploads.Select(u => u.GameName).Distinct().ToList();
-            if (gameNames.Count > 1)
-            {
-                UploadTitleText.Text = $"Uploading {gameNames.Count} games to LAN peer...";
-            }
-            else
-            {
-                UploadTitleText.Text = $"Uploading {gameName} to LAN peer...";
-            }
+            UploadTitleText.Text = gameNames.Count > 1
+                ? $"Uploading {gameNames.Count} games to LAN peer..."
+                : $"Uploading {gameName} to LAN peer...";
 
-            // Progress bar
-            double progress = totalBytes > 0 ? (bytesSent * 100.0 / totalBytes) : 0;
-            UploadProgressBar.Value = progress;
+            UploadProgressBar.Value = totalBytes > 0 ? bytesSent * 100.0 / totalBytes : 0;
 
-            // Speed calculation
             double speed = 0;
             var now = DateTime.UtcNow;
             if (_lastUploadTick != DateTime.MinValue && bytesSent >= _lastBytesSent)
             {
                 double elapsed = (now - _lastUploadTick).TotalSeconds;
-                if (elapsed > 0)
-                {
-                    speed = Math.Max(0, (bytesSent - _lastBytesSent) / elapsed);
-                }
+                if (elapsed > 0) speed = Math.Max(0, (bytesSent - _lastBytesSent) / elapsed);
             }
-
             _lastBytesSent = bytesSent;
             _lastUploadTick = now;
 
-            // Status text: Speed + Progress bytes
-            string speedStr = FormatSpeed(speed);
-            string progressStr = $"{FormatBytes(bytesSent)} of {FormatBytes(totalBytes)}";
-            UploadStatusText.Text = $"{speedStr} - {progressStr}";
-
+            UploadStatusText.Text = $"{FormatSpeed(speed)} - {FormatBytes(bytesSent)} of {FormatBytes(totalBytes)}";
             UploadSeparator.Visibility = Visibility.Visible;
             UploadBarGrid.Visibility = Visibility.Visible;
-        }
-
-        private static string FormatBytes(long bytes)
-        {
-            string[] suffixes = { "B", "KB", "MB", "GB", "TB" };
-            double val = bytes;
-            int i = 0;
-            while (val >= 1024 && i < suffixes.Length - 1)
-            {
-                val /= 1024;
-                i++;
-            }
-            return $"{val:0.0} {suffixes[i]}";
-        }
-
-        private static string FormatSpeed(double bytesPerSec)
-        {
-            string[] suffixes = { "B/s", "KB/s", "MB/s", "GB/s" };
-            double val = bytesPerSec;
-            int i = 0;
-            while (val >= 1024 && i < suffixes.Length - 1)
-            {
-                val /= 1024;
-                i++;
-            }
-            return $"{val:0.0} {suffixes[i]}";
         }
 
         private void CancelUpload_Click(object sender, RoutedEventArgs e)
@@ -808,10 +1121,12 @@ namespace LudusaviWrap
             _lanServer.CancelAllUploads();
         }
 
+        // ── Download (LAN) ───────────────────────────────────────────────────────
+
         private CancellationTokenSource? _downloadCts;
         private bool _isDownloading = false;
 
-        private async Task StartDownloadWithPeersAsync(System.Collections.Generic.List<LanPeer> peers, string gameName, string destFolder)
+        private async Task StartDownloadWithPeersAsync(List<LanPeer> peers, string gameName, string destFolder)
         {
             _isDownloading = true;
             DownloadSeparator.Visibility = Visibility.Visible;
@@ -836,8 +1151,7 @@ namespace LudusaviWrap
                     if (p.Status.StartsWith("Verifying"))
                     {
                         DownloadBytesText.Text = Path.GetFileName(p.CurrentFile);
-                        double pct = p.TotalBytes > 0 ? (double)p.BytesTransferred / p.TotalBytes * 100 : 0;
-                        DownloadProgressBar.Value = pct;
+                        DownloadProgressBar.Value = p.TotalBytes > 0 ? (double)p.BytesTransferred / p.TotalBytes * 100 : 0;
                     }
                     else
                     {
@@ -851,12 +1165,9 @@ namespace LudusaviWrap
                 {
                     DownloadTitleText.Text = $"Downloading {Path.GetFileName(p.CurrentFile)}";
                     DownloadCountText.Text = $"({p.FilesCompleted} / {p.TotalFiles} files)";
-
-                    double pct = p.TotalBytes > 0 ? (double)p.BytesTransferred / p.TotalBytes * 100 : 0;
-                    DownloadProgressBar.Value = pct;
-
+                    DownloadProgressBar.Value = p.TotalBytes > 0 ? (double)p.BytesTransferred / p.TotalBytes * 100 : 0;
                     DownloadBytesText.Text = $"{FormatBytes(p.BytesTransferred)} of {FormatBytes(p.TotalBytes)}";
-                    DownloadSpeedText.Text = $"{FormatSpeed(p.SpeedBytesPerSec)}";
+                    DownloadSpeedText.Text = FormatSpeed(p.SpeedBytesPerSec);
                 }
             });
 
@@ -876,10 +1187,7 @@ namespace LudusaviWrap
                         successPeer = peer;
                         break;
                     }
-                    catch (OperationCanceledException)
-                    {
-                        throw;
-                    }
+                    catch (OperationCanceledException) { throw; }
                     catch (Exception ex)
                     {
                         App.Log($"Download from peer {peer.DeviceName} failed: {ex.Message}");
@@ -894,7 +1202,6 @@ namespace LudusaviWrap
                     DownloadProgressBar.Value = 100;
                     DownloadSpeedText.Text = "";
                     DownloadBytesText.Text = "";
-
                     OfferAddToLibrary(gameName, destFolder, successPeer);
                 }
                 else if (ct.IsCancellationRequested)
@@ -906,8 +1213,7 @@ namespace LudusaviWrap
                 }
                 else
                 {
-                    string errorMsg = lastEx?.Message ?? "No peers available";
-                    MessageBox.Show($"Download failed: {errorMsg}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                    MessageBox.Show($"Download failed: {lastEx?.Message ?? "No peers available"}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
                     DownloadTitleText.Text = "Download failed";
                     DownloadCountText.Text = "";
                     DownloadSpeedText.Text = "";
@@ -955,14 +1261,8 @@ namespace LudusaviWrap
 
         private async void OfferAddToLibrary(string gameName, string destFolder, LanPeer? sourcePeer = null)
         {
-            try
-            {
-                await OfferAddToLibraryAsync(gameName, destFolder, sourcePeer);
-            }
-            catch (Exception ex)
-            {
-                App.Log($"OfferAddToLibrary failed for '{gameName}': {ex}");
-            }
+            try { await OfferAddToLibraryAsync(gameName, destFolder, sourcePeer); }
+            catch (Exception ex) { App.Log($"OfferAddToLibrary failed for '{gameName}': {ex}"); }
         }
 
         private async Task OfferAddToLibraryAsync(string gameName, string destFolder, LanPeer? sourcePeer)
@@ -991,13 +1291,8 @@ namespace LudusaviWrap
             if (!string.IsNullOrEmpty(relativeExePath))
             {
                 string candidate = Path.Combine(destFolder, relativeExePath.Replace('/', Path.DirectorySeparatorChar));
-                if (File.Exists(candidate))
-                {
-                    exePath = candidate;
-                }
+                if (File.Exists(candidate)) exePath = candidate;
             }
-
-            // Fallback to directory search if relative path is missing or doesn't exist
             if (exePath == null)
             {
                 exePath = Directory.GetFiles(destFolder, "*.exe", SearchOption.AllDirectories)
@@ -1013,10 +1308,7 @@ namespace LudusaviWrap
                 {
                     existing.ExePath = exePath;
                     existing.RunAsAdmin = runAsAdmin;
-                    if (runAsAdmin)
-                    {
-                        RegistryHelper.SetCompatFlagRunAsAdmin(exePath);
-                    }
+                    if (runAsAdmin) RegistryHelper.SetCompatFlagRunAsAdmin(exePath);
                 }
                 _library.Update(existing);
             }
@@ -1032,14 +1324,11 @@ namespace LudusaviWrap
                     AddedAt        = DateTime.UtcNow
                 };
                 _library.Add(newEntry);
-
                 if (runAsAdmin && exePath != null)
-                {
                     RegistryHelper.SetCompatFlagRunAsAdmin(exePath);
-                }
             }
-            LoadGames();
 
+            LoadGames();
             ShowToast("Transfer Complete", $"\"{gameName}\" was automatically added to your library.");
 
             var entry = _library.FindByName(gameName);
@@ -1047,132 +1336,28 @@ namespace LudusaviWrap
                 _ = Task.Run(() => FetchCoverForLanEntryAsync(entry, sourcePeer));
         }
 
-        private async Task FetchCoverForLanEntryAsync(GameEntry entry, LanPeer? peer)
-        {
-            string coversDir = Path.Combine(Config.AppDataFolder, "covers");
-            Directory.CreateDirectory(coversDir);
-
-            // Try pulling the cover directly from the peer that served the game files.
-            if (peer != null)
-            {
-                try
-                {
-                    using var http = new System.Net.Http.HttpClient { Timeout = TimeSpan.FromSeconds(15) };
-                    string url = $"http://{peer.IPAddress}:{peer.Port}/games/{Uri.EscapeDataString(entry.GameName)}/cover";
-                    using var response = await http.GetAsync(url);
-                    if (response.IsSuccessStatusCode)
-                    {
-                        string ext = response.Content.Headers.ContentType?.MediaType switch
-                        {
-                            "image/png"  => ".png",
-                            "image/webp" => ".webp",
-                            "image/gif"  => ".gif",
-                            _            => ".jpg"
-                        };
-                        string imagePath = Path.Combine(coversDir, entry.SafeName + "_p" + ext);
-                        byte[] bytes = await response.Content.ReadAsByteArrayAsync();
-                        await File.WriteAllBytesAsync(imagePath, bytes);
-                        Dispatcher.Invoke(() => { entry.CoverImagePath = imagePath; _library.Update(entry); });
-                        App.Log($"Downloaded cover from LAN peer for '{entry.GameName}'");
-                        return;
-                    }
-                }
-                catch (Exception ex)
-                {
-                    App.Log($"LAN cover fetch failed for '{entry.GameName}': {ex.Message}");
-                }
-            }
-
-            // Fall back to SteamGridDB if configured.
-            if (!_config.Data.SteamGridDbEnabled || string.IsNullOrEmpty(_config.Data.SteamGridDbApiKey)) return;
-            try
-            {
-                var sgdb = new SteamGridDbClient(_config.Data.SteamGridDbApiKey);
-                var results = await sgdb.SearchGameAsync(entry.GameName);
-                if (results.Count == 0) return;
-
-                string destBase = Path.Combine(coversDir, entry.SafeName);
-                string? imagePath = await sgdb.DownloadPortraitAsync(results[0].Id, destBase + "_p");
-                imagePath ??= await sgdb.DownloadGridImageAsync(results[0].Id, entry.SafeName, coversDir);
-                if (imagePath != null)
-                    Dispatcher.Invoke(() => { entry.CoverImagePath = imagePath; _library.Update(entry); });
-            }
-            catch (Exception ex)
-            {
-                App.Log($"SteamGridDB cover fetch failed for '{entry.GameName}': {ex.Message}");
-            }
-        }
-
-        private static bool IsFitGirlRepack(HydraDownloadEntry download, string destDir)
-        {
-            if (download.SourceName.Contains("fitgirl", StringComparison.OrdinalIgnoreCase))
-                return true;
-            return File.Exists(Path.Combine(destDir, "setup.exe")) &&
-                   Directory.GetFiles(destDir, "fg-*.bin").Length > 0;
-        }
-
-        private void HandleFitGirlRepack(string title, string destDir)
-        {
-            string setupExe = Path.Combine(destDir, "setup.exe");
-            if (!File.Exists(setupExe))
-            {
-                MessageBox.Show(
-                    $"FitGirl repack detected for \"{title}\" but setup.exe was not found in the download folder.\n\n{destDir}",
-                    "Setup Not Found", MessageBoxButton.OK, MessageBoxImage.Warning);
-                return;
-            }
-
-            var result = MessageBox.Show(
-                $"FitGirl repack detected for \"{title}\".\n\nRun setup.exe as administrator to install the game?",
-                "Install Game", MessageBoxButton.YesNo, MessageBoxImage.Question);
-
-            if (result != MessageBoxResult.Yes) return;
-
-            try
-            {
-                Process.Start(new ProcessStartInfo
-                {
-                    FileName = setupExe,
-                    UseShellExecute = true,
-                    Verb = "runas"
-                });
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show($"Failed to launch setup.exe: {ex.Message}", "Error",
-                    MessageBoxButton.OK, MessageBoxImage.Error);
-            }
-        }
-
-        private void CancelDownload_Click(object sender, RoutedEventArgs e)
-        {
-            _downloadCts?.Cancel();
-        }
+        // ── TorBox download ───────────────────────────────────────────────────────
 
         private void Browse_Click(object sender, RoutedEventArgs e)
         {
             if (_config.Data.DownloadSources.Count == 0)
             {
-                MessageBox.Show(
-                    "No download sources configured.\n\nAdd Hydra-compatible JSON source URLs in Settings.",
+                MessageBox.Show("No download sources configured.\n\nAdd Hydra-compatible JSON source URLs in Settings.",
                     "No Sources", MessageBoxButton.OK, MessageBoxImage.Information);
                 return;
             }
-
             if (_isDownloading)
             {
                 MessageBox.Show("A download is already in progress. Please wait for it to finish or cancel it first.",
                     "Download in Progress", MessageBoxButton.OK, MessageBoxImage.Information);
                 return;
             }
-
             var browse = new BrowseWindow(_config) { Owner = this };
             if (browse.ShowDialog() == true && browse.SelectedDownload != null)
             {
                 if (!_config.IsTorBoxOk)
                 {
-                    MessageBox.Show(
-                        "TorBox is not configured.\n\nEnable TorBox and enter your API key in Settings.",
+                    MessageBox.Show("TorBox is not configured.\n\nEnable TorBox and enter your API key in Settings.",
                         "TorBox Not Configured", MessageBoxButton.OK, MessageBoxImage.Warning);
                     return;
                 }
@@ -1198,7 +1383,6 @@ namespace LudusaviWrap
             var ct = _downloadCts.Token;
 
             string? destDir = null;
-
             try
             {
                 var torbox = new TorBoxClient(_config.Data.TorBoxApiKey);
@@ -1214,54 +1398,32 @@ namespace LudusaviWrap
                 {
                     torrent = await torbox.GetTorrentInfoAsync(torrentId);
                     if (torrent == null) throw new Exception("Torrent not found in TorBox");
-
-                    bool ready = torrent.DownloadState is "cached" or "completed" or "uploading";
-                    if (ready) break;
-
+                    if (torrent.DownloadState is "cached" or "completed" or "uploading") break;
                     DownloadTitleText.Text = $"TorBox: {torrent.DownloadState}...";
                     DownloadProgressBar.Value = torrent.Progress * 100;
                     await Task.Delay(5000, ct);
                 }
                 ct.ThrowIfCancellationRequested();
 
-                var files = torrent!.Files ?? new System.Collections.Generic.List<TorBoxFile>();
+                var files = torrent!.Files ?? new List<TorBoxFile>();
                 if (files.Count == 0) throw new Exception("No files found in torrent");
 
                 string safeTitle = LauncherGenerator.MakeSafeFilename(download.Title);
                 destDir = System.IO.Path.Combine(_config.EffectiveDownloadDir, safeTitle);
 
-                // Determine if all files share a single top-level directory
                 string? commonRoot = null;
                 bool shareCommonRoot = files.Count > 0;
                 foreach (var file in files)
                 {
-                    string name = file.Name;
-                    int slashIdx = name.IndexOf('/');
-                    if (slashIdx <= 0)
-                    {
-                        shareCommonRoot = false;
-                        break;
-                    }
-                    string root = name.Substring(0, slashIdx);
-                    if (commonRoot == null)
-                    {
-                        commonRoot = root;
-                    }
-                    else if (commonRoot != root)
-                    {
-                        shareCommonRoot = false;
-                        break;
-                    }
+                    int slashIdx = file.Name.IndexOf('/');
+                    if (slashIdx <= 0) { shareCommonRoot = false; break; }
+                    string root = file.Name[..slashIdx];
+                    if (commonRoot == null) commonRoot = root;
+                    else if (commonRoot != root) { shareCommonRoot = false; break; }
                 }
 
-                long totalBytesAllFiles = 0;
-                foreach (var file in files)
-                {
-                    totalBytesAllFiles += file.Size;
-                }
-
-                long totalBytesDownloaded = 0;
-                long lastBytes = 0;
+                long totalBytesAllFiles = files.Sum(f => f.Size);
+                long totalBytesDownloaded = 0, lastBytes = 0;
                 DateTime lastTick = DateTime.UtcNow;
                 int currentFileIndex = 0;
 
@@ -1272,11 +1434,9 @@ namespace LudusaviWrap
 
                     string relativePath = file.Name;
                     if (shareCommonRoot && commonRoot != null && relativePath.StartsWith(commonRoot + "/"))
-                    {
-                        relativePath = relativePath.Substring(commonRoot.Length + 1);
-                    }
-                    string normalizedRelativePath = relativePath.Replace('/', System.IO.Path.DirectorySeparatorChar);
-                    string destPath = System.IO.Path.Combine(destDir, normalizedRelativePath);
+                        relativePath = relativePath[(commonRoot.Length + 1)..];
+                    string normalizedPath = relativePath.Replace('/', System.IO.Path.DirectorySeparatorChar);
+                    string destPath = System.IO.Path.Combine(destDir, normalizedPath);
 
                     DownloadTitleText.Text = $"[{currentFileIndex}/{files.Count}] Getting link for {file.ShortName}...";
                     DownloadCountText.Text = $"File {currentFileIndex} of {files.Count}";
@@ -1284,22 +1444,18 @@ namespace LudusaviWrap
 
                     var fileProgress = new Progress<(long bytes, long total)>(p =>
                     {
-                        long currentTotalDownloaded = totalBytesDownloaded + p.bytes;
-
-                        double pct = totalBytesAllFiles > 0 ? (double)currentTotalDownloaded / totalBytesAllFiles * 100 : 0;
-                        DownloadProgressBar.Value = pct;
+                        long cur = totalBytesDownloaded + p.bytes;
+                        DownloadProgressBar.Value = totalBytesAllFiles > 0 ? (double)cur / totalBytesAllFiles * 100 : 0;
                         DownloadTitleText.Text = $"Downloading {file.ShortName}";
                         DownloadBytesText.Text = totalBytesAllFiles > 0
-                            ? $"{FormatBytes(currentTotalDownloaded)} of {FormatBytes(totalBytesAllFiles)}"
-                            : FormatBytes(currentTotalDownloaded);
-
+                            ? $"{FormatBytes(cur)} of {FormatBytes(totalBytesAllFiles)}"
+                            : FormatBytes(cur);
                         var now = DateTime.UtcNow;
                         double elapsed = (now - lastTick).TotalSeconds;
                         if (elapsed >= 1.0)
                         {
-                            double speed = (currentTotalDownloaded - lastBytes) / elapsed;
-                            DownloadSpeedText.Text = FormatSpeed(speed);
-                            lastBytes = currentTotalDownloaded;
+                            DownloadSpeedText.Text = FormatSpeed((cur - lastBytes) / elapsed);
+                            lastBytes = cur;
                             lastTick = now;
                         }
                     });
@@ -1329,8 +1485,7 @@ namespace LudusaviWrap
             catch (Exception ex)
             {
                 App.Log($"TorBox download failed: {ex.Message}");
-                MessageBox.Show($"Download failed: {ex.Message}", "Error",
-                    MessageBoxButton.OK, MessageBoxImage.Error);
+                MessageBox.Show($"Download failed: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
                 DownloadTitleText.Text = "Download failed";
                 DownloadCountText.Text = "";
                 DownloadSpeedText.Text = "";
@@ -1351,6 +1506,134 @@ namespace LudusaviWrap
                     });
                 }, TaskScheduler.Default);
             }
+        }
+
+        private static bool IsFitGirlRepack(HydraDownloadEntry download, string destDir)
+        {
+            if (download.SourceName.Contains("fitgirl", StringComparison.OrdinalIgnoreCase)) return true;
+            return File.Exists(Path.Combine(destDir, "setup.exe")) &&
+                   Directory.GetFiles(destDir, "fg-*.bin").Length > 0;
+        }
+
+        private void HandleFitGirlRepack(string title, string destDir)
+        {
+            string setupExe = Path.Combine(destDir, "setup.exe");
+            if (!File.Exists(setupExe))
+            {
+                MessageBox.Show(
+                    $"FitGirl repack detected for \"{title}\" but setup.exe was not found in the download folder.\n\n{destDir}",
+                    "Setup Not Found", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+            var result = MessageBox.Show(
+                $"FitGirl repack detected for \"{title}\".\n\nRun setup.exe as administrator to install the game?",
+                "Install Game", MessageBoxButton.YesNo, MessageBoxImage.Question);
+            if (result != MessageBoxResult.Yes) return;
+            try
+            {
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = setupExe,
+                    UseShellExecute = true,
+                    Verb = "runas"
+                });
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Failed to launch setup.exe: {ex.Message}", "Error",
+                    MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        private void CancelDownload_Click(object sender, RoutedEventArgs e)
+        {
+            _downloadCts?.Cancel();
+        }
+
+        // ── Utilities ────────────────────────────────────────────────────────────
+
+        private static string FormatBytes(long bytes)
+        {
+            string[] s = { "B", "KB", "MB", "GB", "TB" };
+            double val = bytes;
+            int i = 0;
+            while (val >= 1024 && i < s.Length - 1) { val /= 1024; i++; }
+            return $"{val:0.0} {s[i]}";
+        }
+
+        private static string FormatSpeed(double bytesPerSec)
+        {
+            string[] s = { "B/s", "KB/s", "MB/s", "GB/s" };
+            double val = bytesPerSec;
+            int i = 0;
+            while (val >= 1024 && i < s.Length - 1) { val /= 1024; i++; }
+            return $"{val:0.0} {s[i]}";
+        }
+
+        private static void ShowToast(string title, string body)
+        {
+            try
+            {
+                new ToastContentBuilder().AddText(title).AddText(body).Show();
+            }
+            catch (Exception ex)
+            {
+                App.Log($"Toast notification failed: {ex.Message}");
+            }
+        }
+
+        // ── Window lifecycle ─────────────────────────────────────────────────────
+
+        private void MainWindow_Loaded(object sender, RoutedEventArgs e)
+        {
+            StartLanServerIfEnabled();
+            _scanCts = new CancellationTokenSource();
+            _ = RunLanScanLoopAsync();
+
+            if (System.Version.TryParse(Version, out var parsedVersion))
+                AutoUpdaterDotNET.AutoUpdater.InstalledVersion = parsedVersion;
+
+            AutoUpdaterDotNET.AutoUpdater.ShowSkipButton = false;
+            AutoUpdaterDotNET.AutoUpdater.ShowRemindLaterButton = false;
+            AutoUpdaterDotNET.AutoUpdater.RunUpdateAsAdmin = false;
+            AutoUpdaterDotNET.AutoUpdater.SetOwner(this);
+
+            if (!_updateCheckSubscribed)
+            {
+                _updateCheckSubscribed = true;
+                AutoUpdaterDotNET.AutoUpdater.CheckForUpdateEvent += (args) =>
+                {
+                    if (args.Error != null || !args.IsUpdateAvailable) return;
+                    var result = MessageBox.Show(
+                        $"Version {args.CurrentVersion} is available (you have {args.InstalledVersion}).\n\nInstall now? The app will restart automatically.",
+                        "Update Available", MessageBoxButton.YesNo, MessageBoxImage.Information);
+                    if (result != MessageBoxResult.Yes) return;
+                    try
+                    {
+                        args.InstallerArgs = "/VERYSILENT /SUPPRESSMSGBOXES";
+                        if (AutoUpdaterDotNET.AutoUpdater.DownloadUpdate(args))
+                            Application.Current.Shutdown();
+                    }
+                    catch (Exception ex)
+                    {
+                        MessageBox.Show($"Update failed: {ex.Message}", "Update Error",
+                            MessageBoxButton.OK, MessageBoxImage.Error);
+                    }
+                };
+            }
+
+            AutoUpdaterDotNET.AutoUpdater.Start(
+                "https://raw.githubusercontent.com/aidankinzett/ludusavi-wrap/master/update.xml");
+        }
+
+        private void MainWindow_Closing(object? sender, System.ComponentModel.CancelEventArgs e)
+        {
+            _scanCts?.Cancel();
+            _scanCts?.Dispose();
+            _uiCleanupCts?.Cancel();
+            _uiCleanupCts?.Dispose();
+            _downloadCts?.Dispose();
+            _lanServer.Stop();
         }
     }
 }
