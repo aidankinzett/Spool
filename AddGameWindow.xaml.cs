@@ -50,21 +50,21 @@ namespace LudusaviWrap
             set { _loadingPaths = value; Notify(nameof(LoadingPathsVisibility)); }
         }
 
-        public Visibility PathsVisibility   => IsExpanded ? Visibility.Visible : Visibility.Collapsed;
+        public Visibility PathsVisibility => IsExpanded ? Visibility.Visible : Visibility.Collapsed;
         public Visibility LoadingPathsVisibility => (IsExpanded && LoadingPaths) ? Visibility.Visible : Visibility.Collapsed;
         public Visibility BestMatchVisibility => IsBest ? Visibility.Visible : Visibility.Collapsed;
         public Visibility RadioFillVisibility => IsSelected ? Visibility.Visible : Visibility.Collapsed;
-        public string ChevronText     => IsExpanded ? "▲" : "▼";
-        public string NameWeight      => IsSelected ? "Medium" : "Normal";
+        public string ChevronText => IsExpanded ? "▲" : "▼";
+        public string NameWeight => IsSelected ? "Medium" : "Normal";
         public string ConfidenceLabel => $"{Confidence}% match";
-        public string SaveCountLabel  => SavePaths != null ? $"{SavePaths.Count} save locations" : "Checking save locations…";
+        public string SaveCountLabel => SavePaths != null ? $"{SavePaths.Count} save locations" : "Checking save locations…";
         public double ConfidenceBarWidth => Confidence * 64.0 / 100.0;
-        public Color  ConfidenceBarColor => Confidence > 70 ? Color.FromRgb(0x4C, 0xC2, 0xFF) : Color.FromArgb(140, 255, 255, 255);
-        public Color  AccentColor        => Color.FromRgb(0x4C, 0xC2, 0xFF);
-        public Color  RadioBorderColor   => IsSelected ? Color.FromRgb(0x4C, 0xC2, 0xFF) : Color.FromArgb(80, 255, 255, 255);
+        public Color ConfidenceBarColor => Confidence > 70 ? Color.FromRgb(0x4C, 0xC2, 0xFF) : Color.FromArgb(140, 255, 255, 255);
+        public Color AccentColor => Color.FromRgb(0x4C, 0xC2, 0xFF);
+        public Color RadioBorderColor => IsSelected ? Color.FromRgb(0x4C, 0xC2, 0xFF) : Color.FromArgb(80, 255, 255, 255);
 
         // Row background / border updated by selection state (set from code-behind after binding resolves)
-        public SolidColorBrush RowBackground  => IsSelected
+        public SolidColorBrush RowBackground => IsSelected
             ? new SolidColorBrush(Color.FromArgb(0x14, 0x4C, 0xC2, 0xFF))
             : new SolidColorBrush(Color.FromArgb(0x06, 0xFF, 0xFF, 0xFF));
         public SolidColorBrush RowBorderBrush => IsSelected
@@ -110,8 +110,8 @@ namespace LudusaviWrap
             Width = touch ? 760 : 680;
             double btnH = touch ? 48 : 36;
             GenerateArmouryCrateButton.Height = btnH;
-            AddToSteamButton.Height           = btnH;
-            AddToLibraryButton.Height         = btnH;
+            AddToSteamButton.Height = btnH;
+            AddToLibraryButton.Height = btnH;
         }
 
         // ── Drag-and-drop ──────────────────────────────────────────────────────
@@ -333,12 +333,12 @@ namespace LudusaviWrap
         {
             _state = state;
 
-            DropZoneBorder.Visibility  = state == AddGameState.Empty ? Visibility.Visible : Visibility.Collapsed;
-            ExeCardPanel.Visibility    = state != AddGameState.Empty ? Visibility.Visible : Visibility.Collapsed;
-            DetectingPanel.Visibility  = state == AddGameState.Detecting ? Visibility.Visible : Visibility.Collapsed;
+            DropZoneBorder.Visibility = state == AddGameState.Empty ? Visibility.Visible : Visibility.Collapsed;
+            ExeCardPanel.Visibility = state != AddGameState.Empty ? Visibility.Visible : Visibility.Collapsed;
+            DetectingPanel.Visibility = state == AddGameState.Detecting ? Visibility.Visible : Visibility.Collapsed;
             MultiMatchPanel.Visibility = state == AddGameState.MultiMatch ? Visibility.Visible : Visibility.Collapsed;
             SingleMatchPanel.Visibility = state == AddGameState.SingleMatch ? Visibility.Visible : Visibility.Collapsed;
-            NoMatchPanel.Visibility    = state == AddGameState.NoMatch ? Visibility.Visible : Visibility.Collapsed;
+            NoMatchPanel.Visibility = state == AddGameState.NoMatch ? Visibility.Visible : Visibility.Collapsed;
 
             bool showOptions = state == AddGameState.MultiMatch
                             || state == AddGameState.SingleMatch
@@ -552,11 +552,11 @@ namespace LudusaviWrap
             string folder = FolderPathTextBox.Text.Trim();
             var entry = new GameEntry
             {
-                GameName       = name,
-                ExePath        = exe,
-                SafeName       = safe,
+                GameName = name,
+                ExePath = exe,
+                SafeName = safe,
                 GameFolderPath = folder.Length > 0 ? folder : null,
-                AddedAt        = DateTime.UtcNow
+                AddedAt = DateTime.UtcNow
             };
             ApplyRunAsAdmin(entry);
             return entry;
@@ -900,10 +900,10 @@ namespace LudusaviWrap
                 Directory.CreateDirectory(gridDir);
                 string gridBase = Path.Combine(gridDir, appId.ToString());
 
-                var tHoriz   = sgdb.DownloadGridImageAsync(gameId, safeName, coversDir);
+                var tHoriz = sgdb.DownloadGridImageAsync(gameId, safeName, coversDir);
                 var tPortrait = sgdb.DownloadPortraitAsync(gameId, gridBase + "p");
-                var tHero    = sgdb.DownloadHeroAsync(gameId, gridBase + "_hero");
-                var tLogo    = sgdb.DownloadLogoAsync(gameId, gridBase + "_logo");
+                var tHero = sgdb.DownloadHeroAsync(gameId, gridBase + "_hero");
+                var tLogo = sgdb.DownloadLogoAsync(gameId, gridBase + "_logo");
                 await Task.WhenAll(tHoriz, tPortrait, tHero, tLogo);
 
                 SteamIntegration.CopyGridImage(tHoriz.Result, steamPath, userId, appId, suffix: "");

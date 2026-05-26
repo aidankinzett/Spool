@@ -13,7 +13,7 @@ using System.Threading.Tasks;
 
 namespace LudusaviWrap
 {
-    public class LockStatusResponse
+    public sealed class LockStatusResponse
     {
         [JsonPropertyName("locked")]
         public bool Locked { get; set; }
@@ -28,7 +28,7 @@ namespace LudusaviWrap
         public bool Stale { get; set; }
     }
 
-    public class AcquireRequest
+    public sealed class AcquireRequest
     {
         [JsonPropertyName("device_id")]
         public string DeviceId { get; set; } = "";
@@ -37,13 +37,13 @@ namespace LudusaviWrap
         public string DeviceName { get; set; } = "";
     }
 
-    public class AcquireConflictResponse
+    public sealed class AcquireConflictResponse
     {
         [JsonPropertyName("device_name")]
         public string? DeviceName { get; set; }
     }
 
-    public class LatestBackupResponse
+    public sealed class LatestBackupResponse
     {
         [JsonPropertyName("found")]
         public bool Found { get; set; }
@@ -58,7 +58,7 @@ namespace LudusaviWrap
         public string? OccurredAt { get; set; }
     }
 
-    public class HealthResponse
+    public sealed class HealthResponse
     {
         [JsonPropertyName("ok")]
         public bool Ok { get; set; }
@@ -67,19 +67,19 @@ namespace LudusaviWrap
         public string? Version { get; set; }
     }
 
-    public class RegisterRequest
+    public sealed class RegisterRequest
     {
         [JsonPropertyName("username")]
         public string Username { get; set; } = "";
     }
 
-    public class RegisterResponse
+    public sealed class RegisterResponse
     {
         [JsonPropertyName("api_key")]
         public string? ApiKey { get; set; }
     }
 
-    public class LastPlayedRecord
+    public sealed class LastPlayedRecord
     {
         [JsonPropertyName("game_name")]
         public string GameName { get; set; } = "";
@@ -88,13 +88,13 @@ namespace LudusaviWrap
         public string LastPlayedAt { get; set; } = "";
     }
 
-    public class PlaytimeDeltaRequest
+    public sealed class PlaytimeDeltaRequest
     {
         [JsonPropertyName("delta_minutes")]
         public int DeltaMinutes { get; set; }
     }
 
-    public class PlaytimeRecord
+    public sealed class PlaytimeRecord
     {
         [JsonPropertyName("game_name")]
         public string GameName { get; set; } = "";
@@ -122,14 +122,14 @@ namespace LudusaviWrap
 
     public enum AcquireOutcome { Acquired, Conflict, ServerError, Unavailable }
 
-    public class AcquireResult
+    public sealed class AcquireResult
     {
         public AcquireOutcome Outcome { get; init; }
         public string? ConflictDeviceName { get; init; }
 
-        public static readonly AcquireResult Acquired  = new() { Outcome = AcquireOutcome.Acquired };
-        public static readonly AcquireResult ServerError  = new() { Outcome = AcquireOutcome.ServerError };
-        public static readonly AcquireResult Unavailable  = new() { Outcome = AcquireOutcome.Unavailable };
+        public static readonly AcquireResult Acquired = new() { Outcome = AcquireOutcome.Acquired };
+        public static readonly AcquireResult ServerError = new() { Outcome = AcquireOutcome.ServerError };
+        public static readonly AcquireResult Unavailable = new() { Outcome = AcquireOutcome.Unavailable };
 
         public static AcquireResult ConflictWith(string? deviceName) =>
             new() { Outcome = AcquireOutcome.Conflict, ConflictDeviceName = deviceName };
@@ -148,7 +148,7 @@ namespace LudusaviWrap
         Task AddPlaytimeDeltaAsync(string gameName, int deltaMinutes);
     }
 
-    public class PlayStateLockClient : IPlayStateLockClient
+    public sealed class PlayStateLockClient : IPlayStateLockClient
     {
         private static readonly HttpClient HttpClient = new() { Timeout = TimeSpan.FromSeconds(10) };
 

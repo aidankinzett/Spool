@@ -22,26 +22,26 @@ namespace LudusaviWrap
         private readonly GameLibrary? _library;
         private readonly TimeProvider _clock;
 
-        private const string ProgressToastTag   = "ludusavi-progress";
+        private const string ProgressToastTag = "ludusavi-progress";
         private const string ProgressToastGroup = "ludusavi";
 
         public RunWorkflow(
             string gameName,
             string gameExe,
-            GameEntry? entry                    = null,
-            GameLibrary? library                = null,
-            Config? config                      = null,
-            IDialogService? dialogs             = null,
+            GameEntry? entry = null,
+            GameLibrary? library = null,
+            Config? config = null,
+            IDialogService? dialogs = null,
             IPlayStateLockClient? lockClientOverride = null,
-            TimeProvider? clock                 = null)
+            TimeProvider? clock = null)
         {
             _gameName = gameName;
-            _gameExe  = gameExe;
-            _clock    = clock ?? TimeProvider.System;
-            _library  = library ?? new GameLibrary();
-            _entry    = entry ?? _library.FindByName(_gameName);
-            _config   = config  ?? new Config();
-            _dialogs  = dialogs ?? new WpfDialogService();
+            _gameExe = gameExe;
+            _clock = clock ?? TimeProvider.System;
+            _library = library ?? new GameLibrary();
+            _entry = entry ?? _library.FindByName(_gameName);
+            _config = config ?? new Config();
+            _dialogs = dialogs ?? new WpfDialogService();
 
             _lockClient = lockClientOverride ??
                 (_config.Data.SyncServerEnabled && !string.IsNullOrEmpty(_config.Data.SyncServerUrl)
@@ -62,10 +62,10 @@ namespace LudusaviWrap
                 return;
             }
 
-            if (!await CheckLockBeforeRestoreAsync())  return;
-            if (!await RestoreAndVerifyAsync())        return;
+            if (!await CheckLockBeforeRestoreAsync()) return;
+            if (!await RestoreAndVerifyAsync()) return;
             if (!await AcquireLockBeforeLaunchAsync()) return;
-            if (!await LaunchAndTrackSessionAsync())   return;
+            if (!await LaunchAndTrackSessionAsync()) return;
             await BackupAfterSessionAsync();
 
             if (_lockClient != null)
@@ -314,7 +314,7 @@ namespace LudusaviWrap
             DismissProgressToast();
             try
             {
-                string escapedName   = System.Security.SecurityElement.Escape(_gameName) ?? _gameName;
+                string escapedName = System.Security.SecurityElement.Escape(_gameName) ?? _gameName;
                 string escapedStatus = System.Security.SecurityElement.Escape(status) ?? status;
 
                 var xml = new XmlDocument();
@@ -331,7 +331,7 @@ namespace LudusaviWrap
                     """);
 
                 var toast = new ToastNotification(xml);
-                toast.Tag   = ProgressToastTag;
+                toast.Tag = ProgressToastTag;
                 toast.Group = ProgressToastGroup;
                 ToastNotificationManagerCompat.CreateToastNotifier().Show(toast);
             }
@@ -364,21 +364,21 @@ namespace LudusaviWrap
 
         protected virtual async Task<ProcessResult> RunProcessAsync(string filename, string arguments)
         {
-            var outputBuilder   = new StringBuilder();
-            var errorBuilder    = new StringBuilder();
+            var outputBuilder = new StringBuilder();
+            var errorBuilder = new StringBuilder();
             var outputClosedTcs = new TaskCompletionSource<bool>();
-            var errorClosedTcs  = new TaskCompletionSource<bool>();
+            var errorClosedTcs = new TaskCompletionSource<bool>();
 
             var process = new Process
             {
                 StartInfo = new ProcessStartInfo
                 {
-                    FileName               = filename,
-                    Arguments              = arguments,
-                    UseShellExecute        = false,
+                    FileName = filename,
+                    Arguments = arguments,
+                    UseShellExecute = false,
                     RedirectStandardOutput = true,
-                    RedirectStandardError  = true,
-                    CreateNoWindow         = true
+                    RedirectStandardError = true,
+                    CreateNoWindow = true
                 },
                 EnableRaisingEvents = true
             };
@@ -404,8 +404,8 @@ namespace LudusaviWrap
             var result = new ProcessResult
             {
                 ExitCode = process.ExitCode,
-                Output   = outputBuilder.ToString(),
-                Error    = errorBuilder.ToString()
+                Output = outputBuilder.ToString(),
+                Error = errorBuilder.ToString()
             };
             process.Dispose();
             return result;
@@ -423,8 +423,8 @@ namespace LudusaviWrap
             {
                 Process.Start(new ProcessStartInfo
                 {
-                    FileName        = ludusaviPath,
-                    Arguments       = "gui",
+                    FileName = ludusaviPath,
+                    Arguments = "gui",
                     UseShellExecute = true
                 });
             }
@@ -437,14 +437,14 @@ namespace LudusaviWrap
 
         protected virtual async Task RunGameAsync(string exePath)
         {
-            var tcs      = new TaskCompletionSource<int>();
+            var tcs = new TaskCompletionSource<int>();
             bool runAsAdmin = (_entry?.RunAsAdmin == true) || RegistryHelper.GetCompatFlagRunAsAdmin(exePath);
 
             var startInfo = new ProcessStartInfo
             {
-                FileName         = exePath,
+                FileName = exePath,
                 WorkingDirectory = Path.GetDirectoryName(exePath) ?? "",
-                UseShellExecute  = true
+                UseShellExecute = true
             };
             if (runAsAdmin)
                 startInfo.Verb = "runas";
@@ -471,9 +471,9 @@ namespace LudusaviWrap
                 return "unknown time ago";
 
             var elapsed = _clock.GetUtcNow() - dt.ToUniversalTime();
-            if (elapsed.TotalMinutes < 2)  return "just now";
+            if (elapsed.TotalMinutes < 2) return "just now";
             if (elapsed.TotalMinutes < 60) return $"{(int)elapsed.TotalMinutes}m ago";
-            if (elapsed.TotalHours   < 24) return $"{(int)elapsed.TotalHours}h ago";
+            if (elapsed.TotalHours < 24) return $"{(int)elapsed.TotalHours}h ago";
             return $"{(int)elapsed.TotalDays}d ago";
         }
     }

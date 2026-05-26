@@ -6,7 +6,7 @@ using System.Text.Json.Serialization;
 
 namespace LudusaviWrap
 {
-    public class ConfigData
+    public sealed class ConfigData
     {
         [JsonPropertyName("ludusavi_path")]
         public string LudusaviPath { get; set; } = "";
@@ -74,7 +74,7 @@ namespace LudusaviWrap
     {
     }
 
-    public class Config
+    public sealed class Config
     {
         public static readonly string AppDataFolder = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
@@ -89,9 +89,9 @@ namespace LudusaviWrap
 
         public bool IsEffectivelyTouchOptimized => Data.TouchMode switch
         {
-            "on"  => true,
+            "on" => true,
             "off" => false,
-            _     => TouchscreenDetected,
+            _ => TouchscreenDetected,
         };
 
         public Config()
@@ -193,8 +193,8 @@ namespace LudusaviWrap
         private void EnsureDeviceIdentity()
         {
             bool changed = false;
-            if (string.IsNullOrEmpty(Data.DeviceId))   { Data.DeviceId   = Guid.NewGuid().ToString(); changed = true; }
-            if (string.IsNullOrEmpty(Data.DeviceName)) { Data.DeviceName = Environment.MachineName;   changed = true; }
+            if (string.IsNullOrEmpty(Data.DeviceId)) { Data.DeviceId = Guid.NewGuid().ToString(); changed = true; }
+            if (string.IsNullOrEmpty(Data.DeviceName)) { Data.DeviceName = Environment.MachineName; changed = true; }
             if (changed) Save();
         }
 

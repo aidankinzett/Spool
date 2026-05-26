@@ -8,7 +8,7 @@ using System.Text.Json.Serialization;
 
 namespace LudusaviWrap
 {
-    public class GameEntry : INotifyPropertyChanged
+    public sealed class GameEntry : INotifyPropertyChanged
     {
         private string? _coverImagePath;
         private string? _heroImagePath;
@@ -55,7 +55,7 @@ namespace LudusaviWrap
         [JsonPropertyName("safe_name")]
         public string SafeName { get; set; } = "";
 
-        private string? MigratePath(string? path)
+        private static string? MigratePath(string? path)
         {
             if (string.IsNullOrEmpty(path)) return path;
             if (path.Contains("ludusavi-wrap", StringComparison.OrdinalIgnoreCase))
@@ -217,7 +217,7 @@ namespace LudusaviWrap
         }
 
         public event PropertyChangedEventHandler? PropertyChanged;
-        protected void OnPropertyChanged([CallerMemberName] string? name = null)
+        private void OnPropertyChanged([CallerMemberName] string? name = null)
             => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
     }
 
@@ -226,7 +226,7 @@ namespace LudusaviWrap
     [JsonSerializable(typeof(List<string>))]
     internal partial class LibrarySourceGenerationContext : JsonSerializerContext { }
 
-    public class GameLibrary
+    public sealed class GameLibrary
     {
         private readonly string _appDataFolder;
         private readonly string _libraryPath;
@@ -238,7 +238,7 @@ namespace LudusaviWrap
         private GameLibrary(string? basePath, bool loadNow)
         {
             _appDataFolder = basePath ?? Config.AppDataFolder;
-            _libraryPath   = Path.Combine(_appDataFolder, "library.json");
+            _libraryPath = Path.Combine(_appDataFolder, "library.json");
             if (loadNow) Load();
         }
 

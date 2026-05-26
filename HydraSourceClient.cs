@@ -7,7 +7,7 @@ using System.Threading.Tasks;
 
 namespace LudusaviWrap
 {
-    public class HydraDownloadEntry
+    public sealed class HydraDownloadEntry
     {
         [JsonPropertyName("title")]
         public string Title { get; set; } = "";
@@ -35,7 +35,7 @@ namespace LudusaviWrap
             DateTime.TryParse(UploadDate, out var dt) ? dt : DateTime.MinValue;
     }
 
-    public class HydraSourceFile
+    public sealed class HydraSourceFile
     {
         [JsonPropertyName("name")]
         public string Name { get; set; } = "";

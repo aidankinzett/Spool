@@ -15,60 +15,60 @@ namespace LudusaviWrap
 {
     // ── JSON DTOs ─────────────────────────────────────────────────────────────
 
-    public class LanGameMetadata
+    public sealed class LanGameMetadata
     {
-        [JsonPropertyName("game_name")]         public string GameName { get; set; } = "";
-        [JsonPropertyName("run_as_admin")]      public bool   RunAsAdmin { get; set; }
+        [JsonPropertyName("game_name")] public string GameName { get; set; } = "";
+        [JsonPropertyName("run_as_admin")] public bool RunAsAdmin { get; set; }
         [JsonPropertyName("relative_exe_path")] public string RelativeExePath { get; set; } = "";
-        [JsonPropertyName("install_size_mb")]   public double InstallSizeMb { get; set; }
-        [JsonPropertyName("install_source")]    public string InstallSource { get; set; } = "manual";
-        [JsonPropertyName("lan_device_name")]   public string? LanInstallSourceDeviceName { get; set; }
+        [JsonPropertyName("install_size_mb")] public double InstallSizeMb { get; set; }
+        [JsonPropertyName("install_source")] public string InstallSource { get; set; } = "manual";
+        [JsonPropertyName("lan_device_name")] public string? LanInstallSourceDeviceName { get; set; }
     }
 
-    public class LanAnnounce
+    public sealed class LanAnnounce
     {
-        [JsonPropertyName("type")]       public string Type       { get; set; } = "announce";
+        [JsonPropertyName("type")] public string Type { get; set; } = "announce";
         [JsonPropertyName("deviceName")] public string DeviceName { get; set; } = "";
-        [JsonPropertyName("deviceId")]   public string DeviceId   { get; set; } = "";
-        [JsonPropertyName("port")]       public int    Port       { get; set; }
-        [JsonPropertyName("games")]      public List<string> Games { get; set; } = new();
+        [JsonPropertyName("deviceId")] public string DeviceId { get; set; } = "";
+        [JsonPropertyName("port")] public int Port { get; set; }
+        [JsonPropertyName("games")] public List<string> Games { get; set; } = new();
     }
 
-    public class LanQuery
+    public sealed class LanQuery
     {
         [JsonPropertyName("type")] public string Type { get; set; } = "query";
     }
 
-    public class LanFileEntry
+    public sealed class LanFileEntry
     {
-        [JsonPropertyName("path")]     public string RelativePath { get; set; } = "";
-        [JsonPropertyName("size")]     public long   Size         { get; set; }
-        [JsonPropertyName("modified")] public long   LastModified { get; set; }
-        [JsonPropertyName("hash")]     public string Hash         { get; set; } = "";
+        [JsonPropertyName("path")] public string RelativePath { get; set; } = "";
+        [JsonPropertyName("size")] public long Size { get; set; }
+        [JsonPropertyName("modified")] public long LastModified { get; set; }
+        [JsonPropertyName("hash")] public string Hash { get; set; } = "";
     }
 
-    public class LanPeer
+    public sealed class LanPeer
     {
-        public string DeviceName  { get; set; } = "";
-        public string DeviceId    { get; set; } = "";
-        public string IPAddress   { get; set; } = "";
-        public int    Port        { get; set; }
+        public string DeviceName { get; set; } = "";
+        public string DeviceId { get; set; } = "";
+        public string IPAddress { get; set; } = "";
+        public int Port { get; set; }
         public List<string> Games { get; set; } = new();
         public override string ToString() => $"{DeviceName} ({IPAddress})";
     }
 
-    public class LanDownloadProgress
+    public sealed class LanDownloadProgress
     {
-        public string Status            { get; set; } = "";
-        public string CurrentFile       { get; set; } = "";
-        public int    FilesCompleted    { get; set; }
-        public int    TotalFiles        { get; set; }
-        public long   BytesTransferred  { get; set; }
-        public long   TotalBytes        { get; set; }
-        public double SpeedBytesPerSec  { get; set; }
+        public string Status { get; set; } = "";
+        public string CurrentFile { get; set; } = "";
+        public int FilesCompleted { get; set; }
+        public int TotalFiles { get; set; }
+        public long BytesTransferred { get; set; }
+        public long TotalBytes { get; set; }
+        public double SpeedBytesPerSec { get; set; }
     }
 
-    public class ActiveUpload
+    public sealed class ActiveUpload
     {
         public string Guid { get; set; } = System.Guid.NewGuid().ToString();
         public string GameName { get; }
@@ -88,7 +88,7 @@ namespace LudusaviWrap
         }
     }
 
-    public class ActiveUploadSnapshot
+    public sealed class ActiveUploadSnapshot
     {
         public string Guid { get; set; } = "";
         public string GameName { get; set; } = "";
@@ -107,7 +107,7 @@ namespace LudusaviWrap
 
     // ── Server ────────────────────────────────────────────────────────────────
 
-    public class LanShareServer : IDisposable
+    public sealed class LanShareServer : IDisposable
     {
         private const int BufferSize = 512 * 1024;
 
@@ -117,8 +117,8 @@ namespace LudusaviWrap
         private int _port;
         private int _discoveryPort;
 
-        private TcpListener?  _listener;
-        private UdpClient?    _udpServer;
+        private TcpListener? _listener;
+        private UdpClient? _udpServer;
         private CancellationTokenSource? _cts;
 
         // manifest cache: gameName → list of entries (built once per game, cleared on stop)
@@ -205,18 +205,18 @@ namespace LudusaviWrap
         public LanShareServer(string deviceName, string deviceId)
         {
             _deviceName = deviceName;
-            _deviceId   = deviceId;
+            _deviceId = deviceId;
         }
 
         public void Start(Func<IEnumerable<GameEntry>> gameSource, int port)
         {
             if (IsRunning) Stop();
 
-            _gameSource     = gameSource;
-            _port           = port;
-            _discoveryPort  = port - 1;
-            _cts            = new CancellationTokenSource();
-            var ct          = _cts.Token;
+            _gameSource = gameSource;
+            _port = port;
+            _discoveryPort = port - 1;
+            _cts = new CancellationTokenSource();
+            var ct = _cts.Token;
 
             _listener = new TcpListener(System.Net.IPAddress.Any, _port);
             _listener.Start();
@@ -270,7 +270,7 @@ namespace LudusaviWrap
                 {
                     var client = await _listener!.AcceptTcpClientAsync(ct);
                     client.ReceiveBufferSize = 256 * 1024;
-                    client.SendBufferSize    = 256 * 1024;
+                    client.SendBufferSize = 256 * 1024;
                     _ = HandleClientAsync(client, ct);
                 }
                 catch (OperationCanceledException) { break; }
@@ -495,10 +495,10 @@ namespace LudusaviWrap
                 string ext = Path.GetExtension(entry.HeroImagePath).ToLowerInvariant();
                 string mimeType = ext switch
                 {
-                    ".png"  => "image/png",
+                    ".png" => "image/png",
                     ".webp" => "image/webp",
-                    ".gif"  => "image/gif",
-                    _       => "image/jpeg"
+                    ".gif" => "image/gif",
+                    _ => "image/jpeg"
                 };
                 await SendResponseAsync(stream, 200, mimeType, imgBytes, ct);
             }
@@ -782,36 +782,38 @@ namespace LudusaviWrap
             return new LanAnnounce
             {
                 DeviceName = _deviceName,
-                DeviceId   = _deviceId,
-                Port       = _port,
-                Games      = games
+                DeviceId = _deviceId,
+                Port = _port,
+                Games = games
             };
         }
 
-        public void Dispose() => Stop();
+        public void Dispose()
+        {
+            Stop();
+            GC.SuppressFinalize(this);
+        }
     }
 
     // ── Client ────────────────────────────────────────────────────────────────
 
-    public class LanShareClient
+    public sealed class LanShareClient
     {
-        private const int BufferSize    = 512 * 1024;
-        private const int MaxParallel   = 4;
+        private const int BufferSize = 512 * 1024;
+        private const int MaxParallel = 4;
 
-        private readonly string _deviceName;
         private readonly string _deviceId;
 
-        public LanShareClient(string deviceName, string deviceId)
+        public LanShareClient(string deviceId)
         {
-            _deviceName = deviceName;
-            _deviceId   = deviceId;
+            _deviceId = deviceId;
         }
 
         // Broadcast a query and collect peer announces for ~2 seconds.
         public async Task<List<LanPeer>> DiscoverPeersAsync(int discoveryPort, CancellationToken ct = default)
         {
             var peers = new Dictionary<string, LanPeer>(); // keyed by deviceId
-            var udp   = new UdpClient(0); // bind to any port
+            var udp = new UdpClient(0); // bind to any port
             udp.EnableBroadcast = true;
 
             // Listen for incoming datagrams concurrently
@@ -835,10 +837,10 @@ namespace LudusaviWrap
                             peers[announce.DeviceId] = new LanPeer
                             {
                                 DeviceName = announce.DeviceName,
-                                DeviceId   = announce.DeviceId,
-                                IPAddress  = result.RemoteEndPoint.Address.ToString(),
-                                Port       = announce.Port,
-                                Games      = announce.Games
+                                DeviceId = announce.DeviceId,
+                                IPAddress = result.RemoteEndPoint.Address.ToString(),
+                                Port = announce.Port,
+                                Games = announce.Games
                             };
                         }
                     }
@@ -865,7 +867,7 @@ namespace LudusaviWrap
 
         public async Task<List<LanFileEntry>> GetManifestAsync(LanPeer peer, string gameName, bool includeHashes, CancellationToken ct = default)
         {
-            using var http = MakeHttpClient(peer);
+            using var http = MakeHttpClient();
             string url = $"http://{peer.IPAddress}:{peer.Port}/games/{Uri.EscapeDataString(gameName)}/manifest";
             if (includeHashes) url += "?hashes=true";
             string json = await http.GetStringAsync(url, ct);
@@ -876,7 +878,7 @@ namespace LudusaviWrap
         {
             try
             {
-                using var http = MakeHttpClient(peer);
+                using var http = MakeHttpClient();
                 string url = $"http://{peer.IPAddress}:{peer.Port}/games/{Uri.EscapeDataString(gameName)}/metadata";
                 string json = await http.GetStringAsync(url, ct);
                 return JsonSerializer.Deserialize(json, LanJsonContext.Default.LanGameMetadata);
@@ -973,7 +975,7 @@ namespace LudusaviWrap
                     Directory.CreateDirectory(Path.GetDirectoryName(localPath)!);
                     string tmpPath = localPath + ".lanpart";
 
-                    using var http = MakeHttpClient(peer);
+                    using var http = MakeHttpClient();
                     string url = $"http://{peer.IPAddress}:{peer.Port}/games/{Uri.EscapeDataString(gameName)}/files/{Uri.EscapeDataString(entry.RelativePath)}?sessionId={sessionId}&totalBytes={totalBytes}";
 
                     using var response = await http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, queueCt);
@@ -1035,7 +1037,7 @@ namespace LudusaviWrap
                 bool hostCancelled = false;
                 try
                 {
-                    using var http = MakeHttpClient(peer);
+                    using var http = MakeHttpClient();
                     string url = $"http://{peer.IPAddress}:{peer.Port}/games/{Uri.EscapeDataString(gameName)}/cancel-check";
                     string resp = await http.GetStringAsync(url, ct);
                     if (resp == "cancelled")
@@ -1054,7 +1056,7 @@ namespace LudusaviWrap
             }
         }
 
-        private static HttpClient MakeHttpClient(LanPeer peer)
+        private static HttpClient MakeHttpClient()
         {
             var handler = new SocketsHttpHandler
             {

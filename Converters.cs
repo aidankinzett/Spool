@@ -9,7 +9,7 @@ using System.Windows.Media.Imaging;
 
 namespace LudusaviWrap
 {
-    public class StringToImageConverter : IValueConverter
+    public sealed class StringToImageConverter : IValueConverter
     {
         public object? Convert(object value, Type targetType, object parameter, CultureInfo culture)
         {
@@ -44,7 +44,7 @@ namespace LudusaviWrap
             => throw new NotImplementedException();
     }
 
-    public class CoverToBackgroundBrushConverter : IValueConverter
+    public sealed class CoverToBackgroundBrushConverter : IValueConverter
     {
         private static readonly Brush DefaultBrush;
 
@@ -67,30 +67,28 @@ namespace LudusaviWrap
 
             try
             {
-                using (var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read))
-                {
-                    var decoder = BitmapDecoder.Create(stream, BitmapCreateOptions.None, BitmapCacheOption.OnLoad);
-                    var frame = decoder.Frames[0];
-                    
-                    // Scale to 2x2
-                    var scaled = new TransformedBitmap(frame, new ScaleTransform(2.0 / frame.PixelWidth, 2.0 / frame.PixelHeight));
-                    var bmp = new WriteableBitmap(scaled);
-                    
-                    byte[] pixels = new byte[16];
-                    bmp.CopyPixels(pixels, 8, 0);
+                using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+                var decoder = BitmapDecoder.Create(stream, BitmapCreateOptions.None, BitmapCacheOption.OnLoad);
+                var frame = decoder.Frames[0];
 
-                    // BGRA format
-                    var color1 = Color.FromRgb(pixels[2], pixels[1], pixels[0]);
-                    var color2 = Color.FromRgb(pixels[14], pixels[13], pixels[12]);
+                // Scale to 2x2
+                var scaled = new TransformedBitmap(frame, new ScaleTransform(2.0 / frame.PixelWidth, 2.0 / frame.PixelHeight));
+                var bmp = new WriteableBitmap(scaled);
 
-                    // Darken to make suitable for background
-                    var c1 = Color.FromRgb((byte)(color1.R * 0.4), (byte)(color1.G * 0.4), (byte)(color1.B * 0.4));
-                    var c2 = Color.FromRgb((byte)(color2.R * 0.25), (byte)(color2.G * 0.25), (byte)(color2.B * 0.25));
+                byte[] pixels = new byte[16];
+                bmp.CopyPixels(pixels, 8, 0);
 
-                    var brush = new LinearGradientBrush(c1, c2, new Point(0, 0), new Point(1, 1));
-                    brush.Freeze();
-                    return brush;
-                }
+                // BGRA format
+                var color1 = Color.FromRgb(pixels[2], pixels[1], pixels[0]);
+                var color2 = Color.FromRgb(pixels[14], pixels[13], pixels[12]);
+
+                // Darken to make suitable for background
+                var c1 = Color.FromRgb((byte)(color1.R * 0.4), (byte)(color1.G * 0.4), (byte)(color1.B * 0.4));
+                var c2 = Color.FromRgb((byte)(color2.R * 0.25), (byte)(color2.G * 0.25), (byte)(color2.B * 0.25));
+
+                var brush = new LinearGradientBrush(c1, c2, new Point(0, 0), new Point(1, 1));
+                brush.Freeze();
+                return brush;
             }
             catch (Exception ex)
             {
@@ -103,7 +101,7 @@ namespace LudusaviWrap
             => throw new NotImplementedException();
     }
 
-    public class BooleanToVisibilityConverter : IValueConverter
+    public sealed class BooleanToVisibilityConverter : IValueConverter
     {
         public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
             => value is bool b && b ? Visibility.Visible : Visibility.Collapsed;
@@ -111,7 +109,7 @@ namespace LudusaviWrap
             => throw new NotImplementedException();
     }
 
-    public class InverseBooleanToVisibilityConverter : IValueConverter
+    public sealed class InverseBooleanToVisibilityConverter : IValueConverter
     {
         public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
             => value is bool b && b ? Visibility.Collapsed : Visibility.Visible;
@@ -119,7 +117,7 @@ namespace LudusaviWrap
             => throw new NotImplementedException();
     }
 
-    public class NullToVisibilityConverter : IValueConverter
+    public sealed class NullToVisibilityConverter : IValueConverter
     {
         public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
             => value != null ? Visibility.Visible : Visibility.Collapsed;
@@ -127,7 +125,7 @@ namespace LudusaviWrap
             => throw new NotImplementedException();
     }
 
-    public class InverseNullToVisibilityConverter : IValueConverter
+    public sealed class InverseNullToVisibilityConverter : IValueConverter
     {
         public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
             => value == null ? Visibility.Visible : Visibility.Collapsed;
@@ -135,7 +133,7 @@ namespace LudusaviWrap
             => throw new NotImplementedException();
     }
 
-    public class EmptyStringToVisibilityConverter : IValueConverter
+    public sealed class EmptyStringToVisibilityConverter : IValueConverter
     {
         public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
             => value is string s && string.IsNullOrEmpty(s) ? Visibility.Visible : Visibility.Collapsed;
@@ -143,7 +141,7 @@ namespace LudusaviWrap
             => throw new NotImplementedException();
     }
 
-    public class InverseEmptyStringToVisibilityConverter : IValueConverter
+    public sealed class InverseEmptyStringToVisibilityConverter : IValueConverter
     {
         public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
             => value is string s && !string.IsNullOrEmpty(s) ? Visibility.Visible : Visibility.Collapsed;
@@ -151,7 +149,7 @@ namespace LudusaviWrap
             => throw new NotImplementedException();
     }
 
-    public class RelativeDateConverter : IValueConverter
+    public sealed class RelativeDateConverter : IValueConverter
     {
         public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
         {
@@ -170,7 +168,7 @@ namespace LudusaviWrap
             => throw new NotImplementedException();
     }
 
-    public class AbsoluteDateConverter : IValueConverter
+    public sealed class AbsoluteDateConverter : IValueConverter
     {
         public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
         {
@@ -182,7 +180,7 @@ namespace LudusaviWrap
             => throw new NotImplementedException();
     }
 
-    public class PlaytimeConverter : IValueConverter
+    public sealed class PlaytimeConverter : IValueConverter
     {
         public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
         {
@@ -195,7 +193,7 @@ namespace LudusaviWrap
             => throw new NotImplementedException();
     }
 
-    public class PlaytimeCompactConverter : IValueConverter
+    public sealed class PlaytimeCompactConverter : IValueConverter
     {
         public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
         {
@@ -208,7 +206,7 @@ namespace LudusaviWrap
             => throw new NotImplementedException();
     }
 
-    public class FileSizeMbConverter : IValueConverter
+    public sealed class FileSizeMbConverter : IValueConverter
     {
         public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
         {
@@ -221,7 +219,7 @@ namespace LudusaviWrap
             => throw new NotImplementedException();
     }
 
-    public class GenreListConverter : IValueConverter
+    public sealed class GenreListConverter : IValueConverter
     {
         public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
         {
@@ -233,7 +231,7 @@ namespace LudusaviWrap
             => throw new NotImplementedException();
     }
 
-    public class CoverInitialsConverter : IValueConverter
+    public sealed class CoverInitialsConverter : IValueConverter
     {
         public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
         {
@@ -247,7 +245,7 @@ namespace LudusaviWrap
             => throw new NotImplementedException();
     }
 
-    public class YearConverter : IValueConverter
+    public sealed class YearConverter : IValueConverter
     {
         public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
             => value is DateTime dt ? dt.Year.ToString() : "—";
@@ -255,7 +253,7 @@ namespace LudusaviWrap
             => throw new NotImplementedException();
     }
 
-    public class PositiveIntToVisibilityConverter : IValueConverter
+    public sealed class PositiveIntToVisibilityConverter : IValueConverter
     {
         public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
             => value is int n && n > 0 ? Visibility.Visible : Visibility.Collapsed;

@@ -4,14 +4,14 @@ using System.Text.Json.Serialization;
 
 namespace LudusaviWrap
 {
-    public class ProcessResult
+    public sealed class ProcessResult
     {
-        public int    ExitCode { get; set; }
-        public string Output   { get; set; } = "";
-        public string Error    { get; set; } = "";
+        public int ExitCode { get; set; }
+        public string Output { get; set; } = "";
+        public string Error { get; set; } = "";
     }
 
-    public class LudusaviApiOutput
+    public sealed class LudusaviApiOutput
     {
         [JsonPropertyName("errors")]
         public LudusaviApiErrors? Errors { get; set; }
@@ -20,7 +20,7 @@ namespace LudusaviWrap
         public LudusaviApiOverall? Overall { get; set; }
     }
 
-    public class LudusaviApiErrors
+    public sealed class LudusaviApiErrors
     {
         [JsonPropertyName("unknownGames")]
         public List<string>? UnknownGames { get; set; }
@@ -32,7 +32,7 @@ namespace LudusaviWrap
         public JsonElement? CloudSyncFailed { get; set; }
     }
 
-    public class LudusaviApiOverall
+    public sealed class LudusaviApiOverall
     {
         [JsonPropertyName("totalGames")]
         public int TotalGames { get; set; }

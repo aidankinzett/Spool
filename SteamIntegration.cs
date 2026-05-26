@@ -9,7 +9,7 @@ using VDFParser.Models;
 
 namespace LudusaviWrap
 {
-    public class SteamUserInfo
+    public sealed class SteamUserInfo
     {
         public string UserId { get; init; } = "";
         public string ShortcutsPath { get; init; } = "";

@@ -10,7 +10,7 @@ using System.Threading.Tasks;
 
 namespace LudusaviWrap
 {
-    public class TorBoxTorrent
+    public sealed class TorBoxTorrent
     {
         [JsonPropertyName("id")]
         public int Id { get; set; }
@@ -34,7 +34,7 @@ namespace LudusaviWrap
         public List<TorBoxFile>? Files { get; set; }
     }
 
-    public class TorBoxFile
+    public sealed class TorBoxFile
     {
         [JsonPropertyName("id")]
         public int Id { get; set; }
@@ -49,7 +49,7 @@ namespace LudusaviWrap
         public string ShortName { get; set; } = "";
     }
 
-    public class TorBoxAddData
+    public sealed class TorBoxAddData
     {
         [JsonPropertyName("torrent_id")]
         public int TorrentId { get; set; }
@@ -61,7 +61,7 @@ namespace LudusaviWrap
         public string Hash { get; set; } = "";
     }
 
-    public class TorBoxAddResponse
+    public sealed class TorBoxAddResponse
     {
         [JsonPropertyName("success")]
         public bool Success { get; set; }
@@ -76,7 +76,7 @@ namespace LudusaviWrap
         public TorBoxAddData? Data { get; set; }
     }
 
-    public class TorBoxListResponse
+    public sealed class TorBoxListResponse
     {
         [JsonPropertyName("success")]
         public bool Success { get; set; }
@@ -88,7 +88,7 @@ namespace LudusaviWrap
         public List<TorBoxTorrent>? Data { get; set; }
     }
 
-    public class TorBoxSingleResponse
+    public sealed class TorBoxSingleResponse
     {
         [JsonPropertyName("success")]
         public bool Success { get; set; }
@@ -100,7 +100,7 @@ namespace LudusaviWrap
         public TorBoxTorrent? Data { get; set; }
     }
 
-    public class TorBoxLinkResponse
+    public sealed class TorBoxLinkResponse
     {
         [JsonPropertyName("success")]
         public bool Success { get; set; }
@@ -122,7 +122,7 @@ namespace LudusaviWrap
     [JsonSerializable(typeof(TorBoxLinkResponse))]
     internal partial class TorBoxSourceGenerationContext : JsonSerializerContext { }
 
-    public class TorBoxClient
+    public sealed class TorBoxClient
     {
         private static readonly HttpClient HttpClient = new() { Timeout = TimeSpan.FromSeconds(60) };
         private const string BaseUrl = "https://api.torbox.app/v1/api";
@@ -217,7 +217,7 @@ namespace LudusaviWrap
             return result.Data;
         }
 
-        public async Task DownloadFileAsync(
+        public static async Task DownloadFileAsync(
             string url,
             string destPath,
             IProgress<(long bytesDownloaded, long totalBytes)>? progress,

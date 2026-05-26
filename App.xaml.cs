@@ -14,9 +14,9 @@ namespace LudusaviWrap
         {
             bool useDark = preference switch
             {
-                "dark"  => true,
+                "dark" => true,
                 "light" => false,
-                _       => IsSystemDark()
+                _ => IsSystemDark()
             };
 
             var theme = useDark ? ApplicationTheme.Dark : ApplicationTheme.Light;
@@ -162,7 +162,7 @@ namespace LudusaviWrap
                     ApplyThemeFromConfig();
 
                     string gameName = args[1];
-                    string gameExe  = args[2];
+                    string gameExe = args[2];
                     Log($"--run mode: game='{gameName}' exe='{gameExe}'");
 
                     ShutdownMode = ShutdownMode.OnExplicitShutdown;
@@ -171,7 +171,7 @@ namespace LudusaviWrap
                         try
                         {
                             var runConfig = new Config();
-                            var library   = await GameLibrary.CreateAsync();
+                            var library = await GameLibrary.CreateAsync();
                             await new RunWorkflow(gameName, gameExe, config: runConfig, library: library).ExecuteAsync();
                         }
                         catch (Exception ex)

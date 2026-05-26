@@ -28,21 +28,21 @@ namespace LudusaviWrap
             _isFirstRun = isFirstRun;
 
             // Populate fields
-            LudusaviPathTextBox.Text      = _config.Data.LudusaviPath;
-            SgdbSwitch.IsChecked          = _config.Data.SteamGridDbEnabled;
-            ApiKeyTextBox.Text            = _config.Data.SteamGridDbApiKey;
+            LudusaviPathTextBox.Text = _config.Data.LudusaviPath;
+            SgdbSwitch.IsChecked = _config.Data.SteamGridDbEnabled;
+            ApiKeyTextBox.Text = _config.Data.SteamGridDbApiKey;
 
-            SyncSwitch.IsChecked          = _config.Data.SyncServerEnabled;
-            SyncUrlTextBox.Text           = _config.Data.SyncServerUrl;
-            SyncApiKeyBox.Password        = _config.Data.SyncServerApiKey;
-            DeviceNameTextBox.Text        = _config.Data.DeviceName;
+            SyncSwitch.IsChecked = _config.Data.SyncServerEnabled;
+            SyncUrlTextBox.Text = _config.Data.SyncServerUrl;
+            SyncApiKeyBox.Password = _config.Data.SyncServerApiKey;
+            DeviceNameTextBox.Text = _config.Data.DeviceName;
 
-            LanSwitch.IsChecked           = _config.Data.LanShareEnabled;
-            LanPortTextBox.Text           = _config.Data.LanSharePort.ToString();
-            LanInstallDirTextBox.Text     = _config.Data.LanInstallDir;
+            LanSwitch.IsChecked = _config.Data.LanShareEnabled;
+            LanPortTextBox.Text = _config.Data.LanSharePort.ToString();
+            LanInstallDirTextBox.Text = _config.Data.LanInstallDir;
 
-            TorBoxSwitch.IsChecked        = _config.Data.TorBoxEnabled;
-            TorBoxApiKeyBox.Password      = _config.Data.TorBoxApiKey;
+            TorBoxSwitch.IsChecked = _config.Data.TorBoxEnabled;
+            TorBoxApiKeyBox.Password = _config.Data.TorBoxApiKey;
             TorBoxDownloadDirTextBox.Text = _config.Data.DownloadDir;
             SelectTouchModeRadio(_config.Data.TouchMode);
             TouchDetectedLabel.Text = _config.TouchscreenDetected ? "Touchscreen present" : "None";
@@ -112,21 +112,21 @@ namespace LudusaviWrap
 
         private void ShowSection(string tag)
         {
-            SectionGeneral.Visibility   = tag == "general"   ? Visibility.Visible : Visibility.Collapsed;
-            SectionArtwork.Visibility   = tag == "artwork"   ? Visibility.Visible : Visibility.Collapsed;
-            SectionSources.Visibility   = tag == "sources"   ? Visibility.Visible : Visibility.Collapsed;
-            SectionLan.Visibility       = tag == "lan"       ? Visibility.Visible : Visibility.Collapsed;
-            SectionSync.Visibility      = tag == "sync"      ? Visibility.Visible : Visibility.Collapsed;
+            SectionGeneral.Visibility = tag == "general" ? Visibility.Visible : Visibility.Collapsed;
+            SectionArtwork.Visibility = tag == "artwork" ? Visibility.Visible : Visibility.Collapsed;
+            SectionSources.Visibility = tag == "sources" ? Visibility.Visible : Visibility.Collapsed;
+            SectionLan.Visibility = tag == "lan" ? Visibility.Visible : Visibility.Collapsed;
+            SectionSync.Visibility = tag == "sync" ? Visibility.Visible : Visibility.Collapsed;
             SectionDownloads.Visibility = tag == "downloads" ? Visibility.Visible : Visibility.Collapsed;
         }
 
         private void UpdateNavPills(string activeTag)
         {
-            SetNavPill(NavGeneralPill,   "general",   activeTag);
-            SetNavPill(NavArtworkPill,   "artwork",   activeTag);
-            SetNavPill(NavSourcesPill,   "sources",   activeTag);
-            SetNavPill(NavLanPill,       "lan",       activeTag);
-            SetNavPill(NavSyncPill,      "sync",      activeTag);
+            SetNavPill(NavGeneralPill, "general", activeTag);
+            SetNavPill(NavArtworkPill, "artwork", activeTag);
+            SetNavPill(NavSourcesPill, "sources", activeTag);
+            SetNavPill(NavLanPill, "lan", activeTag);
+            SetNavPill(NavSyncPill, "sync", activeTag);
             SetNavPill(NavDownloadsPill, "downloads", activeTag);
         }
 
@@ -300,13 +300,13 @@ namespace LudusaviWrap
         private void SelectTouchModeRadio(string mode)
         {
             TouchModeAuto.IsChecked = mode != "on" && mode != "off";
-            TouchModeOn.IsChecked   = mode == "on";
-            TouchModeOff.IsChecked  = mode == "off";
+            TouchModeOn.IsChecked = mode == "on";
+            TouchModeOff.IsChecked = mode == "off";
         }
 
         private string GetSelectedTouchMode()
         {
-            if (TouchModeOn.IsChecked  == true) return "on";
+            if (TouchModeOn.IsChecked == true) return "on";
             if (TouchModeOff.IsChecked == true) return "off";
             return "auto";
         }
@@ -329,8 +329,8 @@ namespace LudusaviWrap
         private void SelectThemeRadio(string theme)
         {
             ThemeSystemRadio.IsChecked = theme == "system" || (theme != "light" && theme != "dark");
-            ThemeLightRadio.IsChecked  = theme == "light";
-            ThemeDarkRadio.IsChecked   = theme == "dark";
+            ThemeLightRadio.IsChecked = theme == "light";
+            ThemeDarkRadio.IsChecked = theme == "dark";
         }
 
         private void ThemeRadio_Changed(object sender, RoutedEventArgs e)
@@ -647,23 +647,23 @@ namespace LudusaviWrap
                 return;
             }
 
-            _config.Data.LudusaviPath       = path;
+            _config.Data.LudusaviPath = path;
             _config.Data.SteamGridDbEnabled = sgdbEnabled;
-            _config.Data.SteamGridDbApiKey  = apiKey;
-            _config.Data.Theme              = themeValue;
-            _config.Data.SyncServerEnabled  = SyncSwitch.IsChecked ?? false;
-            _config.Data.SyncServerUrl      = SyncUrlTextBox.Text.Trim();
-            _config.Data.SyncServerApiKey   = SyncApiKeyBox.Password.Trim();
+            _config.Data.SteamGridDbApiKey = apiKey;
+            _config.Data.Theme = themeValue;
+            _config.Data.SyncServerEnabled = SyncSwitch.IsChecked ?? false;
+            _config.Data.SyncServerUrl = SyncUrlTextBox.Text.Trim();
+            _config.Data.SyncServerApiKey = SyncApiKeyBox.Password.Trim();
             if (!string.IsNullOrWhiteSpace(DeviceNameTextBox.Text))
-                _config.Data.DeviceName     = DeviceNameTextBox.Text.Trim();
-            _config.Data.LanShareEnabled    = LanSwitch.IsChecked ?? false;
-            _config.Data.LanSharePort       = lanPort;
-            _config.Data.LanInstallDir      = LanInstallDirTextBox.Text.Trim();
-            _config.Data.TorBoxEnabled      = TorBoxSwitch.IsChecked ?? false;
-            _config.Data.TorBoxApiKey       = TorBoxApiKeyBox.Password.Trim();
-            _config.Data.DownloadDir        = TorBoxDownloadDirTextBox.Text.Trim();
-            _config.Data.DownloadSources    = new System.Collections.Generic.List<string>(_sources);
-            _config.Data.TouchMode          = GetSelectedTouchMode();
+                _config.Data.DeviceName = DeviceNameTextBox.Text.Trim();
+            _config.Data.LanShareEnabled = LanSwitch.IsChecked ?? false;
+            _config.Data.LanSharePort = lanPort;
+            _config.Data.LanInstallDir = LanInstallDirTextBox.Text.Trim();
+            _config.Data.TorBoxEnabled = TorBoxSwitch.IsChecked ?? false;
+            _config.Data.TorBoxApiKey = TorBoxApiKeyBox.Password.Trim();
+            _config.Data.DownloadDir = TorBoxDownloadDirTextBox.Text.Trim();
+            _config.Data.DownloadSources = new System.Collections.Generic.List<string>(_sources);
+            _config.Data.TouchMode = GetSelectedTouchMode();
             _config.Save();
 
             if (Application.Current is App app)

@@ -151,11 +151,11 @@ namespace LudusaviWrap
                     }
                 });
             };
-            _lanClient = new LanShareClient(config.Data.DeviceName, config.Data.DeviceId);
+            _lanClient = new LanShareClient(config.Data.DeviceId);
 
             GameListBox.ItemsSource = _filteredGames;
             LoadGames();
-            Loaded  += MainWindow_Loaded;
+            Loaded += MainWindow_Loaded;
             Closing += MainWindow_Closing;
         }
 
@@ -197,11 +197,11 @@ namespace LudusaviWrap
 
             local = _sortOrder switch
             {
-                "name"     => local.OrderBy(e => e.GameName, StringComparer.OrdinalIgnoreCase),
-                "added"    => local.OrderByDescending(e => e.AddedAt),
+                "name" => local.OrderBy(e => e.GameName, StringComparer.OrdinalIgnoreCase),
+                "added" => local.OrderByDescending(e => e.AddedAt),
                 "playtime" => local.OrderByDescending(e => e.PlaytimeMinutes),
-                "size"     => local.OrderByDescending(e => e.InstallSizeMb),
-                _          => local.OrderByDescending(e => e.LastPlayedAt ?? DateTime.MinValue),
+                "size" => local.OrderByDescending(e => e.InstallSizeMb),
+                _ => local.OrderByDescending(e => e.LastPlayedAt ?? DateTime.MinValue),
             };
 
             var lanCards = _games.Where(g => g.IsLanCard).AsEnumerable();
@@ -211,7 +211,7 @@ namespace LudusaviWrap
                 lanCards = Enumerable.Empty<GameEntry>();
 
             _filteredGames.Clear();
-            foreach (var e in local)    _filteredGames.Add(e);
+            foreach (var e in local) _filteredGames.Add(e);
             foreach (var e in lanCards) _filteredGames.Add(e);
 
             if (prevId != null)
@@ -800,7 +800,7 @@ namespace LudusaviWrap
                 {
                     var msg = $"Verification complete.\n\nMissing files: {missingFiles.Count}\nCorrupted files: {corruptFiles.Count}\n\nWould you like to delete the corrupted local files and initiate a LAN repair transfer to fix them?";
                     var result = MessageBox.Show(msg, "Verification Discrepancies Found", MessageBoxButton.YesNo, MessageBoxImage.Warning);
-                    
+
                     if (result == MessageBoxResult.Yes)
                     {
                         // Delete corrupted files
@@ -832,7 +832,7 @@ namespace LudusaviWrap
                 VerifyStatusText.Text = "";
                 VerifyProgressBar.Value = 0;
                 VerifyProgressBar.IsIndeterminate = false;
-                
+
                 // Hide after delay
                 _ = Task.Delay(3000).ContinueWith(t =>
                 {
@@ -1198,10 +1198,10 @@ namespace LudusaviWrap
                     {
                         string ext = response.Content.Headers.ContentType?.MediaType switch
                         {
-                            "image/png"  => ".png",
+                            "image/png" => ".png",
                             "image/webp" => ".webp",
-                            "image/gif"  => ".gif",
-                            _            => ".jpg"
+                            "image/gif" => ".gif",
+                            _ => ".jpg"
                         };
                         string imagePath = Path.Combine(coversDir, entry.SafeName + "_p" + ext);
                         await File.WriteAllBytesAsync(imagePath, await response.Content.ReadAsByteArrayAsync());
@@ -1220,10 +1220,10 @@ namespace LudusaviWrap
                     {
                         string ext = response.Content.Headers.ContentType?.MediaType switch
                         {
-                            "image/png"  => ".png",
+                            "image/png" => ".png",
                             "image/webp" => ".webp",
-                            "image/gif"  => ".gif",
-                            _            => ".jpg"
+                            "image/gif" => ".gif",
+                            _ => ".jpg"
                         };
                         string heroPath = Path.Combine(coversDir, entry.SafeName + "_hero" + ext);
                         await File.WriteAllBytesAsync(heroPath, await response.Content.ReadAsByteArrayAsync());
@@ -1245,18 +1245,18 @@ namespace LudusaviWrap
 
                 string destBase = Path.Combine(coversDir, entry.SafeName);
                 var tPortrait = gotCover ? Task.FromResult<string?>(null) : sgdb.DownloadPortraitAsync(results[0].Id, destBase + "_p");
-                var tHero     = gotHero  ? Task.FromResult<string?>(null) : sgdb.DownloadHeroAsync(results[0].Id, destBase + "_hero");
+                var tHero = gotHero ? Task.FromResult<string?>(null) : sgdb.DownloadHeroAsync(results[0].Id, destBase + "_hero");
                 await Task.WhenAll(tPortrait, tHero);
 
                 string? imagePath = gotCover ? null : (tPortrait.Result ?? await sgdb.DownloadGridImageAsync(results[0].Id, entry.SafeName, coversDir));
-                string? heroPath  = gotHero  ? null : tHero.Result;
+                string? heroPath = gotHero ? null : tHero.Result;
 
                 if (imagePath != null || heroPath != null)
                 {
                     Dispatcher.Invoke(() =>
                     {
                         if (imagePath != null) entry.CoverImagePath = imagePath;
-                        if (heroPath  != null) entry.HeroImagePath  = heroPath;
+                        if (heroPath != null) entry.HeroImagePath = heroPath;
                         _library.Update(entry);
                     });
                 }
@@ -1438,7 +1438,7 @@ namespace LudusaviWrap
             foreach (var u in uploads)
             {
                 totalBytes += u.TotalBytes;
-                bytesSent  += u.BytesSent;
+                bytesSent += u.BytesSent;
                 if (string.IsNullOrEmpty(gameName)) gameName = u.GameName;
             }
 
@@ -1680,16 +1680,16 @@ namespace LudusaviWrap
             {
                 var newEntry = new GameEntry
                 {
-                    GameName       = gameName,
-                    SafeName       = LauncherGenerator.MakeSafeFilename(gameName),
-                    ExePath        = exePath ?? "",
+                    GameName = gameName,
+                    SafeName = LauncherGenerator.MakeSafeFilename(gameName),
+                    ExePath = exePath ?? "",
                     GameFolderPath = destFolder,
-                    RunAsAdmin     = runAsAdmin,
-                    InstallSizeMb  = installSizeMb,
-                    InstallSource  = "lan",
+                    RunAsAdmin = runAsAdmin,
+                    InstallSizeMb = installSizeMb,
+                    InstallSource = "lan",
                     LanInstallSourceDeviceName = sourcePeer?.DeviceName,
                     LanInstallSourceDeviceId = sourcePeer?.DeviceId,
-                    AddedAt        = DateTime.UtcNow
+                    AddedAt = DateTime.UtcNow
                 };
                 _library.Add(newEntry);
                 if (runAsAdmin && exePath != null)
@@ -1832,7 +1832,7 @@ namespace LudusaviWrap
                         }
                     });
 
-                    await torbox.DownloadFileAsync(link, destPath, fileProgress, ct);
+                    await TorBoxClient.DownloadFileAsync(link, destPath, fileProgress, ct);
                     totalBytesDownloaded += file.Size;
                 }
 
@@ -1959,7 +1959,7 @@ namespace LudusaviWrap
         private void ApplyTouchLayout(bool touch)
         {
             SidebarColumn.Width = new System.Windows.GridLength(touch ? 380 : 320);
-            HeroRow.Height      = new System.Windows.GridLength(touch ? 340 : 300);
+            HeroRow.Height = new System.Windows.GridLength(touch ? 340 : 300);
         }
 
         private void MainWindow_Loaded(object sender, RoutedEventArgs e)

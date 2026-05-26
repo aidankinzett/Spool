@@ -23,9 +23,9 @@ namespace LudusaviWrap
 
         private static readonly Dictionary<string, string> ColumnToProperty = new(StringComparer.Ordinal)
         {
-            ["Title"]  = "Title",
-            ["Size"]   = "FileSize",
-            ["Date"]   = "UploadDateParsed",
+            ["Title"] = "Title",
+            ["Size"] = "FileSize",
+            ["Date"] = "UploadDateParsed",
             ["Source"] = "SourceName",
         };
 

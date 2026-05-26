@@ -9,7 +9,7 @@ using System.Threading.Tasks;
 
 namespace LudusaviWrap
 {
-    public class SgdbSearchResult
+    public sealed class SgdbSearchResult
     {
         [JsonPropertyName("id")]
         public int Id { get; set; }
@@ -18,13 +18,13 @@ namespace LudusaviWrap
         public string Name { get; set; } = "";
     }
 
-    public class SgdbSearchResponse
+    public sealed class SgdbSearchResponse
     {
         [JsonPropertyName("data")]
         public List<SgdbSearchResult>? Data { get; set; }
     }
 
-    public class SgdbGridResult
+    public sealed class SgdbGridResult
     {
         [JsonPropertyName("url")]
         public string Url { get; set; } = "";
@@ -33,7 +33,7 @@ namespace LudusaviWrap
         public string Mime { get; set; } = "";
     }
 
-    public class SgdbGridResponse
+    public sealed class SgdbGridResponse
     {
         [JsonPropertyName("data")]
         public List<SgdbGridResult>? Data { get; set; }
@@ -46,7 +46,7 @@ namespace LudusaviWrap
     {
     }
 
-    public class SteamGridDbClient
+    public sealed class SteamGridDbClient
     {
         private static readonly HttpClient HttpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
         private readonly string _apiKey;

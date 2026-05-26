@@ -10,7 +10,7 @@ namespace LudusaviWrap
         bool Confirm(string title, string message);
     }
 
-    public class WpfDialogService : IDialogService
+    public sealed class WpfDialogService : IDialogService
     {
         public void ShowError(string title, string message)
             => MessageBox.Show(message, title, MessageBoxButton.OK, MessageBoxImage.Error);
