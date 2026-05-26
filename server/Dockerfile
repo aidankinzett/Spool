@@ -3,6 +3,7 @@ WORKDIR /app
 
 # Stage 1: Install dependencies into temporary directories to cache them
 FROM base AS install
+RUN apk add --no-cache python3 make g++ nodejs
 RUN mkdir -p /temp/dev /temp/prod
 
 # Install development dependencies
