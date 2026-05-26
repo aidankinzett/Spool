@@ -94,13 +94,23 @@ namespace LudusaviWrap
         {
             try
             {
-                foreach (System.Windows.Input.TabletDevice device in System.Windows.Input.Tablet.TabletDevices)
+                var devices = System.Windows.Input.Tablet.TabletDevices;
+                App.Log($"[Config] Touch detection: {devices.Count} tablet device(s) enumerated");
+                foreach (System.Windows.Input.TabletDevice device in devices)
                 {
+                    App.Log($"[Config] Touch detection: device '{device.Name}' type={device.Type}");
                     if (device.Type == System.Windows.Input.TabletDeviceType.Touch)
+                    {
+                        App.Log("[Config] Touch detection: touchscreen found — enabling touch-optimized mode");
                         return true;
+                    }
                 }
+                App.Log("[Config] Touch detection: no touchscreen found");
             }
-            catch { }
+            catch (Exception ex)
+            {
+                App.Log($"[Config] Touch detection failed: {ex.Message}");
+            }
             return false;
         }
 
@@ -116,6 +126,7 @@ namespace LudusaviWrap
                     {
                         if (!json.Contains("\"touch_optimized\""))
                         {
+                            App.Log("[Config] touch_optimized not in saved config — auto-detecting touchscreen");
                             loaded.TouchOptimized = IsTouchscreenConnected();
                         }
                         Data = loaded;
@@ -123,6 +134,7 @@ namespace LudusaviWrap
                 }
                 else
                 {
+                    App.Log("[Config] No config file found — auto-detecting touchscreen for new config");
                     Data.TouchOptimized = IsTouchscreenConnected();
                 }
             }

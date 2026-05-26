@@ -197,6 +197,7 @@ namespace LudusaviWrap
             Log("Loading config...");
             var config = new Config();
             IsTouchOptimized = config.Data.TouchOptimized;
+            Log($"TouchOptimized = {config.Data.TouchOptimized}");
             Log($"LudusaviPath = '{config.Data.LudusaviPath}'");
             Log($"IsLudusaviOk = {config.IsLudusaviOk}");
             Log($"Theme = '{config.Data.Theme}'");
