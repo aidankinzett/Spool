@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  push:
+    branches-ignore:
+      - master
+  pull_request:
+    branches:
+      - master
+
+jobs:
+  test:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '9.x'
+
+      - name: Restore dependencies
+        run: dotnet restore Spool.Tests\Spool.Tests.csproj
+
+      - name: Build
+        run: dotnet build Spool.Tests\Spool.Tests.csproj --no-restore
+
+      - name: Test
+        run: dotnet test Spool.Tests\Spool.Tests.csproj --no-build --logger "console;verbosity=normal"
