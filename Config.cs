@@ -144,8 +144,14 @@ namespace LudusaviWrap
                             if (json.Contains("\"touch_optimized\""))
                             {
                                 // Old config: parse value from raw JSON since [JsonIgnore] prevents deserialization
-                                bool oldVal = json.Contains("\"touch_optimized\": true") ||
-                                              json.Contains("\"touch_optimized\":true");
+                                bool oldVal = false;
+                                try
+                                {
+                                    using var doc = JsonDocument.Parse(json);
+                                    oldVal = doc.RootElement.TryGetProperty("touch_optimized", out var prop)
+                                             && prop.ValueKind == JsonValueKind.True;
+                                }
+                                catch { }
                                 loaded.TouchMode = oldVal ? "on" : "auto";
                                 App.Log($"[Config] Migrated touch_optimized={oldVal} → touch_mode={loaded.TouchMode}");
                             }

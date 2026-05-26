@@ -93,6 +93,37 @@ export interface GamePlaytime {
   total_minutes: number;
 }
 
+// Ensures the backup_events table has the CHECK constraint — CREATE TABLE IF NOT EXISTS
+// won't add constraints to an existing table, so we rebuild if it's missing.
+function ensureBackupEventsConstraint(): void {
+  const row = db.prepare(
+    "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'backup_events'"
+  ).get() as { sql: string } | undefined;
+
+  if (!row || row.sql.includes("CHECK")) return;
+
+  db.exec(`
+    BEGIN;
+    ALTER TABLE backup_events RENAME TO backup_events_old;
+    CREATE TABLE backup_events (
+      id          TEXT PRIMARY KEY,
+      user_id     TEXT NOT NULL REFERENCES users(id),
+      game_name   TEXT NOT NULL,
+      device_id   TEXT NOT NULL,
+      device_name TEXT NOT NULL,
+      event_type  TEXT NOT NULL CHECK(event_type IN ('backup', 'restore')),
+      occurred_at TEXT NOT NULL
+    );
+    INSERT INTO backup_events SELECT * FROM backup_events_old;
+    DROP TABLE backup_events_old;
+    CREATE INDEX IF NOT EXISTS idx_backup_events_lookup
+      ON backup_events (user_id, game_name, event_type, occurred_at DESC);
+    COMMIT;
+  `);
+}
+
+ensureBackupEventsConstraint();
+
 export const STALE_THRESHOLD_MS = 5 * 60 * 1000;
 
 export function isStale(lock: Lock): boolean {

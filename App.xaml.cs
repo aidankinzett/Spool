@@ -221,21 +221,24 @@ namespace LudusaviWrap
             }
 
             Log("Creating MainWindow...");
-            try
+            Dispatcher.InvokeAsync(async () =>
             {
-                var library = new GameLibrary();
-                var mainWindow = new MainWindow(config, library);
-                Log("Calling MainWindow.Show()...");
-                mainWindow.Show();
-                Log("MainWindow.Show() returned");
-            }
-            catch (Exception ex)
-            {
-                Log($"EXCEPTION creating/showing MainWindow: {ex}");
-                MessageBox.Show($"Failed to open main window:\n{ex.Message}\n\nSee debug.log in %LOCALAPPDATA%\\Spool",
-                                "Spool Error", MessageBoxButton.OK, MessageBoxImage.Error);
-                Shutdown();
-            }
+                try
+                {
+                    var library = await GameLibrary.CreateAsync();
+                    var mainWindow = new MainWindow(config, library);
+                    Log("Calling MainWindow.Show()...");
+                    mainWindow.Show();
+                    Log("MainWindow.Show() returned");
+                }
+                catch (Exception ex)
+                {
+                    Log($"EXCEPTION creating/showing MainWindow: {ex}");
+                    MessageBox.Show($"Failed to open main window:\n{ex.Message}\n\nSee debug.log in %LOCALAPPDATA%\\Spool",
+                                    "Spool Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                    Shutdown();
+                }
+            });
         }
 
         private static void ApplyThemeFromConfig()
