@@ -68,7 +68,7 @@ Releases are fully automated via `.github/workflows/release.yml` and triggered b
 **Steps to release a new version:**
 
 ```powershell
-# 1. Ensure all changes are committed and merged to master
+# 1. Ensure all changes are committed and pushed to master
 git checkout master
 git pull
 
@@ -86,6 +86,9 @@ git push origin master v3.0.1
 5. Builds the Inno Setup installer (`spool-setup.exe`)
 6. Creates a GitHub Release with auto-generated release notes and attaches both artifacts
 7. Commits the updated `update.xml` back to `master`
+
+**IMPORTANT — after tagging:**
+After pushing a tag, the release workflow commits an updated `update.xml` back to `master`. Before doing any further work or pushes after a tag, always run `git pull --rebase origin master` to pick up that commit. Skipping this causes the next push to be rejected.
 
 **Version number conventions:**
 - The app version is derived entirely from the git tag — there is no hardcoded version string in source code
