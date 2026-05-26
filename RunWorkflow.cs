@@ -30,8 +30,8 @@ namespace LudusaviWrap
         {
             _gameName = gameName;
             _gameExe  = gameExe;
-            _entry    = entry;
-            _library  = library;
+            _library  = library ?? new GameLibrary();
+            _entry    = entry ?? _library.FindByName(_gameName);
             _config   = new Config();
 
             if (_config.Data.SyncServerEnabled && !string.IsNullOrEmpty(_config.Data.SyncServerUrl))
@@ -173,6 +173,18 @@ namespace LudusaviWrap
 
             DismissProgressToast();
             ShowToast("Saves Restored", $"{_gameName} saves restored — launching game.");
+
+            // Update last played timestamp locally and sync to server
+            if (_entry != null)
+            {
+                _entry.LastPlayedAt = DateTime.UtcNow;
+                _library?.Update(_entry);
+
+                if (_lockClient != null)
+                {
+                    _ = _lockClient.UpdateLastPlayedRecordAsync(_entry.GameName, _entry.LastPlayedAt.Value);
+                }
+            }
 
             using var heartbeatCts = new CancellationTokenSource();
             Task? heartbeatTask = _lockClient != null

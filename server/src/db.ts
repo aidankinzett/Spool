@@ -38,6 +38,13 @@ db.exec(`
 
   CREATE INDEX IF NOT EXISTS idx_backup_events_lookup
     ON backup_events (user_id, game_name, event_type, occurred_at DESC);
+
+  CREATE TABLE IF NOT EXISTS game_last_played (
+    user_id        TEXT NOT NULL REFERENCES users(id),
+    game_name      TEXT NOT NULL,
+    last_played_at TEXT NOT NULL,
+    PRIMARY KEY(user_id, game_name)
+  );
 `);
 
 export interface User {
@@ -65,6 +72,12 @@ export interface Lock {
   device_name: string;
   locked_at: string;
   last_heartbeat: string;
+}
+
+export interface GameLastPlayed {
+  user_id: string;
+  game_name: string;
+  last_played_at: string;
 }
 
 export const STALE_THRESHOLD_MS = 5 * 60 * 1000;
@@ -110,5 +123,14 @@ export const queries = {
     `SELECT * FROM backup_events
      WHERE user_id = ? AND game_name = ? AND event_type = 'backup'
      ORDER BY occurred_at DESC LIMIT 1`
+  ),
+  getLastPlayed: db.prepare<[string], GameLastPlayed>(
+    "SELECT * FROM game_last_played WHERE user_id = ?"
+  ),
+  upsertLastPlayed: db.prepare(
+    `INSERT INTO game_last_played (user_id, game_name, last_played_at)
+     VALUES (?, ?, ?)
+     ON CONFLICT(user_id, game_name) DO UPDATE SET
+       last_played_at = excluded.last_played_at`
   ),
 };

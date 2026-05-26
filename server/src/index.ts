@@ -3,12 +3,14 @@ import { Hono } from "hono";
 import { authRouter } from "./routes/auth.js";
 import { locksRouter } from "./routes/locks.js";
 import { eventsRouter } from "./routes/events.js";
+import { lastPlayedRouter } from "./routes/last-played.js";
 
 const app = new Hono();
 
 app.route("/auth", authRouter);
 app.route("/locks", locksRouter);
 app.route("/events", eventsRouter);
+app.route("/last-played", lastPlayedRouter);
 
 const serverVersion = (process.env.APP_VERSION ?? "dev").replace(/^v/, "");
 

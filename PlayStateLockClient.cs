@@ -79,6 +79,15 @@ namespace LudusaviWrap
         public string? ApiKey { get; set; }
     }
 
+    public class LastPlayedRecord
+    {
+        [JsonPropertyName("game_name")]
+        public string GameName { get; set; } = "";
+
+        [JsonPropertyName("last_played_at")]
+        public string LastPlayedAt { get; set; } = "";
+    }
+
     [JsonSourceGenerationOptions(WriteIndented = false)]
     [JsonSerializable(typeof(LockStatusResponse))]
     [JsonSerializable(typeof(AcquireRequest))]
@@ -87,6 +96,8 @@ namespace LudusaviWrap
     [JsonSerializable(typeof(RegisterResponse))]
     [JsonSerializable(typeof(HealthResponse))]
     [JsonSerializable(typeof(LatestBackupResponse))]
+    [JsonSerializable(typeof(LastPlayedRecord))]
+    [JsonSerializable(typeof(List<LastPlayedRecord>))]
     internal partial class LockSourceGenerationContext : JsonSerializerContext
     {
     }
@@ -363,6 +374,44 @@ namespace LudusaviWrap
             catch (TaskCanceledException)
             {
                 return (null, "Request timed out.");
+            }
+        }
+
+        public async Task<List<LastPlayedRecord>?> GetLastPlayedRecordsAsync()
+        {
+            try
+            {
+                using var req = BuildRequest(HttpMethod.Get, "/last-played");
+                using var resp = await HttpClient.SendAsync(req);
+                if (!resp.IsSuccessStatusCode) return null;
+
+                string json = await resp.Content.ReadAsStringAsync();
+                return JsonSerializer.Deserialize(json, LockSourceGenerationContext.Default.ListLastPlayedRecord);
+            }
+            catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException)
+            {
+                App.Log($"GetLastPlayedRecordsAsync failed: {ex.Message}");
+                return null;
+            }
+        }
+
+        public async Task UpdateLastPlayedRecordAsync(string gameName, DateTime lastPlayedAt)
+        {
+            try
+            {
+                using var req = BuildRequest(HttpMethod.Post, "/last-played");
+                var body = new LastPlayedRecord { GameName = gameName, LastPlayedAt = lastPlayedAt.ToString("o") };
+                req.Content = JsonContent.Create(body, LockSourceGenerationContext.Default.LastPlayedRecord);
+
+                using var resp = await HttpClient.SendAsync(req);
+                if (!resp.IsSuccessStatusCode)
+                {
+                    App.Log($"UpdateLastPlayedRecordAsync failed for '{gameName}': status {resp.StatusCode}");
+                }
+            }
+            catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException)
+            {
+                App.Log($"UpdateLastPlayedRecordAsync failed for '{gameName}': {ex.Message}");
             }
         }
     }

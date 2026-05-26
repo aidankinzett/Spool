@@ -1481,6 +1481,11 @@ namespace LudusaviWrap
             _scanCts = new CancellationTokenSource();
             _ = RunLanScanLoopAsync();
 
+            if (_config.Data.SyncServerEnabled && !string.IsNullOrEmpty(_config.Data.SyncServerUrl))
+            {
+                _ = SyncLastPlayedAsync();
+            }
+
             if (System.Version.TryParse(Version, out var parsedVersion))
                 AutoUpdaterDotNET.AutoUpdater.InstalledVersion = parsedVersion;
 
@@ -1515,6 +1520,64 @@ namespace LudusaviWrap
 
             AutoUpdaterDotNET.AutoUpdater.Start(
                 "https://raw.githubusercontent.com/aidankinzett/Spool/master/update.xml");
+        }
+
+        private async Task SyncLastPlayedAsync()
+        {
+            try
+            {
+                var client = new PlayStateLockClient(
+                    _config.Data.SyncServerUrl,
+                    _config.Data.SyncServerApiKey,
+                    _config.Data.DeviceId,
+                    _config.Data.DeviceName);
+
+                var serverRecords = await client.GetLastPlayedRecordsAsync();
+                if (serverRecords == null) return;
+
+                bool updatedAny = false;
+                foreach (var serverRecord in serverRecords)
+                {
+                    var localEntry = _library.FindByName(serverRecord.GameName);
+                    if (localEntry != null)
+                    {
+                        if (DateTime.TryParse(serverRecord.LastPlayedAt, out var serverTime))
+                        {
+                            serverTime = serverTime.ToUniversalTime();
+                            if (!localEntry.LastPlayedAt.HasValue || serverTime > localEntry.LastPlayedAt.Value.ToUniversalTime())
+                            {
+                                localEntry.LastPlayedAt = serverTime;
+                                _library.Update(localEntry);
+                                updatedAny = true;
+                            }
+                            else if (localEntry.LastPlayedAt.Value.ToUniversalTime() > serverTime)
+                            {
+                                // Local is newer, push to server
+                                _ = client.UpdateLastPlayedRecordAsync(localEntry.GameName, localEntry.LastPlayedAt.Value);
+                            }
+                        }
+                    }
+                }
+
+                // Push local-only game timestamps to the server
+                var serverGames = new HashSet<string>(serverRecords.Select(r => r.GameName), StringComparer.OrdinalIgnoreCase);
+                foreach (var localEntry in _library.Entries)
+                {
+                    if (localEntry.LastPlayedAt.HasValue && !serverGames.Contains(localEntry.GameName))
+                    {
+                        _ = client.UpdateLastPlayedRecordAsync(localEntry.GameName, localEntry.LastPlayedAt.Value);
+                    }
+                }
+
+                if (updatedAny)
+                {
+                    Dispatcher.Invoke(() => LoadGames());
+                }
+            }
+            catch (Exception ex)
+            {
+                App.Log($"SyncLastPlayedAsync failed: {ex.Message}");
+            }
         }
 
         private void MainWindow_Closing(object? sender, System.ComponentModel.CancelEventArgs e)
