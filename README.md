@@ -18,6 +18,16 @@ Written in C# / WPF for instant startup, high-DPI / handheld touch support, and 
 
 ---
 
+## Screenshots
+
+| Main library | Add game | Settings |
+|---|---|---|
+| ![Main library](screenshots/main-window.png) | ![Add game](screenshots/add-game.png) | ![Settings](screenshots/settings.png) |
+
+![Game detail](screenshots/game-detail.png)
+
+---
+
 ## Table of Contents
 
 - [Download](#download)
@@ -28,6 +38,7 @@ Written in C# / WPF for instant startup, high-DPI / handheld touch support, and 
   - [Generating shortcuts](#generating-shortcuts)
 - [Features](#features)
   - [Game Library](#game-library)
+  - [Playtime Tracking](#playtime-tracking)
   - [LAN Game Sharing](#lan-game-sharing)
   - [Cloud Sync & Cross-Device Lock](#cloud-sync--cross-device-lock)
   - [TorBox Downloader Integration](#torbox-downloader-integration)
@@ -53,15 +64,16 @@ Grab the latest installer `spool-setup.exe` or the standalone executable from th
 
 ### Adding games to your library
 
-1. **First launch** — point the app at your `ludusavi.exe` (or let it autodetect).
+1. **First launch** — point the app at your `ludusavi.exe` in Settings (or let it autodetect).
 2. Click **Add Game**.
-3. **Browse** to the game executable.
-4. **Search** for the game name as Ludusavi knows it, or type it manually.
-5. Click **Add to Library** — the game is saved and cover art is fetched automatically from SteamGridDB (if configured).
+3. **Drop the game's `.exe`** onto the dialog, or click "browse for one".
+4. Spool queries Ludusavi to auto-identify the game — a ranked list of candidates appears with confidence scores. If only one strong match is found it is pre-selected; if there are several, pick the right one.
+5. Use **Search Manually** if auto-detection finds nothing.
+6. Click **Add to Library**, **Armoury Crate**, or **Add to Steam** — cover art is fetched automatically from SteamGridDB (if configured).
 
 ### Playing a game
 
-Click the **Play** button on any game card. Spool will:
+Select a game in the sidebar and click the **Play** button. Spool will:
 1. Restore your saves via Ludusavi (with cloud sync if configured)
 2. Check that no other device is already playing the game (if a sync server is configured)
 3. Launch the game and wait for it to close
@@ -72,11 +84,11 @@ The app hides itself during gameplay and communicates progress through **Windows
 
 ### Generating shortcuts
 
-Right-click any game card for shortcut options:
+Select a game and use the action buttons in the detail panel:
 
-* **Generate for Armoury Crate** — creates a `launcher.exe` in `%LOCALAPPDATA%\Spool\launchers\`. In Armoury Crate: Library → Manage Library → Add, then browse to that file.
+* **Armoury Crate** — creates a `launcher.exe` in `%LOCALAPPDATA%\Spool\launchers\`. In Armoury Crate: Library → Manage Library → Add, then browse to that file.
 * **Add to Steam** — writes the shortcut directly to Steam's `shortcuts.vdf` and downloads all artwork types (grid, portrait, hero, logo) from SteamGridDB.
-* **Set Game Folder** — manually set the installation folder for a game (used by LAN sharing).
+* **Game settings → Install folder** — manually set the installation folder for a game (used by LAN sharing).
 
 ---
 
@@ -84,17 +96,34 @@ Right-click any game card for shortcut options:
 
 ### Game Library
 
-The main window displays your games as a cover-art grid (portrait cards, 180×265 px). Each card shows:
+The main window uses a sidebar + detail layout:
 
-- Full cover art fetched from SteamGridDB
-- Game name with text wrapping
-- A **Play** button
-- A **save sync status badge** (shown after the first play session):
-  - Green — saves are synced across devices
-  - Orange — local save is newer than cloud
-  - Blue — cloud save is newer than local
+**Sidebar (left)**
+- Searchable game list with cover thumbnails, last-played time, and save-sync status badge
+- Filter tabs: **All**, **Recent**, **On LAN**, **Unplayed**
+
+**Detail panel (right)**
+- Large cover art, game title, and a **Play** button
+- At-a-glance stats: last played, total playtime, install size, sync status
+- Action buttons: Open in Editor, Generate for Armoury Crate, Add to Steam, Refetch artwork
+- Game settings: run as administrator, install folder (used for LAN sharing)
+- **Remove** button
+
+**Library stats header** shows aggregate totals: number of games, total playtime, save backup count, and total disk usage.
+
+The **save-sync status badge** updates after each session:
+- Green — saves are synced across devices
+- Orange — local save is newer than cloud
+- Blue — cloud save is newer than local
 
 Games are stored in `%LOCALAPPDATA%\Spool\library.json` with atomic writes to prevent corruption.
+
+### Playtime Tracking
+
+Spool measures how long each play session lasts and accumulates total playtime per game.
+
+- Playtime is displayed on each game's detail panel and in the library stats header.
+- If a sync server is configured, playtime is pushed after every session and pulled on startup, merging using the higher of the local or server value — so totals stay accurate across multiple devices.
 
 ### LAN Game Sharing
 
@@ -185,20 +214,20 @@ When a new version is available, Spool shows a simple yes/no prompt. Accepting d
 
 ## Settings
 
-Open Settings (gear icon) to configure:
+Open Settings (gear icon) to configure. Settings are organised into tabs:
 
-| Setting | Description |
-|---|---|
-| Ludusavi Path | Path to `ludusavi.exe`. Click Auto-detect to find it automatically. |
-| SteamGridDB | API key for automatic cover art download. |
-| Theme | System / Light / Dark. |
-| Sync Server | URL and API key for the cloud sync / play-state-lock server. |
-| Device Name | How this machine appears to peers and on the sync server. |
-| LAN Share | Enable/disable, port number, and default install directory. |
-| TorBox | API key and local download directory for the debrid downloader. |
-| Download Sources | List of Hydra-format catalogue URLs for the Browse Games window. |
+| Tab | Setting | Description |
+|---|---|---|
+| General | Ludusavi executable | Path to `ludusavi.exe`. Shows "Detected" if found automatically. |
+| General | Theme | System / Light / Dark — applied live across all open windows. |
+| Artwork | SteamGridDB | API key for automatic cover art download. |
+| Sources | Download Sources | Hydra-format catalogue URLs for the Browse Games window. |
+| LAN sharing | LAN Share | Enable/disable, port number, and default install directory for received games. |
+| Cloud sync | Sync Server | URL and API key for the cloud sync / play-state-lock server. |
+| Cloud sync | Device Name | How this machine appears to peers and on the sync server. |
+| Downloads | TorBox | API key and local download directory for the debrid downloader. |
 
-The Settings window is scrollable and resizable, making it usable on small screens and handhelds.
+The Settings window is resizable, making it usable on small screens and handhelds.
 
 ---
 
