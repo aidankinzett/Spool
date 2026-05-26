@@ -4,6 +4,7 @@ using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 using LudusaviWrap;
+using Microsoft.Extensions.Time.Testing;
 using Xunit;
 
 namespace Spool.Tests;
@@ -48,22 +49,28 @@ class FakeLockClient : IPlayStateLockClient
 class FakeRunWorkflow : RunWorkflow
 {
     private readonly Queue<ProcessResult> _processResults;
+    private readonly FakeTimeProvider?    _fakeTimeProvider;
+    private readonly TimeSpan             _gameSessionDuration;
 
-    public bool GameLaunched    { get; private set; }
+    public bool GameLaunched     { get; private set; }
     public int  ProcessCallCount { get; private set; }
 
     public FakeRunWorkflow(
         string gameName,
         string gameExe,
-        GameEntry?            entry              = null,
-        GameLibrary?          library            = null,
-        Config?               config             = null,
-        IDialogService?       dialogs            = null,
-        IPlayStateLockClient? lockClientOverride = null,
-        IEnumerable<ProcessResult>? processResults = null)
-        : base(gameName, gameExe, entry, library, config, dialogs, lockClientOverride)
+        GameEntry?            entry               = null,
+        GameLibrary?          library             = null,
+        Config?               config              = null,
+        IDialogService?       dialogs             = null,
+        IPlayStateLockClient? lockClientOverride  = null,
+        IEnumerable<ProcessResult>? processResults = null,
+        FakeTimeProvider?     clock               = null,
+        TimeSpan?             gameSessionDuration = null)
+        : base(gameName, gameExe, entry, library, config, dialogs, lockClientOverride, clock)
     {
-        _processResults = new Queue<ProcessResult>(processResults ?? Array.Empty<ProcessResult>());
+        _processResults      = new Queue<ProcessResult>(processResults ?? Array.Empty<ProcessResult>());
+        _fakeTimeProvider    = clock;
+        _gameSessionDuration = gameSessionDuration ?? TimeSpan.Zero;
     }
 
     protected override Task<ProcessResult> RunProcessAsync(string filename, string arguments)
@@ -77,6 +84,9 @@ class FakeRunWorkflow : RunWorkflow
     protected override Task RunGameAsync(string exePath)
     {
         GameLaunched = true;
+        // Advance the fake clock so session-duration calculations see elapsed time
+        if (_fakeTimeProvider != null && _gameSessionDuration > TimeSpan.Zero)
+            _fakeTimeProvider.Advance(_gameSessionDuration);
         return Task.CompletedTask;
     }
 }
@@ -377,5 +387,85 @@ public class RunWorkflowTests : IClassFixture<WorkflowTempFilesFixture>, IDispos
         Assert.NotEmpty(dialogs.Errors);
         Assert.Equal(0, wf.ProcessCallCount);
         Assert.False(wf.GameLaunched);
+    }
+
+    // ── TimeProvider: session tracking ────────────────────────────────────────
+
+    [Fact]
+    public async Task Launch_SetsLastPlayedAt_ToClockTimeAtSessionStart()
+    {
+        // Arrange
+        var sessionStart = new DateTimeOffset(2025, 3, 15, 10, 0, 0, TimeSpan.Zero);
+        var clock        = new FakeTimeProvider(sessionStart);
+        var entry        = new GameEntryBuilder().WithName("My Game").Build();
+        var lib          = MakeLibrary();
+        lib.Add(entry);
+
+        var wf = new FakeRunWorkflow("My Game", _fakeGameExePath,
+            entry:   entry,
+            config:  MakeConfig(),
+            library: lib,
+            clock:   clock,
+            processResults: new[] { RestoreSuccess(), BackupSuccess() });
+
+        // Act
+        await wf.ExecuteAsync();
+
+        // Assert
+        Assert.Equal(sessionStart.UtcDateTime, entry.LastPlayedAt);
+    }
+
+    [Fact]
+    public async Task Launch_AccumulatesPlaytime_WhenSessionExceedsOneMinute()
+    {
+        // Arrange
+        var clock = new FakeTimeProvider(DateTimeOffset.UtcNow);
+        var entry = new GameEntryBuilder()
+            .WithName("My Game")
+            .WithPlaytime(30)   // 30 minutes already logged
+            .Build();
+        var lib = MakeLibrary();
+        lib.Add(entry);
+
+        var wf = new FakeRunWorkflow("My Game", _fakeGameExePath,
+            entry:               entry,
+            config:              MakeConfig(),
+            library:             lib,
+            clock:               clock,
+            gameSessionDuration: TimeSpan.FromMinutes(90),
+            processResults:      new[] { RestoreSuccess(), BackupSuccess() });
+
+        // Act
+        await wf.ExecuteAsync();
+
+        // Assert — 30 pre-existing + 90 new = 120
+        Assert.Equal(120, entry.PlaytimeMinutes);
+    }
+
+    [Fact]
+    public async Task Launch_DoesNotAccumulatePlaytime_WhenSessionUnderOneMinute()
+    {
+        // Arrange
+        var clock = new FakeTimeProvider(DateTimeOffset.UtcNow);
+        var entry = new GameEntryBuilder()
+            .WithName("My Game")
+            .WithPlaytime(10)
+            .Build();
+        var lib = MakeLibrary();
+        lib.Add(entry);
+
+        var wf = new FakeRunWorkflow("My Game", _fakeGameExePath,
+            entry:               entry,
+            config:              MakeConfig(),
+            library:             lib,
+            clock:               clock,
+            gameSessionDuration: TimeSpan.FromSeconds(45),  // < 1 minute — should not count
+            processResults:      new[] { RestoreSuccess(), BackupSuccess() });
+
+        // Act
+        await wf.ExecuteAsync();
+
+        // Assert — playtime unchanged
+        Assert.Equal(10, entry.PlaytimeMinutes);
     }
 }

@@ -203,27 +203,28 @@ public class GameLibraryTests : IDisposable
     [Fact]
     public void Reload_FullRoundtrip_AllFieldsSurvive()
     {
-        var lib   = NewLibrary();
-        var ts    = new DateTime(2024, 3, 10, 8, 0, 0, DateTimeKind.Utc);
-        var entry = new GameEntry
-        {
-            GameName        = "Elden Ring",
-            ExePath         = @"C:\Games\EldenRing\game.exe",
-            SafeName        = "Elden Ring",
-            PlaytimeMinutes = 350,
-            LastPlayedAt    = ts,
-            RunAsAdmin      = true,
-            LanShared       = true,
-        };
+        // Arrange
+        var lib = NewLibrary();
+        var ts  = new DateTime(2024, 3, 10, 8, 0, 0, DateTimeKind.Utc);
+        var entry = new GameEntryBuilder()
+            .WithName("Elden Ring")
+            .WithExePath(@"C:\Games\EldenRing\game.exe")
+            .WithPlaytime(350)
+            .WithLastPlayedAt(ts)
+            .AsAdmin()
+            .SharedOnLan()
+            .Build();
         lib.Add(entry);
 
+        // Act
         var reloaded = NewLibrary();
         var r = reloaded.Entries[0];
 
-        Assert.Equal("Elden Ring",            r.GameName);
+        // Assert
+        Assert.Equal("Elden Ring",                   r.GameName);
         Assert.Equal(@"C:\Games\EldenRing\game.exe", r.ExePath);
-        Assert.Equal(350,                     r.PlaytimeMinutes);
-        Assert.Equal(ts,                      r.LastPlayedAt);
+        Assert.Equal(350,                            r.PlaytimeMinutes);
+        Assert.Equal(ts,                             r.LastPlayedAt);
         Assert.True(r.RunAsAdmin);
         Assert.True(r.LanShared);
     }
