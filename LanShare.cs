@@ -20,6 +20,7 @@ namespace LudusaviWrap
         [JsonPropertyName("game_name")]         public string GameName { get; set; } = "";
         [JsonPropertyName("run_as_admin")]      public bool   RunAsAdmin { get; set; }
         [JsonPropertyName("relative_exe_path")] public string RelativeExePath { get; set; } = "";
+        [JsonPropertyName("install_size_mb")]   public double InstallSizeMb { get; set; }
     }
 
     public class LanAnnounce
@@ -179,6 +180,24 @@ namespace LudusaviWrap
         }
 
         public bool IsRunning { get; private set; }
+
+        public Action<string, List<LanFileEntry>>? OnManifestBuilt { get; set; }
+
+        public void SetCachedManifest(string gameName, List<LanFileEntry> manifest)
+        {
+            lock (_cacheLock)
+            {
+                _manifestCache[gameName] = manifest;
+            }
+        }
+
+        public bool TryGetCachedManifest(string gameName, out List<LanFileEntry> manifest)
+        {
+            lock (_cacheLock)
+            {
+                return _manifestCache.TryGetValue(gameName, out manifest!);
+            }
+        }
 
         public LanShareServer(string deviceName, string deviceId)
         {
@@ -404,7 +423,8 @@ namespace LudusaviWrap
             {
                 GameName = entry.GameName,
                 RunAsAdmin = entry.RunAsAdmin || RegistryHelper.GetCompatFlagRunAsAdmin(entry.ExePath),
-                RelativeExePath = relExePath
+                RelativeExePath = relExePath,
+                InstallSizeMb = entry.InstallSizeMb
             };
 
             byte[] json = JsonSerializer.SerializeToUtf8Bytes(meta, LanJsonContext.Default.LanGameMetadata);
@@ -511,13 +531,14 @@ namespace LudusaviWrap
             {
                 manifest = await BuildManifestAsync(entry.GameFolderPath, ct);
                 lock (_cacheLock) _manifestCache[gameName] = manifest;
+                OnManifestBuilt?.Invoke(gameName, manifest);
             }
 
             byte[] json = JsonSerializer.SerializeToUtf8Bytes(manifest, LanJsonContext.Default.ListLanFileEntry);
             await SendResponseAsync(stream, 200, "application/json", json, ct);
         }
 
-        private static Task<List<LanFileEntry>> BuildManifestAsync(string folderPath, CancellationToken ct)
+        public static Task<List<LanFileEntry>> BuildManifestAsync(string folderPath, CancellationToken ct)
             => Task.Run(() =>
         {
             var entries = new List<LanFileEntry>();

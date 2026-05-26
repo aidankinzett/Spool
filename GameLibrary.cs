@@ -21,6 +21,7 @@ namespace LudusaviWrap
         private int _saveBackupCount;
         private DateTime? _saveLastBackedUpAt;
         private double _saveBackupSizeMb;
+        private double _installSizeMb;
 
         [JsonIgnore]
         public bool IsLanCard
@@ -117,7 +118,11 @@ namespace LudusaviWrap
         public DateTime? ReleaseDate { get; set; }
 
         [JsonPropertyName("install_size_mb")]
-        public double InstallSizeMb { get; set; }
+        public double InstallSizeMb
+        {
+            get => _installSizeMb;
+            set { _installSizeMb = value; OnPropertyChanged(); }
+        }
 
         // ── Play tracking ──────────────────────────────────────────────────────
 

@@ -133,6 +133,23 @@ namespace LudusaviWrap
             _lanServer = new LanShareServer(config.Data.DeviceName, config.Data.DeviceId);
             _lanServer.UploadsChanged += LanServer_UploadsChanged;
             _lanServer.PeerActivityDetected += LanServer_PeerActivityDetected;
+            _lanServer.OnManifestBuilt = (gameName, manifest) =>
+            {
+                Dispatcher.Invoke(() =>
+                {
+                    var entry = _library.FindByName(gameName);
+                    if (entry != null)
+                    {
+                        long totalBytes = manifest.Sum(f => f.Size);
+                        double sizeMb = totalBytes / (1024.0 * 1024.0);
+                        if (Math.Abs(entry.InstallSizeMb - sizeMb) > 0.01)
+                        {
+                            entry.InstallSizeMb = sizeMb;
+                            _library.Update(entry);
+                        }
+                    }
+                });
+            };
             _lanClient = new LanShareClient(config.Data.DeviceName, config.Data.DeviceId);
 
             GameListBox.ItemsSource = _filteredGames;
@@ -222,6 +239,67 @@ namespace LudusaviWrap
                 : $"{totalMb / 1024:0.0} GB";
         }
 
+        private async Task StartSizeCalculationAsync(GameEntry entry)
+        {
+            if (string.IsNullOrEmpty(entry.GameFolderPath) || !Directory.Exists(entry.GameFolderPath))
+            {
+                Dispatcher.Invoke(() =>
+                {
+                    if (entry.InstallSizeMb != 0)
+                    {
+                        entry.InstallSizeMb = 0;
+                        _library.Update(entry);
+                    }
+                });
+                return;
+            }
+
+            try
+            {
+                List<LanFileEntry> manifest;
+                if (_lanServer.TryGetCachedManifest(entry.GameName, out var cached))
+                {
+                    manifest = cached;
+                }
+                else
+                {
+                    manifest = await LanShareServer.BuildManifestAsync(entry.GameFolderPath, CancellationToken.None);
+                    _lanServer.SetCachedManifest(entry.GameName, manifest);
+                }
+
+                long totalBytes = manifest.Sum(f => f.Size);
+                double sizeMb = totalBytes / (1024.0 * 1024.0);
+
+                Dispatcher.Invoke(() =>
+                {
+                    if (Math.Abs(entry.InstallSizeMb - sizeMb) > 0.01)
+                    {
+                        entry.InstallSizeMb = sizeMb;
+                        _library.Update(entry);
+                    }
+                });
+            }
+            catch (Exception ex)
+            {
+                App.Log($"Failed to calculate folder size for '{entry.GameName}': {ex.Message}");
+            }
+        }
+
+        private async Task ScanAllUnsizedGamesAsync()
+        {
+            var unsized = Dispatcher.Invoke(() =>
+            {
+                return _library.Entries
+                    .Where(e => e.InstallSizeMb <= 0 && !string.IsNullOrEmpty(e.GameFolderPath) && Directory.Exists(e.GameFolderPath))
+                    .ToList();
+            });
+
+            foreach (var entry in unsized)
+            {
+                await StartSizeCalculationAsync(entry);
+            }
+        }
+
         // ── Filter / sort / search ───────────────────────────────────────────────
 
         private void SearchBox_TextChanged(object sender, TextChangedEventArgs e)
@@ -256,12 +334,33 @@ namespace LudusaviWrap
 
         // ── Game selection ───────────────────────────────────────────────────────
 
-        private void GameListBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        private async void GameListBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
         {
             if (_updatingDetail) return;
             _updatingDetail = true;
-            SelectedGame = GameListBox.SelectedItem as GameEntry;
-            Dispatcher.BeginInvoke(new Action(() => _updatingDetail = false));
+            var selected = GameListBox.SelectedItem as GameEntry;
+            SelectedGame = selected;
+            _ = Dispatcher.BeginInvoke(new Action(() => _updatingDetail = false));
+
+            if (selected != null && selected.IsLanCard && selected.InstallSizeMb <= 0)
+            {
+                var peer = selected.LanPeers?.FirstOrDefault();
+                if (peer != null)
+                {
+                    try
+                    {
+                        var meta = await _lanClient.GetMetadataAsync(peer, selected.GameName);
+                        if (meta != null && selected == SelectedGame)
+                        {
+                            selected.InstallSizeMb = meta.InstallSizeMb;
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        App.Log($"Failed to fetch metadata on selection for '{selected.GameName}': {ex.Message}");
+                    }
+                }
+            }
         }
 
         // ── Play ─────────────────────────────────────────────────────────────────
@@ -312,6 +411,7 @@ namespace LudusaviWrap
                         _games.Add(entry);
                 ApplyFilterSort();
                 _lanServer.BroadcastAnnounce();
+                _ = ScanAllUnsizedGamesAsync();
             }
         }
 
@@ -599,6 +699,7 @@ namespace LudusaviWrap
             _library.Update(entry);
             _lanServer.InvalidateManifestCache();
             _lanServer.BroadcastAnnounce();
+            _ = StartSizeCalculationAsync(entry);
         }
 
         private void LanShare_Unchecked(object sender, RoutedEventArgs e)
@@ -627,6 +728,7 @@ namespace LudusaviWrap
             _library.Update(entry);
             _lanServer.InvalidateManifestCache();
             _lanServer.BroadcastAnnounce();
+            _ = StartSizeCalculationAsync(entry);
         }
 
         // ── Save management ──────────────────────────────────────────────────────
@@ -1181,6 +1283,7 @@ namespace LudusaviWrap
         {
             bool runAsAdmin = false;
             string? relativeExePath = null;
+            double installSizeMb = 0;
 
             if (sourcePeer != null)
             {
@@ -1191,6 +1294,7 @@ namespace LudusaviWrap
                     {
                         runAsAdmin = meta.RunAsAdmin;
                         relativeExePath = meta.RelativeExePath;
+                        installSizeMb = meta.InstallSizeMb;
                     }
                 }
                 catch (Exception ex)
@@ -1222,7 +1326,15 @@ namespace LudusaviWrap
                     existing.RunAsAdmin = runAsAdmin;
                     if (runAsAdmin) RegistryHelper.SetCompatFlagRunAsAdmin(exePath);
                 }
+                if (installSizeMb > 0)
+                {
+                    existing.InstallSizeMb = installSizeMb;
+                }
                 _library.Update(existing);
+                if (installSizeMb <= 0)
+                {
+                    _ = StartSizeCalculationAsync(existing);
+                }
             }
             else
             {
@@ -1233,11 +1345,16 @@ namespace LudusaviWrap
                     ExePath        = exePath ?? "",
                     GameFolderPath = destFolder,
                     RunAsAdmin     = runAsAdmin,
+                    InstallSizeMb  = installSizeMb,
                     AddedAt        = DateTime.UtcNow
                 };
                 _library.Add(newEntry);
                 if (runAsAdmin && exePath != null)
                     RegistryHelper.SetCompatFlagRunAsAdmin(exePath);
+                if (installSizeMb <= 0)
+                {
+                    _ = StartSizeCalculationAsync(newEntry);
+                }
             }
 
             LoadGames();
@@ -1501,6 +1618,7 @@ namespace LudusaviWrap
             StartLanServerIfEnabled();
             _scanCts = new CancellationTokenSource();
             _ = RunLanScanLoopAsync();
+            _ = ScanAllUnsizedGamesAsync();
 
             if (_config.Data.SyncServerEnabled && !string.IsNullOrEmpty(_config.Data.SyncServerUrl))
             {
