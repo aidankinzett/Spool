@@ -724,7 +724,7 @@
                                 </Border>
                                 <TextBlock Style="{StaticResource SectionTitle}" Text="Cloud sync" Margin="12,0,0,0" VerticalAlignment="Center"/>
                             </StackPanel>
-                            <TextBlock Style="{StaticResource SectionSubtitle}" Text="Prevent launching a game that's already running on another device."/>
+                            <TextBlock Style="{StaticResource SectionSubtitle}" Text="Keep saves, playtime, and play state in sync across all your devices."/>
                         </StackPanel>
 
                         <Border Background="{DynamicResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}" BorderThickness="1" CornerRadius="6">
@@ -750,7 +750,7 @@
                                                 </StackPanel>
                                             </Border>
                                         </StackPanel>
-                                        <TextBlock Text="Coordinate game session locks across all your devices."
+                                        <TextBlock Text="Syncs saves, playtime, last played, and session locks across your devices."
                                                    FontSize="12" Foreground="{DynamicResource TextFillColorSecondaryBrush}" Margin="0,2,0,0"/>
                                     </StackPanel>
                                     <StackPanel Grid.Column="3" Orientation="Horizontal" VerticalAlignment="Center">
