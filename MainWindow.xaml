@@ -233,6 +233,13 @@
                                                            Margin="0,0,4,0"/>
                                             <TextBlock Text="{Binding LastPlayedAt, Converter={StaticResource RelDate}}"
                                                        FontSize="11" Foreground="#80FFFFFF" VerticalAlignment="Center"/>
+                                            <ui:SymbolIcon Symbol="Timer24" FontSize="10"
+                                                           Foreground="#80FFFFFF" VerticalAlignment="Center"
+                                                           Margin="6,0,3,0"
+                                                           Visibility="{Binding PlaytimeMinutes, Converter={StaticResource PosIntToVis}}"/>
+                                            <TextBlock Text="{Binding PlaytimeMinutes, Converter={StaticResource PlaytimeCompactConv}}"
+                                                       FontSize="11" Foreground="#80FFFFFF" VerticalAlignment="Center"
+                                                       Visibility="{Binding PlaytimeMinutes, Converter={StaticResource PosIntToVis}}"/>
                                             <ui:SymbolIcon Symbol="Wifi224" FontSize="12"
                                                            Foreground="#7EE2A4" VerticalAlignment="Center"
                                                            Margin="6,0,0,0"

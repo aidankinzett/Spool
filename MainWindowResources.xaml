@@ -13,6 +13,7 @@
     <local:InverseEmptyStringToVisibilityConverter x:Key="InvEmptyStrToVis"/>
     <local:RelativeDateConverter x:Key="RelDate"/>
     <local:PlaytimeConverter x:Key="PlaytimeConv"/>
+    <local:PlaytimeCompactConverter x:Key="PlaytimeCompactConv"/>
     <local:FileSizeMbConverter x:Key="SizeMbConv"/>
     <local:GenreListConverter x:Key="GenreListConv"/>
     <local:CoverInitialsConverter x:Key="InitialsConv"/>

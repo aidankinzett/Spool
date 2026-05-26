@@ -195,6 +195,19 @@ namespace LudusaviWrap
             => throw new NotImplementedException();
     }
 
+    public class PlaytimeCompactConverter : IValueConverter
+    {
+        public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
+        {
+            if (value is not int minutes || minutes <= 0) return "";
+            int h = minutes / 60, m = minutes % 60;
+            if (h == 0) return $"{m}m";
+            return m == 0 ? $"{h}h" : $"{h}h {m}m";
+        }
+        public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
+            => throw new NotImplementedException();
+    }
+
     public class FileSizeMbConverter : IValueConverter
     {
         public object Convert(object value, Type targetType, object parameter, CultureInfo culture)

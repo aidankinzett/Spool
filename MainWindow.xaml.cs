@@ -1484,6 +1484,7 @@ namespace LudusaviWrap
             if (_config.Data.SyncServerEnabled && !string.IsNullOrEmpty(_config.Data.SyncServerUrl))
             {
                 _ = SyncLastPlayedAsync();
+                _ = SyncPlaytimeAsync();
             }
 
             if (System.Version.TryParse(Version, out var parsedVersion))
@@ -1577,6 +1578,57 @@ namespace LudusaviWrap
             catch (Exception ex)
             {
                 App.Log($"SyncLastPlayedAsync failed: {ex.Message}");
+            }
+        }
+
+        private async Task SyncPlaytimeAsync()
+        {
+            try
+            {
+                var client = new PlayStateLockClient(
+                    _config.Data.SyncServerUrl,
+                    _config.Data.SyncServerApiKey,
+                    _config.Data.DeviceId,
+                    _config.Data.DeviceName);
+
+                var serverRecords = await client.FetchAllPlaytimeAsync();
+                if (serverRecords == null) return;
+
+                bool updatedAny = false;
+
+                foreach (var serverRecord in serverRecords)
+                {
+                    var localEntry = _library.FindByName(serverRecord.GameName);
+                    if (localEntry == null) continue;
+
+                    if (serverRecord.TotalMinutes > localEntry.PlaytimeMinutes)
+                    {
+                        localEntry.PlaytimeMinutes = serverRecord.TotalMinutes;
+                        _library.Update(localEntry);
+                        updatedAny = true;
+                    }
+                }
+
+                var serverGames = new HashSet<string>(
+                    serverRecords.Select(r => r.GameName),
+                    StringComparer.OrdinalIgnoreCase);
+
+                foreach (var localEntry in _library.Entries)
+                {
+                    if (localEntry.PlaytimeMinutes > 0 && !serverGames.Contains(localEntry.GameName))
+                    {
+                        _ = client.AddPlaytimeDeltaAsync(localEntry.GameName, localEntry.PlaytimeMinutes);
+                    }
+                }
+
+                if (updatedAny)
+                {
+                    Dispatcher.Invoke(() => LoadGames());
+                }
+            }
+            catch (Exception ex)
+            {
+                App.Log($"SyncPlaytimeAsync failed: {ex.Message}");
             }
         }
 

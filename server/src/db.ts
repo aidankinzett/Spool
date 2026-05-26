@@ -45,6 +45,13 @@ db.exec(`
     last_played_at TEXT NOT NULL,
     PRIMARY KEY(user_id, game_name)
   );
+
+  CREATE TABLE IF NOT EXISTS game_playtime (
+    user_id       TEXT    NOT NULL REFERENCES users(id),
+    game_name     TEXT    NOT NULL,
+    total_minutes INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (user_id, game_name)
+  );
 `);
 
 export interface User {
@@ -78,6 +85,12 @@ export interface GameLastPlayed {
   user_id: string;
   game_name: string;
   last_played_at: string;
+}
+
+export interface GamePlaytime {
+  user_id: string;
+  game_name: string;
+  total_minutes: number;
 }
 
 export const STALE_THRESHOLD_MS = 5 * 60 * 1000;
@@ -132,5 +145,14 @@ export const queries = {
      VALUES (?, ?, ?)
      ON CONFLICT(user_id, game_name) DO UPDATE SET
        last_played_at = excluded.last_played_at`
+  ),
+  getAllPlaytime: db.prepare<[string], GamePlaytime>(
+    "SELECT * FROM game_playtime WHERE user_id = ?"
+  ),
+  addPlaytimeDelta: db.prepare(
+    `INSERT INTO game_playtime (user_id, game_name, total_minutes)
+     VALUES (?, ?, ?)
+     ON CONFLICT(user_id, game_name) DO UPDATE SET
+       total_minutes = total_minutes + excluded.total_minutes`
   ),
 };

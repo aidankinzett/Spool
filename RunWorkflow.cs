@@ -191,6 +191,8 @@ namespace LudusaviWrap
                 ? _lockClient.StartHeartbeatLoopAsync(_gameName, heartbeatCts.Token)
                 : null;
 
+            var sessionStart = DateTime.UtcNow;
+
             try
             {
                 await RunGameAsync(_gameExe);
@@ -215,6 +217,15 @@ namespace LudusaviWrap
 
             heartbeatCts.Cancel();
             if (heartbeatTask != null) try { await heartbeatTask; } catch { }
+
+            var sessionMinutes = (int)(DateTime.UtcNow - sessionStart).TotalMinutes;
+            if (sessionMinutes >= 1 && _entry != null)
+            {
+                _entry.PlaytimeMinutes += sessionMinutes;
+                _library?.Update(_entry);
+                if (_lockClient != null)
+                    _ = _lockClient.AddPlaytimeDeltaAsync(_entry.GameName, sessionMinutes);
+            }
 
             // 4. Backup saves
             ShowOrUpdateProgressToast($"Backing up saves for '{_gameName}'...");
