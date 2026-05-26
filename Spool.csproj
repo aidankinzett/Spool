@@ -7,8 +7,8 @@
     <UseWpf>true</UseWpf>
     <ImplicitUsings>enable</ImplicitUsings>
     <!-- Single-File Publishing instead of Native AOT for WPF compatibility -->
+    <!-- SelfContained omitted: pass -p:SelfContained=true at publish time instead -->
     <PublishSingleFile>true</PublishSingleFile>
-    <SelfContained>true</SelfContained>
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
     <ApplicationIcon>brand\Spool.ico</ApplicationIcon>
     <AssemblyName>spool</AssemblyName>
