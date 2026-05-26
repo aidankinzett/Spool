@@ -21,6 +21,7 @@ FROM base AS builder
 COPY --from=install /temp/dev/node_modules ./node_modules
 COPY tsconfig.json ./
 COPY src/ ./src/
+COPY package.json ./
 RUN bun run build
 
 # Stage 3: Runner stage (Node.js runtime for running the compiled application)
