@@ -4,6 +4,10 @@ on:
   push:
     tags: ["v*"]
 
+concurrency:
+  group: server-publish
+  cancel-in-progress: false
+
 jobs:
   docker:
     runs-on: ubuntu-latest
