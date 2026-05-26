@@ -156,8 +156,20 @@
                                   Style="{StaticResource FilterChip}"
                                   Click="FilterChip_Click" Tag="unplayed"/>
                     <Button x:Name="SortButton" Grid.Column="5"
-                            Width="30" Height="24" Cursor="Hand" ToolTip="Sort"
+                            Cursor="Hand" ToolTip="Sort"
                             Click="SortButton_Click">
+                        <Button.Style>
+                            <Style TargetType="Button">
+                                <Setter Property="Width" Value="30"/>
+                                <Setter Property="Height" Value="24"/>
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding IsTouchOptimized, Source={x:Static Application.Current}}" Value="True">
+                                        <Setter Property="Width" Value="46"/>
+                                        <Setter Property="Height" Value="46"/>
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </Button.Style>
                         <Button.Template>
                             <ControlTemplate TargetType="Button">
                                 <Border x:Name="Bd" Background="Transparent"
@@ -227,14 +239,36 @@
                                     <!-- Name + meta -->
                                     <StackPanel Grid.Column="1" VerticalAlignment="Center">
                                         <TextBlock Text="{Binding GameName}"
-                                                   FontSize="13" Foreground="White"
-                                                   TextTrimming="CharacterEllipsis"/>
+                                                   Foreground="White"
+                                                   TextTrimming="CharacterEllipsis">
+                                            <TextBlock.Style>
+                                                <Style TargetType="TextBlock">
+                                                    <Setter Property="FontSize" Value="13"/>
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding IsTouchOptimized, Source={x:Static Application.Current}}" Value="True">
+                                                            <Setter Property="FontSize" Value="17"/>
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </TextBlock.Style>
+                                        </TextBlock>
                                         <StackPanel Orientation="Horizontal" Margin="0,2,0,0">
                                             <ui:SymbolIcon Symbol="Clock24" FontSize="10"
                                                            Foreground="#80FFFFFF" VerticalAlignment="Center"
                                                            Margin="0,0,4,0"/>
                                             <TextBlock Text="{Binding LastPlayedAt, Converter={StaticResource RelDate}}"
-                                                       FontSize="11" Foreground="#80FFFFFF" VerticalAlignment="Center"/>
+                                                       Foreground="#80FFFFFF" VerticalAlignment="Center">
+                                                <TextBlock.Style>
+                                                    <Style TargetType="TextBlock">
+                                                        <Setter Property="FontSize" Value="11"/>
+                                                        <Style.Triggers>
+                                                            <DataTrigger Binding="{Binding IsTouchOptimized, Source={x:Static Application.Current}}" Value="True">
+                                                                <Setter Property="FontSize" Value="14"/>
+                                                            </DataTrigger>
+                                                        </Style.Triggers>
+                                                    </Style>
+                                                </TextBlock.Style>
+                                            </TextBlock>
                                             <ui:SymbolIcon Symbol="Timer24" FontSize="10"
                                                            Foreground="#80FFFFFF" VerticalAlignment="Center"
                                                            Margin="6,0,3,0"
