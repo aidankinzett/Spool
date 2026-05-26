@@ -3,10 +3,14 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
         Title="Add Game"
-        Width="660"
+        Width="680"
         SizeToContent="Height"
         ResizeMode="NoResize"
-        WindowStartupLocation="CenterOwner">
+        WindowStartupLocation="CenterOwner"
+        AllowDrop="True"
+        Drop="Window_Drop"
+        DragOver="Window_DragOver"
+        DragLeave="Window_DragLeave">
 
     <Grid>
         <Grid.RowDefinitions>
@@ -18,188 +22,610 @@
                      ShowMaximize="False"
                      Grid.Row="0"/>
 
-        <Grid Grid.Row="1" Margin="24,12,24,24">
-            <Grid.RowDefinitions>
-                <RowDefinition Height="Auto"/>
-                <RowDefinition Height="Auto"/>
-                <RowDefinition Height="Auto"/>
-                <RowDefinition Height="Auto"/>
-                <RowDefinition Height="Auto"/>
-            </Grid.RowDefinitions>
+        <StackPanel Grid.Row="1">
 
-            <!-- Subtitle -->
-            <TextBlock Grid.Row="0"
-                       Text="Add a game to your library with save management"
-                       Foreground="{DynamicResource TextFillColorSecondaryBrush}"
-                       FontSize="12"
-                       Margin="0,0,0,12"/>
-
-            <!-- Separator -->
-            <Separator Grid.Row="1" Margin="0,0,0,16"/>
-
-            <!-- Form rows -->
-            <StackPanel Grid.Row="2">
-                <!-- Executable row -->
-                <Grid Margin="0,0,0,12">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="110"/>
-                        <ColumnDefinition Width="*"/>
-                        <ColumnDefinition Width="Auto"/>
-                    </Grid.ColumnDefinitions>
-                    <TextBlock Text="Executable"
-                               VerticalAlignment="Center"
-                               Grid.Column="0"/>
-                    <ui:TextBox x:Name="ExePathTextBox"
-                                IsReadOnly="True"
-                                PlaceholderText="Browse to a game executable..."
-                                Margin="0,0,8,0"
-                                Grid.Column="1"/>
-                    <ui:Button Content="Browse"
-                               Appearance="Secondary"
-                               Click="BrowseExe_Click"
-                               Grid.Column="2"/>
-                </Grid>
-
-                <!-- Game folder row (for LAN sharing) -->
-                <Grid Margin="0,0,0,12">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="110"/>
-                        <ColumnDefinition Width="*"/>
-                        <ColumnDefinition Width="Auto"/>
-                    </Grid.ColumnDefinitions>
-                    <TextBlock VerticalAlignment="Center" Grid.Column="0">
-                        <Run Text="Game Folder"/>
-                        <LineBreak/>
-                        <Run Text="(for LAN share)" FontSize="10"
-                             Foreground="{DynamicResource TextFillColorSecondaryBrush}"/>
-                    </TextBlock>
-                    <ui:TextBox x:Name="FolderPathTextBox"
-                                IsReadOnly="True"
-                                PlaceholderText="Optional — root folder of game installation"
-                                Margin="0,0,8,0"
-                                Grid.Column="1"/>
-                    <ui:Button Content="Browse"
-                               Appearance="Secondary"
-                               Click="BrowseFolder_Click"
-                               Grid.Column="2"/>
-                </Grid>
-
-                <!-- Game name row -->
-                <Grid Margin="0,0,0,4">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="110"/>
-                        <ColumnDefinition Width="*"/>
-                        <ColumnDefinition Width="Auto"/>
-                    </Grid.ColumnDefinitions>
-                    <TextBlock Text="Game Name"
-                               VerticalAlignment="Center"
-                               Grid.Column="0"/>
-                    <ui:TextBox x:Name="GameNameTextBox"
-                                PlaceholderText="Enter or search for game name..."
-                                GotFocus="TextBox_GotFocus"
-                                Margin="0,0,8,0"
-                                Grid.Column="1"/>
-                    <ui:Button x:Name="SearchButton"
-                               Content="Search"
-                               Appearance="Secondary"
-                               Click="Search_Click"
-                               Grid.Column="2"/>
-                </Grid>
-
-                <!-- Autocomplete results dropdown -->
-                <Grid Margin="110,0,0,12">
-                    <ui:Card x:Name="ResultsBorder"
-                             Padding="2"
-                             MaxHeight="120"
-                             Visibility="Collapsed">
-                        <ScrollViewer VerticalScrollBarVisibility="Auto">
-                            <ListBox x:Name="ResultsListBox"
-                                     Background="Transparent"
-                                     BorderThickness="0"
-                                     SelectionChanged="ResultsListBox_SelectionChanged">
-                                <ListBox.ItemContainerStyle>
-                                    <Style TargetType="ListBoxItem">
-                                        <Setter Property="Background" Value="Transparent"/>
-                                        <Setter Property="BorderThickness" Value="0"/>
-                                        <Setter Property="Padding" Value="8,6"/>
-                                        <Setter Property="Template">
-                                            <Setter.Value>
-                                                <ControlTemplate TargetType="ListBoxItem">
-                                                    <Border Background="{TemplateBinding Background}"
-                                                            CornerRadius="4"
-                                                            Padding="{TemplateBinding Padding}">
-                                                        <ContentPresenter/>
-                                                    </Border>
-                                                </ControlTemplate>
-                                            </Setter.Value>
-                                        </Setter>
-                                        <Style.Triggers>
-                                            <Trigger Property="IsMouseOver" Value="True">
-                                                <Setter Property="Background" Value="{DynamicResource SubtleFillColorSecondaryBrush}"/>
-                                            </Trigger>
-                                            <Trigger Property="IsSelected" Value="True">
-                                                <Setter Property="Background" Value="{DynamicResource SystemAccentColorPrimaryBrush}"/>
-                                            </Trigger>
-                                        </Style.Triggers>
-                                    </Style>
-                                </ListBox.ItemContainerStyle>
-                            </ListBox>
-                        </ScrollViewer>
-                    </ui:Card>
-                </Grid>
-
-                <!-- Run as Administrator checkbox -->
-                <Grid Margin="110,0,0,12">
-                    <CheckBox x:Name="RunAsAdminCheckBox"
-                              Content="Run as Administrator"
-                              ToolTip="Sets the Windows compatibility flag to run this game elevated as administrator"/>
-                </Grid>
+            <!-- Header -->
+            <StackPanel Margin="24,20,24,4">
+                <TextBlock Text="Add a game"
+                           FontSize="18" FontWeight="SemiBold"
+                           Foreground="{DynamicResource TextFillColorPrimaryBrush}"/>
+                <TextBlock Text="Drop the game's executable below — Spool identifies it with ludusavi so saves get backed up automatically."
+                           FontSize="12"
+                           Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                           TextWrapping="Wrap"
+                           Margin="0,4,0,0"/>
             </StackPanel>
 
-            <!-- Action buttons -->
-            <Grid Grid.Row="3" Margin="0,8,0,16">
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="*"/>
-                    <ColumnDefinition Width="8"/>
-                    <ColumnDefinition Width="*"/>
-                    <ColumnDefinition Width="8"/>
-                    <ColumnDefinition Width="*"/>
-                </Grid.ColumnDefinitions>
-                <ui:Button x:Name="AddToLibraryButton"
-                           Grid.Column="0"
-                           Content="Add to Library"
-                           Appearance="Primary"
-                           Height="40"
-                           FontSize="13"
-                           HorizontalAlignment="Stretch"
-                           Click="AddToLibrary_Click"/>
-                <ui:Button x:Name="GenerateArmouryCrateButton"
-                           Grid.Column="2"
-                           Content="Armoury Crate"
-                           Appearance="Secondary"
-                           Height="40"
-                           FontSize="13"
-                           HorizontalAlignment="Stretch"
-                           Click="GenerateArmouryCrate_Click"/>
-                <ui:Button x:Name="AddToSteamButton"
-                           Grid.Column="4"
-                           Content="Add to Steam"
-                           Appearance="Secondary"
-                           Height="40"
-                           FontSize="13"
-                           HorizontalAlignment="Stretch"
-                           Click="AddToSteam_Click"/>
-            </Grid>
+            <!-- Content area -->
+            <StackPanel Margin="24,16,24,4" x:Name="ContentArea">
 
-            <!-- Status label -->
-            <TextBlock x:Name="StatusLabel"
-                       Text=""
-                       TextWrapping="Wrap"
-                       HorizontalAlignment="Center"
-                       FontWeight="SemiBold"
-                       Margin="0,0,0,8"
-                       Visibility="Collapsed"
-                       Grid.Row="4"/>
-        </Grid>
+                <!-- ── Drop zone (Empty + Dragging) ── -->
+                <Border x:Name="DropZoneBorder"
+                        Padding="20,36"
+                        CornerRadius="10"
+                        BorderThickness="2"
+                        BorderBrush="#30FFFFFF"
+                        Cursor="Hand"
+                        MouseLeftButtonUp="DropZone_Click"
+                        Background="#05FFFFFF">
+                    <StackPanel HorizontalAlignment="Center">
+                        <!-- Icon circle -->
+                        <Border x:Name="DropIconCircle"
+                                Width="52" Height="52"
+                                CornerRadius="26"
+                                HorizontalAlignment="Center">
+                            <Border.Background>
+                                <SolidColorBrush x:Name="DropIconCircleBrush" Color="#1A4CC2FF"/>
+                            </Border.Background>
+                            <!-- EXE icon -->
+                            <Viewbox Width="24" Height="24">
+                                <Canvas Width="24" Height="24">
+                                    <Path Fill="{DynamicResource SystemAccentColorPrimaryBrush}"
+                                          Data="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/>
+                                    <Path Stroke="{DynamicResource SystemAccentColorPrimaryBrush}" StrokeThickness="1.5"
+                                          Data="M14 3v6h6"/>
+                                    <Path Stroke="White" StrokeThickness="1.2" StrokeStartLineCap="Round" StrokeEndLineCap="Round"
+                                          Data="M8 14l1.5 3 1.5-3M13 14v3M14 14h-1v3h1"/>
+                                </Canvas>
+                            </Viewbox>
+                        </Border>
+                        <TextBlock x:Name="DropZoneTitle"
+                                   Text="Drop a game .exe here"
+                                   FontSize="14" FontWeight="Medium"
+                                   HorizontalAlignment="Center"
+                                   Margin="0,10,0,0"/>
+                        <TextBlock x:Name="DropZoneSubtitle"
+                                   FontSize="12"
+                                   HorizontalAlignment="Center"
+                                   Margin="0,4,0,0">
+                            <Run Text="or "/>
+                            <Run Text="browse for one"
+                                 Foreground="{DynamicResource SystemAccentColorPrimaryBrush}"
+                                 TextDecorations="Underline"/>
+                        </TextBlock>
+                    </StackPanel>
+                </Border>
+
+                <!-- ── Detected EXE card ── -->
+                <Border x:Name="ExeCardPanel"
+                        Visibility="Collapsed"
+                        Padding="12,10"
+                        CornerRadius="8"
+                        Background="#08FFFFFF"
+                        BorderThickness="1"
+                        BorderBrush="#14FFFFFF">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+
+                        <!-- EXE icon box -->
+                        <Border Width="36" Height="36" CornerRadius="6"
+                                Background="#0AFFFFFF" BorderThickness="1" BorderBrush="#14FFFFFF"
+                                HorizontalAlignment="Left" VerticalAlignment="Center"
+                                Grid.Column="0" Margin="0,0,12,0">
+                            <Viewbox Width="18" Height="18">
+                                <Canvas Width="24" Height="24">
+                                    <Path Fill="{DynamicResource TextFillColorSecondaryBrush}"
+                                          Data="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/>
+                                    <Path Stroke="{DynamicResource TextFillColorSecondaryBrush}" StrokeThickness="1.5"
+                                          Data="M14 3v6h6"/>
+                                </Canvas>
+                            </Viewbox>
+                        </Border>
+
+                        <!-- File info -->
+                        <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                            <TextBlock x:Name="ExeFilenameLabel"
+                                       FontSize="13" FontWeight="Medium"
+                                       TextTrimming="CharacterEllipsis"/>
+                            <StackPanel Orientation="Horizontal" Margin="0,2,0,0">
+                                <TextBlock x:Name="ExePathLabel"
+                                           FontSize="11" FontFamily="Cascadia Code, Consolas, Courier New"
+                                           Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                           TextTrimming="CharacterEllipsis"
+                                           MaxWidth="350"/>
+                                <TextBlock Text=" · "
+                                           FontSize="11"
+                                           Foreground="{DynamicResource TextFillColorTertiaryBrush}"/>
+                                <TextBlock x:Name="ExeSizeLabel"
+                                           FontSize="11"
+                                           Foreground="{DynamicResource TextFillColorSecondaryBrush}"/>
+                            </StackPanel>
+                        </StackPanel>
+
+                        <!-- Change button -->
+                        <ui:Button x:Name="ChangeExeButton"
+                                   Grid.Column="2"
+                                   Content="Change"
+                                   Appearance="Secondary"
+                                   FontSize="11.5"
+                                   Height="28"
+                                   Click="ChangeExe_Click"
+                                   VerticalAlignment="Center"/>
+                    </Grid>
+                </Border>
+
+                <!-- ── Detecting panel ── -->
+                <Border x:Name="DetectingPanel"
+                        Visibility="Collapsed"
+                        Padding="16,20"
+                        CornerRadius="8"
+                        Background="#06FFFFFF"
+                        BorderThickness="1"
+                        BorderBrush="#0FFFFFFF">
+                    <StackPanel Orientation="Horizontal">
+                        <ui:ProgressRing Width="20" Height="20" IsIndeterminate="True" Margin="0,0,12,0"/>
+                        <StackPanel>
+                            <TextBlock Text="Looking up in ludusavi"
+                                       FontSize="13" FontWeight="Medium"/>
+                            <TextBlock x:Name="DetectingSubtitle"
+                                       FontSize="11.5"
+                                       Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                       Margin="0,2,0,0"/>
+                        </StackPanel>
+                    </StackPanel>
+                </Border>
+
+                <!-- ── Multi-match candidates ── -->
+                <StackPanel x:Name="MultiMatchPanel" Visibility="Collapsed">
+                    <!-- Header -->
+                    <Grid Margin="0,4,0,10">
+                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                            <TextBlock x:Name="AutoMatchLabel"
+                                       FontSize="10.5" FontWeight="SemiBold"
+                                       Foreground="{DynamicResource SystemAccentColorPrimaryBrush}"
+                                       VerticalAlignment="Center"
+                                       Text="⚡ Auto-matched"/>
+                            <TextBlock x:Name="CandidateCountLabel"
+                                       FontSize="12"
+                                       Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                       VerticalAlignment="Center"
+                                       Margin="8,0,0,0"/>
+                        </StackPanel>
+                        <ui:Button HorizontalAlignment="Right"
+                                   Content="Search manually"
+                                   Appearance="Transparent"
+                                   FontSize="11.5"
+                                   Padding="8,4"
+                                   Click="SearchManually_Click"/>
+                    </Grid>
+
+                    <!-- Candidate rows -->
+                    <ItemsControl x:Name="CandidateList"
+                                  HorizontalAlignment="Stretch"
+                                  HorizontalContentAlignment="Stretch">
+                        <ItemsControl.ItemsPanel>
+                            <ItemsPanelTemplate>
+                                <StackPanel HorizontalAlignment="Stretch"/>
+                            </ItemsPanelTemplate>
+                        </ItemsControl.ItemsPanel>
+                        <ItemsControl.ItemContainerStyle>
+                            <Style TargetType="ContentPresenter">
+                                <Setter Property="HorizontalAlignment" Value="Stretch"/>
+                            </Style>
+                        </ItemsControl.ItemContainerStyle>
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <Border x:Name="CandidateBorder"
+                                        Margin="0,0,0,6"
+                                        CornerRadius="8"
+                                        BorderThickness="1"
+                                        HorizontalAlignment="Stretch"
+                                        Background="{Binding RowBackground}"
+                                        BorderBrush="{Binding RowBorderBrush}"
+                                        ClipToBounds="True">
+                                    <StackPanel>
+                                        <!-- Row button -->
+                                        <Button x:Name="CandidateRowButton"
+                                                Click="CandidateRow_Click"
+                                                Tag="{Binding}"
+                                                Background="Transparent"
+                                                BorderThickness="0"
+                                                Padding="14,12,14,12"
+                                                HorizontalAlignment="Stretch"
+                                                HorizontalContentAlignment="Stretch"
+                                                Cursor="Hand">
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="Auto"/>
+                                                    <ColumnDefinition Width="*"/>
+                                                </Grid.ColumnDefinitions>
+
+                                                <!-- Radio dot -->
+                                                <Border Width="16" Height="16" CornerRadius="8"
+                                                        BorderThickness="1.5"
+                                                        VerticalAlignment="Center"
+                                                        Grid.Column="0" Margin="0,0,12,0">
+                                                    <Border.BorderBrush>
+                                                        <SolidColorBrush Color="{Binding RadioBorderColor}"/>
+                                                    </Border.BorderBrush>
+                                                    <Ellipse Width="7" Height="7"
+                                                             HorizontalAlignment="Center"
+                                                             VerticalAlignment="Center"
+                                                             Visibility="{Binding RadioFillVisibility}">
+                                                        <Ellipse.Fill>
+                                                            <SolidColorBrush Color="{Binding AccentColor}"/>
+                                                        </Ellipse.Fill>
+                                                    </Ellipse>
+                                                </Border>
+
+                                                <!-- Name + best match badge -->
+                                                <StackPanel Grid.Column="1" VerticalAlignment="Center" Orientation="Horizontal">
+                                                    <TextBlock Text="{Binding Name}"
+                                                               FontSize="13"
+                                                               FontWeight="{Binding NameWeight}"
+                                                               VerticalAlignment="Center"/>
+                                                    <TextBlock Text="Best match"
+                                                               FontSize="9.5" FontWeight="SemiBold"
+                                                               Foreground="{DynamicResource SystemAccentColorPrimaryBrush}"
+                                                               VerticalAlignment="Center"
+                                                               Margin="8,0,0,0"
+                                                               Visibility="{Binding BestMatchVisibility}"/>
+                                                </StackPanel>
+                                            </Grid>
+                                        </Button>
+
+                                    </StackPanel>
+                                </Border>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </StackPanel>
+
+                <!-- ── Single high-confidence match ── -->
+                <Border x:Name="SingleMatchPanel"
+                        Visibility="Collapsed"
+                        CornerRadius="8"
+                        BorderThickness="1"
+                        ClipToBounds="True">
+                    <StackPanel>
+                        <!-- Match row -->
+                        <Grid Margin="12,12">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+
+                            <!-- Check circle -->
+                            <Border Width="28" Height="28" CornerRadius="14"
+                                    VerticalAlignment="Center"
+                                    Grid.Column="0" Margin="0,0,12,0">
+                                <Border.Background>
+                                    <SolidColorBrush x:Name="SingleMatchIconBg" Color="#554CC2FF"/>
+                                </Border.Background>
+                                <TextBlock Text="✓"
+                                           FontSize="13" FontWeight="Bold"
+                                           HorizontalAlignment="Center"
+                                           VerticalAlignment="Center"
+                                           Foreground="{DynamicResource SystemAccentColorPrimaryBrush}"/>
+                            </Border>
+
+                            <!-- Name + details -->
+                            <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock x:Name="SingleMatchName"
+                                               FontSize="13.5" FontWeight="Medium"
+                                               VerticalAlignment="Center"/>
+                                    <TextBlock x:Name="SingleMatchConfidence"
+                                               FontSize="9.5" FontWeight="SemiBold"
+                                               Foreground="{DynamicResource SystemAccentColorPrimaryBrush}"
+                                               VerticalAlignment="Center"
+                                               Margin="8,0,0,0"/>
+                                </StackPanel>
+                                <TextBlock x:Name="SingleMatchSubtitle"
+                                           FontSize="11.5"
+                                           Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                           Margin="0,2,0,0"/>
+                            </StackPanel>
+
+                            <!-- Preview saves button -->
+                            <ui:Button Grid.Column="2"
+                                       x:Name="SingleMatchPreviewButton"
+                                       Content="Preview saves"
+                                       Appearance="Secondary"
+                                       FontSize="11.5"
+                                       Height="28"
+                                       Click="SingleMatchPreview_Click"
+                                       VerticalAlignment="Center"/>
+                        </Grid>
+
+                        <!-- Save paths (expanded) -->
+                        <Border x:Name="SingleMatchPathsPanel"
+                                Visibility="Collapsed"
+                                Padding="14,10,14,12"
+                                Background="#2D000000"
+                                BorderThickness="0,1,0,0"
+                                BorderBrush="#1AFFFFFF">
+                            <StackPanel>
+                                <ItemsControl x:Name="SingleMatchPaths">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <TextBlock Text="{Binding}"
+                                                       FontSize="11.5"
+                                                       FontFamily="Cascadia Code, Consolas, Courier New"
+                                                       Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                                       TextTrimming="CharacterEllipsis"
+                                                       Margin="0,0,0,3"/>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                                <TextBlock x:Name="SingleMatchPathsLoading"
+                                           Text="Loading save locations…"
+                                           FontSize="11.5"
+                                           Foreground="{DynamicResource TextFillColorTertiaryBrush}"
+                                           Visibility="Collapsed"/>
+                            </StackPanel>
+                        </Border>
+
+                        <!-- Footer: "Not this one?" -->
+                        <Border Padding="14,8"
+                                Background="#1F000000"
+                                BorderThickness="0,1,0,0"
+                                BorderBrush="#0FFFFFFF">
+                            <Grid>
+                                <TextBlock Text="Not this one?"
+                                           FontSize="11.5"
+                                           Foreground="{DynamicResource TextFillColorTertiaryBrush}"
+                                           VerticalAlignment="Center"/>
+                                <ui:Button HorizontalAlignment="Right"
+                                           Content="Show other matches"
+                                           Appearance="Transparent"
+                                           FontSize="11.5"
+                                           Click="ShowAllMatches_Click"/>
+                            </Grid>
+                        </Border>
+                    </StackPanel>
+                </Border>
+
+                <!-- ── No match panel ── -->
+                <StackPanel x:Name="NoMatchPanel" Visibility="Collapsed">
+                    <!-- Amber warning -->
+                    <Border Padding="10,10"
+                            CornerRadius="8"
+                            Background="#0FFFFBA4"
+                            BorderThickness="1"
+                            BorderBrush="#38FFC278"
+                            Margin="0,0,0,12">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <Border Width="22" Height="22" CornerRadius="11"
+                                    Background="#24FFC278"
+                                    VerticalAlignment="Top"
+                                    Margin="0,0,10,0">
+                                <TextBlock Text="!" FontSize="12" FontWeight="Bold"
+                                           Foreground="#FFC278"
+                                           HorizontalAlignment="Center"
+                                           VerticalAlignment="Center"/>
+                            </Border>
+                            <StackPanel Grid.Column="1">
+                                <TextBlock Text="Spool couldn't identify this from the filename"
+                                           FontSize="12.5"
+                                           Foreground="{DynamicResource TextFillColorPrimaryBrush}"/>
+                                <TextBlock Text="Search ludusavi's database below, or add the game without save management."
+                                           FontSize="11.5"
+                                           Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                           Margin="0,2,0,0"/>
+                            </StackPanel>
+                        </Grid>
+                    </Border>
+
+                    <!-- Search field -->
+                    <TextBlock Text="Search ludusavi"
+                               FontSize="12" FontWeight="Medium"
+                               Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                               Margin="0,0,0,6"/>
+                    <ui:TextBox x:Name="ManualSearchBox"
+                                PlaceholderText="Type the game's name…"
+                                TextChanged="ManualSearch_TextChanged"
+                                Margin="0,0,0,8"/>
+
+                    <!-- Results list -->
+                    <Border CornerRadius="6"
+                            BorderThickness="1"
+                            BorderBrush="#0FFFFFFF"
+                            Background="#2D000000"
+                            MaxHeight="180"
+                            ClipToBounds="True">
+                        <ScrollViewer VerticalScrollBarVisibility="Auto">
+                            <StackPanel>
+                                <ListBox x:Name="ManualResultsList"
+                                         Background="Transparent"
+                                         BorderThickness="0"
+                                         SelectionChanged="ManualResults_SelectionChanged">
+                                    <ListBox.ItemContainerStyle>
+                                        <Style TargetType="ListBoxItem">
+                                            <Setter Property="Background" Value="Transparent"/>
+                                            <Setter Property="BorderThickness" Value="0,0,0,0"/>
+                                            <Setter Property="Padding" Value="12,9"/>
+                                            <Setter Property="Template">
+                                                <Setter.Value>
+                                                    <ControlTemplate TargetType="ListBoxItem">
+                                                        <Border Background="{TemplateBinding Background}"
+                                                                BorderBrush="{TemplateBinding BorderBrush}"
+                                                                BorderThickness="{TemplateBinding BorderThickness}"
+                                                                Padding="{TemplateBinding Padding}">
+                                                            <ContentPresenter/>
+                                                        </Border>
+                                                    </ControlTemplate>
+                                                </Setter.Value>
+                                            </Setter>
+                                            <Style.Triggers>
+                                                <Trigger Property="IsMouseOver" Value="True">
+                                                    <Setter Property="Background" Value="#0AFFFFFF"/>
+                                                </Trigger>
+                                                <Trigger Property="IsSelected" Value="True">
+                                                    <Setter Property="Background" Value="#1A4CC2FF"/>
+                                                    <Setter Property="BorderBrush" Value="{DynamicResource SystemAccentColorPrimaryBrush}"/>
+                                                    <Setter Property="BorderThickness" Value="2,0,0,0"/>
+                                                </Trigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </ListBox.ItemContainerStyle>
+                                    <ListBox.ItemTemplate>
+                                        <DataTemplate>
+                                            <Grid>
+                                                <TextBlock Text="{Binding}"
+                                                           FontSize="12.5"
+                                                           Foreground="{DynamicResource TextFillColorPrimaryBrush}"/>
+                                            </Grid>
+                                        </DataTemplate>
+                                    </ListBox.ItemTemplate>
+                                </ListBox>
+                                <TextBlock x:Name="NoManualResultsLabel"
+                                           Text="No matches — try a shorter name."
+                                           FontSize="12"
+                                           Foreground="{DynamicResource TextFillColorTertiaryBrush}"
+                                           HorizontalAlignment="Center"
+                                           Padding="16"
+                                           Visibility="Collapsed"/>
+                            </StackPanel>
+                        </ScrollViewer>
+                    </Border>
+
+                    <!-- Add anyway escape hatch -->
+                    <Button x:Name="AddWithoutSaveManagementButton"
+                            Content="Add without save management"
+                            Background="Transparent"
+                            BorderThickness="0"
+                            Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                            FontSize="11.5"
+                            Padding="0"
+                            HorizontalAlignment="Left"
+                            Cursor="Hand"
+                            Margin="0,10,0,0"
+                            Click="AddWithoutSaveManagement_Click"/>
+                </StackPanel>
+
+            </StackPanel>
+
+            <!-- ── More options Expander ── -->
+            <Expander x:Name="MoreOptionsExpander"
+                      Margin="24,8,24,0"
+                      Visibility="Collapsed"
+                      Header="More options"
+                      FontSize="12">
+                <Grid Margin="0,10,0,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="140"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="12"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+
+                    <!-- Install folder label -->
+                    <StackPanel Grid.Row="0" Grid.Column="0" VerticalAlignment="Center">
+                        <TextBlock Text="Install folder"
+                                   FontSize="12"
+                                   Foreground="{DynamicResource TextFillColorSecondaryBrush}"/>
+                        <TextBlock Text="for LAN share"
+                                   FontSize="10.5"
+                                   Foreground="{DynamicResource TextFillColorTertiaryBrush}"
+                                   Margin="0,1,0,0"/>
+                    </StackPanel>
+
+                    <!-- Install folder field -->
+                    <ui:TextBox x:Name="FolderPathTextBox"
+                                Grid.Row="0" Grid.Column="1"
+                                IsReadOnly="True"
+                                PlaceholderText="Optional — root folder of game installation"
+                                Margin="0,0,8,0"/>
+                    <ui:Button Content="Browse"
+                               Grid.Row="0" Grid.Column="2"
+                               Appearance="Secondary"
+                               Click="BrowseFolder_Click"/>
+
+                    <!-- Run as admin -->
+                    <TextBlock Grid.Row="2" Grid.Column="0"
+                               Text="Permissions"
+                               FontSize="12"
+                               Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                               VerticalAlignment="Center"/>
+                    <CheckBox x:Name="RunAsAdminCheckBox"
+                              Grid.Row="2" Grid.Column="1" Grid.ColumnSpan="2"
+                              Content="Run as Administrator"
+                              FontSize="12.5"
+                              VerticalAlignment="Center"
+                              ToolTip="Sets the Windows compatibility flag to run this game elevated as administrator"/>
+                </Grid>
+            </Expander>
+
+            <!-- ── Footer ── -->
+            <Border Margin="0,12,0,0"
+                    BorderThickness="0,1,0,0"
+                    BorderBrush="#0AFFFFFF"
+                    Background="#2D000000">
+                <Grid Margin="20,14,20,18">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="8"/>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="8"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+
+                    <ui:Button Grid.Column="0"
+                               Content="Cancel"
+                               Appearance="Transparent"
+                               FontSize="12.5"
+                               Click="Cancel_Click"/>
+
+                    <!-- Status label -->
+                    <TextBlock x:Name="StatusLabel"
+                               Grid.Column="1"
+                               Text=""
+                               FontSize="11.5"
+                               FontWeight="SemiBold"
+                               TextWrapping="NoWrap"
+                               TextTrimming="CharacterEllipsis"
+                               VerticalAlignment="Center"
+                               HorizontalAlignment="Center"
+                               Margin="8,0"
+                               Visibility="Collapsed"/>
+
+                    <ui:Button x:Name="GenerateArmouryCrateButton"
+                               Grid.Column="2"
+                               Content="Armoury Crate"
+                               Appearance="Secondary"
+                               Height="36"
+                               FontSize="13"
+                               IsEnabled="False"
+                               Click="GenerateArmouryCrate_Click"/>
+
+                    <ui:Button x:Name="AddToSteamButton"
+                               Grid.Column="4"
+                               Content="Add to Steam"
+                               Appearance="Secondary"
+                               Height="36"
+                               FontSize="13"
+                               IsEnabled="False"
+                               Click="AddToSteam_Click"/>
+
+                    <ui:Button x:Name="AddToLibraryButton"
+                               Grid.Column="6"
+                               Content="Add to Library"
+                               Appearance="Primary"
+                               Height="36"
+                               MinWidth="130"
+                               FontSize="13"
+                               FontWeight="Medium"
+                               IsEnabled="False"
+                               Click="AddToLibrary_Click"/>
+                </Grid>
+            </Border>
+
+        </StackPanel>
     </Grid>
 </ui:FluentWindow>
