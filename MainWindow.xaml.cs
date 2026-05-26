@@ -490,7 +490,7 @@ namespace LudusaviWrap
             Hide();
             try
             {
-                await new RunWorkflow(entry.GameName, entry.ExePath, entry: entry, library: _library).ExecuteAsync();
+                await new RunWorkflow(entry.GameName, entry.ExePath, entry: entry, library: _library, config: _config).ExecuteAsync();
             }
             catch (Exception ex)
             {
