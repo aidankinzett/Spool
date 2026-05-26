@@ -49,7 +49,7 @@ jobs:
           tags: |
             type=ref,event=branch
             type=semver,pattern={{version}}
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=latest
 
       - name: Resolve version
         id: ver
@@ -77,9 +77,10 @@ jobs:
 
       - name: Retag existing image (no server changes)
         if: steps.changes.outputs.changed == 'false'
+        env:
+          VERSION: ${{ steps.ver.outputs.value }}
+          REPO: ghcr.io/${{ github.repository_owner }}/spool-server
         run: |
-          VERSION="${{ steps.ver.outputs.value }}"
-          REPO="ghcr.io/${{ github.repository_owner }}/spool-server"
           docker buildx imagetools create \
             --tag "${REPO}:${VERSION}" \
             --tag "${REPO}:latest" \
