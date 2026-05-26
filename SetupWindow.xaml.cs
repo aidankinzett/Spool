@@ -44,6 +44,7 @@ namespace LudusaviWrap
             TorBoxSwitch.IsChecked        = _config.Data.TorBoxEnabled;
             TorBoxApiKeyBox.Password      = _config.Data.TorBoxApiKey;
             TorBoxDownloadDirTextBox.Text = _config.Data.DownloadDir;
+            TouchOptimizedSwitch.IsChecked = _config.Data.TouchOptimized;
 
             foreach (var url in _config.Data.DownloadSources)
                 _sources.Add(url);
@@ -289,6 +290,11 @@ namespace LudusaviWrap
         private void TorBoxSwitch_Changed(object sender, RoutedEventArgs e)
         {
             UpdateTorBoxPill();
+            SetDirty(true);
+        }
+
+        private void TouchOptimizedSwitch_Changed(object sender, RoutedEventArgs e)
+        {
             SetDirty(true);
         }
 
@@ -647,7 +653,13 @@ namespace LudusaviWrap
             _config.Data.TorBoxApiKey       = TorBoxApiKeyBox.Password.Trim();
             _config.Data.DownloadDir        = TorBoxDownloadDirTextBox.Text.Trim();
             _config.Data.DownloadSources    = new System.Collections.Generic.List<string>(_sources);
+            _config.Data.TouchOptimized     = TouchOptimizedSwitch.IsChecked ?? false;
             _config.Save();
+
+            if (Application.Current is App app)
+            {
+                app.IsTouchOptimized = _config.Data.TouchOptimized;
+            }
 
             SetDirty(false);
             _closeConfirmed = true;

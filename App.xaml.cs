@@ -1,6 +1,8 @@
 using System;
+using System.Diagnostics;
 using System.IO;
 using System.Windows;
+using System.Windows.Input;
 using Microsoft.Win32;
 using Wpf.Ui.Appearance;
 
@@ -38,8 +40,74 @@ namespace LudusaviWrap
         }
     }
 
-    public partial class App : Application
+    public partial class App : Application, System.ComponentModel.INotifyPropertyChanged
     {
+        private bool _isTouchOptimized;
+
+        public bool IsTouchOptimized
+        {
+            get => _isTouchOptimized;
+            set
+            {
+                if (_isTouchOptimized != value)
+                {
+                    _isTouchOptimized = value;
+                    OnPropertyChanged(nameof(IsTouchOptimized));
+                }
+            }
+        }
+
+        public event System.ComponentModel.PropertyChangedEventHandler? PropertyChanged;
+
+        protected virtual void OnPropertyChanged(string propertyName)
+        {
+            PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(propertyName));
+        }
+
+        public App()
+        {
+            AppContext.SetSwitch("Switch.System.Windows.Input.Stylus.EnablePointerSupport", true);
+
+            EventManager.RegisterClassHandler(typeof(System.Windows.Controls.TextBox),
+                System.Windows.Controls.TextBox.PreviewTouchDownEvent,
+                new EventHandler<TouchEventArgs>(TextBox_PreviewTouchDown));
+            EventManager.RegisterClassHandler(typeof(System.Windows.Controls.PasswordBox),
+                System.Windows.Controls.PasswordBox.PreviewTouchDownEvent,
+                new EventHandler<TouchEventArgs>(PasswordBox_PreviewTouchDown));
+        }
+
+        private static void TextBox_PreviewTouchDown(object? sender, TouchEventArgs e)
+        {
+            if (Application.Current is App app && app.IsTouchOptimized)
+            {
+                ShowTouchKeyboard();
+            }
+        }
+
+        private static void PasswordBox_PreviewTouchDown(object? sender, TouchEventArgs e)
+        {
+            if (Application.Current is App app && app.IsTouchOptimized)
+            {
+                ShowTouchKeyboard();
+            }
+        }
+
+        public static void ShowTouchKeyboard()
+        {
+            try
+            {
+                string path = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.CommonProgramFiles),
+                    @"Microsoft Shared\ink\TabTip.exe"
+                );
+                if (File.Exists(path))
+                {
+                    Process.Start(new ProcessStartInfo(path) { UseShellExecute = true });
+                }
+            }
+            catch { }
+        }
+
         private static readonly string LogPath = Path.Combine(Config.AppDataFolder, "debug.log");
 
         internal static void Log(string message)
@@ -128,6 +196,7 @@ namespace LudusaviWrap
 
             Log("Loading config...");
             var config = new Config();
+            IsTouchOptimized = config.Data.TouchOptimized;
             Log($"LudusaviPath = '{config.Data.LudusaviPath}'");
             Log($"IsLudusaviOk = {config.IsLudusaviOk}");
             Log($"Theme = '{config.Data.Theme}'");
@@ -173,6 +242,10 @@ namespace LudusaviWrap
             {
                 var config = new Config();
                 ThemeManager.ApplyTheme(config.Data.Theme);
+                if (Application.Current is App app)
+                {
+                    app.IsTouchOptimized = config.Data.TouchOptimized;
+                }
             }
             catch
             {

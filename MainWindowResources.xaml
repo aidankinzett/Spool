@@ -43,6 +43,11 @@
             </Setter.Value>
         </Setter>
         <Style.Triggers>
+            <DataTrigger Binding="{Binding IsTouchOptimized, Source={x:Static Application.Current}}" Value="True">
+                <Setter Property="Height" Value="34"/>
+                <Setter Property="Padding" Value="14,0"/>
+                <Setter Property="FontSize" Value="12"/>
+            </DataTrigger>
             <Trigger Property="IsChecked" Value="False">
                 <Setter Property="Background" Value="Transparent"/>
                 <Setter Property="BorderBrush" Value="#14FFFFFF"/>
@@ -95,6 +100,13 @@
                 </ControlTemplate>
             </Setter.Value>
         </Setter>
+        <Style.Triggers>
+            <DataTrigger Binding="{Binding IsTouchOptimized, Source={x:Static Application.Current}}" Value="True">
+                <Setter Property="Height" Value="42"/>
+                <Setter Property="Padding" Value="16,0"/>
+                <Setter Property="FontSize" Value="13"/>
+            </DataTrigger>
+        </Style.Triggers>
     </Style>
 
     <!-- Danger button -->
@@ -183,6 +195,12 @@
                 </ControlTemplate>
             </Setter.Value>
         </Setter>
+        <Style.Triggers>
+            <DataTrigger Binding="{Binding IsTouchOptimized, Source={x:Static Application.Current}}" Value="True">
+                <Setter Property="Height" Value="44"/>
+                <Setter Property="Padding" Value="14,0"/>
+            </DataTrigger>
+        </Style.Triggers>
     </Style>
 
     <!-- Card container -->

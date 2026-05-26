@@ -58,6 +58,9 @@ namespace LudusaviWrap
 
         [JsonPropertyName("download_sources")]
         public List<string> DownloadSources { get; set; } = new();
+
+        [JsonPropertyName("touch_optimized")]
+        public bool TouchOptimized { get; set; } = false;
     }
 
     [JsonSourceGenerationOptions(WriteIndented = true)]
@@ -87,6 +90,20 @@ namespace LudusaviWrap
             SaveCurrentExePath();
         }
 
+        private static bool IsTouchscreenConnected()
+        {
+            try
+            {
+                foreach (System.Windows.Input.TabletDevice device in System.Windows.Input.Tablet.TabletDevices)
+                {
+                    if (device.Type == System.Windows.Input.TabletDeviceType.Touch)
+                        return true;
+                }
+            }
+            catch { }
+            return false;
+        }
+
         private void Load()
         {
             try
@@ -97,8 +114,16 @@ namespace LudusaviWrap
                     var loaded = JsonSerializer.Deserialize(json, ConfigSourceGenerationContext.Default.ConfigData);
                     if (loaded != null)
                     {
+                        if (!json.Contains("\"touch_optimized\""))
+                        {
+                            loaded.TouchOptimized = IsTouchscreenConnected();
+                        }
                         Data = loaded;
                     }
+                }
+                else
+                {
+                    Data.TouchOptimized = IsTouchscreenConnected();
                 }
             }
             catch

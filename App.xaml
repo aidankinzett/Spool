@@ -9,6 +9,36 @@
                 <ui:ThemesDictionary Theme="Dark" />
                 <ui:ControlsDictionary />
             </ResourceDictionary.MergedDictionaries>
+
+            <Style TargetType="{x:Type ScrollViewer}" BasedOn="{StaticResource {x:Type ScrollViewer}}">
+                <Setter Property="PanningMode" Value="Both" />
+            </Style>
+
+            <Style TargetType="{x:Type TextBox}" BasedOn="{StaticResource {x:Type TextBox}}">
+                <Style.Triggers>
+                    <DataTrigger Binding="{Binding IsTouchOptimized, Source={x:Static Application.Current}}" Value="True">
+                        <Setter Property="MinHeight" Value="38"/>
+                        <Setter Property="Padding" Value="10,6,10,6"/>
+                    </DataTrigger>
+                </Style.Triggers>
+            </Style>
+
+            <Style TargetType="{x:Type PasswordBox}" BasedOn="{StaticResource {x:Type PasswordBox}}">
+                <Style.Triggers>
+                    <DataTrigger Binding="{Binding IsTouchOptimized, Source={x:Static Application.Current}}" Value="True">
+                        <Setter Property="MinHeight" Value="38"/>
+                        <Setter Property="Padding" Value="10,6,10,6"/>
+                    </DataTrigger>
+                </Style.Triggers>
+            </Style>
+
+            <Style TargetType="{x:Type ComboBox}" BasedOn="{StaticResource {x:Type ComboBox}}">
+                <Style.Triggers>
+                    <DataTrigger Binding="{Binding IsTouchOptimized, Source={x:Static Application.Current}}" Value="True">
+                        <Setter Property="MinHeight" Value="38"/>
+                    </DataTrigger>
+                </Style.Triggers>
+            </Style>
         </ResourceDictionary>
     </Application.Resources>
 </Application>
