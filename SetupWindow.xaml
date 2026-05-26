@@ -236,7 +236,7 @@
                                             HorizontalAlignment="Left"
                                             Visibility="Hidden"/>
                                     <ui:SymbolIcon Grid.Column="1"
-                                                   Symbol="DesktopTower20"
+                                                   Symbol="Router20"
                                                    FontSize="16"
                                                    VerticalAlignment="Center"/>
                                     <TextBlock Grid.Column="2"
@@ -619,7 +619,7 @@
                             <StackPanel Orientation="Horizontal">
                                 <Border Width="36" Height="36" CornerRadius="8"
                                         Background="{DynamicResource ControlFillColorDefaultBrush}" BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}" BorderThickness="1">
-                                    <ui:SymbolIcon Symbol="DesktopTower20" FontSize="18" VerticalAlignment="Center" HorizontalAlignment="Center"/>
+                                    <ui:SymbolIcon Symbol="Router20" FontSize="18" VerticalAlignment="Center" HorizontalAlignment="Center"/>
                                 </Border>
                                 <TextBlock Style="{StaticResource SectionTitle}" Text="LAN sharing" Margin="12,0,0,0" VerticalAlignment="Center"/>
                             </StackPanel>
@@ -637,7 +637,7 @@
                                     </Grid.ColumnDefinitions>
                                     <Border Grid.Column="0" Width="32" Height="32" CornerRadius="4"
                                             Background="{DynamicResource ControlFillColorDefaultBrush}" BorderBrush="{DynamicResource ControlStrokeColorDefaultBrush}" BorderThickness="1">
-                                        <ui:SymbolIcon Symbol="DesktopTower20" FontSize="16" VerticalAlignment="Center" HorizontalAlignment="Center"/>
+                                        <ui:SymbolIcon Symbol="Router20" FontSize="16" VerticalAlignment="Center" HorizontalAlignment="Center"/>
                                     </Border>
                                     <StackPanel Grid.Column="2">
                                         <StackPanel Orientation="Horizontal">
