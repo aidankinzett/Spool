@@ -14,7 +14,7 @@ namespace LudusaviWrap
     {
         private readonly Config _config;
         private readonly bool _isFirstRun;
-        private bool _themeComboInitialized = false;
+        private bool _themeRadioInitialized = false;
         private bool _dirty = false;
         private bool _closeConfirmed = false;
         private readonly ObservableCollection<string> _sources = new();
@@ -51,8 +51,8 @@ namespace LudusaviWrap
             SourcesListBox.ItemsSource = _sources;
             UpdateSourcesCount();
 
-            SelectThemeComboItem(_config.Data.Theme);
-            _themeComboInitialized = true;
+            SelectThemeRadio(_config.Data.Theme);
+            _themeRadioInitialized = true;
 
             AboutVersionText.Text = $"Spool v{GetAppVersion()} · Up to date";
 
@@ -308,28 +308,21 @@ namespace LudusaviWrap
         // Theme
         // ─────────────────────────────────────────────────────────────────────
 
-        private void SelectThemeComboItem(string theme)
+        private void SelectThemeRadio(string theme)
         {
-            foreach (ComboBoxItem item in ThemeComboBox.Items)
-            {
-                if (item.Tag?.ToString() == theme)
-                {
-                    ThemeComboBox.SelectedItem = item;
-                    return;
-                }
-            }
-            ThemeComboBox.SelectedIndex = 0;
+            ThemeSystemRadio.IsChecked = theme == "system" || (theme != "light" && theme != "dark");
+            ThemeLightRadio.IsChecked  = theme == "light";
+            ThemeDarkRadio.IsChecked   = theme == "dark";
         }
 
-        private void ThemeComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        private void ThemeRadio_Changed(object sender, RoutedEventArgs e)
         {
-            if (!_themeComboInitialized) return;
-            if (ThemeComboBox.SelectedItem is ComboBoxItem selected &&
-                selected.Tag?.ToString() is string tag)
-            {
-                ThemeManager.ApplyTheme(tag);
-                SetDirty(true);
-            }
+            if (!_themeRadioInitialized) return;
+            string tag = "system";
+            if (ThemeLightRadio.IsChecked == true) tag = "light";
+            else if (ThemeDarkRadio.IsChecked == true) tag = "dark";
+            ThemeManager.ApplyTheme(tag);
+            SetDirty(true);
         }
 
         // ─────────────────────────────────────────────────────────────────────
@@ -625,9 +618,8 @@ namespace LudusaviWrap
             }
 
             string themeValue = "system";
-            if (ThemeComboBox.SelectedItem is ComboBoxItem selectedTheme &&
-                selectedTheme.Tag?.ToString() is string tag)
-                themeValue = tag;
+            if (ThemeLightRadio.IsChecked == true) themeValue = "light";
+            else if (ThemeDarkRadio.IsChecked == true) themeValue = "dark";
 
             string lanPortText = LanPortTextBox.Text.Trim();
             if (!int.TryParse(lanPortText, out int lanPort) || lanPort < 1024 || lanPort > 65534)

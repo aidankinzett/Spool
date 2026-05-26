@@ -384,15 +384,19 @@
                                         <TextBlock Text="Match Windows, or override with light or dark."
                                                    FontSize="12" Foreground="{DynamicResource TextFillColorSecondaryBrush}" Margin="0,2,0,0"/>
                                     </StackPanel>
-                                    <ComboBox x:Name="ThemeComboBox"
-                                              Grid.Column="3"
-                                              Width="180"
-                                              VerticalAlignment="Center"
-                                              SelectionChanged="ThemeComboBox_SelectionChanged">
-                                        <ComboBoxItem x:Name="ThemeSystem" Content="System default" Tag="system"/>
-                                        <ComboBoxItem x:Name="ThemeLight"  Content="Light"          Tag="light"/>
-                                        <ComboBoxItem x:Name="ThemeDark"   Content="Dark"           Tag="dark"/>
-                                    </ComboBox>
+                                    <StackPanel Grid.Column="3" Orientation="Horizontal" VerticalAlignment="Center">
+                                        <RadioButton x:Name="ThemeSystemRadio"
+                                                     Content="System"
+                                                     Margin="0,0,12,0"
+                                                     Checked="ThemeRadio_Changed"/>
+                                        <RadioButton x:Name="ThemeLightRadio"
+                                                     Content="Light"
+                                                     Margin="0,0,12,0"
+                                                     Checked="ThemeRadio_Changed"/>
+                                        <RadioButton x:Name="ThemeDarkRadio"
+                                                     Content="Dark"
+                                                     Checked="ThemeRadio_Changed"/>
+                                    </StackPanel>
                                 </Grid>
                             </Border>
 
@@ -407,7 +411,7 @@
                                     </Grid.ColumnDefinitions>
                                     <Border Grid.Column="0" Width="32" Height="32" CornerRadius="4"
                                             Background="{DynamicResource ControlFillColorDefaultBrush}" BorderBrush="{DynamicResource ControlStrokeColorDefaultBrush}" BorderThickness="1">
-                                        <ui:SymbolIcon Symbol="Hand20" FontSize="16" VerticalAlignment="Center" HorizontalAlignment="Center"/>
+                                        <ui:SymbolIcon Symbol="HandDraw20" FontSize="16" VerticalAlignment="Center" HorizontalAlignment="Center"/>
                                     </Border>
                                     <StackPanel Grid.Column="2">
                                         <TextBlock Text="Touch Optimization" FontWeight="Medium" FontSize="13"/>
@@ -837,11 +841,11 @@
                                                         <ColumnDefinition Width="*"/>
                                                         <ColumnDefinition Width="Auto"/>
                                                     </Grid.ColumnDefinitions>
-                                                    <PasswordBox Grid.Column="0"
-                                                                 x:Name="SyncApiKeyBox"
-                                                                 FontFamily="Cascadia Code, Consolas, monospace"
-                                                                 FontSize="12"
-                                                                 Margin="0,0,6,0"/>
+                                                    <ui:PasswordBox Grid.Column="0"
+                                                                    x:Name="SyncApiKeyBox"
+                                                                    FontFamily="Cascadia Code, Consolas, monospace"
+                                                                    FontSize="12"
+                                                                    Margin="0,0,6,0"/>
                                                     <ui:Button Grid.Column="1"
                                                                Content="Register…"
                                                                Appearance="Secondary"
@@ -885,10 +889,10 @@
                                                         <ColumnDefinition Width="*"/>
                                                     </Grid.ColumnDefinitions>
                                                     <TextBlock Grid.Column="0" Text="Admin secret" Style="{StaticResource SubLabel}"/>
-                                                    <PasswordBox Grid.Column="1"
-                                                                 x:Name="RegisterAdminSecretBox"
-                                                                 FontFamily="Cascadia Code, Consolas, monospace"
-                                                                 FontSize="12"/>
+                                                    <ui:PasswordBox Grid.Column="1"
+                                                                    x:Name="RegisterAdminSecretBox"
+                                                                    FontFamily="Cascadia Code, Consolas, monospace"
+                                                                    FontSize="12"/>
                                                 </Grid>
                                                 <Grid Margin="0,0,0,8">
                                                     <Grid.ColumnDefinitions>
@@ -987,7 +991,7 @@
                                                         <ColumnDefinition Width="*"/>
                                                         <ColumnDefinition Width="Auto"/>
                                                     </Grid.ColumnDefinitions>
-                                                    <PasswordBox Grid.Column="0"
+                                                    <ui:PasswordBox Grid.Column="0"
                                                                  x:Name="TorBoxApiKeyBox"
                                                                  FontFamily="Cascadia Code, Consolas, monospace"
                                                                  FontSize="12"
