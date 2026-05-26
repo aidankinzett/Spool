@@ -228,14 +228,15 @@ namespace LudusaviWrap
 
     public class GameLibrary
     {
-        private static readonly string AppDataFolder = Config.AppDataFolder;
-
-        private static readonly string LibraryPath = Path.Combine(AppDataFolder, "library.json");
+        private readonly string _appDataFolder;
+        private readonly string _libraryPath;
 
         public List<GameEntry> Entries { get; private set; } = new();
 
-        public GameLibrary()
+        public GameLibrary(string? basePath = null)
         {
+            _appDataFolder = basePath ?? Config.AppDataFolder;
+            _libraryPath   = Path.Combine(_appDataFolder, "library.json");
             Load();
         }
 
@@ -243,9 +244,9 @@ namespace LudusaviWrap
         {
             try
             {
-                if (File.Exists(LibraryPath))
+                if (File.Exists(_libraryPath))
                 {
-                    string json = File.ReadAllText(LibraryPath);
+                    string json = File.ReadAllText(_libraryPath);
                     var loaded = JsonSerializer.Deserialize(json, LibrarySourceGenerationContext.Default.ListGameEntry);
                     if (loaded != null)
                         Entries = loaded;
@@ -261,14 +262,14 @@ namespace LudusaviWrap
         {
             try
             {
-                Directory.CreateDirectory(AppDataFolder);
+                Directory.CreateDirectory(_appDataFolder);
                 string json = JsonSerializer.Serialize(Entries, LibrarySourceGenerationContext.Default.ListGameEntry);
-                string tmpPath = LibraryPath + ".tmp";
+                string tmpPath = _libraryPath + ".tmp";
                 File.WriteAllText(tmpPath, json);
-                if (File.Exists(LibraryPath))
-                    File.Replace(tmpPath, LibraryPath, LibraryPath + ".bak");
+                if (File.Exists(_libraryPath))
+                    File.Replace(tmpPath, _libraryPath, _libraryPath + ".bak");
                 else
-                    File.Move(tmpPath, LibraryPath);
+                    File.Move(tmpPath, _libraryPath);
             }
             catch (Exception ex)
             {

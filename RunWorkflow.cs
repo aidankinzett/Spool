@@ -1,13 +1,10 @@
 using System;
-using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Text;
 using System.Text.Json;
-using System.Text.Json.Serialization;
 using System.Threading;
 using System.Threading.Tasks;
-using System.Windows;
 using Microsoft.Toolkit.Uwp.Notifications;
 using Windows.Data.Xml.Dom;
 using Windows.UI.Notifications;
@@ -19,6 +16,7 @@ namespace LudusaviWrap
         private readonly string _gameName;
         private readonly string _gameExe;
         private readonly Config _config;
+        private readonly IDialogService _dialogs;
         private readonly PlayStateLockClient? _lockClient;
         private readonly GameEntry? _entry;
         private readonly GameLibrary? _library;
@@ -26,13 +24,20 @@ namespace LudusaviWrap
         private const string ProgressToastTag   = "ludusavi-progress";
         private const string ProgressToastGroup = "ludusavi";
 
-        public RunWorkflow(string gameName, string gameExe, GameEntry? entry = null, GameLibrary? library = null)
+        public RunWorkflow(
+            string gameName,
+            string gameExe,
+            GameEntry? entry        = null,
+            GameLibrary? library    = null,
+            Config? config          = null,
+            IDialogService? dialogs = null)
         {
             _gameName = gameName;
             _gameExe  = gameExe;
             _library  = library ?? new GameLibrary();
             _entry    = entry ?? _library.FindByName(_gameName);
-            _config   = new Config();
+            _config   = config  ?? new Config();
+            _dialogs  = dialogs ?? new WpfDialogService();
 
             if (_config.Data.SyncServerEnabled && !string.IsNullOrEmpty(_config.Data.SyncServerUrl))
             {
@@ -48,46 +53,58 @@ namespace LudusaviWrap
         {
             if (!_config.IsLudusaviOk)
             {
-                MessageBox.Show(
-                    $"Ludusavi executable not found at:\n{_config.Data.LudusaviPath}\n\nPlease open settings in Spool to configure it.",
-                    "Spool Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                _dialogs.ShowError("Spool Error",
+                    $"Ludusavi executable not found at:\n{_config.Data.LudusaviPath}\n\nPlease open settings in Spool to configure it.");
                 return;
             }
 
-            string ludusavi = _config.Data.LudusaviPath;
+            if (!await CheckLockBeforeRestoreAsync())  return;
+            if (!await RestoreAndVerifyAsync())        return;
+            if (!await AcquireLockBeforeLaunchAsync()) return;
+            if (!await LaunchAndTrackSessionAsync())   return;
+            await BackupAfterSessionAsync();
 
-            // 0. Check play state lock before restoring saves
             if (_lockClient != null)
-            {
-                ShowOrUpdateProgressToast($"Checking play state for '{_gameName}'...");
-                var lockStatus = await _lockClient.CheckLockAsync(_gameName);
-                if (lockStatus != null && lockStatus.Locked && lockStatus.DeviceId != _config.Data.DeviceId)
-                {
-                    string device = lockStatus.DeviceName ?? "another device";
-                    DismissProgressToast();
+                _ = _lockClient.ReleaseLockAsync(_gameName);
+        }
 
-                    if (!lockStatus.Stale)
-                    {
-                        var ans = MessageBox.Show(
-                            $"{device} is currently playing '{_gameName}'.\n\nLaunch anyway?",
-                            "Game Already Running", MessageBoxButton.YesNo, MessageBoxImage.Warning);
-                        if (ans == MessageBoxResult.No)
-                            return;
-                    }
-                    else
-                    {
-                        var lastBackup = await _lockClient.GetLatestBackupEventAsync(_gameName);
-                        string backupDetail = lastBackup?.Found == true
-                            ? $"\n\nLast backup: {FormatTimeAgo(lastBackup.OccurredAt)} from {lastBackup.DeviceName}."
-                            : "";
-                        MessageBox.Show(
-                            $"{device}'s session appears to have ended without releasing the lock.{backupDetail}\n\nProceeding with restore.",
-                            "Stale Lock Detected", MessageBoxButton.OK, MessageBoxImage.Information);
-                    }
+        // ── Phase 1: Check play state lock before restoring ────────────────────
+
+        private async Task<bool> CheckLockBeforeRestoreAsync()
+        {
+            if (_lockClient == null) return true;
+
+            ShowOrUpdateProgressToast($"Checking play state for '{_gameName}'...");
+            var lockStatus = await _lockClient.CheckLockAsync(_gameName);
+            if (lockStatus != null && lockStatus.Locked && lockStatus.DeviceId != _config.Data.DeviceId)
+            {
+                string device = lockStatus.DeviceName ?? "another device";
+                DismissProgressToast();
+
+                if (!lockStatus.Stale)
+                {
+                    if (!_dialogs.Confirm("Game Already Running",
+                            $"{device} is currently playing '{_gameName}'.\n\nLaunch anyway?"))
+                        return false;
+                }
+                else
+                {
+                    var lastBackup = await _lockClient.GetLatestBackupEventAsync(_gameName);
+                    string backupDetail = lastBackup?.Found == true
+                        ? $"\n\nLast backup: {FormatTimeAgo(lastBackup.OccurredAt)} from {lastBackup.DeviceName}."
+                        : "";
+                    _dialogs.ShowInfo("Stale Lock Detected",
+                        $"{device}'s session appears to have ended without releasing the lock.{backupDetail}\n\nProceeding with restore.");
                 }
             }
+            return true;
+        }
 
-            // 1. Restore saves
+        // ── Phase 2: Restore saves ─────────────────────────────────────────────
+
+        private async Task<bool> RestoreAndVerifyAsync()
+        {
+            string ludusavi = _config.Data.LudusaviPath;
             ShowOrUpdateProgressToast($"Restoring saves for '{_gameName}'...");
 
             ProcessResult restoreResult;
@@ -99,9 +116,8 @@ namespace LudusaviWrap
             {
                 DismissProgressToast();
                 App.Log($"Failed to start Ludusavi restore for '{_gameName}': {ex}");
-                MessageBox.Show($"Failed to start Ludusavi restore process:\n{ex.Message}",
-                    "Ludusavi Error", MessageBoxButton.OK, MessageBoxImage.Error);
-                return;
+                _dialogs.ShowError("Ludusavi Error", $"Failed to start Ludusavi restore process:\n{ex.Message}");
+                return false;
             }
 
             var restoreOutput = ParseLudusaviOutput(restoreResult.Output);
@@ -110,12 +126,10 @@ namespace LudusaviWrap
             {
                 DismissProgressToast();
                 App.Log($"Ludusavi restore cloud conflict for '{_gameName}'");
-                var ans = MessageBox.Show(
-                    $"Cloud sync conflict detected for '{_gameName}'. Open Ludusavi to resolve?",
-                    "Cloud Sync Conflict", MessageBoxButton.YesNo, MessageBoxImage.Warning);
-                if (ans == MessageBoxResult.Yes)
+                if (_dialogs.Confirm("Cloud Sync Conflict",
+                        $"Cloud sync conflict detected for '{_gameName}'. Open Ludusavi to resolve?"))
                     TryOpenLudusaviGui(ludusavi);
-                return;
+                return false;
             }
 
             if (restoreOutput?.Errors?.CloudSyncFailed != null)
@@ -132,58 +146,62 @@ namespace LudusaviWrap
                 DismissProgressToast();
                 string details = string.IsNullOrWhiteSpace(restoreResult.Error) ? restoreResult.Output : restoreResult.Error;
                 App.Log($"Ludusavi restore failed for '{_gameName}' (exit {restoreResult.ExitCode}): {details.Trim()}");
-                MessageBox.Show($"Ludusavi restore failed. Game will not launch.\n\nDetails:\n{details.Trim()}",
-                    "Ludusavi Error", MessageBoxButton.OK, MessageBoxImage.Error);
-                return;
+                _dialogs.ShowError("Ludusavi Error", $"Ludusavi restore failed. Game will not launch.\n\nDetails:\n{details.Trim()}");
+                return false;
             }
 
             if (_lockClient != null)
                 _ = _lockClient.RecordRestoreAsync(_gameName);
 
-            // 2. Acquire play state lock before launching
-            if (_lockClient != null)
-            {
-                ShowOrUpdateProgressToast($"Acquiring play lock for '{_gameName}'...");
-                var acquireResult = await _lockClient.AcquireLockAsync(_gameName);
+            return true;
+        }
 
-                if (acquireResult.Outcome == AcquireOutcome.Conflict)
-                {
-                    string device = acquireResult.ConflictDeviceName ?? "another device";
-                    DismissProgressToast();
-                    var ans = MessageBox.Show(
-                        $"{device} is currently playing '{_gameName}'.\n\nLaunch anyway?",
-                        "Game Already Running", MessageBoxButton.YesNo, MessageBoxImage.Warning);
-                    if (ans == MessageBoxResult.No)
-                        return;
-                }
-                else if (acquireResult.Outcome == AcquireOutcome.Unavailable)
-                {
-                    ShowOrUpdateProgressToast("Sync server unavailable — launching anyway...");
-                }
+        // ── Phase 3: Acquire play state lock before launching ──────────────────
+
+        private async Task<bool> AcquireLockBeforeLaunchAsync()
+        {
+            if (_lockClient == null) return true;
+
+            ShowOrUpdateProgressToast($"Acquiring play lock for '{_gameName}'...");
+            var acquireResult = await _lockClient.AcquireLockAsync(_gameName);
+
+            if (acquireResult.Outcome == AcquireOutcome.Conflict)
+            {
+                string device = acquireResult.ConflictDeviceName ?? "another device";
+                DismissProgressToast();
+                if (!_dialogs.Confirm("Game Already Running",
+                        $"{device} is currently playing '{_gameName}'.\n\nLaunch anyway?"))
+                    return false;
+            }
+            else if (acquireResult.Outcome == AcquireOutcome.Unavailable)
+            {
+                ShowOrUpdateProgressToast("Sync server unavailable — launching anyway...");
             }
 
-            // 3. Launch the game
-            if (!File.Exists(_gameExe))
+            return true;
+        }
+
+        // ── Phase 4: Launch game, heartbeat, track session ─────────────────────
+
+        private async Task<bool> LaunchAndTrackSessionAsync()
+        {
+            if (!await Task.Run(() => File.Exists(_gameExe)))
             {
                 DismissProgressToast();
-                MessageBox.Show($"Game executable not found at:\n{_gameExe}",
-                    "Game Launcher Error", MessageBoxButton.OK, MessageBoxImage.Error);
-                return;
+                _dialogs.ShowError("Game Launcher Error", $"Game executable not found at:\n{_gameExe}");
+                return false;
             }
 
             DismissProgressToast();
             ShowToast("Saves Restored", $"{_gameName} saves restored — launching game.");
 
-            // Update last played timestamp locally and sync to server
             if (_entry != null)
             {
                 _entry.LastPlayedAt = DateTime.UtcNow;
                 _library?.Update(_entry);
 
                 if (_lockClient != null)
-                {
                     _ = _lockClient.UpdateLastPlayedRecordAsync(_entry.GameName, _entry.LastPlayedAt.Value);
-                }
             }
 
             using var heartbeatCts = new CancellationTokenSource();
@@ -203,16 +221,15 @@ namespace LudusaviWrap
                 if (heartbeatTask != null) try { await heartbeatTask; } catch { }
                 App.Log($"Game launch cancelled for '{_gameName}': {ex.Message}");
                 ShowToast("Launch Cancelled", "Game launch was cancelled.");
-                return;
+                return false;
             }
             catch (Exception ex)
             {
                 heartbeatCts.Cancel();
                 if (heartbeatTask != null) try { await heartbeatTask; } catch { }
                 App.Log($"Failed to start game '{_gameName}': {ex}");
-                MessageBox.Show($"Failed to start game:\n{ex.Message}",
-                    "Game Launcher Error", MessageBoxButton.OK, MessageBoxImage.Error);
-                return;
+                _dialogs.ShowError("Game Launcher Error", $"Failed to start game:\n{ex.Message}");
+                return false;
             }
 
             heartbeatCts.Cancel();
@@ -227,7 +244,14 @@ namespace LudusaviWrap
                     _ = _lockClient.AddPlaytimeDeltaAsync(_entry.GameName, sessionMinutes);
             }
 
-            // 4. Backup saves
+            return true;
+        }
+
+        // ── Phase 5: Backup saves ──────────────────────────────────────────────
+
+        private async Task BackupAfterSessionAsync()
+        {
+            string ludusavi = _config.Data.LudusaviPath;
             ShowOrUpdateProgressToast($"Backing up saves for '{_gameName}'...");
 
             try
@@ -241,10 +265,8 @@ namespace LudusaviWrap
                     if (_lockClient != null) _ = _lockClient.RecordBackupAsync(_gameName);
                     DismissProgressToast();
                     App.Log($"Ludusavi backup cloud conflict for '{_gameName}'");
-                    var ans = MessageBox.Show(
-                        $"Cloud sync conflict detected during backup for '{_gameName}'. Your saves are backed up locally. Open Ludusavi to resolve?",
-                        "Cloud Sync Conflict", MessageBoxButton.YesNo, MessageBoxImage.Warning);
-                    if (ans == MessageBoxResult.Yes)
+                    if (_dialogs.Confirm("Cloud Sync Conflict",
+                            $"Cloud sync conflict detected during backup for '{_gameName}'. Your saves are backed up locally. Open Ludusavi to resolve?"))
                         TryOpenLudusaviGui(ludusavi);
                 }
                 else if (backupOutput?.Errors?.CloudSyncFailed != null)
@@ -259,8 +281,7 @@ namespace LudusaviWrap
                     DismissProgressToast();
                     string details = string.IsNullOrWhiteSpace(backupResult.Error) ? backupResult.Output : backupResult.Error;
                     App.Log($"Ludusavi backup failed for '{_gameName}' (exit {backupResult.ExitCode}): {details.Trim()}");
-                    MessageBox.Show($"Ludusavi backup failed. Your saves may not have been backed up.\n\nDetails:\n{details.Trim()}",
-                        "Ludusavi Warning", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    _dialogs.ShowWarning("Ludusavi Warning", $"Ludusavi backup failed. Your saves may not have been backed up.\n\nDetails:\n{details.Trim()}");
                 }
                 else if (backupOutput?.Overall?.TotalGames > 0)
                 {
@@ -278,14 +299,11 @@ namespace LudusaviWrap
             {
                 DismissProgressToast();
                 App.Log($"Failed to run Ludusavi backup for '{_gameName}': {ex}");
-                MessageBox.Show($"Failed to run Ludusavi backup:\n{ex.Message}",
-                    "Ludusavi Warning", MessageBoxButton.OK, MessageBoxImage.Warning);
+                _dialogs.ShowWarning("Ludusavi Warning", $"Failed to run Ludusavi backup:\n{ex.Message}");
             }
-
-            // 5. Release play state lock (fire-and-forget)
-            if (_lockClient != null)
-                _ = _lockClient.ReleaseLockAsync(_gameName);
         }
+
+        // ── Helpers ────────────────────────────────────────────────────────────
 
         private void ShowOrUpdateProgressToast(string status)
         {
@@ -342,8 +360,8 @@ namespace LudusaviWrap
 
         private static async Task<ProcessResult> RunProcessAsync(string filename, string arguments)
         {
-            var outputBuilder = new StringBuilder();
-            var errorBuilder  = new StringBuilder();
+            var outputBuilder   = new StringBuilder();
+            var errorBuilder    = new StringBuilder();
             var outputClosedTcs = new TaskCompletionSource<bool>();
             var errorClosedTcs  = new TaskCompletionSource<bool>();
 
@@ -351,12 +369,12 @@ namespace LudusaviWrap
             {
                 StartInfo = new ProcessStartInfo
                 {
-                    FileName              = filename,
-                    Arguments             = arguments,
-                    UseShellExecute       = false,
+                    FileName               = filename,
+                    Arguments              = arguments,
+                    UseShellExecute        = false,
                     RedirectStandardOutput = true,
                     RedirectStandardError  = true,
-                    CreateNoWindow        = true
+                    CreateNoWindow         = true
                 },
                 EnableRaisingEvents = true
             };
@@ -401,16 +419,15 @@ namespace LudusaviWrap
             {
                 Process.Start(new ProcessStartInfo
                 {
-                    FileName       = ludusaviPath,
-                    Arguments      = "gui",
+                    FileName        = ludusaviPath,
+                    Arguments       = "gui",
                     UseShellExecute = true
                 });
             }
             catch (Exception ex)
             {
                 App.Log($"Failed to open Ludusavi GUI: {ex}");
-                MessageBox.Show($"Failed to open Ludusavi GUI:\n{ex.Message}",
-                    "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                _dialogs.ShowError("Error", $"Failed to open Ludusavi GUI:\n{ex.Message}");
             }
         }
 
@@ -456,42 +473,4 @@ namespace LudusaviWrap
             return $"{(int)elapsed.TotalDays}d ago";
         }
     }
-
-    public class ProcessResult
-    {
-        public int    ExitCode { get; set; }
-        public string Output   { get; set; } = "";
-        public string Error    { get; set; } = "";
-    }
-
-    public class LudusaviApiOutput
-    {
-        [JsonPropertyName("errors")]
-        public LudusaviApiErrors? Errors { get; set; }
-
-        [JsonPropertyName("overall")]
-        public LudusaviApiOverall? Overall { get; set; }
-    }
-
-    public class LudusaviApiErrors
-    {
-        [JsonPropertyName("unknownGames")]
-        public List<string>? UnknownGames { get; set; }
-
-        [JsonPropertyName("cloudConflict")]
-        public System.Text.Json.JsonElement? CloudConflict { get; set; }
-
-        [JsonPropertyName("cloudSyncFailed")]
-        public System.Text.Json.JsonElement? CloudSyncFailed { get; set; }
-    }
-
-    public class LudusaviApiOverall
-    {
-        [JsonPropertyName("totalGames")]
-        public int TotalGames { get; set; }
-    }
-
-    [JsonSourceGenerationOptions(WriteIndented = false)]
-    [JsonSerializable(typeof(LudusaviApiOutput))]
-    internal partial class LudusaviOutputContext : JsonSerializerContext { }
 }
