@@ -185,7 +185,7 @@ namespace LudusaviWrap
 
         private async Task<bool> LaunchAndTrackSessionAsync()
         {
-            if (!File.Exists(_gameExe))
+            if (!await Task.Run(() => File.Exists(_gameExe)))
             {
                 DismissProgressToast();
                 _dialogs.ShowError("Game Launcher Error", $"Game executable not found at:\n{_gameExe}");
