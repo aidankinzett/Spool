@@ -2,18 +2,24 @@
 
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
-    <TargetFramework>net9.0-windows10.0.17763.0</TargetFramework>
+    <TargetFramework>net10.0-windows10.0.17763.0</TargetFramework>
     <Nullable>enable</Nullable>
     <UseWpf>true</UseWpf>
     <ImplicitUsings>enable</ImplicitUsings>
     <!-- Single-File Publishing instead of Native AOT for WPF compatibility -->
+    <!-- SelfContained omitted: pass -p:SelfContained=true at publish time instead -->
     <PublishSingleFile>true</PublishSingleFile>
-    <SelfContained>true</SelfContained>
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
     <ApplicationIcon>brand\Spool.ico</ApplicationIcon>
     <AssemblyName>spool</AssemblyName>
     <RootNamespace>LudusaviWrap</RootNamespace>
   </PropertyGroup>
+
+  <ItemGroup>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
+      <_Parameter1>Spool.Tests</_Parameter1>
+    </AssemblyAttribute>
+  </ItemGroup>
 
   <!-- Embed launcher_stub.exe as a resource so we can write it out at runtime -->
   <ItemGroup>
@@ -25,6 +31,7 @@
   <!-- Exclude launcher_stub.cs from compilation since it is a separate tool stub -->
   <ItemGroup>
     <Compile Remove="launcher_stub.cs" />
+    <Compile Remove="Spool.Tests\**" />
   </ItemGroup>
 
   <ItemGroup>

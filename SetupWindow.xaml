@@ -13,6 +13,17 @@
         WindowStartupLocation="CenterScreen">
 
     <Window.Resources>
+        <!-- Accent colour tokens — centralised so theme overrides touch only these keys -->
+        <SolidColorBrush x:Key="AppAccentBrush"                     Color="#4CC2FF"/>
+        <SolidColorBrush x:Key="AppAccentForegroundBrush"           Color="#000000"/>
+        <SolidColorBrush x:Key="AppAccentSubtleHoverBrush"          Color="#0AFFFFFF"/>
+        <SolidColorBrush x:Key="AppAccentHintBackgroundBrush"       Color="#0A4CC2FF"/>
+        <SolidColorBrush x:Key="AppAccentHintBorderBrush"           Color="#1A4CC2FF"/>
+        <SolidColorBrush x:Key="AppAccentHintTextBrush"             Color="#C8FFFFFF"/>
+        <SolidColorBrush x:Key="AppAccentSelectedBackgroundBrush"   Color="#1F4CC2FF"/>
+        <SolidColorBrush x:Key="AppAccentRegisterBackgroundBrush"   Color="#0D4CC2FF"/>
+        <SolidColorBrush x:Key="AppAccentRegisterBorderBrush"       Color="#334CC2FF"/>
+
         <!-- Nav item style -->
         <Style x:Key="NavItemStyle" TargetType="ListBoxItem">
             <Setter Property="Padding" Value="12,9"/>
@@ -85,8 +96,8 @@
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsChecked" Value="True">
-                                <Setter TargetName="Bd" Property="Background" Value="#4CC2FF"/>
-                                <Setter Property="Foreground" Value="#000000"/>
+                                <Setter TargetName="Bd" Property="Background" Value="{DynamicResource AppAccentBrush}"/>
+                                <Setter Property="Foreground" Value="{DynamicResource AppAccentForegroundBrush}"/>
                                 <Setter Property="FontWeight" Value="SemiBold"/>
                             </Trigger>
                             <MultiTrigger>
@@ -94,7 +105,7 @@
                                     <Condition Property="IsChecked" Value="False"/>
                                     <Condition Property="IsMouseOver" Value="True"/>
                                 </MultiTrigger.Conditions>
-                                <Setter TargetName="Bd" Property="Background" Value="#0AFFFFFF"/>
+                                <Setter TargetName="Bd" Property="Background" Value="{DynamicResource AppAccentSubtleHoverBrush}"/>
                             </MultiTrigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -192,7 +203,7 @@
                                             Grid.Column="0"
                                             Width="3" Height="18"
                                             CornerRadius="2"
-                                            Background="#4CC2FF"
+                                            Background="{DynamicResource AppAccentBrush}"
                                             HorizontalAlignment="Left"
                                             Visibility="Hidden"/>
                                     <ui:SymbolIcon Grid.Column="1"
@@ -218,7 +229,7 @@
                                             Grid.Column="0"
                                             Width="3" Height="18"
                                             CornerRadius="2"
-                                            Background="#4CC2FF"
+                                            Background="{DynamicResource AppAccentBrush}"
                                             HorizontalAlignment="Left"
                                             Visibility="Hidden"/>
                                     <ui:SymbolIcon Grid.Column="1"
@@ -244,7 +255,7 @@
                                             Grid.Column="0"
                                             Width="3" Height="18"
                                             CornerRadius="2"
-                                            Background="#4CC2FF"
+                                            Background="{DynamicResource AppAccentBrush}"
                                             HorizontalAlignment="Left"
                                             Visibility="Hidden"/>
                                     <ui:SymbolIcon Grid.Column="1"
@@ -270,7 +281,7 @@
                                             Grid.Column="0"
                                             Width="3" Height="18"
                                             CornerRadius="2"
-                                            Background="#4CC2FF"
+                                            Background="{DynamicResource AppAccentBrush}"
                                             HorizontalAlignment="Left"
                                             Visibility="Hidden"/>
                                     <ui:SymbolIcon Grid.Column="1"
@@ -296,7 +307,7 @@
                                             Grid.Column="0"
                                             Width="3" Height="18"
                                             CornerRadius="2"
-                                            Background="#4CC2FF"
+                                            Background="{DynamicResource AppAccentBrush}"
                                             HorizontalAlignment="Left"
                                             Visibility="Hidden"/>
                                     <ui:SymbolIcon Grid.Column="1"
@@ -322,7 +333,7 @@
                                             Grid.Column="0"
                                             Width="3" Height="18"
                                             CornerRadius="2"
-                                            Background="#4CC2FF"
+                                            Background="{DynamicResource AppAccentBrush}"
                                             HorizontalAlignment="Left"
                                             Visibility="Hidden"/>
                                     <ui:SymbolIcon Grid.Column="1"
@@ -481,13 +492,13 @@
                                 </Grid>
                             </Border>
                             <!-- Touch Mode info hint -->
-                            <Border Background="#0A4CC2FF" BorderBrush="#1A4CC2FF" BorderThickness="1"
+                            <Border Background="{DynamicResource AppAccentHintBackgroundBrush}" BorderBrush="{DynamicResource AppAccentHintBorderBrush}" BorderThickness="1"
                                     CornerRadius="4" Padding="12,8" Margin="0,0,0,8">
                                 <StackPanel Orientation="Horizontal">
                                     <ui:SymbolIcon Symbol="Info20" FontSize="12" Margin="0,0,8,0"
-                                                   Foreground="#4CC2FF" VerticalAlignment="Top"/>
-                                    <TextBlock FontSize="11.5" Foreground="#C8FFFFFF" TextWrapping="Wrap">
-                                        <Run FontWeight="Medium" Foreground="#4CC2FF">Auto</Run>
+                                                   Foreground="{DynamicResource AppAccentBrush}" VerticalAlignment="Top"/>
+                                    <TextBlock FontSize="11.5" Foreground="{DynamicResource AppAccentHintTextBrush}" TextWrapping="Wrap">
+                                        <Run FontWeight="Medium" Foreground="{DynamicResource AppAccentBrush}">Auto</Run>
                                         <Run Text=" uses hardware detection at startup. Override with On or Off if detection is incorrect for your device."/>
                                     </TextBlock>
                                 </StackPanel>
@@ -690,11 +701,11 @@
                                                 <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
                                                 <Style.Triggers>
                                                     <Trigger Property="IsSelected" Value="True">
-                                                        <Setter Property="BorderBrush" Value="#4cc2ff"/>
-                                                        <Setter Property="Background" Value="#1F4CC2FF"/>
+                                                        <Setter Property="BorderBrush" Value="{DynamicResource AppAccentBrush}"/>
+                                                        <Setter Property="Background" Value="{DynamicResource AppAccentSelectedBackgroundBrush}"/>
                                                     </Trigger>
                                                     <Trigger Property="IsMouseOver" Value="True">
-                                                        <Setter Property="Background" Value="#0AFFFFFF"/>
+                                                        <Setter Property="Background" Value="{DynamicResource AppAccentSubtleHoverBrush}"/>
                                                     </Trigger>
                                                 </Style.Triggers>
                                             </Style>
@@ -939,8 +950,8 @@
                                         <!-- Inline register panel -->
                                         <Border x:Name="RegisterPanel"
                                                 Visibility="Collapsed"
-                                                Background="#0D4CC2FF"
-                                                BorderBrush="#334CC2FF"
+                                                Background="{DynamicResource AppAccentRegisterBackgroundBrush}"
+                                                BorderBrush="{DynamicResource AppAccentRegisterBorderBrush}"
                                                 BorderThickness="1"
                                                 CornerRadius="4"
                                                 Padding="12,10"
@@ -948,7 +959,7 @@
                                             <StackPanel>
                                                 <TextBlock Text="Register a new device with this server"
                                                            FontSize="12" FontWeight="Medium"
-                                                           Foreground="#4CC2FF"
+                                                           Foreground="{DynamicResource AppAccentBrush}"
                                                            Margin="0,0,0,10"/>
                                                 <Grid Margin="0,0,0,8">
                                                     <Grid.ColumnDefinitions>

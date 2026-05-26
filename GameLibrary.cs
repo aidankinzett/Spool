@@ -233,11 +233,20 @@ namespace LudusaviWrap
 
         public List<GameEntry> Entries { get; private set; } = new();
 
-        public GameLibrary(string? basePath = null)
+        public GameLibrary(string? basePath = null) : this(basePath, loadNow: true) { }
+
+        private GameLibrary(string? basePath, bool loadNow)
         {
             _appDataFolder = basePath ?? Config.AppDataFolder;
             _libraryPath   = Path.Combine(_appDataFolder, "library.json");
-            Load();
+            if (loadNow) Load();
+        }
+
+        public static async Task<GameLibrary> CreateAsync(string? basePath = null)
+        {
+            var lib = new GameLibrary(basePath, loadNow: false);
+            await Task.Run(lib.Load);
+            return lib;
         }
 
         private void Load()

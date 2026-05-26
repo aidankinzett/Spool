@@ -17,9 +17,10 @@ namespace LudusaviWrap
         private readonly string _gameExe;
         private readonly Config _config;
         private readonly IDialogService _dialogs;
-        private readonly PlayStateLockClient? _lockClient;
+        private readonly IPlayStateLockClient? _lockClient;
         private readonly GameEntry? _entry;
         private readonly GameLibrary? _library;
+        private readonly TimeProvider _clock;
 
         private const string ProgressToastTag   = "ludusavi-progress";
         private const string ProgressToastGroup = "ludusavi";
@@ -27,26 +28,29 @@ namespace LudusaviWrap
         public RunWorkflow(
             string gameName,
             string gameExe,
-            GameEntry? entry        = null,
-            GameLibrary? library    = null,
-            Config? config          = null,
-            IDialogService? dialogs = null)
+            GameEntry? entry                    = null,
+            GameLibrary? library                = null,
+            Config? config                      = null,
+            IDialogService? dialogs             = null,
+            IPlayStateLockClient? lockClientOverride = null,
+            TimeProvider? clock                 = null)
         {
             _gameName = gameName;
             _gameExe  = gameExe;
+            _clock    = clock ?? TimeProvider.System;
             _library  = library ?? new GameLibrary();
             _entry    = entry ?? _library.FindByName(_gameName);
             _config   = config  ?? new Config();
             _dialogs  = dialogs ?? new WpfDialogService();
 
-            if (_config.Data.SyncServerEnabled && !string.IsNullOrEmpty(_config.Data.SyncServerUrl))
-            {
-                _lockClient = new PlayStateLockClient(
-                    _config.Data.SyncServerUrl,
-                    _config.Data.SyncServerApiKey,
-                    _config.Data.DeviceId,
-                    _config.Data.DeviceName);
-            }
+            _lockClient = lockClientOverride ??
+                (_config.Data.SyncServerEnabled && !string.IsNullOrEmpty(_config.Data.SyncServerUrl)
+                    ? new PlayStateLockClient(
+                        _config.Data.SyncServerUrl,
+                        _config.Data.SyncServerApiKey,
+                        _config.Data.DeviceId,
+                        _config.Data.DeviceName)
+                    : null);
         }
 
         public async Task ExecuteAsync()
@@ -197,7 +201,7 @@ namespace LudusaviWrap
 
             if (_entry != null)
             {
-                _entry.LastPlayedAt = DateTime.UtcNow;
+                _entry.LastPlayedAt = _clock.GetUtcNow().UtcDateTime;
                 _library?.Update(_entry);
 
                 if (_lockClient != null)
@@ -209,7 +213,7 @@ namespace LudusaviWrap
                 ? _lockClient.StartHeartbeatLoopAsync(_gameName, heartbeatCts.Token)
                 : null;
 
-            var sessionStart = DateTime.UtcNow;
+            var sessionStart = _clock.GetUtcNow();
 
             try
             {
@@ -235,7 +239,7 @@ namespace LudusaviWrap
             heartbeatCts.Cancel();
             if (heartbeatTask != null) try { await heartbeatTask; } catch { }
 
-            var sessionMinutes = (int)(DateTime.UtcNow - sessionStart).TotalMinutes;
+            var sessionMinutes = (int)(_clock.GetUtcNow() - sessionStart).TotalMinutes;
             if (sessionMinutes >= 1 && _entry != null)
             {
                 _entry.PlaytimeMinutes += sessionMinutes;
@@ -358,7 +362,7 @@ namespace LudusaviWrap
             }
         }
 
-        private static async Task<ProcessResult> RunProcessAsync(string filename, string arguments)
+        protected virtual async Task<ProcessResult> RunProcessAsync(string filename, string arguments)
         {
             var outputBuilder   = new StringBuilder();
             var errorBuilder    = new StringBuilder();
@@ -431,7 +435,7 @@ namespace LudusaviWrap
             }
         }
 
-        private async Task RunGameAsync(string exePath)
+        protected virtual async Task RunGameAsync(string exePath)
         {
             var tcs      = new TaskCompletionSource<int>();
             bool runAsAdmin = (_entry?.RunAsAdmin == true) || RegistryHelper.GetCompatFlagRunAsAdmin(exePath);
@@ -460,13 +464,13 @@ namespace LudusaviWrap
             await tcs.Task;
         }
 
-        private static string FormatTimeAgo(string? isoTimestamp)
+        private string FormatTimeAgo(string? isoTimestamp)
         {
             if (string.IsNullOrEmpty(isoTimestamp) ||
                 !DateTimeOffset.TryParse(isoTimestamp, out var dt))
                 return "unknown time ago";
 
-            var elapsed = DateTimeOffset.UtcNow - dt.ToUniversalTime();
+            var elapsed = _clock.GetUtcNow() - dt.ToUniversalTime();
             if (elapsed.TotalMinutes < 2)  return "just now";
             if (elapsed.TotalMinutes < 60) return $"{(int)elapsed.TotalMinutes}m ago";
             if (elapsed.TotalHours   < 24) return $"{(int)elapsed.TotalHours}h ago";

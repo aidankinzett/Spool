@@ -1,7 +1,7 @@
 ; Inno Setup Compiler script for Spool
 ; To build: iscc installer.iss
 
-#define BuildDir "bin\Release\net9.0-windows10.0.17763.0\win-x64\publish"
+#define BuildDir "bin\Release\net10.0-windows10.0.17763.0\win-x64\publish"
 #define AppExe BuildDir + "\spool.exe"
 #define AppVersion GetVersionNumbersString(AppExe)
 
