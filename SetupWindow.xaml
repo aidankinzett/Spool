@@ -111,6 +111,7 @@
         <ui:TitleBar Title="Settings — Spool"
                      ShowMaximize="False"
                      ShowMinimize="False"
+                     Height="40"
                      Grid.Row="0"/>
 
         <!-- Body: sidebar + content -->
