@@ -760,11 +760,14 @@ namespace LudusaviWrap
             string coversDir = Path.Combine(Config.AppDataFolder, "covers");
             Directory.CreateDirectory(coversDir);
 
+            bool gotCover = false, gotHero = false;
+
             if (peer != null)
             {
+                using var http = new System.Net.Http.HttpClient { Timeout = TimeSpan.FromSeconds(15) };
+
                 try
                 {
-                    using var http = new System.Net.Http.HttpClient { Timeout = TimeSpan.FromSeconds(15) };
                     string url = $"http://{peer.IPAddress}:{peer.Port}/games/{Uri.EscapeDataString(entry.GameName)}/cover";
                     using var response = await http.GetAsync(url);
                     if (response.IsSuccessStatusCode)
@@ -777,19 +780,38 @@ namespace LudusaviWrap
                             _            => ".jpg"
                         };
                         string imagePath = Path.Combine(coversDir, entry.SafeName + "_p" + ext);
-                        byte[] bytes = await response.Content.ReadAsByteArrayAsync();
-                        await File.WriteAllBytesAsync(imagePath, bytes);
+                        await File.WriteAllBytesAsync(imagePath, await response.Content.ReadAsByteArrayAsync());
                         Dispatcher.Invoke(() => { entry.CoverImagePath = imagePath; _library.Update(entry); });
                         App.Log($"Downloaded cover from LAN peer for '{entry.GameName}'");
-                        return;
+                        gotCover = true;
                     }
                 }
-                catch (Exception ex)
+                catch (Exception ex) { App.Log($"LAN cover fetch failed for '{entry.GameName}': {ex.Message}"); }
+
+                try
                 {
-                    App.Log($"LAN cover fetch failed for '{entry.GameName}': {ex.Message}");
+                    string url = $"http://{peer.IPAddress}:{peer.Port}/games/{Uri.EscapeDataString(entry.GameName)}/hero";
+                    using var response = await http.GetAsync(url);
+                    if (response.IsSuccessStatusCode)
+                    {
+                        string ext = response.Content.Headers.ContentType?.MediaType switch
+                        {
+                            "image/png"  => ".png",
+                            "image/webp" => ".webp",
+                            "image/gif"  => ".gif",
+                            _            => ".jpg"
+                        };
+                        string heroPath = Path.Combine(coversDir, entry.SafeName + "_hero" + ext);
+                        await File.WriteAllBytesAsync(heroPath, await response.Content.ReadAsByteArrayAsync());
+                        Dispatcher.Invoke(() => { entry.HeroImagePath = heroPath; _library.Update(entry); });
+                        App.Log($"Downloaded hero from LAN peer for '{entry.GameName}'");
+                        gotHero = true;
+                    }
                 }
+                catch (Exception ex) { App.Log($"LAN hero fetch failed for '{entry.GameName}': {ex.Message}"); }
             }
 
+            if (gotCover && gotHero) return;
             if (!_config.Data.SteamGridDbEnabled || string.IsNullOrEmpty(_config.Data.SteamGridDbApiKey)) return;
             try
             {
@@ -798,20 +820,19 @@ namespace LudusaviWrap
                 if (results.Count == 0) return;
 
                 string destBase = Path.Combine(coversDir, entry.SafeName);
-                var tPortrait = sgdb.DownloadPortraitAsync(results[0].Id, destBase + "_p");
-                var tHero = sgdb.DownloadHeroAsync(results[0].Id, destBase + "_hero");
+                var tPortrait = gotCover ? Task.FromResult<string?>(null) : sgdb.DownloadPortraitAsync(results[0].Id, destBase + "_p");
+                var tHero     = gotHero  ? Task.FromResult<string?>(null) : sgdb.DownloadHeroAsync(results[0].Id, destBase + "_hero");
                 await Task.WhenAll(tPortrait, tHero);
 
-                string? imagePath = tPortrait.Result;
-                imagePath ??= await sgdb.DownloadGridImageAsync(results[0].Id, entry.SafeName, coversDir);
-                string? heroPath = tHero.Result;
+                string? imagePath = gotCover ? null : (tPortrait.Result ?? await sgdb.DownloadGridImageAsync(results[0].Id, entry.SafeName, coversDir));
+                string? heroPath  = gotHero  ? null : tHero.Result;
 
                 if (imagePath != null || heroPath != null)
                 {
                     Dispatcher.Invoke(() =>
                     {
                         if (imagePath != null) entry.CoverImagePath = imagePath;
-                        if (heroPath != null) entry.HeroImagePath = heroPath;
+                        if (heroPath  != null) entry.HeroImagePath  = heroPath;
                         _library.Update(entry);
                     });
                 }
