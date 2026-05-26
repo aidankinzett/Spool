@@ -68,8 +68,7 @@ namespace LudusaviWrap
             UpdateSyncPill();
             UpdateTorBoxPill();
 
-            // Start on Cloud sync section (mirrors the design mock default)
-            NavList.SelectedItem = NavSync;
+            NavList.SelectedItem = NavGeneral;
 
             SetDirty(false);
 
