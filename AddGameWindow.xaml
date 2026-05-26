@@ -224,10 +224,19 @@
                                                 Tag="{Binding}"
                                                 Background="Transparent"
                                                 BorderThickness="0"
-                                                Padding="14,12,14,12"
                                                 HorizontalAlignment="Stretch"
                                                 HorizontalContentAlignment="Stretch"
                                                 Cursor="Hand">
+                                                <Button.Style>
+                                                    <Style TargetType="Button">
+                                                        <Setter Property="Padding" Value="14,12,14,12"/>
+                                                        <Style.Triggers>
+                                                            <DataTrigger Binding="{Binding IsTouchOptimized, Source={x:Static Application.Current}}" Value="True">
+                                                                <Setter Property="Padding" Value="14,18,14,18"/>
+                                                            </DataTrigger>
+                                                        </Style.Triggers>
+                                                    </Style>
+                                                </Button.Style>
                                             <Grid>
                                                 <Grid.ColumnDefinitions>
                                                     <ColumnDefinition Width="Auto"/>

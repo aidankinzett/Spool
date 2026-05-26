@@ -70,6 +70,44 @@
             <Setter Property="Padding" Value="16,14,16,16"/>
         </Style>
 
+        <!-- Touch mode segmented RadioButton style -->
+        <Style x:Key="TouchModeSegmentStyle" TargetType="RadioButton">
+            <Setter Property="Height" Value="26"/>
+            <Setter Property="Padding" Value="14,0"/>
+            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="RadioButton">
+                        <Border x:Name="Bd" Background="Transparent" CornerRadius="4"
+                                Padding="{TemplateBinding Padding}" Height="{TemplateBinding Height}">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="#4CC2FF"/>
+                                <Setter Property="Foreground" Value="#000000"/>
+                                <Setter Property="FontWeight" Value="SemiBold"/>
+                            </Trigger>
+                            <MultiTrigger>
+                                <MultiTrigger.Conditions>
+                                    <Condition Property="IsChecked" Value="False"/>
+                                    <Condition Property="IsMouseOver" Value="True"/>
+                                </MultiTrigger.Conditions>
+                                <Setter TargetName="Bd" Property="Background" Value="#0AFFFFFF"/>
+                            </MultiTrigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+            <Style.Triggers>
+                <Trigger Property="IsChecked" Value="False">
+                    <Setter Property="Foreground" Value="{DynamicResource TextFillColorSecondaryBrush}"/>
+                    <Setter Property="FontWeight" Value="Normal"/>
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+
         <!-- Sub-label style -->
         <Style x:Key="SubLabel" TargetType="TextBlock">
             <Setter Property="FontSize" Value="12"/>
@@ -400,8 +438,8 @@
                                 </Grid>
                             </Border>
 
-                            <!-- Touch Optimization card -->
-                            <Border Background="{DynamicResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}" BorderThickness="1" CornerRadius="6" Margin="0,0,0,8">
+                            <!-- Touch Mode card -->
+                            <Border Background="{DynamicResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}" BorderThickness="1" CornerRadius="6" Margin="0,0,0,4">
                                 <Grid Margin="16,14">
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="32"/>
@@ -414,16 +452,45 @@
                                         <ui:SymbolIcon Symbol="HandDraw20" FontSize="16" VerticalAlignment="Center" HorizontalAlignment="Center"/>
                                     </Border>
                                     <StackPanel Grid.Column="2">
-                                        <TextBlock Text="Touch Optimization" FontWeight="Medium" FontSize="13"/>
-                                        <TextBlock Text="Optimize button sizes, padding, and inputs for touchscreens."
-                                                   FontSize="12" Foreground="{DynamicResource TextFillColorSecondaryBrush}" Margin="0,2,0,0"/>
+                                        <TextBlock Text="Touch Mode" FontWeight="Medium" FontSize="13"/>
+                                        <StackPanel Orientation="Horizontal" Margin="0,2,0,0">
+                                            <TextBlock FontSize="12" Foreground="{DynamicResource TextFillColorSecondaryBrush}">Larger buttons, taller rows, and tap-friendly menus.  Detected: </TextBlock>
+                                            <TextBlock x:Name="TouchDetectedLabel" FontSize="12" FontWeight="Medium"/>
+                                        </StackPanel>
                                     </StackPanel>
-                                    <ui:ToggleSwitch x:Name="TouchOptimizedSwitch"
-                                                     Grid.Column="3"
-                                                     VerticalAlignment="Center"
-                                                     Checked="TouchOptimizedSwitch_Changed"
-                                                     Unchecked="TouchOptimizedSwitch_Changed"/>
+                                    <!-- Segmented control: Auto · On · Off -->
+                                    <Border Grid.Column="3" VerticalAlignment="Center"
+                                            Background="{DynamicResource ControlFillColorDefaultBrush}"
+                                            BorderBrush="{DynamicResource ControlStrokeColorDefaultBrush}"
+                                            BorderThickness="1" CornerRadius="6" Padding="2">
+                                        <StackPanel Orientation="Horizontal">
+                                            <RadioButton x:Name="TouchModeAuto" Content="Auto"
+                                                         GroupName="TouchMode"
+                                                         Style="{StaticResource TouchModeSegmentStyle}"
+                                                         Checked="TouchMode_Changed"/>
+                                            <RadioButton x:Name="TouchModeOn" Content="On"
+                                                         GroupName="TouchMode"
+                                                         Style="{StaticResource TouchModeSegmentStyle}"
+                                                         Checked="TouchMode_Changed"/>
+                                            <RadioButton x:Name="TouchModeOff" Content="Off"
+                                                         GroupName="TouchMode"
+                                                         Style="{StaticResource TouchModeSegmentStyle}"
+                                                         Checked="TouchMode_Changed"/>
+                                        </StackPanel>
+                                    </Border>
                                 </Grid>
+                            </Border>
+                            <!-- Touch Mode info hint -->
+                            <Border Background="#0A4CC2FF" BorderBrush="#1A4CC2FF" BorderThickness="1"
+                                    CornerRadius="4" Padding="12,8" Margin="0,0,0,8">
+                                <StackPanel Orientation="Horizontal">
+                                    <ui:SymbolIcon Symbol="Info20" FontSize="12" Margin="0,0,8,0"
+                                                   Foreground="#4CC2FF" VerticalAlignment="Top"/>
+                                    <TextBlock FontSize="11.5" Foreground="#C8FFFFFF" TextWrapping="Wrap">
+                                        <Run FontWeight="Medium" Foreground="#4CC2FF">Auto</Run>
+                                        <Run Text=" uses hardware detection at startup. Override with On or Off if detection is incorrect for your device."/>
+                                    </TextBlock>
+                                </StackPanel>
                             </Border>
 
                             <!-- About card -->

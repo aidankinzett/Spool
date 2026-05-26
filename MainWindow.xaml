@@ -111,7 +111,7 @@
         <!-- ═══ Two-pane layout ═══ -->
         <Grid Grid.Row="1">
             <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="320"/>
+                <ColumnDefinition x:Name="SidebarColumn" Width="320"/>
                 <ColumnDefinition Width="1"/>
                 <ColumnDefinition Width="*"/>
             </Grid.ColumnDefinitions>
@@ -220,8 +220,20 @@
                                         <ColumnDefinition Width="Auto"/>
                                         <ColumnDefinition Width="*"/>
                                     </Grid.ColumnDefinitions>
-                                    <!-- Cover thumbnail 30x43 -->
-                                    <Grid Grid.Column="0" Width="30" Height="43" Margin="0,0,10,0">
+                                    <!-- Cover thumbnail -->
+                                    <Grid Grid.Column="0" Margin="0,0,10,0">
+                                        <Grid.Style>
+                                            <Style TargetType="Grid">
+                                                <Setter Property="Width" Value="30"/>
+                                                <Setter Property="Height" Value="43"/>
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding IsTouchOptimized, Source={x:Static Application.Current}}" Value="True">
+                                                        <Setter Property="Width" Value="48"/>
+                                                        <Setter Property="Height" Value="69"/>
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </Grid.Style>
                                         <Border CornerRadius="3" Background="#2A3A4A"
                                                 BorderBrush="#10FFFFFF" BorderThickness="1">
                                             <TextBlock Text="{Binding GameName, Converter={StaticResource InitialsConv}}"
@@ -229,12 +241,12 @@
                                                        HorizontalAlignment="Center" VerticalAlignment="Bottom"
                                                        Margin="2,0,2,2"/>
                                         </Border>
-                                        <Image Source="{Binding CoverImagePath, Converter={StaticResource StringToImageConverter}}"
-                                               Stretch="UniformToFill">
-                                            <Image.Clip>
-                                                <RectangleGeometry RadiusX="3" RadiusY="3" Rect="0,0,30,43"/>
-                                            </Image.Clip>
-                                        </Image>
+                                        <Border CornerRadius="3">
+                                            <Border.Background>
+                                                <ImageBrush ImageSource="{Binding CoverImagePath, Converter={StaticResource StringToImageConverter}}"
+                                                            Stretch="UniformToFill"/>
+                                            </Border.Background>
+                                        </Border>
                                     </Grid>
                                     <!-- Name + meta -->
                                     <StackPanel Grid.Column="1" VerticalAlignment="Center">
@@ -246,7 +258,7 @@
                                                     <Setter Property="FontSize" Value="13"/>
                                                     <Style.Triggers>
                                                         <DataTrigger Binding="{Binding IsTouchOptimized, Source={x:Static Application.Current}}" Value="True">
-                                                            <Setter Property="FontSize" Value="17"/>
+                                                            <Setter Property="FontSize" Value="15"/>
                                                         </DataTrigger>
                                                     </Style.Triggers>
                                                 </Style>
@@ -263,7 +275,7 @@
                                                         <Setter Property="FontSize" Value="11"/>
                                                         <Style.Triggers>
                                                             <DataTrigger Binding="{Binding IsTouchOptimized, Source={x:Static Application.Current}}" Value="True">
-                                                                <Setter Property="FontSize" Value="14"/>
+                                                                <Setter Property="FontSize" Value="13"/>
                                                             </DataTrigger>
                                                         </Style.Triggers>
                                                     </Style>
@@ -383,7 +395,7 @@
                       DataContext="{Binding SelectedGame, RelativeSource={RelativeSource AncestorType={x:Type local:MainWindow}}}"
                       Visibility="{Binding SelectedGame, RelativeSource={RelativeSource AncestorType={x:Type local:MainWindow}}, Converter={StaticResource NullToVis}}">
                     <Grid.RowDefinitions>
-                        <RowDefinition Height="300"/>
+                        <RowDefinition x:Name="HeroRow" Height="300"/>
                         <RowDefinition Height="*"/>
                     </Grid.RowDefinitions>
 
@@ -407,7 +419,19 @@
                         <!-- Bottom-left: cover + title -->
                         <StackPanel Orientation="Horizontal" VerticalAlignment="Bottom" Margin="32,0,0,28">
                             <!-- Cover card -->
-                            <Grid Width="96" Height="139">
+                            <Grid>
+                                <Grid.Style>
+                                    <Style TargetType="Grid">
+                                        <Setter Property="Width" Value="96"/>
+                                        <Setter Property="Height" Value="139"/>
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding IsTouchOptimized, Source={x:Static Application.Current}}" Value="True">
+                                                <Setter Property="Width" Value="128"/>
+                                                <Setter Property="Height" Value="185"/>
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </Grid.Style>
                                 <Border CornerRadius="4" Background="#2A3A4A"
                                         BorderBrush="#1AFFFFFF" BorderThickness="1">
                                     <TextBlock Text="{Binding GameName, Converter={StaticResource InitialsConv}}"
@@ -415,18 +439,29 @@
                                                HorizontalAlignment="Center" VerticalAlignment="Bottom"
                                                Margin="4,0,4,4"/>
                                 </Border>
-                                <Image Source="{Binding CoverImagePath, Converter={StaticResource StringToImageConverter}}"
-                                       Stretch="UniformToFill">
-                                    <Image.Clip>
-                                        <RectangleGeometry RadiusX="4" RadiusY="4" Rect="0,0,96,139"/>
-                                    </Image.Clip>
-                                </Image>
+                                <Border CornerRadius="4">
+                                    <Border.Background>
+                                        <ImageBrush ImageSource="{Binding CoverImagePath, Converter={StaticResource StringToImageConverter}}"
+                                                    Stretch="UniformToFill"/>
+                                    </Border.Background>
+                                </Border>
                             </Grid>
                             <!-- Title + meta -->
                             <StackPanel VerticalAlignment="Bottom" Margin="20,0,0,4" MaxWidth="520">
                                 <TextBlock Text="{Binding GameName}"
-                                           FontSize="32" FontWeight="Bold" Foreground="White"
-                                           TextTrimming="CharacterEllipsis" TextWrapping="NoWrap"/>
+                                           FontWeight="Bold" Foreground="White"
+                                           TextTrimming="CharacterEllipsis" TextWrapping="NoWrap">
+                                    <TextBlock.Style>
+                                        <Style TargetType="TextBlock">
+                                            <Setter Property="FontSize" Value="32"/>
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding IsTouchOptimized, Source={x:Static Application.Current}}" Value="True">
+                                                    <Setter Property="FontSize" Value="40"/>
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </TextBlock.Style>
+                                </TextBlock>
                                 <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
                                     <TextBlock Text="{Binding Developer}"
                                                FontSize="12" Foreground="#C8FFFFFF" VerticalAlignment="Center"/>
@@ -479,7 +514,18 @@
                                         <TextBlock Text="LAST PLAYED" FontSize="10" FontWeight="Medium"
                                                    Foreground="#80FFFFFF" Margin="0,0,0,4"/>
                                         <TextBlock Text="{Binding LastPlayedAt, Converter={StaticResource RelDate}}"
-                                                   FontSize="17" FontWeight="SemiBold" Foreground="White"/>
+                                                   FontWeight="SemiBold" Foreground="White">
+                                            <TextBlock.Style>
+                                                <Style TargetType="TextBlock">
+                                                    <Setter Property="FontSize" Value="17"/>
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding IsTouchOptimized, Source={x:Static Application.Current}}" Value="True">
+                                                            <Setter Property="FontSize" Value="22"/>
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </TextBlock.Style>
+                                        </TextBlock>
                                         <TextBlock Text="{Binding LastPlayedAt, Converter={StaticResource AbsDate}}"
                                                    FontSize="11" Foreground="#73FFFFFF" Margin="0,2,0,0"/>
                                     </StackPanel>
@@ -490,7 +536,18 @@
                                         <TextBlock Text="PLAYTIME" FontSize="10" FontWeight="Medium"
                                                    Foreground="#80FFFFFF" Margin="0,0,0,4"/>
                                         <TextBlock Text="{Binding PlaytimeMinutes, Converter={StaticResource PlaytimeConv}}"
-                                                   FontSize="17" FontWeight="SemiBold" Foreground="White"/>
+                                                   FontWeight="SemiBold" Foreground="White">
+                                            <TextBlock.Style>
+                                                <Style TargetType="TextBlock">
+                                                    <Setter Property="FontSize" Value="17"/>
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding IsTouchOptimized, Source={x:Static Application.Current}}" Value="True">
+                                                            <Setter Property="FontSize" Value="22"/>
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </TextBlock.Style>
+                                        </TextBlock>
                                     </StackPanel>
                                 </Border>
                                 <Border Grid.Column="2" Padding="16,18"
@@ -499,7 +556,18 @@
                                         <TextBlock Text="INSTALL SIZE" FontSize="10" FontWeight="Medium"
                                                    Foreground="#80FFFFFF" Margin="0,0,0,4"/>
                                         <TextBlock Text="{Binding InstallSizeMb, Converter={StaticResource SizeMbConv}}"
-                                                   FontSize="17" FontWeight="SemiBold" Foreground="White"/>
+                                                   FontWeight="SemiBold" Foreground="White">
+                                            <TextBlock.Style>
+                                                <Style TargetType="TextBlock">
+                                                    <Setter Property="FontSize" Value="17"/>
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding IsTouchOptimized, Source={x:Static Application.Current}}" Value="True">
+                                                            <Setter Property="FontSize" Value="22"/>
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </TextBlock.Style>
+                                        </TextBlock>
                                     </StackPanel>
                                 </Border>
                                 <Border Grid.Column="3" Padding="16,18"
@@ -507,16 +575,20 @@
                                     <StackPanel>
                                         <TextBlock Text="LAN SHARE" FontSize="10" FontWeight="Medium"
                                                    Foreground="#80FFFFFF" Margin="0,0,0,4"/>
-                                        <TextBlock FontSize="17" FontWeight="SemiBold" Foreground="White">
+                                        <TextBlock FontWeight="SemiBold" Foreground="White">
                                             <TextBlock.Style>
                                                 <Style TargetType="TextBlock">
                                                     <Setter Property="Text" Value="Local only"/>
+                                                    <Setter Property="FontSize" Value="17"/>
                                                     <Style.Triggers>
                                                         <DataTrigger Binding="{Binding LanShared}" Value="True">
                                                             <Setter Property="Text" Value="Shared"/>
                                                         </DataTrigger>
                                                         <DataTrigger Binding="{Binding IsLanCard}" Value="True">
                                                             <Setter Property="Text" Value="Available"/>
+                                                        </DataTrigger>
+                                                        <DataTrigger Binding="{Binding IsTouchOptimized, Source={x:Static Application.Current}}" Value="True">
+                                                            <Setter Property="FontSize" Value="22"/>
                                                         </DataTrigger>
                                                     </Style.Triggers>
                                                 </Style>

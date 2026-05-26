@@ -196,8 +196,8 @@ namespace LudusaviWrap
 
             Log("Loading config...");
             var config = new Config();
-            IsTouchOptimized = config.Data.TouchOptimized;
-            Log($"TouchOptimized = {config.Data.TouchOptimized}");
+            IsTouchOptimized = config.IsEffectivelyTouchOptimized;
+            Log($"TouchMode = {config.Data.TouchMode}, IsEffectivelyTouchOptimized = {config.IsEffectivelyTouchOptimized}");
             Log($"LudusaviPath = '{config.Data.LudusaviPath}'");
             Log($"IsLudusaviOk = {config.IsLudusaviOk}");
             Log($"Theme = '{config.Data.Theme}'");
@@ -245,7 +245,7 @@ namespace LudusaviWrap
                 ThemeManager.ApplyTheme(config.Data.Theme);
                 if (Application.Current is App app)
                 {
-                    app.IsTouchOptimized = config.Data.TouchOptimized;
+                    app.IsTouchOptimized = config.IsEffectivelyTouchOptimized;
                 }
             }
             catch

@@ -1956,8 +1956,22 @@ namespace LudusaviWrap
 
         // ── Window lifecycle ─────────────────────────────────────────────────────
 
+        private void ApplyTouchLayout(bool touch)
+        {
+            SidebarColumn.Width = new System.Windows.GridLength(touch ? 380 : 320);
+            HeroRow.Height      = new System.Windows.GridLength(touch ? 340 : 300);
+        }
+
         private void MainWindow_Loaded(object sender, RoutedEventArgs e)
         {
+            ApplyTouchLayout((Application.Current as App)?.IsTouchOptimized ?? false);
+            if (Application.Current is App app)
+                app.PropertyChanged += (s, ev) =>
+                {
+                    if (ev.PropertyName == nameof(App.IsTouchOptimized))
+                        ApplyTouchLayout(app.IsTouchOptimized);
+                };
+
             StartLanServerIfEnabled();
             _scanCts = new CancellationTokenSource();
             _ = RunLanScanLoopAsync();

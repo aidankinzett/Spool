@@ -32,7 +32,7 @@ db.exec(`
     game_name   TEXT NOT NULL,
     device_id   TEXT NOT NULL,
     device_name TEXT NOT NULL,
-    event_type  TEXT NOT NULL,
+    event_type  TEXT NOT NULL CHECK(event_type IN ('backup', 'restore')),
     occurred_at TEXT NOT NULL
   );
 

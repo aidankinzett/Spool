@@ -59,8 +59,12 @@ namespace LudusaviWrap
         [JsonPropertyName("download_sources")]
         public List<string> DownloadSources { get; set; } = new();
 
+        [JsonIgnore]
         [JsonPropertyName("touch_optimized")]
         public bool TouchOptimized { get; set; } = false;
+
+        [JsonPropertyName("touch_mode")]
+        public string TouchMode { get; set; } = "auto";
     }
 
     [JsonSourceGenerationOptions(WriteIndented = true)]
@@ -81,9 +85,19 @@ namespace LudusaviWrap
 
         public ConfigData Data { get; private set; }
 
+        public bool TouchscreenDetected { get; private set; }
+
+        public bool IsEffectivelyTouchOptimized => Data.TouchMode switch
+        {
+            "on"  => true,
+            "off" => false,
+            _     => TouchscreenDetected,
+        };
+
         public Config()
         {
             Data = new ConfigData();
+            TouchscreenDetected = IsTouchscreenConnected();
             Load();
             EnsureDeviceIdentity();
             AutoDetectLudusavi();
@@ -124,18 +138,30 @@ namespace LudusaviWrap
                     var loaded = JsonSerializer.Deserialize(json, ConfigSourceGenerationContext.Default.ConfigData);
                     if (loaded != null)
                     {
-                        if (!json.Contains("\"touch_optimized\""))
+                        // Migrate from old bool to three-state TouchMode
+                        if (!json.Contains("\"touch_mode\""))
                         {
-                            App.Log("[Config] touch_optimized not in saved config — auto-detecting touchscreen");
-                            loaded.TouchOptimized = IsTouchscreenConnected();
+                            if (json.Contains("\"touch_optimized\""))
+                            {
+                                // Old config: parse value from raw JSON since [JsonIgnore] prevents deserialization
+                                bool oldVal = json.Contains("\"touch_optimized\": true") ||
+                                              json.Contains("\"touch_optimized\":true");
+                                loaded.TouchMode = oldVal ? "on" : "auto";
+                                App.Log($"[Config] Migrated touch_optimized={oldVal} → touch_mode={loaded.TouchMode}");
+                            }
+                            else
+                            {
+                                loaded.TouchMode = "auto";
+                                App.Log("[Config] No touch setting found — defaulting to auto");
+                            }
                         }
                         Data = loaded;
                     }
                 }
                 else
                 {
-                    App.Log("[Config] No config file found — auto-detecting touchscreen for new config");
-                    Data.TouchOptimized = IsTouchscreenConnected();
+                    App.Log("[Config] No config file found — defaulting touch_mode=auto");
+                    Data.TouchMode = "auto";
                 }
             }
             catch

@@ -101,6 +101,17 @@ namespace LudusaviWrap
             _config = config;
             _library = library;
             ApplyState(AddGameState.Empty);
+            ApplyTouchLayout();
+        }
+
+        private void ApplyTouchLayout()
+        {
+            bool touch = (Application.Current as App)?.IsTouchOptimized ?? false;
+            Width = touch ? 760 : 680;
+            double btnH = touch ? 48 : 36;
+            GenerateArmouryCrateButton.Height = btnH;
+            AddToSteamButton.Height           = btnH;
+            AddToLibraryButton.Height         = btnH;
         }
 
         // ── Drag-and-drop ──────────────────────────────────────────────────────

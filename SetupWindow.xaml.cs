@@ -44,7 +44,11 @@ namespace LudusaviWrap
             TorBoxSwitch.IsChecked        = _config.Data.TorBoxEnabled;
             TorBoxApiKeyBox.Password      = _config.Data.TorBoxApiKey;
             TorBoxDownloadDirTextBox.Text = _config.Data.DownloadDir;
-            TouchOptimizedSwitch.IsChecked = _config.Data.TouchOptimized;
+            SelectTouchModeRadio(_config.Data.TouchMode);
+            TouchDetectedLabel.Text = _config.TouchscreenDetected ? "Touchscreen present" : "None";
+            TouchDetectedLabel.Foreground = _config.TouchscreenDetected
+                ? new SolidColorBrush(System.Windows.Media.Color.FromRgb(0x7E, 0xE2, 0xA4))
+                : (System.Windows.Media.Brush)FindResource("TextFillColorTertiaryBrush");
 
             foreach (var url in _config.Data.DownloadSources)
                 _sources.Add(url);
@@ -293,7 +297,21 @@ namespace LudusaviWrap
             SetDirty(true);
         }
 
-        private void TouchOptimizedSwitch_Changed(object sender, RoutedEventArgs e)
+        private void SelectTouchModeRadio(string mode)
+        {
+            TouchModeAuto.IsChecked = mode != "on" && mode != "off";
+            TouchModeOn.IsChecked   = mode == "on";
+            TouchModeOff.IsChecked  = mode == "off";
+        }
+
+        private string GetSelectedTouchMode()
+        {
+            if (TouchModeOn.IsChecked  == true) return "on";
+            if (TouchModeOff.IsChecked == true) return "off";
+            return "auto";
+        }
+
+        private void TouchMode_Changed(object sender, RoutedEventArgs e)
         {
             SetDirty(true);
         }
@@ -645,12 +663,12 @@ namespace LudusaviWrap
             _config.Data.TorBoxApiKey       = TorBoxApiKeyBox.Password.Trim();
             _config.Data.DownloadDir        = TorBoxDownloadDirTextBox.Text.Trim();
             _config.Data.DownloadSources    = new System.Collections.Generic.List<string>(_sources);
-            _config.Data.TouchOptimized     = TouchOptimizedSwitch.IsChecked ?? false;
+            _config.Data.TouchMode          = GetSelectedTouchMode();
             _config.Save();
 
             if (Application.Current is App app)
             {
-                app.IsTouchOptimized = _config.Data.TouchOptimized;
+                app.IsTouchOptimized = _config.IsEffectivelyTouchOptimized;
             }
 
             SetDirty(false);
