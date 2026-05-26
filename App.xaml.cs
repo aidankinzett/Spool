@@ -171,7 +171,8 @@ namespace LudusaviWrap
                         try
                         {
                             var runConfig = new Config();
-                            await new RunWorkflow(gameName, gameExe, config: runConfig).ExecuteAsync();
+                            var library   = await GameLibrary.CreateAsync();
+                            await new RunWorkflow(gameName, gameExe, config: runConfig, library: library).ExecuteAsync();
                         }
                         catch (Exception ex)
                         {
