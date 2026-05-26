@@ -25,6 +25,8 @@
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
         <!-- ═══ Title bar ═══ -->
@@ -518,12 +520,28 @@
                                                 <TextBlock Text="Add to Steam" VerticalAlignment="Center"/>
                                             </StackPanel>
                                         </Button>
-                                        <Button Style="{StaticResource ActionBtn}"
+                                        <Button Style="{StaticResource ActionBtn}" Margin="0,0,8,0"
                                                 Click="DetailRefetchArtwork_Click"
                                                 Visibility="{Binding IsLanCard, Converter={StaticResource InvBoolToVis}}">
                                             <StackPanel Orientation="Horizontal">
                                                 <ui:SymbolIcon Symbol="Image24" FontSize="14" Margin="0,0,6,0"/>
                                                 <TextBlock Text="Refetch artwork" VerticalAlignment="Center"/>
+                                            </StackPanel>
+                                        </Button>
+                                        <Button Style="{StaticResource ActionBtn}" Margin="0,0,8,0"
+                                                Click="DetailVerifyIntegrity_Click"
+                                                Visibility="{Binding CanVerify, Converter={StaticResource BoolToVis}}">
+                                            <StackPanel Orientation="Horizontal">
+                                                <ui:SymbolIcon Symbol="CheckmarkCheck24" FontSize="14" Margin="0,0,6,0"/>
+                                                <TextBlock Text="Verify files" VerticalAlignment="Center"/>
+                                            </StackPanel>
+                                        </Button>
+                                        <Button Style="{StaticResource ActionBtn}"
+                                                Click="DetailFitGirlVerify_Click"
+                                                Visibility="{Binding HasQuickSfv, Converter={StaticResource BoolToVis}}">
+                                            <StackPanel Orientation="Horizontal">
+                                                <ui:SymbolIcon Symbol="Checkmark24" FontSize="14" Margin="0,0,6,0"/>
+                                                <TextBlock Text="FitGirl Verify" VerticalAlignment="Center"/>
                                             </StackPanel>
                                         </Button>
                                     </StackPanel>
@@ -851,6 +869,19 @@
                                                        FontFamily="Cascadia Code, Consolas, Courier New"
                                                        TextTrimming="CharacterEllipsis"/>
                                         </Grid>
+                                        <Rectangle Height="1" Fill="#0AFFFFFF"/>
+                                        <!-- Install source -->
+                                        <Grid MinHeight="34">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="140"/>
+                                                <ColumnDefinition Width="*"/>
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Grid.Column="0" Text="Install source"
+                                                       FontSize="12" Foreground="#8CFFFFFF" VerticalAlignment="Center"/>
+                                            <TextBlock Grid.Column="1" x:Name="InstallSourceText"
+                                                       FontSize="12.5" Foreground="#EBFFFFFF" VerticalAlignment="Center"
+                                                       TextTrimming="CharacterEllipsis"/>
+                                        </Grid>
                                     </StackPanel>
                                 </Border>
 
@@ -930,6 +961,42 @@
                            Margin="16,0,0,0" VerticalAlignment="Center"
                            Visibility="Collapsed"
                            Click="CancelDownload_Click"/>
+            </Grid>
+        </Border>
+
+        <!-- ─── Verification bar ─── -->
+        <Separator x:Name="VerifySeparator" Grid.Row="6" Visibility="Collapsed" Margin="0"/>
+        <Border x:Name="VerifyBarGrid" Grid.Row="7"
+                Background="{DynamicResource CardBackgroundFillBrushDefault}"
+                Padding="24,12" Visibility="Collapsed">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <StackPanel Grid.Column="0" VerticalAlignment="Center">
+                    <Grid Margin="0,0,0,6">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <StackPanel Orientation="Horizontal" Grid.Column="0">
+                            <TextBlock x:Name="VerifyTitleText" Text="Verifying..."
+                                       FontWeight="SemiBold" FontSize="13"/>
+                            <TextBlock x:Name="VerifyCountText" FontSize="12"
+                                       Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                       Margin="8,1,0,0"/>
+                        </StackPanel>
+                        <TextBlock x:Name="VerifyStatusText" Grid.Column="1" FontSize="12"
+                                   Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                   VerticalAlignment="Bottom"/>
+                    </Grid>
+                    <ProgressBar x:Name="VerifyProgressBar" Height="8" Minimum="0" Maximum="100" Value="0"/>
+                </StackPanel>
+                <ui:Button x:Name="CancelVerifyButton" Grid.Column="1"
+                           Content="Cancel" Appearance="Danger"
+                           Margin="16,0,0,0" VerticalAlignment="Center"
+                           Click="CancelVerify_Click"/>
             </Grid>
         </Border>
     </Grid>

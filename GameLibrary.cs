@@ -22,19 +22,25 @@ namespace LudusaviWrap
         private DateTime? _saveLastBackedUpAt;
         private double _saveBackupSizeMb;
         private double _installSizeMb;
+        private string _installSource = "manual";
+        private string? _lanInstallSourceDeviceName;
+        private string? _lanInstallSourceDeviceId;
+        private bool _canVerify;
+        private LanPeer? _verifiedSourcePeer;
+        private bool _hasQuickSfv;
 
         [JsonIgnore]
         public bool IsLanCard
         {
             get => _isLanCard;
-            set { _isLanCard = value; OnPropertyChanged(); }
+            set { _isLanCard = value; OnPropertyChanged(); OnPropertyChanged(nameof(CanVerify)); }
         }
 
         [JsonIgnore]
         public List<LanPeer>? LanPeers
         {
             get => _lanPeers;
-            set { _lanPeers = value; OnPropertyChanged(); }
+            set { _lanPeers = value; OnPropertyChanged(); OnPropertyChanged(nameof(CanVerify)); }
         }
 
         [JsonPropertyName("id")]
@@ -166,6 +172,48 @@ namespace LudusaviWrap
         {
             get => _saveBackupSizeMb;
             set { _saveBackupSizeMb = value; OnPropertyChanged(); }
+        }
+
+        [JsonPropertyName("install_source")]
+        public string InstallSource
+        {
+            get => _installSource;
+            set { _installSource = value; OnPropertyChanged(); OnPropertyChanged(nameof(CanVerify)); }
+        }
+
+        [JsonPropertyName("lan_install_source_device_name")]
+        public string? LanInstallSourceDeviceName
+        {
+            get => _lanInstallSourceDeviceName;
+            set { _lanInstallSourceDeviceName = value; OnPropertyChanged(); }
+        }
+
+        [JsonPropertyName("lan_install_source_device_id")]
+        public string? LanInstallSourceDeviceId
+        {
+            get => _lanInstallSourceDeviceId;
+            set { _lanInstallSourceDeviceId = value; OnPropertyChanged(); }
+        }
+
+        [JsonIgnore]
+        public bool CanVerify
+        {
+            get => _canVerify;
+            set { _canVerify = value; OnPropertyChanged(); }
+        }
+
+        [JsonIgnore]
+        public LanPeer? VerifiedSourcePeer
+        {
+            get => _verifiedSourcePeer;
+            set { _verifiedSourcePeer = value; OnPropertyChanged(); }
+        }
+
+        [JsonIgnore]
+        public bool HasQuickSfv
+        {
+            get => _hasQuickSfv;
+            set { _hasQuickSfv = value; OnPropertyChanged(); }
         }
 
         public event PropertyChangedEventHandler? PropertyChanged;

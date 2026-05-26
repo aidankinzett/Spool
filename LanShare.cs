@@ -21,6 +21,8 @@ namespace LudusaviWrap
         [JsonPropertyName("run_as_admin")]      public bool   RunAsAdmin { get; set; }
         [JsonPropertyName("relative_exe_path")] public string RelativeExePath { get; set; } = "";
         [JsonPropertyName("install_size_mb")]   public double InstallSizeMb { get; set; }
+        [JsonPropertyName("install_source")]    public string InstallSource { get; set; } = "manual";
+        [JsonPropertyName("lan_device_name")]   public string? LanInstallSourceDeviceName { get; set; }
     }
 
     public class LanAnnounce
@@ -42,6 +44,7 @@ namespace LudusaviWrap
         [JsonPropertyName("path")]     public string RelativePath { get; set; } = "";
         [JsonPropertyName("size")]     public long   Size         { get; set; }
         [JsonPropertyName("modified")] public long   LastModified { get; set; }
+        [JsonPropertyName("hash")]     public string Hash         { get; set; } = "";
     }
 
     public class LanPeer
@@ -323,7 +326,7 @@ namespace LudusaviWrap
                 }
                 else if (segments.Length == 3 && segments[0] == "games" && segments[2] == "manifest")
                 {
-                    await ServeManifestAsync(stream, segments[1], ct);
+                    await ServeManifestAsync(stream, segments[1], query, ct);
                 }
                 else if (segments.Length == 3 && segments[0] == "games" && segments[2] == "metadata")
                 {
@@ -424,7 +427,9 @@ namespace LudusaviWrap
                 GameName = entry.GameName,
                 RunAsAdmin = entry.RunAsAdmin || RegistryHelper.GetCompatFlagRunAsAdmin(entry.ExePath),
                 RelativeExePath = relExePath,
-                InstallSizeMb = entry.InstallSizeMb
+                InstallSizeMb = entry.InstallSizeMb,
+                InstallSource = entry.InstallSource ?? "manual",
+                LanInstallSourceDeviceName = entry.LanInstallSourceDeviceName
             };
 
             byte[] json = JsonSerializer.SerializeToUtf8Bytes(meta, LanJsonContext.Default.LanGameMetadata);
@@ -504,7 +509,7 @@ namespace LudusaviWrap
             }
         }
 
-        private async Task ServeManifestAsync(NetworkStream stream, string gameName, CancellationToken ct)
+        private async Task ServeManifestAsync(NetworkStream stream, string gameName, string query, CancellationToken ct)
         {
             lock (_cancelledLock)
             {
@@ -520,6 +525,8 @@ namespace LudusaviWrap
                 return;
             }
 
+            bool includeHashes = query.Contains("hashes=true", StringComparison.OrdinalIgnoreCase);
+
             List<LanFileEntry> manifest;
             lock (_cacheLock)
             {
@@ -527,9 +534,11 @@ namespace LudusaviWrap
                     manifest = null!;
             }
 
-            if (manifest == null)
+            bool cacheValid = manifest != null && (!includeHashes || manifest.All(f => !string.IsNullOrEmpty(f.Hash)));
+
+            if (!cacheValid)
             {
-                manifest = await BuildManifestAsync(entry.GameFolderPath, ct);
+                manifest = await BuildManifestAsync(entry.GameFolderPath, includeHashes, ct);
                 lock (_cacheLock) _manifestCache[gameName] = manifest;
                 OnManifestBuilt?.Invoke(gameName, manifest);
             }
@@ -539,6 +548,11 @@ namespace LudusaviWrap
         }
 
         public static Task<List<LanFileEntry>> BuildManifestAsync(string folderPath, CancellationToken ct)
+        {
+            return BuildManifestAsync(folderPath, false, ct);
+        }
+
+        public static Task<List<LanFileEntry>> BuildManifestAsync(string folderPath, bool includeHashes, CancellationToken ct)
             => Task.Run(() =>
         {
             var entries = new List<LanFileEntry>();
@@ -550,10 +564,39 @@ namespace LudusaviWrap
                 var fi = new FileInfo(file);
                 long size = fi.Length;
                 long lastModified = new DateTimeOffset(fi.LastWriteTimeUtc).ToUnixTimeMilliseconds();
-                entries.Add(new LanFileEntry { RelativePath = rel, Size = size, LastModified = lastModified });
+
+                string hash = "";
+                if (includeHashes)
+                {
+                    try
+                    {
+                        hash = CalculateFileHash(file, ct);
+                    }
+                    catch (Exception ex)
+                    {
+                        App.Log($"Failed to hash file {file}: {ex.Message}");
+                    }
+                }
+
+                entries.Add(new LanFileEntry { RelativePath = rel, Size = size, LastModified = lastModified, Hash = hash });
             }
             return entries;
         });
+
+        public static string CalculateFileHash(string filePath, CancellationToken ct)
+        {
+            using var fs = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read, 4096, FileOptions.SequentialScan);
+            using var md5 = System.Security.Cryptography.MD5.Create();
+            byte[] buffer = new byte[128 * 1024]; // 128KB buffer
+            int read;
+            while ((read = fs.Read(buffer, 0, buffer.Length)) > 0)
+            {
+                ct.ThrowIfCancellationRequested();
+                md5.TransformBlock(buffer, 0, read, null, 0);
+            }
+            md5.TransformFinalBlock(Array.Empty<byte>(), 0, 0);
+            return Convert.ToHexString(md5.Hash!).ToLowerInvariant();
+        }
 
         private async Task ServeFileAsync(NetworkStream stream, string gameName, string relPath, long totalBytesParam, string sessionIdParam, CancellationToken ct)
         {
@@ -817,8 +860,14 @@ namespace LudusaviWrap
 
         public async Task<List<LanFileEntry>> GetManifestAsync(LanPeer peer, string gameName, CancellationToken ct = default)
         {
+            return await GetManifestAsync(peer, gameName, false, ct);
+        }
+
+        public async Task<List<LanFileEntry>> GetManifestAsync(LanPeer peer, string gameName, bool includeHashes, CancellationToken ct = default)
+        {
             using var http = MakeHttpClient(peer);
             string url = $"http://{peer.IPAddress}:{peer.Port}/games/{Uri.EscapeDataString(gameName)}/manifest";
+            if (includeHashes) url += "?hashes=true";
             string json = await http.GetStringAsync(url, ct);
             return JsonSerializer.Deserialize(json, LanJsonContext.Default.ListLanFileEntry) ?? new();
         }

@@ -115,6 +115,7 @@ namespace LudusaviWrap
         private readonly LanShareClient _lanClient;
         private CancellationTokenSource? _scanCts;
         private CancellationTokenSource? _uiCleanupCts;
+        private CancellationTokenSource? _verifyCts;
         private int _scanInProgress = 0;
         private string _activeFilter = "all";
         private string _sortOrder = "recent";
@@ -342,24 +343,130 @@ namespace LudusaviWrap
             SelectedGame = selected;
             _ = Dispatcher.BeginInvoke(new Action(() => _updatingDetail = false));
 
-            if (selected != null && selected.IsLanCard && selected.InstallSizeMb <= 0)
+            if (selected == null)
             {
-                var peer = selected.LanPeers?.FirstOrDefault();
-                if (peer != null)
+                InstallSourceText.Text = "";
+                return;
+            }
+
+            // Reset UI states
+            selected.CanVerify = false;
+            selected.VerifiedSourcePeer = null;
+            selected.HasQuickSfv = false;
+
+            // 1. Format initial install source text
+            if (selected.IsLanCard)
+            {
+                InstallSourceText.Text = "Not installed (available on LAN)";
+            }
+            else
+            {
+                if (selected.InstallSource == "lan")
                 {
-                    try
+                    InstallSourceText.Text = $"LAN download from {selected.LanInstallSourceDeviceName ?? "unknown peer"}";
+                }
+                else
+                {
+                    InstallSourceText.Text = "Manual installation (Original copy)";
+                }
+
+                // 2. Check for FitGirl QuickSFV
+                if (!string.IsNullOrEmpty(selected.GameFolderPath) && Directory.Exists(selected.GameFolderPath))
+                {
+                    string redistPath = Path.Combine(selected.GameFolderPath, "_Redist");
+                    if (Directory.Exists(redistPath))
                     {
-                        var meta = await _lanClient.GetMetadataAsync(peer, selected.GameName);
-                        if (meta != null && selected == SelectedGame)
+                        string quickSfvPath = Path.Combine(redistPath, "QuickSFV.exe");
+                        if (File.Exists(quickSfvPath) || File.Exists(Path.Combine(redistPath, "QuickSFV.EXE")))
                         {
-                            selected.InstallSizeMb = meta.InstallSizeMb;
+                            selected.HasQuickSfv = true;
                         }
                     }
-                    catch (Exception ex)
+                }
+            }
+
+            // 3. Fetch sizes for LAN cards AND verify availability for LAN-installed local cards
+            if (selected.IsLanCard)
+            {
+                if (selected.InstallSizeMb <= 0)
+                {
+                    var peer = selected.LanPeers?.FirstOrDefault();
+                    if (peer != null)
                     {
-                        App.Log($"Failed to fetch metadata on selection for '{selected.GameName}': {ex.Message}");
+                        try
+                        {
+                            var meta = await _lanClient.GetMetadataAsync(peer, selected.GameName);
+                            if (meta != null && selected == SelectedGame)
+                            {
+                                selected.InstallSizeMb = meta.InstallSizeMb;
+                                if (meta.InstallSource == "lan")
+                                {
+                                    InstallSourceText.Text = $"LAN download (originally from {meta.LanInstallSourceDeviceName}) on {peer.DeviceName}";
+                                }
+                                else
+                                {
+                                    InstallSourceText.Text = $"Original copy on {peer.DeviceName}";
+                                }
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            App.Log($"Failed to fetch metadata on selection for '{selected.GameName}': {ex.Message}");
+                        }
                     }
                 }
+                else
+                {
+                    var peer = selected.LanPeers?.FirstOrDefault();
+                    if (peer != null)
+                    {
+                        try
+                        {
+                            var meta = await _lanClient.GetMetadataAsync(peer, selected.GameName);
+                            if (meta != null && selected == SelectedGame)
+                            {
+                                if (meta.InstallSource == "lan")
+                                {
+                                    InstallSourceText.Text = $"LAN download (originally from {meta.LanInstallSourceDeviceName}) on {peer.DeviceName}";
+                                }
+                                else
+                                {
+                                    InstallSourceText.Text = $"Original copy on {peer.DeviceName}";
+                                }
+                            }
+                        }
+                        catch { }
+                    }
+                }
+            }
+            else if (selected.InstallSource == "lan" && selected.LanPeers != null && selected.LanPeers.Count > 0)
+            {
+                // We downloaded it over LAN and have peers sharing it.
+                // Scan the peers to find one that has the manual (original) copy of the game.
+                var peersToCheck = selected.LanPeers.ToList();
+                _ = Task.Run(async () =>
+                {
+                    foreach (var peer in peersToCheck)
+                    {
+                        try
+                        {
+                            var meta = await _lanClient.GetMetadataAsync(peer, selected.GameName);
+                            if (meta != null && meta.InstallSource == "manual")
+                            {
+                                Dispatcher.Invoke(() =>
+                                {
+                                    if (selected == SelectedGame)
+                                    {
+                                        selected.CanVerify = true;
+                                        selected.VerifiedSourcePeer = peer;
+                                    }
+                                });
+                                break;
+                            }
+                        }
+                        catch { }
+                    }
+                });
             }
         }
 
@@ -564,6 +671,221 @@ namespace LudusaviWrap
             if (users.Count > 1)
                 _successWindow.UpdateArtwork($"Added to Steam user {targetUser.UserId}", "#4CAF50");
             _successWindow.ShowDialog();
+        }
+
+        private void CancelVerify_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                _verifyCts?.Cancel();
+            }
+            catch { }
+        }
+
+        private async void DetailVerifyIntegrity_Click(object sender, RoutedEventArgs e)
+        {
+            var entry = SelectedGame;
+            if (entry == null || entry.IsLanCard || string.IsNullOrEmpty(entry.GameFolderPath) || !Directory.Exists(entry.GameFolderPath))
+            {
+                MessageBox.Show("Game folder not found locally. Verification cannot proceed.", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                return;
+            }
+
+            var peer = entry.VerifiedSourcePeer;
+            if (peer == null)
+            {
+                MessageBox.Show("No trusted LAN peer found with the original manual installation of this game.", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                return;
+            }
+
+            if (_verifyCts != null)
+            {
+                try { _verifyCts.Cancel(); } catch { }
+                _verifyCts.Dispose();
+            }
+            _verifyCts = new CancellationTokenSource();
+            var ct = _verifyCts.Token;
+
+            // Show verification panel
+            VerifySeparator.Visibility = Visibility.Visible;
+            VerifyBarGrid.Visibility = Visibility.Visible;
+            VerifyTitleText.Text = "Requesting file hashes from peer...";
+            VerifyCountText.Text = "";
+            VerifyStatusText.Text = "";
+            VerifyProgressBar.IsIndeterminate = true;
+
+            try
+            {
+                // 1. Fetch manifest with hashes from peer
+                var peerManifest = await _lanClient.GetManifestAsync(peer, entry.GameName, includeHashes: true, ct);
+                if (peerManifest == null || peerManifest.Count == 0)
+                {
+                    MessageBox.Show("Failed to retrieve file manifest from peer, or peer has no files in game folder.", "Verification Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                    VerifySeparator.Visibility = Visibility.Collapsed;
+                    VerifyBarGrid.Visibility = Visibility.Collapsed;
+                    return;
+                }
+
+                VerifyProgressBar.IsIndeterminate = false;
+                VerifyProgressBar.Maximum = peerManifest.Count;
+                VerifyProgressBar.Value = 0;
+
+                var corruptFiles = new List<string>();
+                var missingFiles = new List<string>();
+                int checkedCount = 0;
+
+                // 2. Perform sequential verification in background thread
+                await Task.Run(() =>
+                {
+                    foreach (var file in peerManifest)
+                    {
+                        ct.ThrowIfCancellationRequested();
+                        checkedCount++;
+
+                        // Update UI progress
+                        Dispatcher.Invoke(() =>
+                        {
+                            VerifyTitleText.Text = $"Verifying {Path.GetFileName(file.RelativePath)}";
+                            VerifyCountText.Text = $"({checkedCount} / {peerManifest.Count} files)";
+                            VerifyProgressBar.Value = checkedCount;
+                        });
+
+                        string localPath = Path.Combine(entry.GameFolderPath, file.RelativePath.Replace('/', Path.DirectorySeparatorChar));
+
+                        if (!File.Exists(localPath))
+                        {
+                            missingFiles.Add(file.RelativePath);
+                            continue;
+                        }
+
+                        // Check size first (quick optimization)
+                        var fi = new FileInfo(localPath);
+                        if (fi.Length != file.Size)
+                        {
+                            corruptFiles.Add(file.RelativePath);
+                            continue;
+                        }
+
+                        // Check content hash
+                        string localHash = "";
+                        try
+                        {
+                            localHash = LanShareServer.CalculateFileHash(localPath, ct);
+                        }
+                        catch
+                        {
+                            corruptFiles.Add(file.RelativePath);
+                            continue;
+                        }
+
+                        if (string.IsNullOrEmpty(file.Hash) || !string.Equals(localHash, file.Hash, StringComparison.OrdinalIgnoreCase))
+                        {
+                            corruptFiles.Add(file.RelativePath);
+                        }
+                    }
+                }, ct);
+
+                // Hide verification bar
+                VerifySeparator.Visibility = Visibility.Collapsed;
+                VerifyBarGrid.Visibility = Visibility.Collapsed;
+
+                // 3. Display results
+                int totalBad = corruptFiles.Count + missingFiles.Count;
+                if (totalBad == 0)
+                {
+                    MessageBox.Show("Verification complete! All files match the peer's manual copy correctly.",
+                        "Verification Successful", MessageBoxButton.OK, MessageBoxImage.Information);
+                }
+                else
+                {
+                    var msg = $"Verification complete.\n\nMissing files: {missingFiles.Count}\nCorrupted files: {corruptFiles.Count}\n\nWould you like to delete the corrupted local files and initiate a LAN repair transfer to fix them?";
+                    var result = MessageBox.Show(msg, "Verification Discrepancies Found", MessageBoxButton.YesNo, MessageBoxImage.Warning);
+                    
+                    if (result == MessageBoxResult.Yes)
+                    {
+                        // Delete corrupted files
+                        foreach (var path in corruptFiles)
+                        {
+                            string localPath = Path.Combine(entry.GameFolderPath, path.Replace('/', Path.DirectorySeparatorChar));
+                            try
+                            {
+                                if (File.Exists(localPath))
+                                {
+                                    File.Delete(localPath);
+                                }
+                            }
+                            catch (Exception ex)
+                            {
+                                App.Log($"Failed to delete corrupted file {localPath} for repair: {ex.Message}");
+                            }
+                        }
+
+                        // Trigger download from the verified peer to repair the local folder directly
+                        await StartDownloadWithPeersAsync(new List<LanPeer> { peer }, entry.GameName, entry.GameFolderPath);
+                    }
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                VerifyTitleText.Text = "Verification cancelled";
+                VerifyCountText.Text = "";
+                VerifyStatusText.Text = "";
+                VerifyProgressBar.Value = 0;
+                VerifyProgressBar.IsIndeterminate = false;
+                
+                // Hide after delay
+                _ = Task.Delay(3000).ContinueWith(t =>
+                {
+                    Dispatcher.Invoke(() =>
+                    {
+                        VerifySeparator.Visibility = Visibility.Collapsed;
+                        VerifyBarGrid.Visibility = Visibility.Collapsed;
+                    });
+                });
+            }
+            catch (Exception ex)
+            {
+                VerifySeparator.Visibility = Visibility.Collapsed;
+                VerifyBarGrid.Visibility = Visibility.Collapsed;
+                MessageBox.Show($"Verification failed: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        private void DetailFitGirlVerify_Click(object sender, RoutedEventArgs e)
+        {
+            var entry = SelectedGame;
+            if (entry == null || string.IsNullOrEmpty(entry.GameFolderPath)) return;
+
+            string redistPath = Path.Combine(entry.GameFolderPath, "_Redist");
+            string exePath = Path.Combine(redistPath, "QuickSFV.exe");
+            if (!File.Exists(exePath)) exePath = Path.Combine(redistPath, "QuickSFV.EXE");
+
+            if (!File.Exists(exePath))
+            {
+                MessageBox.Show("QuickSFV.exe not found in _Redist folder.", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                return;
+            }
+
+            try
+            {
+                var sfvFiles = Directory.GetFiles(entry.GameFolderPath, "*.sfv", SearchOption.AllDirectories)
+                    .Concat(Directory.GetFiles(entry.GameFolderPath, "*.md5", SearchOption.AllDirectories))
+                    .ToList();
+                string? sfvFile = sfvFiles.FirstOrDefault();
+
+                var psi = new ProcessStartInfo
+                {
+                    FileName = exePath,
+                    Arguments = sfvFile != null ? $"\"{sfvFile}\"" : "",
+                    WorkingDirectory = entry.GameFolderPath,
+                    UseShellExecute = true
+                };
+                Process.Start(psi);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Failed to launch QuickSFV: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
         }
 
         private void DetailRemove_Click(object sender, RoutedEventArgs e)
@@ -1057,6 +1379,18 @@ namespace LudusaviWrap
                     }
                 }
 
+                foreach (var game in _games)
+                {
+                    if (lanGames.TryGetValue(game.GameName, out var gamePeers))
+                    {
+                        game.LanPeers = gamePeers;
+                    }
+                    else
+                    {
+                        game.LanPeers = null;
+                    }
+                }
+
                 ApplyFilterSort();
             }));
         }
@@ -1320,6 +1654,12 @@ namespace LudusaviWrap
             if (existing != null)
             {
                 existing.GameFolderPath = destFolder;
+                existing.InstallSource = "lan";
+                if (sourcePeer != null)
+                {
+                    existing.LanInstallSourceDeviceName = sourcePeer.DeviceName;
+                    existing.LanInstallSourceDeviceId = sourcePeer.DeviceId;
+                }
                 if (exePath != null)
                 {
                     existing.ExePath = exePath;
@@ -1346,6 +1686,9 @@ namespace LudusaviWrap
                     GameFolderPath = destFolder,
                     RunAsAdmin     = runAsAdmin,
                     InstallSizeMb  = installSizeMb,
+                    InstallSource  = "lan",
+                    LanInstallSourceDeviceName = sourcePeer?.DeviceName,
+                    LanInstallSourceDeviceId = sourcePeer?.DeviceId,
                     AddedAt        = DateTime.UtcNow
                 };
                 _library.Add(newEntry);
