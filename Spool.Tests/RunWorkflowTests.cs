@@ -81,27 +81,41 @@ class FakeRunWorkflow : RunWorkflow
     }
 }
 
-// ── Test fixture ──────────────────────────────────────────────────────────────
+// ── Shared fixture — creates/cleans up the two stub files once per class ─────
 
-public class RunWorkflowTests : IDisposable
+public class WorkflowTempFilesFixture : IDisposable
 {
-    // A real file on disk so IsLudusaviOk and File.Exists(_gameExe) both pass.
-    private static readonly string FakeLudusaviPath =
+    public string _fakeLudusaviPath { get; } =
         Path.Combine(Path.GetTempPath(), "spool_test_fake_ludusavi.exe");
 
-    private static readonly string FakeGameExePath =
+    public string _fakeGameExePath { get; } =
         Path.Combine(Path.GetTempPath(), "spool_test_fake_game.exe");
 
-    private readonly string _tempLibDir;
-
-    static RunWorkflowTests()
+    public WorkflowTempFilesFixture()
     {
-        File.WriteAllBytes(FakeLudusaviPath, Array.Empty<byte>());
-        File.WriteAllBytes(FakeGameExePath,  Array.Empty<byte>());
+        File.WriteAllBytes(_fakeLudusaviPath, Array.Empty<byte>());
+        File.WriteAllBytes(_fakeGameExePath,  Array.Empty<byte>());
     }
 
-    public RunWorkflowTests()
+    public void Dispose()
     {
+        try { if (File.Exists(_fakeLudusaviPath)) File.Delete(_fakeLudusaviPath); } catch { }
+        try { if (File.Exists(_fakeGameExePath))  File.Delete(_fakeGameExePath);  } catch { }
+    }
+}
+
+// ── Test fixture ──────────────────────────────────────────────────────────────
+
+public class RunWorkflowTests : IClassFixture<WorkflowTempFilesFixture>, IDisposable
+{
+    private readonly string _fakeLudusaviPath;
+    private readonly string _fakeGameExePath;
+    private readonly string _tempLibDir;
+
+    public RunWorkflowTests(WorkflowTempFilesFixture tempFiles)
+    {
+        _fakeLudusaviPath = tempFiles._fakeLudusaviPath;
+        _fakeGameExePath  = tempFiles._fakeGameExePath;
         _tempLibDir = Path.Combine(Path.GetTempPath(), "spool_wf_test_" + Guid.NewGuid());
         Directory.CreateDirectory(_tempLibDir);
     }
@@ -114,7 +128,7 @@ public class RunWorkflowTests : IDisposable
     private Config MakeConfig(bool syncEnabled = false, string? syncUrl = null)
     {
         var cfg = new Config();
-        cfg.Data.LudusaviPath      = FakeLudusaviPath;
+        cfg.Data.LudusaviPath      = _fakeLudusaviPath;
         cfg.Data.SyncServerEnabled = syncEnabled;
         cfg.Data.SyncServerUrl     = syncUrl ?? "";
         return cfg;
@@ -173,7 +187,7 @@ public class RunWorkflowTests : IDisposable
     public async Task Restore_CloudConflict_AbortsAndCallsConfirm()
     {
         var dialogs = new FakeDialogService { ConfirmResult = false };
-        var wf = new FakeRunWorkflow("My Game", FakeGameExePath,
+        var wf = new FakeRunWorkflow("My Game", _fakeGameExePath,
             config:  MakeConfig(),
             library: MakeLibrary(),
             dialogs: dialogs,
@@ -189,7 +203,7 @@ public class RunWorkflowTests : IDisposable
     public async Task Restore_CloudSyncFailed_ContinuesAndLaunchesGame()
     {
         var dialogs = new FakeDialogService();
-        var wf = new FakeRunWorkflow("My Game", FakeGameExePath,
+        var wf = new FakeRunWorkflow("My Game", _fakeGameExePath,
             config:  MakeConfig(),
             library: MakeLibrary(),
             dialogs: dialogs,
@@ -205,7 +219,7 @@ public class RunWorkflowTests : IDisposable
     public async Task Restore_UnknownGame_ContinuesWithoutError()
     {
         var dialogs = new FakeDialogService();
-        var wf = new FakeRunWorkflow("My Game", FakeGameExePath,
+        var wf = new FakeRunWorkflow("My Game", _fakeGameExePath,
             config:  MakeConfig(),
             library: MakeLibrary(),
             dialogs: dialogs,
@@ -221,7 +235,7 @@ public class RunWorkflowTests : IDisposable
     public async Task Restore_NonZeroExitWithSaves_AbortsAndShowsError()
     {
         var dialogs = new FakeDialogService();
-        var wf = new FakeRunWorkflow("My Game", FakeGameExePath,
+        var wf = new FakeRunWorkflow("My Game", _fakeGameExePath,
             config:  MakeConfig(),
             library: MakeLibrary(),
             dialogs: dialogs,
@@ -237,7 +251,7 @@ public class RunWorkflowTests : IDisposable
     public async Task Restore_Success_LaunchesGame()
     {
         var dialogs = new FakeDialogService();
-        var wf = new FakeRunWorkflow("My Game", FakeGameExePath,
+        var wf = new FakeRunWorkflow("My Game", _fakeGameExePath,
             config:  MakeConfig(),
             library: MakeLibrary(),
             dialogs: dialogs,
@@ -273,7 +287,7 @@ public class RunWorkflowTests : IDisposable
             AcquireLockResult = AcquireResult.Acquired,
         };
 
-        var wf = new FakeRunWorkflow("My Game", FakeGameExePath,
+        var wf = new FakeRunWorkflow("My Game", _fakeGameExePath,
             config:             MakeConfig(),
             library:            MakeLibrary(),
             dialogs:            dialogs,
@@ -302,7 +316,7 @@ public class RunWorkflowTests : IDisposable
             },
         };
 
-        var wf = new FakeRunWorkflow("My Game", FakeGameExePath,
+        var wf = new FakeRunWorkflow("My Game", _fakeGameExePath,
             config:             MakeConfig(),
             library:            MakeLibrary(),
             dialogs:            dialogs,
@@ -332,7 +346,7 @@ public class RunWorkflowTests : IDisposable
             AcquireLockResult = AcquireResult.Acquired,
         };
 
-        var wf = new FakeRunWorkflow("My Game", FakeGameExePath,
+        var wf = new FakeRunWorkflow("My Game", _fakeGameExePath,
             config:             MakeConfig(),
             library:            MakeLibrary(),
             dialogs:            dialogs,
@@ -353,7 +367,7 @@ public class RunWorkflowTests : IDisposable
         var cfg     = MakeConfig();
         cfg.Data.LudusaviPath = "";   // not configured
 
-        var wf = new FakeRunWorkflow("My Game", FakeGameExePath,
+        var wf = new FakeRunWorkflow("My Game", _fakeGameExePath,
             config:  cfg,
             library: MakeLibrary(),
             dialogs: dialogs);
