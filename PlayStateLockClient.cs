@@ -135,7 +135,20 @@ namespace LudusaviWrap
             new() { Outcome = AcquireOutcome.Conflict, ConflictDeviceName = deviceName };
     }
 
-    public class PlayStateLockClient
+    public interface IPlayStateLockClient
+    {
+        Task<LockStatusResponse?> CheckLockAsync(string gameName);
+        Task<LatestBackupResponse?> GetLatestBackupEventAsync(string gameName);
+        Task<AcquireResult> AcquireLockAsync(string gameName);
+        Task ReleaseLockAsync(string gameName);
+        Task StartHeartbeatLoopAsync(string gameName, CancellationToken ct);
+        Task RecordRestoreAsync(string gameName);
+        Task RecordBackupAsync(string gameName);
+        Task UpdateLastPlayedRecordAsync(string gameName, DateTime lastPlayedAt);
+        Task AddPlaytimeDeltaAsync(string gameName, int deltaMinutes);
+    }
+
+    public class PlayStateLockClient : IPlayStateLockClient
     {
         private static readonly HttpClient HttpClient = new() { Timeout = TimeSpan.FromSeconds(10) };
 

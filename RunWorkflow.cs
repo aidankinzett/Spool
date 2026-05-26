@@ -17,7 +17,7 @@ namespace LudusaviWrap
         private readonly string _gameExe;
         private readonly Config _config;
         private readonly IDialogService _dialogs;
-        private readonly PlayStateLockClient? _lockClient;
+        private readonly IPlayStateLockClient? _lockClient;
         private readonly GameEntry? _entry;
         private readonly GameLibrary? _library;
 
@@ -27,10 +27,11 @@ namespace LudusaviWrap
         public RunWorkflow(
             string gameName,
             string gameExe,
-            GameEntry? entry        = null,
-            GameLibrary? library    = null,
-            Config? config          = null,
-            IDialogService? dialogs = null)
+            GameEntry? entry                    = null,
+            GameLibrary? library                = null,
+            Config? config                      = null,
+            IDialogService? dialogs             = null,
+            IPlayStateLockClient? lockClientOverride = null)
         {
             _gameName = gameName;
             _gameExe  = gameExe;
@@ -39,14 +40,14 @@ namespace LudusaviWrap
             _config   = config  ?? new Config();
             _dialogs  = dialogs ?? new WpfDialogService();
 
-            if (_config.Data.SyncServerEnabled && !string.IsNullOrEmpty(_config.Data.SyncServerUrl))
-            {
-                _lockClient = new PlayStateLockClient(
-                    _config.Data.SyncServerUrl,
-                    _config.Data.SyncServerApiKey,
-                    _config.Data.DeviceId,
-                    _config.Data.DeviceName);
-            }
+            _lockClient = lockClientOverride ??
+                (_config.Data.SyncServerEnabled && !string.IsNullOrEmpty(_config.Data.SyncServerUrl)
+                    ? new PlayStateLockClient(
+                        _config.Data.SyncServerUrl,
+                        _config.Data.SyncServerApiKey,
+                        _config.Data.DeviceId,
+                        _config.Data.DeviceName)
+                    : null);
         }
 
         public async Task ExecuteAsync()
@@ -358,7 +359,7 @@ namespace LudusaviWrap
             }
         }
 
-        private static async Task<ProcessResult> RunProcessAsync(string filename, string arguments)
+        protected virtual async Task<ProcessResult> RunProcessAsync(string filename, string arguments)
         {
             var outputBuilder   = new StringBuilder();
             var errorBuilder    = new StringBuilder();
@@ -431,7 +432,7 @@ namespace LudusaviWrap
             }
         }
 
-        private async Task RunGameAsync(string exePath)
+        protected virtual async Task RunGameAsync(string exePath)
         {
             var tcs      = new TaskCompletionSource<int>();
             bool runAsAdmin = (_entry?.RunAsAdmin == true) || RegistryHelper.GetCompatFlagRunAsAdmin(exePath);
