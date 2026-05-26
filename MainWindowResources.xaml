@@ -1,0 +1,235 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                    xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
+                    xmlns:local="clr-namespace:LudusaviWrap">
+
+    <local:StringToImageConverter x:Key="StringToImageConverter"/>
+    <local:CoverToBackgroundBrushConverter x:Key="CoverToBackgroundBrushConverter"/>
+    <local:BooleanToVisibilityConverter x:Key="BoolToVis"/>
+    <local:InverseBooleanToVisibilityConverter x:Key="InvBoolToVis"/>
+    <local:NullToVisibilityConverter x:Key="NullToVis"/>
+    <local:InverseNullToVisibilityConverter x:Key="InvNullToVis"/>
+    <local:EmptyStringToVisibilityConverter x:Key="EmptyStrToVis"/>
+    <local:InverseEmptyStringToVisibilityConverter x:Key="InvEmptyStrToVis"/>
+    <local:RelativeDateConverter x:Key="RelDate"/>
+    <local:PlaytimeConverter x:Key="PlaytimeConv"/>
+    <local:FileSizeMbConverter x:Key="SizeMbConv"/>
+    <local:GenreListConverter x:Key="GenreListConv"/>
+    <local:CoverInitialsConverter x:Key="InitialsConv"/>
+    <local:YearConverter x:Key="YearConv"/>
+    <local:PositiveIntToVisibilityConverter x:Key="PosIntToVis"/>
+    <local:AbsoluteDateConverter x:Key="AbsDate"/>
+
+    <!-- Filter chip style -->
+    <Style x:Key="FilterChip" TargetType="ToggleButton">
+        <Setter Property="Height" Value="24"/>
+        <Setter Property="Padding" Value="10,0"/>
+        <Setter Property="FontSize" Value="11"/>
+        <Setter Property="BorderThickness" Value="1"/>
+        <Setter Property="Cursor" Value="Hand"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="ToggleButton">
+                    <Border x:Name="Bd"
+                            Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}"
+                            BorderThickness="{TemplateBinding BorderThickness}"
+                            CornerRadius="12"
+                            Padding="{TemplateBinding Padding}">
+                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                    </Border>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+        <Style.Triggers>
+            <Trigger Property="IsChecked" Value="False">
+                <Setter Property="Background" Value="Transparent"/>
+                <Setter Property="BorderBrush" Value="#14FFFFFF"/>
+                <Setter Property="Foreground" Value="{DynamicResource TextFillColorSecondaryBrush}"/>
+            </Trigger>
+            <Trigger Property="IsChecked" Value="True">
+                <Setter Property="Background" Value="#284CC2FF"/>
+                <Setter Property="BorderBrush" Value="#444CC2FF"/>
+                <Setter Property="Foreground" Value="#4CC2FF"/>
+                <Setter Property="FontWeight" Value="Medium"/>
+            </Trigger>
+            <MultiTrigger>
+                <MultiTrigger.Conditions>
+                    <Condition Property="IsChecked" Value="False"/>
+                    <Condition Property="IsMouseOver" Value="True"/>
+                </MultiTrigger.Conditions>
+                <Setter Property="Background" Value="#0AFFFFFF"/>
+            </MultiTrigger>
+        </Style.Triggers>
+    </Style>
+
+    <!-- Toolbar action button -->
+    <Style x:Key="ActionBtn" TargetType="Button">
+        <Setter Property="Height" Value="32"/>
+        <Setter Property="Padding" Value="12,0"/>
+        <Setter Property="FontSize" Value="12"/>
+        <Setter Property="Background" Value="#0FFFFFFF"/>
+        <Setter Property="BorderBrush" Value="#17FFFFFF"/>
+        <Setter Property="BorderThickness" Value="1"/>
+        <Setter Property="Foreground" Value="White"/>
+        <Setter Property="Cursor" Value="Hand"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Border x:Name="Bd"
+                            Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}"
+                            BorderThickness="{TemplateBinding BorderThickness}"
+                            CornerRadius="4" Padding="{TemplateBinding Padding}">
+                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Bd" Property="Background" Value="#1AFFFFFF"/>
+                        </Trigger>
+                        <Trigger Property="IsPressed" Value="True">
+                            <Setter TargetName="Bd" Property="Background" Value="#08FFFFFF"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- Danger button -->
+    <Style x:Key="DangerBtn" TargetType="Button" BasedOn="{StaticResource ActionBtn}">
+        <Setter Property="Background" Value="#1AFF5F5F"/>
+        <Setter Property="BorderBrush" Value="#33FF5F5F"/>
+        <Setter Property="Foreground" Value="#FF8A8A"/>
+        <Style.Triggers>
+            <Trigger Property="IsMouseOver" Value="True">
+                <Setter Property="Background" Value="#2EFF5F5F"/>
+            </Trigger>
+        </Style.Triggers>
+    </Style>
+
+    <!-- Play button -->
+    <Style x:Key="PlayBtn" TargetType="Button">
+        <Setter Property="Height" Value="46"/>
+        <Setter Property="Padding" Value="24,0"/>
+        <Setter Property="FontSize" Value="15"/>
+        <Setter Property="FontWeight" Value="SemiBold"/>
+        <Setter Property="Foreground" Value="#000"/>
+        <Setter Property="Cursor" Value="Hand"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Border x:Name="Bd" Background="#4CC2FF" CornerRadius="6"
+                            Padding="{TemplateBinding Padding}">
+                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Bd" Property="Background" Value="#3DAEEB"/>
+                        </Trigger>
+                        <Trigger Property="IsPressed" Value="True">
+                            <Setter TargetName="Bd" Property="Background" Value="#2E9BD6"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- Download button (for LAN cards) -->
+    <Style x:Key="DownloadBtn" TargetType="Button" BasedOn="{StaticResource PlayBtn}">
+        <Setter Property="Foreground" Value="#000"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Border x:Name="Bd" Background="#21D07A" CornerRadius="6"
+                            Padding="{TemplateBinding Padding}">
+                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Bd" Property="Background" Value="#1ABC6E"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- Sort popup menu button -->
+    <Style x:Key="SortMenuItem" TargetType="Button">
+        <Setter Property="Height" Value="34"/>
+        <Setter Property="Padding" Value="10,0"/>
+        <Setter Property="FontSize" Value="12"/>
+        <Setter Property="Background" Value="Transparent"/>
+        <Setter Property="BorderThickness" Value="0"/>
+        <Setter Property="Foreground" Value="White"/>
+        <Setter Property="HorizontalContentAlignment" Value="Left"/>
+        <Setter Property="Cursor" Value="Hand"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Border x:Name="Bd" Background="{TemplateBinding Background}"
+                            CornerRadius="4" Padding="{TemplateBinding Padding}">
+                        <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                          VerticalAlignment="Center"/>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Bd" Property="Background" Value="#0FFFFFFF"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- Card container -->
+    <Style x:Key="DetailCard" TargetType="Border">
+        <Setter Property="Background" Value="#08FFFFFF"/>
+        <Setter Property="BorderBrush" Value="#0DFFFFFF"/>
+        <Setter Property="BorderThickness" Value="1"/>
+        <Setter Property="CornerRadius" Value="8"/>
+        <Setter Property="Padding" Value="18,16"/>
+    </Style>
+
+    <!-- ListBoxItem style for game rows -->
+    <Style x:Key="GameRowItem" TargetType="ListBoxItem">
+        <Setter Property="Padding" Value="0"/>
+        <Setter Property="Margin" Value="0,0,0,1"/>
+        <Setter Property="Background" Value="Transparent"/>
+        <Setter Property="BorderThickness" Value="0"/>
+        <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+        <Setter Property="Cursor" Value="Hand"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="ListBoxItem">
+                    <Grid>
+                        <Rectangle x:Name="ActiveBar" Width="3"
+                                   HorizontalAlignment="Left" VerticalAlignment="Center"
+                                   Height="22" RadiusX="2" RadiusY="2"
+                                   Fill="#4CC2FF" Visibility="Collapsed"/>
+                        <Border x:Name="Bd" Background="Transparent"
+                                CornerRadius="4" Padding="14,8,12,8">
+                            <ContentPresenter/>
+                        </Border>
+                    </Grid>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsSelected" Value="True">
+                            <Setter TargetName="Bd" Property="Background" Value="#0FFFFFFF"/>
+                            <Setter TargetName="ActiveBar" Property="Visibility" Value="Visible"/>
+                        </Trigger>
+                        <MultiTrigger>
+                            <MultiTrigger.Conditions>
+                                <Condition Property="IsMouseOver" Value="True"/>
+                                <Condition Property="IsSelected" Value="False"/>
+                            </MultiTrigger.Conditions>
+                            <Setter TargetName="Bd" Property="Background" Value="#06FFFFFF"/>
+                        </MultiTrigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+</ResourceDictionary>
