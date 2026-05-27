@@ -10,9 +10,11 @@ use crate::paths;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
-use tauri::State;
+use tauri::{AppHandle, Emitter, State};
 
-/// One game in the library. Matches the C# `GameEntry` JSON shape exactly.
+/// One game in the library. Matches the C# `GameEntry` JSON shape exactly
+/// for the legacy fields, plus a small set of manifest-derived metadata
+/// new to the Tauri rewrite (steam id, gog id, save paths, …).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct GameEntry {
@@ -60,6 +62,23 @@ pub struct GameEntry {
     pub install_source: String,
     pub lan_install_source_device_name: Option<String>,
     pub lan_install_source_device_id: Option<String>,
+
+    // ── Manifest-derived metadata (new in Tauri rewrite) ────────────────────
+    //
+    // Snapshot of the ludusavi manifest entry that matched this game at
+    // add-time. Stays stable for the entry's lifetime; the user can re-run
+    // identification to refresh it. Empty/None when the user added a game
+    // without save tracking (no ludusavi match).
+    pub steam_id: Option<u64>,
+    pub gog_id: Option<u64>,
+    pub lutris_slug: Option<String>,
+    pub has_cloud_save: bool,
+    /// The folder name ludusavi expects, e.g. `"Hades"`. Useful for hinting
+    /// at the install dir when the user picks an exe.
+    pub manifest_install_dir: Option<String>,
+    /// Save path templates from the manifest, in display form (e.g.
+    /// `%APPDATA%/Hades`). First entry is the canonical / primary location.
+    pub save_paths: Vec<String>,
 }
 
 impl Default for GameEntry {
@@ -89,13 +108,38 @@ impl Default for GameEntry {
             save_backup_count: 0,
             save_last_backed_up_at: None,
             save_backup_size_mb: 0.0,
-            // Matches the C# default — keeps the contract identical for
-            // entries that were originally created in the WPF app.
             install_source: "manual".to_string(),
             lan_install_source_device_name: None,
             lan_install_source_device_id: None,
+            steam_id: None,
+            gog_id: None,
+            lutris_slug: None,
+            has_cloud_save: false,
+            manifest_install_dir: None,
+            save_paths: Vec::new(),
         }
     }
+}
+
+/// Payload accepted by the `add_game` command. The frontend constructs this
+/// from a picked `SearchCandidate` plus the user-chosen exe path. Empty
+/// ludusavi-derived fields represent the "add without save tracking" path.
+#[derive(Debug, Deserialize)]
+pub struct NewGame {
+    pub game_name: String,
+    pub exe_path: String,
+    #[serde(default)]
+    pub steam_id: Option<u64>,
+    #[serde(default)]
+    pub gog_id: Option<u64>,
+    #[serde(default)]
+    pub lutris_slug: Option<String>,
+    #[serde(default)]
+    pub has_cloud_save: bool,
+    #[serde(default)]
+    pub manifest_install_dir: Option<String>,
+    #[serde(default)]
+    pub save_paths: Vec<String>,
 }
 
 /// In-memory library, loaded once at startup and held behind a [`Mutex`] in
@@ -118,7 +162,6 @@ impl Library {
         let entries: Vec<GameEntry> = serde_json::from_str(&json)?;
         let mut lib = Self { entries };
         if lib.backfill_catalog_numbers() {
-            // Best-effort save — if it fails, the next mutating op will retry.
             let _ = lib.save();
         }
         Ok(lib)
@@ -126,7 +169,6 @@ impl Library {
 
     /// Returns the next catalog number to assign to a new entry. Numbers are
     /// monotonically increasing; gaps from deletions are preserved.
-    #[allow(dead_code)]
     pub fn next_catalog_number(&self) -> u32 {
         self.entries.iter().map(|e| e.catalog_number).max().unwrap_or(0) + 1
     }
@@ -153,7 +195,6 @@ impl Library {
 
     /// Atomic save: write to a temp file then rename, keeping a `.bak` of the
     /// previous contents. Mirrors the C# implementation's safety guarantees.
-    #[allow(dead_code)]
     pub fn save(&self) -> AppResult<()> {
         let path = paths::library_file();
         if let Some(parent) = path.parent() {
@@ -165,20 +206,66 @@ impl Library {
 
         if path.exists() {
             let bak = path.with_extension("json.bak");
-            // Best-effort backup; ignore failure here so we don't lose the
-            // save just because the .bak couldn't be replaced.
             let _ = std::fs::rename(&path, &bak);
         }
         std::fs::rename(&tmp, &path)?;
         Ok(())
     }
+
+    /// Locates an entry by id without removing it.
+    pub fn find(&self, id: &str) -> Option<&GameEntry> {
+        self.entries.iter().find(|e| e.id == id)
+    }
 }
 
 /// Shared library state. Wrapping in [`Mutex`] is fine here because every
 /// access is a quick read/clone — we never hold the guard across an `.await`.
-/// If we ever need to do async work while holding state, switch to
-/// `tokio::sync::Mutex`.
 pub type SharedLibrary = Mutex<Library>;
+
+/// Filesystem-safe filename derived from a game name.
+///
+/// Invalid path characters are replaced with spaces (not stripped) so word
+/// boundaries are preserved — `"A: B/C"` becomes `"A B C"` rather than
+/// `"A BC"`. Non-ASCII characters are dropped to avoid codepage issues in
+/// legacy non-Unicode tools (some launchers / Inno Setup scripts).
+/// Whitespace runs are then collapsed.
+pub fn make_safe_filename(name: &str) -> String {
+    const INVALID: &[char] = &['<', '>', ':', '"', '/', '\\', '|', '?', '*'];
+
+    // Pass 1: ASCII-only, invalid-or-control chars become spaces.
+    let stage: String = name
+        .chars()
+        .filter(|c| c.is_ascii())
+        .map(|c| {
+            if INVALID.contains(&c) || c.is_control() {
+                ' '
+            } else {
+                c
+            }
+        })
+        .collect();
+
+    // Pass 2: collapse runs of whitespace to a single space.
+    let mut collapsed = String::with_capacity(stage.len());
+    let mut last_space = false;
+    for c in stage.chars() {
+        if c.is_whitespace() {
+            if !last_space {
+                collapsed.push(' ');
+                last_space = true;
+            }
+        } else {
+            collapsed.push(c);
+            last_space = false;
+        }
+    }
+    let trimmed = collapsed.trim().trim_end_matches('.');
+    if trimmed.is_empty() {
+        "Game".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
 
 // ── Tauri commands ──────────────────────────────────────────────────────────
 
@@ -186,4 +273,126 @@ pub type SharedLibrary = Mutex<Library>;
 pub fn list_games(state: State<'_, SharedLibrary>) -> AppResult<Vec<GameEntry>> {
     let lib = state.lock().map_err(|_| AppError::LockPoisoned)?;
     Ok(lib.entries.clone())
+}
+
+/// Adds a new game. Assigns id/catalog/timestamps server-side; persists
+/// atomically; emits `library.changed` so any open windows can refresh.
+#[tauri::command]
+pub fn add_game(
+    state: State<'_, SharedLibrary>,
+    app: AppHandle,
+    new_game: NewGame,
+) -> AppResult<GameEntry> {
+    let entry = {
+        let mut lib = state.lock().map_err(|_| AppError::LockPoisoned)?;
+        let entry = GameEntry {
+            id: uuid::Uuid::new_v4().to_string(),
+            catalog_number: lib.next_catalog_number(),
+            game_name: new_game.game_name.clone(),
+            exe_path: new_game.exe_path,
+            safe_name: make_safe_filename(&new_game.game_name),
+            added_at: Some(Utc::now()),
+            steam_id: new_game.steam_id,
+            gog_id: new_game.gog_id,
+            lutris_slug: new_game.lutris_slug,
+            has_cloud_save: new_game.has_cloud_save,
+            manifest_install_dir: new_game.manifest_install_dir,
+            save_paths: new_game.save_paths,
+            ..GameEntry::default()
+        };
+        lib.entries.push(entry.clone());
+        lib.save()?;
+        entry
+    };
+    if let Err(e) = app.emit("library:changed", &entry.id) {
+        eprintln!("[library] failed to emit library:changed after add_game: {e}");
+    }
+
+    // Kick off an async cover-art fetch. Non-blocking — the user sees the
+    // new card immediately with the synthetic sleeve fallback, and the
+    // real cover lands a moment later via a second library:changed emit.
+    let app_for_task = app.clone();
+    let id_for_task = entry.id.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Err(e) = crate::steamgriddb::fetch_and_save_cover(&app_for_task, &id_for_task).await
+        {
+            eprintln!("[sgdb] cover fetch failed for {id_for_task}: {e}");
+        }
+    });
+
+    Ok(entry)
+}
+
+/// Replaces an entry by id with the provided value. The id field on
+/// `entry` is the lookup key; mismatches between in-memory state and
+/// disk are resolved by overwriting.
+#[tauri::command]
+pub fn update_game(
+    state: State<'_, SharedLibrary>,
+    app: AppHandle,
+    entry: GameEntry,
+) -> AppResult<GameEntry> {
+    let updated = {
+        let mut lib = state.lock().map_err(|_| AppError::LockPoisoned)?;
+        let idx = lib
+            .entries
+            .iter()
+            .position(|e| e.id == entry.id)
+            .ok_or_else(|| AppError::Other(format!("game with id {} not found", entry.id)))?;
+        lib.entries[idx] = entry.clone();
+        lib.save()?;
+        entry
+    };
+    if let Err(e) = app.emit("library:changed", &updated.id) {
+        eprintln!("[library] failed to emit library.changed after update_game: {e}");
+    }
+    Ok(updated)
+}
+
+/// Removes an entry by id. No-op if the id isn't present (returns false).
+/// Emits `library.changed` when something was actually removed.
+#[tauri::command]
+pub fn remove_game(
+    state: State<'_, SharedLibrary>,
+    app: AppHandle,
+    id: String,
+) -> AppResult<bool> {
+    let removed = {
+        let mut lib = state.lock().map_err(|_| AppError::LockPoisoned)?;
+        let before = lib.entries.len();
+        lib.entries.retain(|e| e.id != id);
+        if lib.entries.len() < before {
+            lib.save()?;
+            true
+        } else {
+            false
+        }
+    };
+    if removed {
+        if let Err(e) = app.emit("library:changed", &id) {
+            eprintln!("[library] failed to emit library.changed after remove_game: {e}");
+        }
+    }
+    Ok(removed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn make_safe_filename_handles_basics() {
+        assert_eq!(make_safe_filename("Hades II"), "Hades II");
+        assert_eq!(make_safe_filename("Game: Bad/Chars?"), "Game Bad Chars");
+        assert_eq!(make_safe_filename("  many   spaces  "), "many spaces");
+        assert_eq!(make_safe_filename(""), "Game");
+        assert_eq!(make_safe_filename("...."), "Game");
+    }
+
+    #[test]
+    fn make_safe_filename_strips_non_ascii() {
+        // Non-ASCII characters get dropped — same behaviour as the C#
+        // version, intended to keep legacy non-Unicode tools happy.
+        assert_eq!(make_safe_filename("Tëst Gämé"), "Tst Gm");
+    }
 }

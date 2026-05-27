@@ -97,3 +97,11 @@ html, body {
 
 /* Mono numeric — tabular figures for catalog ids, timestamps, sizes */
 .num { font-variant-numeric: tabular-nums; }
+
+/* Spinning-reels animation — used by the Add Game "identifying" state.
+   Defined globally because Svelte's component-scoped @keyframes wouldn't
+   apply inside the SVG <g> elements via the `animation:` style attribute. */
+@keyframes spool-spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}

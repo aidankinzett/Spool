@@ -1,0 +1,287 @@
+//! SteamGridDB integration — cover art lookup and download.
+//!
+//! Lookup strategy: prefer Steam ID (canonical, accurate) and fall back
+//! to name autocomplete when no Steam ID is known. Downloads land in
+//! `%LOCALAPPDATA%\Spool\covers\<safe_name>.<ext>` and the matching
+//! `GameEntry.cover_image_path` is updated in place; the library file
+//! is saved atomically and `library:changed` is emitted so any open
+//! window can refresh.
+//!
+//! v1 only fetches the portrait cover (600×900). Hero / wide grid / logo
+//! will land alongside the "Add to Steam" slice that needs them all.
+
+use crate::config::SharedConfig;
+use crate::error::{AppError, AppResult};
+use crate::library::SharedLibrary;
+use crate::paths;
+use serde::Deserialize;
+use std::time::Duration;
+use tauri::{AppHandle, Emitter, Manager};
+
+const BASE: &str = "https://www.steamgriddb.com/api/v2";
+
+/// Stateless SteamGridDB client. The HTTP client is held inline so we
+/// only pay the TLS setup cost once per process. The API key comes from
+/// `Config` at call time (no caching) so changes in Settings take effect
+/// immediately.
+pub struct SteamGridDbClient {
+    http: reqwest::Client,
+}
+
+impl SteamGridDbClient {
+    pub fn new() -> Self {
+        Self {
+            http: reqwest::Client::builder()
+                .timeout(Duration::from_secs(30))
+                .user_agent("Spool/0.1 (https://github.com/aidankinzett/spool)")
+                .build()
+                .unwrap_or_else(|_| reqwest::Client::new()),
+        }
+    }
+}
+
+impl Default for SteamGridDbClient {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// ── DTOs ────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+#[serde(bound(deserialize = "T: serde::de::DeserializeOwned"))]
+struct SgdbResponse<T> {
+    success: bool,
+    data: Option<T>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SgdbGame {
+    id: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct Grid {
+    url: String,
+    #[serde(default)]
+    mime: String,
+}
+
+// ── Public entry point used by add_game (spawned in the background) ─────────
+
+/// Fetches the portrait cover for `game_entry_id`, saves it to disk,
+/// updates the library entry's `cover_image_path`, and emits
+/// `library:changed` so listeners refresh.
+///
+/// Returns the saved path (or None if cover lookup yielded nothing or
+/// SteamGridDB is disabled in settings).
+pub async fn fetch_and_save_cover(
+    app: &AppHandle,
+    game_entry_id: &str,
+) -> AppResult<Option<String>> {
+    let config = app.state::<SharedConfig>();
+    let library = app.state::<SharedLibrary>();
+    let client = app.state::<SteamGridDbClient>();
+
+    // 1. Bail early if SteamGridDB isn't configured.
+    let (api_key, enabled) = {
+        let cfg = config.lock().map_err(|_| AppError::LockPoisoned)?;
+        (
+            cfg.data.steamgriddb_api_key.clone(),
+            cfg.data.steamgriddb_enabled,
+        )
+    };
+    if !enabled || api_key.is_empty() {
+        return Ok(None);
+    }
+
+    // 2. Snapshot lookup info from the library entry — drop the lock fast.
+    let (name, safe_name, steam_id) = {
+        let lib = library.lock().map_err(|_| AppError::LockPoisoned)?;
+        let entry = lib
+            .find(game_entry_id)
+            .ok_or_else(|| AppError::Other(format!("game not found: {game_entry_id}")))?;
+        (
+            entry.game_name.clone(),
+            entry.safe_name.clone(),
+            entry.steam_id,
+        )
+    };
+
+    // 3. Resolve to a SteamGridDB game id.
+    let Some(sgdb_id) = resolve_game_id(&client.http, &api_key, steam_id, &name).await? else {
+        return Ok(None);
+    };
+
+    // 4. Pick the first portrait grid result.
+    let grids = fetch_portrait_grids(&client.http, &api_key, sgdb_id).await?;
+    let Some(grid) = grids.into_iter().next() else {
+        return Ok(None);
+    };
+
+    // 5. Download to disk.
+    let ext = mime_to_ext(&grid.mime).unwrap_or_else(|| url_ext(&grid.url).unwrap_or("png"));
+    let dir = paths::covers_dir();
+    std::fs::create_dir_all(&dir)?;
+    let path = dir.join(format!("{safe_name}.{ext}"));
+    let bytes = client
+        .http
+        .get(&grid.url)
+        .send()
+        .await
+        .map_err(|e| AppError::Other(format!("sgdb image fetch failed: {e}")))?
+        .bytes()
+        .await
+        .map_err(|e| AppError::Other(format!("sgdb image body failed: {e}")))?;
+    std::fs::write(&path, &bytes)?;
+    let path_str = path.to_string_lossy().to_string();
+
+    // 6. Update library entry + persist.
+    {
+        let mut lib = library.lock().map_err(|_| AppError::LockPoisoned)?;
+        if let Some(entry) = lib.entries.iter_mut().find(|e| e.id == game_entry_id) {
+            entry.cover_image_path = Some(path_str.clone());
+        }
+        lib.save()?;
+    }
+
+    // 7. Notify the UI.
+    if let Err(e) = app.emit("library:changed", &game_entry_id.to_string()) {
+        eprintln!("[sgdb] failed to emit library:changed after cover: {e}");
+    }
+
+    Ok(Some(path_str))
+}
+
+// ── Tauri commands ──────────────────────────────────────────────────────────
+
+/// Manual cover refresh for an existing game (re-runs lookup + download).
+#[tauri::command]
+pub async fn fetch_cover(app: AppHandle, game_id: String) -> AppResult<Option<String>> {
+    fetch_and_save_cover(&app, &game_id).await
+}
+
+// ── Internals ───────────────────────────────────────────────────────────────
+
+/// Returns a SteamGridDB game id. Tries Steam ID first; falls back to
+/// name autocomplete. None when nothing matches at all.
+async fn resolve_game_id(
+    http: &reqwest::Client,
+    api_key: &str,
+    steam_id: Option<u64>,
+    name: &str,
+) -> AppResult<Option<u64>> {
+    if let Some(sid) = steam_id {
+        let url = format!("{BASE}/games/steam/{sid}");
+        let resp = http
+            .get(&url)
+            .bearer_auth(api_key)
+            .send()
+            .await
+            .map_err(|e| AppError::Other(format!("sgdb steam lookup failed: {e}")))?;
+        if resp.status().is_success() {
+            let body: SgdbResponse<SgdbGame> = resp
+                .json()
+                .await
+                .map_err(|e| AppError::Other(format!("sgdb json (steam): {e}")))?;
+            if body.success {
+                if let Some(g) = body.data {
+                    return Ok(Some(g.id));
+                }
+            }
+        }
+        // Steam ID lookup failed — fall through to name search.
+    }
+
+    // Autocomplete by name — Url::path_segments_mut() handles percent-encoding.
+    let mut url = reqwest::Url::parse(&format!("{BASE}/search/autocomplete/"))
+        .map_err(|e| AppError::Other(format!("sgdb url parse: {e}")))?;
+    url.path_segments_mut()
+        .map_err(|_| AppError::Other("sgdb url cannot have path segments".into()))?
+        .pop_if_empty()
+        .push(name);
+
+    let resp = http
+        .get(url)
+        .bearer_auth(api_key)
+        .send()
+        .await
+        .map_err(|e| AppError::Other(format!("sgdb search failed: {e}")))?;
+    if !resp.status().is_success() {
+        return Ok(None);
+    }
+    let body: SgdbResponse<Vec<SgdbGame>> = resp
+        .json()
+        .await
+        .map_err(|e| AppError::Other(format!("sgdb json (search): {e}")))?;
+    if !body.success {
+        return Ok(None);
+    }
+    Ok(body.data.and_then(|v| v.into_iter().next()).map(|g| g.id))
+}
+
+async fn fetch_portrait_grids(
+    http: &reqwest::Client,
+    api_key: &str,
+    sgdb_game_id: u64,
+) -> AppResult<Vec<Grid>> {
+    let url = format!("{BASE}/grids/game/{sgdb_game_id}?dimensions=600x900");
+    let resp = http
+        .get(&url)
+        .bearer_auth(api_key)
+        .send()
+        .await
+        .map_err(|e| AppError::Other(format!("sgdb grids failed: {e}")))?;
+    if !resp.status().is_success() {
+        return Ok(Vec::new());
+    }
+    let body: SgdbResponse<Vec<Grid>> = resp
+        .json()
+        .await
+        .map_err(|e| AppError::Other(format!("sgdb json (grids): {e}")))?;
+    Ok(body.data.unwrap_or_default())
+}
+
+fn mime_to_ext(mime: &str) -> Option<&'static str> {
+    match mime {
+        "image/png" => Some("png"),
+        "image/jpeg" => Some("jpg"),
+        "image/webp" => Some("webp"),
+        _ => None,
+    }
+}
+
+fn url_ext(url: &str) -> Option<&'static str> {
+    // Best-effort extension sniff from the URL path.
+    let path = url.split('?').next().unwrap_or(url);
+    let ext = path.rsplit('.').next()?.to_lowercase();
+    match ext.as_str() {
+        "png" => Some("png"),
+        "jpg" | "jpeg" => Some("jpg"),
+        "webp" => Some("webp"),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mime_translates_known_types() {
+        assert_eq!(mime_to_ext("image/png"), Some("png"));
+        assert_eq!(mime_to_ext("image/jpeg"), Some("jpg"));
+        assert_eq!(mime_to_ext("image/webp"), Some("webp"));
+        assert_eq!(mime_to_ext("image/avif"), None);
+    }
+
+    #[test]
+    fn url_ext_sniffs_path() {
+        assert_eq!(url_ext("https://cdn.example.com/a/b/cover.png"), Some("png"));
+        assert_eq!(
+            url_ext("https://cdn.example.com/cover.jpg?v=1"),
+            Some("jpg")
+        );
+        assert_eq!(url_ext("https://cdn.example.com/cover"), None);
+    }
+}

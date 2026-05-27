@@ -1,6 +1,8 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { Plus, Search, Settings } from '@lucide/svelte';
+  import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
+  import { listen } from '@tauri-apps/api/event';
   import { api } from '$lib/api';
   import GameCard from '$lib/GameCard.svelte';
   import WindowChrome from '$lib/components/WindowChrome.svelte';
@@ -12,7 +14,7 @@
   let error = $state<string | null>(null);
   let loaded = $state(false);
 
-  onMount(async () => {
+  async function refresh() {
     try {
       games = await api.listGames();
     } catch (e) {
@@ -20,7 +22,55 @@
     } finally {
       loaded = true;
     }
+  }
+
+  let unlistenLibraryChanged: (() => void) | undefined;
+
+  onMount(() => {
+    refresh();
+    // Backend emits `library.changed` from add/update/remove. Listen
+    // here so the library refreshes when the Add Game popup adds a
+    // game in a sibling window.
+    listen<string>('library:changed', (event) => {
+      console.debug('[library] library.changed received for id', event.payload);
+      refresh();
+    })
+      .then((fn) => {
+        unlistenLibraryChanged = fn;
+        console.debug('[library] library.changed listener registered');
+      })
+      .catch((e) => console.error('[library] failed to register listener:', e));
+
+    return () => unlistenLibraryChanged?.();
   });
+
+  /**
+   * Opens Add Game as a child webview window. The new window loads the
+   * `/add` route; closing it returns focus to the library, and any
+   * library.changed events emitted from the add flow are picked up
+   * automatically via the listener above.
+   */
+  function openAddGame() {
+    const existing = WebviewWindow.getByLabel('add-game');
+    existing.then((win) => {
+      if (win) {
+        win.setFocus();
+        return;
+      }
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      const _added = new WebviewWindow('add-game', {
+        url: '/add',
+        title: 'Add Game · Spool',
+        width: 720,
+        height: 560,
+        minWidth: 600,
+        minHeight: 480,
+        decorations: false,
+        resizable: true,
+        center: true,
+      });
+    });
+  }
 </script>
 
 <div class="flex h-screen flex-col bg-bg-0 text-ink-0">
@@ -45,14 +95,18 @@
         <a
           href="/settings"
           aria-label="Settings"
-          class="inline-flex h-7 w-7 items-center justify-center rounded-sm border border-line-1 text-ink-1 transition-colors hover:bg-white/5 hover:text-ink-0"
+          class="inline-flex h-8 w-8 items-center justify-center rounded-sm border border-line-1 text-ink-1 transition-colors hover:bg-white/5 hover:text-ink-0"
         >
           <Settings size={14} />
         </a>
-        <Btn variant="primary">
-          {#snippet icon()}<Plus size={14} />{/snippet}
+        <button
+          type="button"
+          onclick={openAddGame}
+          class="inline-flex h-8 cursor-pointer items-center gap-1.5 whitespace-nowrap rounded-sm border border-transparent bg-spool px-3 text-[12.5px] font-medium text-bg-0 transition-colors hover:brightness-95"
+        >
+          <Plus size={14} />
           Add game
-        </Btn>
+        </button>
       </div>
     </header>
 
@@ -71,10 +125,14 @@
           <p class="max-w-md text-sm text-ink-2">
             No games yet. Add an executable to start your collection.
           </p>
-          <Btn variant="primary">
-            {#snippet icon()}<Plus size={14} />{/snippet}
+          <button
+            type="button"
+            onclick={openAddGame}
+            class="inline-flex h-8 cursor-pointer items-center gap-1.5 whitespace-nowrap rounded-sm border border-transparent bg-spool px-3 text-[12.5px] font-medium text-bg-0 transition-colors hover:brightness-95"
+          >
+            <Plus size={14} />
             Add your first game
-          </Btn>
+          </button>
         </div>
       {:else}
         <div class="flex flex-wrap gap-5">

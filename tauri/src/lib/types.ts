@@ -68,4 +68,47 @@ export type GameEntry = {
   install_source: string;
   lan_install_source_device_name: string | null;
   lan_install_source_device_id: string | null;
+
+  // Manifest-derived (Tauri rewrite — empty/null for legacy C# entries)
+  steam_id: number | null;
+  gog_id: number | null;
+  lutris_slug: string | null;
+  has_cloud_save: boolean;
+  manifest_install_dir: string | null;
+  save_paths: string[];
+};
+
+/**
+ * Enriched search result from `search_games` / `search_by_exe`. Mirrors the
+ * Rust `SearchCandidate` struct in src-tauri/src/ludusavi.rs.
+ *
+ * `score` is 0.0–1.0 from ludusavi find; the UI typically hides it when
+ * >= 0.95 (a confident match).
+ */
+export type SearchCandidate = {
+  name: string;
+  score: number;
+  save_path: string | null;
+  save_paths: string[];
+  steam_id: number | null;
+  gog_id: number | null;
+  lutris_slug: string | null;
+  has_cloud_save: boolean;
+  manifest_install_dir: string | null;
+};
+
+/**
+ * Payload for `add_game`. id / catalog_number / timestamps are assigned by
+ * the backend. Empty / falsy manifest fields are the signal for the "add
+ * without save tracking" path.
+ */
+export type NewGame = {
+  game_name: string;
+  exe_path: string;
+  steam_id?: number | null;
+  gog_id?: number | null;
+  lutris_slug?: string | null;
+  has_cloud_save?: boolean;
+  manifest_install_dir?: string | null;
+  save_paths?: string[];
 };

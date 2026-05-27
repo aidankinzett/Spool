@@ -81,7 +81,7 @@
   {onclick}
   onmouseenter={() => (hover = true)}
   onmouseleave={() => (hover = false)}
-  class="inline-flex h-7 cursor-pointer items-center gap-1.5 whitespace-nowrap rounded-sm px-3 text-[12.5px] font-medium transition-colors duration-100 disabled:cursor-not-allowed disabled:opacity-50 {full
+  class="inline-flex h-8 cursor-pointer items-center gap-1.5 whitespace-nowrap rounded-sm px-3 text-[12.5px] font-medium transition-colors duration-100 disabled:cursor-not-allowed disabled:opacity-50 {full
     ? 'w-full'
     : ''} {className}"
   style:background={style.background}

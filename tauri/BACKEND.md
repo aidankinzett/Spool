@@ -130,13 +130,13 @@ Long-running ops emit progress events rather than returning blob results:
 
 | Event | Payload | When |
 |---|---|---|
-| `library.changed` | `{ game_id }` | any library mutation |
-| `cover.downloaded` | `{ game_id, kind, path }` | SteamGridDB download finishes |
-| `run.phase` | `{ game_id, phase, message }` | RunWorkflow phase transition |
-| `run.error` | `{ game_id, message }` | RunWorkflow fails |
-| `update.available` | `{ version }` | new release detected |
+| `library:changed` | `{ game_id }` | any library mutation |
+| `cover:downloaded` | `{ game_id, kind, path }` | SteamGridDB download finishes |
+| `run:phase` | `{ game_id, phase, message }` | RunWorkflow phase transition |
+| `run:error` | `{ game_id, message }` | RunWorkflow fails |
+| `update:available` | `{ version }` | new release detected |
 
-Dotted names + JSON payload so the frontend can subscribe per-domain.
+Colon-namespaced names + JSON payload so the frontend can subscribe per-domain. **Important**: Tauri 2 only allows alphanumerics, `-`, `/`, `:`, `_` in event names — periods are rejected at runtime, hence the colon convention.
 
 ### Logging
 
