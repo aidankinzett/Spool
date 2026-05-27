@@ -24,7 +24,7 @@
 {#if error}
   <p style="color: red">Error: {error}</p>
 {:else}
-  <h1>Library ({games.length} games)</h1>
+  <h1 class="text-3xl font-bold text-blue-500">Library ({games.length} games)</h1>
   <ul>
     {#each games as game (game.id)}
       <li>{game.game_name} <small>— {game.exe_path}</small></li>
