@@ -117,7 +117,19 @@
         }
       }
     })
-      .then((fn) => (unlistenRunPhase = fn))
+      .then((fn) => {
+        unlistenRunPhase = fn;
+        // Listener is registered — safe to pick up a cold-start --run
+        // queue without losing the resulting run:phase events.
+        return api.takePendingRun();
+      })
+      .then((pendingId) => {
+        if (pendingId) {
+          api
+            .launchGame(pendingId)
+            .catch((e) => console.error('[lifecycle] pending --run failed:', e));
+        }
+      })
       .catch((e) => console.error('[library] run-phase listener failed:', e));
     return () => {
       unlistenLibraryChanged?.();

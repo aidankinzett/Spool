@@ -86,8 +86,16 @@ fn emit_phase(app: &AppHandle, game_id: &str, phase: &str, message: Option<&str>
 
 #[tauri::command]
 pub async fn launch_game(app: AppHandle, game_id: String) -> AppResult<()> {
+    launch_game_inner(&app, &game_id).await
+}
+
+/// Inner launch function callable from non-command contexts (e.g. the
+/// `tauri-plugin-single-instance` callback when a forwarded `--run` arrives).
+/// Same behaviour as the `launch_game` command — single-launch guard +
+/// full workflow + phase emission.
+pub async fn launch_game_inner(app: &AppHandle, game_id: &str) -> AppResult<()> {
     let run_state = app.state::<RunState>();
-    let _guard = run_state.try_acquire(&game_id)?;
+    let _guard = run_state.try_acquire(game_id)?;
 
     // Snapshot what we need from state up front so we don't hold any
     // sync Mutex across the long-running awaits below.
@@ -95,7 +103,7 @@ pub async fn launch_game(app: AppHandle, game_id: String) -> AppResult<()> {
         let library = app.state::<SharedLibrary>();
         let lib = library.lock().map_err(|_| AppError::LockPoisoned)?;
         let entry = lib
-            .find(&game_id)
+            .find(game_id)
             .ok_or_else(|| AppError::Other(format!("game not found: {game_id}")))?;
         if entry.exe_path.is_empty() {
             return Err(AppError::Other("Game has no executable configured".into()));
@@ -117,10 +125,10 @@ pub async fn launch_game(app: AppHandle, game_id: String) -> AppResult<()> {
 
     let ludusavi_client = app.state::<LudusaviClient>();
     let result =
-        run_workflow(&app, &game_id, &game_name, &exe_path, &ludusavi_exe, &ludusavi_client).await;
+        run_workflow(app, game_id, &game_name, &exe_path, &ludusavi_exe, &ludusavi_client).await;
 
     if let Err(e) = &result {
-        emit_phase(&app, &game_id, "error", Some(&e.to_string()));
+        emit_phase(app, game_id, "error", Some(&e.to_string()));
     }
     result
 }
