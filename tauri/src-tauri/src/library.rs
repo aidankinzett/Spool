@@ -17,6 +17,11 @@ use tauri::State;
 #[serde(default)]
 pub struct GameEntry {
     pub id: String,
+    /// Sequential shelf catalog number, formatted as `SPL-NNNN` in the UI.
+    /// Assigned at add-time and stable for the entry's lifetime; deleting a
+    /// game leaves a gap rather than reusing the number. Zero means "not yet
+    /// assigned" — `Library::load` backfills these for legacy entries.
+    pub catalog_number: u32,
     pub game_name: String,
     pub exe_path: String,
     pub safe_name: String,
@@ -61,6 +66,7 @@ impl Default for GameEntry {
     fn default() -> Self {
         Self {
             id: String::new(),
+            catalog_number: 0,
             game_name: String::new(),
             exe_path: String::new(),
             safe_name: String::new(),
@@ -101,6 +107,8 @@ pub struct Library {
 
 impl Library {
     /// Loads from disk. Missing file → empty library; corrupt file → error.
+    /// Backfills sequential `catalog_number`s for any entries missing one
+    /// (legacy data from before the field existed) and persists if so.
     pub fn load() -> AppResult<Self> {
         let path = paths::library_file();
         if !path.exists() {
@@ -108,7 +116,39 @@ impl Library {
         }
         let json = std::fs::read_to_string(&path)?;
         let entries: Vec<GameEntry> = serde_json::from_str(&json)?;
-        Ok(Self { entries })
+        let mut lib = Self { entries };
+        if lib.backfill_catalog_numbers() {
+            // Best-effort save — if it fails, the next mutating op will retry.
+            let _ = lib.save();
+        }
+        Ok(lib)
+    }
+
+    /// Returns the next catalog number to assign to a new entry. Numbers are
+    /// monotonically increasing; gaps from deletions are preserved.
+    #[allow(dead_code)]
+    pub fn next_catalog_number(&self) -> u32 {
+        self.entries.iter().map(|e| e.catalog_number).max().unwrap_or(0) + 1
+    }
+
+    /// Assigns sequential catalog numbers to any entries that don't have one.
+    /// Preserves existing assignments. Returns true if any entry was modified.
+    fn backfill_catalog_numbers(&mut self) -> bool {
+        let mut next = self
+            .entries
+            .iter()
+            .map(|e| e.catalog_number)
+            .max()
+            .unwrap_or(0);
+        let mut changed = false;
+        for entry in &mut self.entries {
+            if entry.catalog_number == 0 {
+                next += 1;
+                entry.catalog_number = next;
+                changed = true;
+            }
+        }
+        changed
     }
 
     /// Atomic save: write to a temp file then rename, keeping a `.bak` of the

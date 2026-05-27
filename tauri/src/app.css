@@ -1,1 +1,99 @@
+/* ──────────────────────────────────────────────────────────────────────
+   Spool · design tokens + global styles
+   "Cassette-forward" — dark-only, warm graphite, oxide-amber accent.
+   Tokens mirror src/lib/tokens.ts — keep them in sync.
+   ────────────────────────────────────────────────────────────────────── */
+
+@import "@fontsource/geist-sans/400.css";
+@import "@fontsource/geist-sans/500.css";
+@import "@fontsource/geist-sans/600.css";
+@import "@fontsource/geist-sans/700.css";
+@import "@fontsource/space-grotesk/500.css";
+@import "@fontsource/space-grotesk/600.css";
+@import "@fontsource/space-grotesk/700.css";
+@import "@fontsource/jetbrains-mono/400.css";
+@import "@fontsource/jetbrains-mono/500.css";
+@import "@fontsource/jetbrains-mono/600.css";
+
 @import "tailwindcss";
+
+/* ── Design tokens (Tailwind v4 @theme) ────────────────────────────── */
+@theme {
+  /* Graphite palette — quiet, slightly warm at the deep end. */
+  --color-bg-0: #0b0c0e;          /* window void */
+  --color-bg-1: #101216;          /* pane */
+  --color-bg-2: #15181d;          /* card / raised */
+  --color-bg-3: #1c2027;          /* hover / selection */
+
+  --color-line-1: rgb(255 255 255 / 0.06);
+  --color-line-2: rgb(255 255 255 / 0.10);
+  --color-line-3: rgb(255 255 255 / 0.16);
+
+  --color-ink-0: #f4f4f5;
+  --color-ink-1: rgb(244 244 245 / 0.78);
+  --color-ink-2: rgb(244 244 245 / 0.56);
+  --color-ink-3: rgb(244 244 245 / 0.36);
+
+  /* Status (meter colors) */
+  --color-ok: #7ee2a4;
+  --color-warn: #f4b66c;
+  --color-info: #7ec6ff;
+  --color-bad: #ff7a7a;
+
+  /* Brand */
+  --color-spool: #d7c9a0;         /* tape oxide */
+  --color-spool-deep: #1a1612;    /* shell */
+
+  /* Font stacks */
+  --font-sans: "Geist", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-display: "Space Grotesk", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "Cascadia Code", monospace;
+
+  /* Radii — small, utility-feel (cassettes aren't pillowy) */
+  --radius-xs: 2px;
+  --radius-sm: 3px;
+  --radius-md: 5px;
+  --radius-lg: 8px;
+}
+
+/* ── Global resets / app shell ─────────────────────────────────────── */
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--color-bg-0);
+  color: var(--color-ink-0);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overflow: hidden;        /* the window provides scroll surfaces; body never scrolls */
+  height: 100vh;
+}
+
+* { box-sizing: border-box; }
+
+/* Cassette-style scrollbars — narrow, low-contrast */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: rgb(244 244 245 / 0.12);
+  border-radius: 4px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgb(244 244 245 / 0.22);
+  background-clip: content-box;
+}
+
+/* Drag region — applies to title-bar elements that should drag the window.
+   Buttons inside the chrome opt out via [data-tauri-drag-region="false"]. */
+[data-tauri-drag-region] {
+  -webkit-user-select: none;
+  user-select: none;
+  cursor: default;
+}
+
+/* Mono numeric — tabular figures for catalog ids, timestamps, sizes */
+.num { font-variant-numeric: tabular-nums; }

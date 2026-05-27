@@ -29,5 +29,12 @@ export default defineConfig(async () => ({
       // 3. tell vite to ignore watching `src-tauri`
       ignored: ["**/src-tauri/**"],
     },
+    // 4. Bun hoists shared dependencies to a parent node_modules when it
+    //    detects multiple package.json files in ancestor directories (common
+    //    in worktree setups). `../..` covers everywhere under the worktrees
+    //    folder where bun may decide to put @fontsource font assets.
+    fs: {
+      allow: ["../.."],
+    },
   },
 }));

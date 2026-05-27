@@ -13,6 +13,9 @@
   },
   "license": "MIT",
   "dependencies": {
+    "@fontsource/geist-sans": "^5.2.5",
+    "@fontsource/jetbrains-mono": "^5.2.8",
+    "@fontsource/space-grotesk": "^5.2.10",
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-opener": "^2"
   },

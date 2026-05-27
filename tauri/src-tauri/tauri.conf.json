@@ -12,9 +12,12 @@
   "app": {
     "windows": [
       {
-        "title": "tauri",
-        "width": 800,
-        "height": 600
+        "title": "Spool",
+        "width": 1280,
+        "height": 800,
+        "minWidth": 900,
+        "minHeight": 600,
+        "decorations": false
       }
     ],
     "security": {

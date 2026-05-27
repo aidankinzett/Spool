@@ -4,6 +4,8 @@
 
 export type GameEntry = {
   id: string;
+  /** Sequential shelf number, formatted as SPL-NNNN in the UI. */
+  catalog_number: number;
   game_name: string;
   exe_path: string;
   safe_name: string;
