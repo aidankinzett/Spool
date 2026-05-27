@@ -1,8 +1,18 @@
 # Spool Backend Architecture (Rust / Tauri)
 
 A working document for porting the C# WPF backend to a Rust Tauri backend.
-Treat this as the source-of-truth design doc — update it when decisions
-change.
+Treat this as the source-of-truth **design** doc — what we're aiming at.
+For "what's currently built" see [`REWRITE.md`](./REWRITE.md).
+
+Status markers used throughout:
+- ✅ implemented and working end-to-end
+- 🚧 partial (some pieces landed, more planned)
+- ❌ not built yet
+- ⏸ deferred to v2
+
+As of `37b9c93`: the core MVP loop (add → display → play → save management)
+is ✅. Tray-resident model, `--run` CLI mode, Steam shortcut generation,
+and Armoury Crate launchers are all ❌ — see the deferred section below.
 
 ---
 
@@ -41,29 +51,29 @@ WebSocket connections, scheduled work, etc.).
 
 ```
 src-tauri/src/
-├── main.rs              # entry point
-├── lib.rs               # module wiring, state, command registration,
-│                        # lifecycle (normal / --run / first-run)
+├── main.rs              # entry point                               ✅
+├── lib.rs               # module wiring, state, command registration ✅
+│                        # (lifecycle dispatch for --run / first-run ❌)
 │
-├── error.rs             # AppError + AppResult                      ✅ done
-├── paths.rs             # filesystem locations                      ✅ done
-├── logging.rs           # tracing setup, debug.log writer
+├── error.rs             # AppError + AppResult                       ✅
+├── paths.rs             # filesystem locations                       ✅
+├── logging.rs           # tracing setup, debug.log writer            ❌
 │
-├── config.rs            # Config struct, settings persistence
-├── library.rs           # GameEntry + Library CRUD                  ✅ partial
+├── config.rs            # Config struct, settings persistence        ✅
+├── library.rs           # GameEntry + Library CRUD + safe_name       ✅
 │
-├── ludusavi.rs          # CLI subprocess + --api JSON DTO parsing
-├── steamgriddb.rs       # cover/hero/logo/grid search + download
-├── steam.rs             # shortcuts.vdf writer + Steam path detection
-├── armoury.rs           # Armoury Crate file integration  (Windows)
-├── launcher.rs          # launcher_stub.exe payload generator (Windows)
-├── process.rs           # game process spawn (runas / shell verb)
+├── ludusavi.rs          # search + manifest cache + restore/backup   ✅
+├── steamgriddb.rs       # cover/hero/logo/grid search + download     🚧 (cover only)
+├── steam.rs             # shortcuts.vdf writer + Steam path detection ❌
+├── armoury.rs           # Armoury Crate file integration  (Windows)  ❌
+├── launcher.rs          # launcher_stub.exe payload generator (Win)  ❌
+├── process.rs           # game process spawn                         🚧 (no runas)
 │
-├── runner.rs            # RunWorkflow: orchestrates restore → launch → backup
-├── cli.rs               # CLI arg parsing for `--run` mode
-├── tray.rs              # system tray icon, menu, click dispatch
-├── windows.rs           # window orchestration (show/hide library, open overlay)
-└── update.rs            # Tauri updater wiring + migration from update.xml
+├── runner.rs            # RunWorkflow: restore → launch → backup     ✅
+├── cli.rs               # CLI arg parsing for `--run` mode           ❌
+├── tray.rs              # system tray icon, menu, click dispatch     ❌
+├── windows.rs           # window orchestration                       🚧 (popup inline)
+└── update.rs            # Tauri updater + update.xml migration       ❌
 ```
 
 Files stay flat until they outgrow ~500 lines, then split to a folder.
@@ -72,20 +82,20 @@ Files stay flat until they outgrow ~500 lines, then split to a folder.
 
 ## Module responsibilities
 
-| Module | Owns | Talks to | Tauri commands |
-|---|---|---|---|
-| `config` | `Config`, settings JSON, ludusavi-detection | `paths` | `get_config`, `update_config` |
-| `library` | `GameEntry`, `Library`, atomic save + .bak | `paths` | `list_games`, `add_game`, `update_game`, `remove_game` |
-| `ludusavi` | subprocess invocation, JSON DTOs, fuzzy name lookup | `config` (binary path) | `search_games` |
-| `steamgriddb` | HTTP client, image downloads | `config` (API key), `paths` | `fetch_cover`, `fetch_all_art` |
-| `steam` | shortcuts.vdf format, Steam install detection | OS registry (Windows) | `add_to_steam` |
-| `armoury` | Armoury Crate registration | `paths`, `launcher` | `generate_for_armoury` |
-| `launcher` | stub extraction + payload append | `paths`, `config` | called by `armoury` only |
-| `process` | game launch with shell verb / runas | OS registry (Windows) | called by `runner` only |
-| `runner` | run workflow state machine | `config`, `library`, `ludusavi`, `process` | `launch_game` |
-| `tray` | tray icon, context menu, click dispatch, status indicator | `windows`, `runner` | none directly (driven by tray events) |
-| `windows` | show/hide library window, spawn overlay windows for `--run`, route to setup on first-run | all UI-touching modules | `show_library`, `hide_to_tray` |
-| `update` | auto-updater, legacy `update.xml` migration | `config` | `check_for_updates`, `apply_update` |
+| Module | Status | Owns | Talks to | Tauri commands |
+|---|---|---|---|---|
+| `config` | ✅ | `Config`, settings JSON, ludusavi-detection, device identity | `paths` | `get_config`, `update_config`, `detect_ludusavi` |
+| `library` | ✅ | `GameEntry`, `Library`, atomic save + .bak, catalog backfill | `paths` | `list_games`, `add_game`, `update_game`, `remove_game` |
+| `ludusavi` | ✅ | subprocess, find/restore/backup, JSON DTOs, manifest cache | `config` (binary path) | `search_games`, `search_by_exe`, `open_ludusavi_gui` |
+| `steamgriddb` | 🚧 | HTTP client, portrait cover download | `config` (API key), `paths` | `fetch_cover` |
+| `steam` | ❌ | shortcuts.vdf format, Steam install detection | OS registry (Windows) | `add_to_steam` |
+| `armoury` | ❌ | Armoury Crate registration | `paths`, `launcher` | `generate_for_armoury` |
+| `launcher` | ❌ | stub extraction + payload append | `paths`, `config` | called by `armoury` only |
+| `process` | 🚧 | game launch (runas deferred to v1.1) | — | called by `runner` only |
+| `runner` | ✅ | run workflow state machine, `RunState` | `config`, `library`, `ludusavi`, `process` | `launch_game` |
+| `tray` | ❌ | tray icon, context menu, click dispatch, status indicator | `windows`, `runner` | none directly (driven by tray events) |
+| `windows` | 🚧 | currently inline in `+page.svelte`; not yet a dedicated module | all UI-touching modules | `show_library`, `hide_to_tray` (planned) |
+| `update` | ❌ | auto-updater, legacy `update.xml` migration | `config` | `check_for_updates`, `apply_update` |
 
 ---
 
@@ -167,13 +177,16 @@ duplicate process bloat, and no "two overlays for the same game" race.
 
 ### Concurrency model for game launches
 
-- Normal launch (UI click): runs in-process, async task, emits `run.phase`
-- `--run X` invocation: this *is* the launch — the entire app exists to
-  drive that one workflow
-- Two concurrent launches from one Spool: allowed? **Decision: serialise
-  per-game, allow per-different-game.** Two simultaneous restores on the
-  same save dir would corrupt it; two different games is fine. Enforce via
-  a `HashMap<game_id, Mutex<()>>` in the runner.
+- Normal launch (UI click): runs in-process, async task, emits `run:phase`
+- `--run X` invocation (❌ not built): this *is* the launch — the entire
+  app exists to drive that one workflow
+- Two concurrent launches from one Spool: allowed?
+  - **Plan**: serialise per-game, allow per-different-game. Two
+    simultaneous restores on the same save dir would corrupt it; two
+    different games is fine. Via `HashMap<game_id, Mutex<()>>` in runner.
+  - **Today**: global single-launch lock (Mutex<Option<game_id>>) with
+    RAII guard. Simpler than the planned HashMap, drops the slot even
+    on panic. Switch to per-game when anyone actually hits the wall.
 
 ---
 
@@ -208,13 +221,22 @@ until the user explicitly quits. Windows come and go as needed.
 
 ### Game launch (in detail)
 
-The overlay window is short-lived per game launch:
+**Planned (with tray-resident model)**: a short-lived overlay window
+per game launch:
 
-1. RunWorkflow starts, emits `run.phase "restoring"`
+1. RunWorkflow starts, emits `run:phase "restoring"`
 2. Overlay opens, subscribes to events, shows progress
 3. Workflow proceeds through restore → spawn game → wait → backup
-4. On `run.phase: done` → overlay closes (or shows "completed" briefly)
+4. On `run:phase: done` → overlay closes (or shows "completed" briefly)
 5. Tray icon returns to idle state
+
+**Today** (no tray, no overlay window): the Play button in the library
+detail pane *is* the progress UI. Its label flips through "Restoring
+saves…" → "Launching…" → "Playing" → "Backing up…" → back to "Play" as
+`run:phase` events arrive. A toast announces the result (green "Saves
+backed up" or warn/bad on conflict/error). When tray + `--run` lands,
+the toast surface stays; the in-button label can collapse into the
+overlay window.
 
 ### Tray icon states
 
@@ -240,35 +262,50 @@ The overlay window is short-lived per game launch:
 ### Launch a game (the big one)
 
 ```
-launch_game(id)
-  ├─ library::find(id) → entry
-  ├─ runner::execute(entry, config):
-  │   ├─ emit run.phase "restoring"
-  │   ├─ ludusavi::restore(name) → handle CloudConflict, CloudSyncFailed
-  │   ├─ emit run.phase "launching"
-  │   ├─ process::spawn(exe, run_as_admin) → wait_for_exit
-  │   ├─ library::update_last_played(id, now)
-  │   ├─ emit run.phase "backing-up"
-  │   ├─ ludusavi::backup(name)
-  │   └─ library::update_playtime(id, session_minutes)
-  └─ emit run.phase "done"
+launch_game(id)                                                  ✅
+  ├─ acquire single-launch RunGuard (RAII; releases on drop)
+  ├─ snapshot game_name + exe_path from library
+  ├─ snapshot ludusavi_path from config
+  ├─ runner::run_workflow:
+  │   ├─ emit run:phase "restoring"
+  │   ├─ ludusavi.restore(name) → handle CloudConflict, CloudSyncFailed
+  │   ├─ emit run:phase "launching"
+  │   ├─ process::run_game(exe) → wait
+  │   ├─ emit run:phase "playing"
+  │   ├─ on exit: update last_played_at + playtime_minutes
+  │   ├─ emit library:changed
+  │   ├─ emit run:phase "backing-up"
+  │   ├─ ludusavi.backup(name)
+  │   ├─ on success: update save_backup_count, _last_backed_up_at, _size_mb
+  │   └─ emit library:changed
+  └─ emit run:phase "done"
 ```
 
-Errors at any phase → emit `run.error` + return early. Frontend overlay
-subscribes for live updates.
+Errors at any phase → emit `run:phase` with phase `"error"` + return
+the error. Frontend's library page listener shows the toast (warn for
+known conflict patterns, bad for everything else).
 
 ### Add a game
 
 ```
-add_game(name, exe_path)
-  ├─ library::add(entry) → persist
-  ├─ emit library.changed
-  ├─ return entry.id immediately
-  └─ spawn task: steamgriddb::fetch_cover(name)
-       └─ on success: library::update + emit cover.downloaded
+add_game(NewGame)                                                ✅
+  ├─ assign uuid v4 id, catalog_number, added_at
+  ├─ library::add(entry) → atomic save
+  ├─ emit library:changed
+  ├─ return entry immediately
+  └─ tauri::async_runtime::spawn:
+       steamgriddb::fetch_and_save_cover(app, entry_id)
+         ├─ skip if SteamGridDB disabled or no API key
+         ├─ resolve game id (Steam ID → autocomplete)
+         ├─ pick first 600x900 portrait
+         ├─ download to covers/<safe_name>.<ext>
+         ├─ update entry.cover_image_path + save
+         └─ emit library:changed
 ```
 
-Frontend gets the entry instantly; cover fills in async.
+Frontend gets the entry instantly; cover swaps in via library:changed.
+No separate `cover:downloaded` event in v1 — piggybacking on
+library:changed kept the UI listener surface small.
 
 ### Add to Steam
 
@@ -327,18 +364,26 @@ Windows-only code from Linux/macOS builds.
 
 ## Implementation phases
 
-| Phase | Scope | Deliverable |
-|---|---|---|
-| 1 | Foundation | `config.rs`, `logging.rs`, library CRUD + events |
-| 2 | Tray + lifecycle | `tray.rs`, `windows.rs`, `cli.rs`, single-instance plugin, close-to-tray prompt, autostart setting |
-| 3 | Ludusavi | `ludusavi.rs` with restore/backup/search + JSON DTOs |
-| 4 | Run workflow | `process.rs` + `runner.rs` + overlay window route |
-| 5 | SteamGridDB | `steamgriddb.rs` + Add Game flow integration |
-| 6 | Steam + Armoury | `steam.rs`, `armoury.rs`, `launcher.rs` (Windows) |
-| 7 | Polish | updater, migration, first-run, panic hook, tray icon state variants |
+| Phase | Scope | Deliverable | Status |
+|---|---|---|---|
+| 1 | Foundation | `config.rs`, library CRUD + events | ✅ (logging.rs deferred) |
+| 2 | Tray + lifecycle | `tray.rs`, `windows.rs`, `cli.rs`, single-instance plugin, close-to-tray prompt, autostart | ❌ |
+| 3 | Ludusavi | `ludusavi.rs` with restore/backup/search + JSON DTOs | ✅ |
+| 4 | Run workflow | `process.rs` + `runner.rs` (overlay window deferred until Phase 2 lands) | ✅ |
+| 5 | SteamGridDB | `steamgriddb.rs` + Add Game flow integration | 🚧 (cover only; hero/grid/logo with Phase 6) |
+| 6 | Steam + Armoury | `steam.rs`, `armoury.rs`, `launcher.rs` | ❌ |
+| 7 | Polish | updater, migration, first-run, panic hook, tray icon state variants | ❌ |
+
+Phase 2 was originally next-after-foundation but got reordered: we
+built ludusavi → run workflow → SteamGridDB first because they deliver
+the visible core feature (Play a game). Phase 2 is now the natural
+next big chunk — it changes the lifecycle, so doing it before adding
+more features avoids re-doing wiring.
 
 Each phase ends with: backend modules + Tauri commands + at least one
-integration test using a real fixture.
+integration test using a real fixture (test infrastructure itself is
+still aspirational — we have unit tests inline but no `tests/`
+fixtures yet).
 
 ---
 
@@ -438,3 +483,31 @@ The module skeleton accommodates all of these without restructuring.
 7. **Autostart default** — opt-in (default off, surfaced in settings)
    vs opt-out (default on, with prompt on first run). Lean opt-in for
    respect-the-user reasons; users who want it will enable it.
+
+---
+
+## Tauri 2 gotchas worth knowing
+
+Discovered during the build, codified here so future contributors don't
+have to re-debug them. The full list with rationale lives in
+[`REWRITE.md`](./REWRITE.md); these are the ones that affect ongoing
+design decisions:
+
+- **Event names must be `[A-Za-z0-9_\-/:]+`** — periods are rejected at
+  runtime, only surfacing on `listen()` registration. Convention: use
+  colon namespacing (`library:changed`, `run:phase`).
+- **`AppHandle::emit` broadcasts to all webviews** — no targeted emit
+  needed for cross-window refresh. The Add Game popup updating library
+  state triggers a refresh in the library window for free.
+- **Holding `std::sync::Mutex` across `.await` is unsound** — every
+  async command snapshots from state, drops the guard, then awaits.
+  Hasn't been a problem in practice.
+- **Long-running commands are fine** — `launch_game` awaits for the
+  whole game session. The IPC channel stays open for hours without
+  issue.
+- **Bun walks up looking for a workspace root** — add `"workspaces": []`
+  to `tauri/package.json` to stop it. Otherwise it can hoist deps to
+  a phantom package.json in unexpected parent dirs.
+- **Svelte 5 narrowing doesn't propagate into snippets** — `config!`
+  non-null assertion at use sites inside snippet closures, even after
+  a guard in the parent scope.
