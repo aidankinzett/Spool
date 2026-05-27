@@ -288,14 +288,15 @@
           {#each filteredGames as g (g.id)}
             {@const selected = selectedId === g.id}
             {@const cover = assetUrl(g.cover_image_path)}
+            {@const rowAccent = g.accent_color ?? '#d7c9a0'}
             <button
               type="button"
               onclick={() => (selectedId = g.id)}
               class="flex w-full items-center gap-2.5 border-l-2 px-3 py-2 text-left transition-colors"
               style:background={selected
-                ? 'rgb(215 201 160 / 0.10)'
+                ? `color-mix(in srgb, ${rowAccent} 12%, transparent)`
                 : 'transparent'}
-              style:border-left-color={selected ? 'var(--color-spool)' : 'transparent'}
+              style:border-left-color={selected ? rowAccent : 'transparent'}
             >
               <div
                 class="h-11 w-8 shrink-0 overflow-hidden rounded-sm border border-line-1 bg-bg-2"

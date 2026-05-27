@@ -80,9 +80,17 @@
     }
   }
 
-  // Brand accent for now. Future: per-game value derived from the cover.
-  const accent = 'var(--color-spool)';
-  const accentHex = '#d7c9a0';
+  /**
+   * Per-game accent colour. Extracted from the cover image when it
+   * downloaded (see steamgriddb::extract_vibrant_color); falls back to
+   * the brand `spool` colour when None — keeps things consistent for
+   * games without cover art and before extraction has run.
+   */
+  const BRAND_SPOOL = '#d7c9a0';
+  const accentHex = $derived(game.accent_color ?? BRAND_SPOOL);
+  // CSS-variable form for cases that need a token-style reference; same
+  // value either way, just different consumers.
+  const accent = $derived(accentHex);
 
   const coverUrl = $derived(assetUrl(game.cover_image_path));
 
@@ -219,8 +227,10 @@
           </button>
 
           <div class="flex flex-col gap-px">
-            <MonoLabel size={9.5} class="text-[color:var(--color-spool)]">
-              LAST · {game.last_played_at ? relDate(game.last_played_at).toUpperCase() : 'NEVER'}
+            <MonoLabel size={9.5}>
+              <span style:color={accentHex}>
+                LAST · {game.last_played_at ? relDate(game.last_played_at).toUpperCase() : 'NEVER'}
+              </span>
             </MonoLabel>
             <span
               class="font-mono text-[11.5px] tracking-[0.04em] text-ink-2"

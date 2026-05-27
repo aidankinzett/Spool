@@ -76,6 +76,9 @@ export type GameEntry = {
   has_cloud_save: boolean;
   manifest_install_dir: string | null;
   save_paths: string[];
+
+  /** Dominant cover-art colour as `#rrggbb`, or null to use the brand default. */
+  accent_color: string | null;
 };
 
 /**

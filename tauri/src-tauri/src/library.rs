@@ -79,6 +79,10 @@ pub struct GameEntry {
     /// Save path templates from the manifest, in display form (e.g.
     /// `%APPDATA%/Hades`). First entry is the canonical / primary location.
     pub save_paths: Vec<String>,
+    /// Dominant cover-art colour as `#rrggbb`, extracted when the cover
+    /// downloads. Drives hero / button / accent tinting in the detail
+    /// view; falls back to the brand `spool` colour when None.
+    pub accent_color: Option<String>,
 }
 
 impl Default for GameEntry {
@@ -117,6 +121,7 @@ impl Default for GameEntry {
             has_cloud_save: false,
             manifest_install_dir: None,
             save_paths: Vec::new(),
+            accent_color: None,
         }
     }
 }

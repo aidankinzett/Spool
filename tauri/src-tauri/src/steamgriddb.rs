@@ -136,11 +136,18 @@ pub async fn fetch_and_save_cover(
     std::fs::write(&path, &bytes)?;
     let path_str = path.to_string_lossy().to_string();
 
-    // 6. Update library entry + persist.
+    // 6. Extract a vibrant accent colour from the cover. Best-effort —
+    //    failure here just leaves the brand `spool` default on the UI.
+    let accent = extract_vibrant_color(&path);
+
+    // 7. Update library entry + persist.
     {
         let mut lib = library.lock().map_err(|_| AppError::LockPoisoned)?;
         if let Some(entry) = lib.entries.iter_mut().find(|e| e.id == game_entry_id) {
             entry.cover_image_path = Some(path_str.clone());
+            if let Some(a) = accent.clone() {
+                entry.accent_color = Some(a);
+            }
         }
         lib.save()?;
     }
@@ -151,6 +158,88 @@ pub async fn fetch_and_save_cover(
     }
 
     Ok(Some(path_str))
+}
+
+// ── Accent colour extraction ────────────────────────────────────────────────
+
+/// Picks a "design-intent-y" accent colour from a cover image. The most
+/// common colour in a typical cover is the background black; we want the
+/// vibrant fill (the oxide-amber on Nightreign, the arcane purple on
+/// Hades II). Algorithm:
+///
+///   1. Downsample to 32×32 for speed
+///   2. Bucket pixels into ~32k colour bins (5 bits per channel)
+///   3. Score each bin by saturation × proximity-to-mid-lightness ×
+///      sqrt(frequency) — favours saturated mid-tones common enough to be
+///      meaningful but not just background fill
+///   4. Return the top bin as `#rrggbb`, or None if nothing passes
+///      minimum saturation / lightness filters
+///
+/// Pure Rust, no extra crates beyond `image`.
+pub fn extract_vibrant_color(path: &std::path::Path) -> Option<String> {
+    use std::collections::HashMap;
+
+    let img = image::open(path).ok()?.to_rgb8();
+    let resized = image::imageops::resize(
+        &img,
+        32,
+        32,
+        image::imageops::FilterType::Lanczos3,
+    );
+
+    let mut buckets: HashMap<(u8, u8, u8), u32> = HashMap::new();
+    for px in resized.pixels() {
+        // 5 bits per channel ⇒ 32×32×32 = 32k buckets
+        let key = (px[0] & 0xF8, px[1] & 0xF8, px[2] & 0xF8);
+        *buckets.entry(key).or_insert(0) += 1;
+    }
+
+    let best = buckets
+        .iter()
+        .filter_map(|(&(r, g, b), &count)| {
+            if count < 3 {
+                return None;
+            }
+            let (_, s, l) = rgb_to_hsl(r, g, b);
+            if s < 0.25 || l < 0.18 || l > 0.85 {
+                return None;
+            }
+            // Peak score at lightness ~0.55 (slightly above middle —
+            // covers tend to be moody, accent should pop a bit brighter).
+            let lightness_weight = (1.0 - (l - 0.55).abs() * 2.0).max(0.1);
+            let score = s * lightness_weight * (count as f32).sqrt();
+            Some((r, g, b, score))
+        })
+        .max_by(|a, b| a.3.partial_cmp(&b.3).unwrap_or(std::cmp::Ordering::Equal));
+
+    best.map(|(r, g, b, _)| format!("#{r:02x}{g:02x}{b:02x}"))
+}
+
+/// Standard RGB → HSL conversion. Returns (hue 0–360, sat 0–1, lum 0–1).
+fn rgb_to_hsl(r: u8, g: u8, b: u8) -> (f32, f32, f32) {
+    let r = r as f32 / 255.0;
+    let g = g as f32 / 255.0;
+    let b = b as f32 / 255.0;
+    let max = r.max(g).max(b);
+    let min = r.min(g).min(b);
+    let l = (max + min) / 2.0;
+    let d = max - min;
+    if d < 1e-6 {
+        return (0.0, 0.0, l);
+    }
+    let s = if l > 0.5 {
+        d / (2.0 - max - min)
+    } else {
+        d / (max + min)
+    };
+    let h = if max == r {
+        (g - b) / d + if g < b { 6.0 } else { 0.0 }
+    } else if max == g {
+        (b - r) / d + 2.0
+    } else {
+        (r - g) / d + 4.0
+    } * 60.0;
+    (h, s, l)
 }
 
 // ── Multi-art bundle for Add-to-Steam ───────────────────────────────────────
