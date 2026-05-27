@@ -28,7 +28,7 @@
   } from '@lucide/svelte';
   import { openPath } from '@tauri-apps/plugin-opener';
   import { api, assetUrl } from '$lib/api';
-  import type { GameEntry } from '$lib/types';
+  import type { GameEntry, RunPhase } from '$lib/types';
   import {
     absDate,
     absDateTime,
@@ -43,7 +43,41 @@
   import Btn from './Btn.svelte';
   import DetailCard from './DetailCard.svelte';
 
-  let { game }: { game: GameEntry } = $props();
+  let {
+    game,
+    runPhase = null,
+  }: {
+    game: GameEntry;
+    /** Current Run-workflow phase for *this* game (null if idle). */
+    runPhase?: RunPhase | null;
+  } = $props();
+
+  const isRunning = $derived(runPhase != null);
+  const playLabel = $derived.by(() => {
+    switch (runPhase) {
+      case 'restoring':
+        return 'Restoring saves…';
+      case 'launching':
+        return 'Launching…';
+      case 'playing':
+        return 'Playing';
+      case 'backing-up':
+        return 'Backing up…';
+      default:
+        return 'Play';
+    }
+  });
+
+  async function launch() {
+    if (!game.exe_path) return;
+    try {
+      await api.launchGame(game.id);
+    } catch (e) {
+      // Error is also broadcast via run:phase → 'error', but capturing here
+      // so the in-button label can flip back to "Play" immediately.
+      console.error('[runner] launch failed:', e);
+    }
+  }
 
   // Brand accent for now. Future: per-game value derived from the cover.
   const accent = 'var(--color-spool)';
@@ -137,15 +171,23 @@
         <div class="mt-3.5 flex items-center gap-3.5">
           <button
             type="button"
-            class="font-sans inline-flex h-[42px] cursor-not-allowed items-center gap-2.5 rounded-md border-none px-5 text-[14px] font-semibold opacity-70"
+            onclick={launch}
+            disabled={isRunning || !game.exe_path}
+            class="font-sans inline-flex h-[42px] items-center gap-2.5 rounded-md border-none px-5 text-[14px] font-semibold transition-opacity"
+            class:cursor-pointer={!isRunning && !!game.exe_path}
+            class:cursor-not-allowed={isRunning || !game.exe_path}
+            class:opacity-70={isRunning || !game.exe_path}
             style:background={accentHex}
             style:color="#0b0c0e"
             style:box-shadow="0 6px 20px color-mix(in srgb, {accentHex} 26%, transparent)"
-            disabled
-            title="Launching games is coming in the next slice"
+            title={!game.exe_path
+              ? 'No executable set'
+              : isRunning
+                ? playLabel
+                : 'Restore saves, launch game, back up on exit'}
           >
             <Play size={16} fill="currentColor" />
-            Play
+            {playLabel}
           </button>
 
           <div class="flex flex-col gap-px">

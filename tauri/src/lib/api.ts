@@ -22,9 +22,13 @@ export const api = {
   searchGames: (query: string): Promise<SearchCandidate[]> => invoke('search_games', { query }),
   searchByExe: (exePath: string): Promise<SearchCandidate[]> =>
     invoke('search_by_exe', { exePath }),
+  openLudusaviGui: (): Promise<void> => invoke('open_ludusavi_gui'),
 
   // SteamGridDB
   fetchCover: (gameId: string): Promise<string | null> => invoke('fetch_cover', { gameId }),
+
+  // Run workflow
+  launchGame: (gameId: string): Promise<void> => invoke('launch_game', { gameId }),
 } as const;
 
 /**

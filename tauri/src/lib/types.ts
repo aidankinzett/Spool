@@ -98,6 +98,32 @@ export type SearchCandidate = {
 };
 
 /**
+ * Phases emitted by the Run workflow as `run:phase` events. The frontend
+ * uses these to update the Play button label / lock the UI for the
+ * currently-running game.
+ *
+ *   restoring  → ludusavi restore is running
+ *   launching  → game process is being spawned
+ *   playing    → game is running; await its exit
+ *   backing-up → ludusavi backup is running after the session
+ *   done       → workflow completed successfully
+ *   error      → workflow aborted; see `message`
+ */
+export type RunPhase =
+  | 'restoring'
+  | 'launching'
+  | 'playing'
+  | 'backing-up'
+  | 'done'
+  | 'error';
+
+export type RunPhaseEvent = {
+  game_id: string;
+  phase: RunPhase;
+  message: string | null;
+};
+
+/**
  * Payload for `add_game`. id / catalog_number / timestamps are assigned by
  * the backend. Empty / falsy manifest fields are the signal for the "add
  * without save tracking" path.

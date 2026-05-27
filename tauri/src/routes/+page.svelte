@@ -22,7 +22,8 @@
   import { listen } from '@tauri-apps/api/event';
   import { api, assetUrl } from '$lib/api';
   import { fmtCatalog, relDate } from '$lib/format';
-  import type { GameEntry } from '$lib/types';
+  import { toasts } from '$lib/toasts.svelte';
+  import type { GameEntry, RunPhase, RunPhaseEvent } from '$lib/types';
   import WindowChrome from '$lib/components/WindowChrome.svelte';
   import MonoLabel from '$lib/components/MonoLabel.svelte';
   import GameDetail from '$lib/components/GameDetail.svelte';
@@ -34,6 +35,11 @@
   let selectedId = $state<string | null>(null);
   let searchQuery = $state('');
   let filter = $state<'all' | 'recent' | 'played'>('all');
+
+  // Currently-running game. Updated by `run:phase` events from the backend.
+  // GameDetail uses these to drive the Play button label.
+  let runningId = $state<string | null>(null);
+  let runningPhase = $state<RunPhase | null>(null);
 
   // ── Derived ────────────────────────────────────────────────────────────
   const filteredGames = $derived.by(() => {
@@ -80,14 +86,80 @@
   }
 
   let unlistenLibraryChanged: (() => void) | undefined;
+  let unlistenRunPhase: (() => void) | undefined;
 
   onMount(() => {
     refresh();
     listen<string>('library:changed', () => refresh())
       .then((fn) => (unlistenLibraryChanged = fn))
       .catch((e) => console.error('[library] listener failed:', e));
-    return () => unlistenLibraryChanged?.();
+    listen<RunPhaseEvent>('run:phase', (event) => {
+      const { game_id, phase, message } = event.payload;
+      if (phase === 'done' || phase === 'error') {
+        runningId = null;
+        runningPhase = null;
+      } else {
+        runningId = game_id;
+        runningPhase = phase;
+      }
+      if (phase === 'error') {
+        showRunErrorToast(game_id, message ?? 'Game launch failed');
+      } else if (phase === 'done') {
+        const game = games.find((g) => g.id === game_id);
+        if (game) {
+          toasts.show({
+            kind: 'ok',
+            label: 'LUDUSAVI',
+            title: 'Saves backed up',
+            sub: `${game.game_name} · session complete`,
+            catalog: fmtCatalog(game.catalog_number),
+          });
+        }
+      }
+    })
+      .then((fn) => (unlistenRunPhase = fn))
+      .catch((e) => console.error('[library] run-phase listener failed:', e));
+    return () => {
+      unlistenLibraryChanged?.();
+      unlistenRunPhase?.();
+    };
   });
+
+  /**
+   * Shows a toast for a Run workflow error. Detects known patterns
+   * (cloud-conflict) and attaches a smarter CTA. Falls back to a plain
+   * error toast for everything else.
+   */
+  function showRunErrorToast(gameId: string, message: string) {
+    const game = games.find((g) => g.id === gameId);
+    const catalog = game ? fmtCatalog(game.catalog_number) : undefined;
+    const subjectName = game?.game_name ?? 'this game';
+
+    if (/cloud sync conflict/i.test(message)) {
+      toasts.show({
+        kind: 'warn',
+        label: 'LUDUSAVI · CONFLICT',
+        catalog,
+        title: 'Cloud sync conflict',
+        sub: `${subjectName} has different saves locally and in the cloud. Open Ludusavi to pick which to keep.`,
+        cta: {
+          label: 'Open Ludusavi',
+          onClick: () => {
+            api.openLudusaviGui().catch((e) => console.error('[ludusavi] open failed:', e));
+          },
+        },
+      });
+      return;
+    }
+
+    toasts.show({
+      kind: 'bad',
+      label: 'LAUNCH · FAILED',
+      catalog,
+      title: 'Couldn’t launch game',
+      sub: message,
+    });
+  }
 
   // ── Add Game popup ─────────────────────────────────────────────────────
   function openAddGame() {
@@ -270,7 +342,10 @@
 
     <!-- ── Detail pane ──────────────────────────────────────────────── -->
     {#if selectedGame}
-      <GameDetail game={selectedGame} />
+      <GameDetail
+        game={selectedGame}
+        runPhase={runningId === selectedGame.id ? runningPhase : null}
+      />
     {:else if loaded && games.length === 0}
       <div class="flex flex-col items-center justify-center gap-3 text-center">
         <MonoLabel>Empty library</MonoLabel>

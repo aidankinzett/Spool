@@ -15,11 +15,14 @@ mod error;
 mod library;
 mod ludusavi;
 mod paths;
+mod process;
+mod runner;
 mod steamgriddb;
 
 use config::{Config, SharedConfig};
 use library::{Library, SharedLibrary};
 use ludusavi::LudusaviClient;
+use runner::RunState;
 use std::sync::Mutex;
 use steamgriddb::SteamGridDbClient;
 
@@ -44,6 +47,7 @@ pub fn run() {
         .manage::<SharedConfig>(Mutex::new(config))
         .manage::<LudusaviClient>(LudusaviClient::new())
         .manage::<SteamGridDbClient>(SteamGridDbClient::new())
+        .manage::<RunState>(RunState::default())
         .invoke_handler(tauri::generate_handler![
             // library
             library::list_games,
@@ -57,8 +61,11 @@ pub fn run() {
             // ludusavi
             ludusavi::search_games,
             ludusavi::search_by_exe,
+            ludusavi::open_ludusavi_gui,
             // steamgriddb
             steamgriddb::fetch_cover,
+            // runner
+            runner::launch_game,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

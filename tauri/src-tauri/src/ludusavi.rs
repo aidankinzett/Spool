@@ -18,6 +18,40 @@ use tauri::State;
 use tokio::process::Command;
 use tokio::sync::RwLock;
 
+// ── DTOs: `ludusavi {restore,backup} --api` output ──────────────────────────
+
+/// Parsed `--api` output from `ludusavi restore` / `ludusavi backup`.
+/// All fields default to empty so a partial / unexpected response still
+/// deserializes — only the few signals the workflow cares about matter.
+#[derive(Debug, Deserialize, Default)]
+#[serde(default)]
+pub struct ApiOutput {
+    pub errors: Option<ApiErrors>,
+    pub overall: Option<ApiOverall>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(default)]
+pub struct ApiErrors {
+    #[serde(rename = "unknownGames")]
+    pub unknown_games: Vec<String>,
+    #[serde(rename = "cloudConflict")]
+    pub cloud_conflict: Option<serde_json::Value>,
+    #[serde(rename = "cloudSyncFailed")]
+    pub cloud_sync_failed: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(default)]
+pub struct ApiOverall {
+    #[serde(rename = "totalGames")]
+    pub total_games: i32,
+    #[serde(rename = "totalBytes")]
+    pub total_bytes: u64,
+    #[serde(rename = "processedGames")]
+    pub processed_games: i32,
+}
+
 // ── DTOs: `ludusavi find --api` output ──────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
@@ -148,6 +182,28 @@ impl LudusaviClient {
         Ok(candidates)
     }
 
+    /// Runs `ludusavi restore --api --cloud-sync --force <name>` and parses
+    /// the JSON output. Empty stdout (which ludusavi sometimes produces for
+    /// unknown-game errors) deserialises to an empty `ApiOutput` rather
+    /// than failing.
+    pub async fn restore(
+        &self,
+        ludusavi_exe: &Path,
+        game_name: &str,
+    ) -> AppResult<ApiOutput> {
+        run_api(ludusavi_exe, &["restore", "--api", "--cloud-sync", "--force", game_name]).await
+    }
+
+    /// Runs `ludusavi backup --api --cloud-sync --force <name>` and parses
+    /// the JSON output. Same forgiving behaviour as `restore`.
+    pub async fn backup(
+        &self,
+        ludusavi_exe: &Path,
+        game_name: &str,
+    ) -> AppResult<ApiOutput> {
+        run_api(ludusavi_exe, &["backup", "--api", "--cloud-sync", "--force", game_name]).await
+    }
+
     async fn manifest_or_load(
         &self,
         ludusavi_exe: &Path,
@@ -191,6 +247,24 @@ async fn run_find(ludusavi_exe: &Path, query: &str) -> AppResult<FindOutput> {
     }
     serde_json::from_str(&stdout)
         .map_err(|e| AppError::Other(format!("failed to parse ludusavi find output: {e}")))
+}
+
+/// Generic runner for ludusavi subcommands that emit the `--api` envelope
+/// shared by `restore` and `backup`. Treats empty stdout as a successful
+/// no-op (ludusavi sometimes exits non-zero with no output when the game
+/// isn't in its manifest, which we surface as "no saves to handle").
+async fn run_api(ludusavi_exe: &Path, args: &[&str]) -> AppResult<ApiOutput> {
+    let output = Command::new(ludusavi_exe)
+        .args(args)
+        .output()
+        .await
+        .map_err(|e| AppError::Other(format!("failed to spawn ludusavi: {e}")))?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    if stdout.trim().is_empty() {
+        return Ok(ApiOutput::default());
+    }
+    serde_json::from_str(&stdout)
+        .map_err(|e| AppError::Other(format!("failed to parse ludusavi output: {e}")))
 }
 
 async fn load_manifest(ludusavi_exe: &Path) -> AppResult<HashMap<String, ManifestEntry>> {
@@ -315,6 +389,19 @@ pub async fn search_games(
 ) -> AppResult<Vec<SearchCandidate>> {
     let ludusavi_exe = ludusavi_path_or_err(&config)?;
     ludusavi.search(&ludusavi_exe, query.trim()).await
+}
+
+/// Opens the configured ludusavi executable in GUI mode (`ludusavi gui`).
+/// Used by toast CTAs that ask the user to resolve a state in ludusavi
+/// (cloud-sync conflict, missing manifest entry, etc.).
+#[tauri::command]
+pub async fn open_ludusavi_gui(config: State<'_, SharedConfig>) -> AppResult<()> {
+    let ludusavi_exe = ludusavi_path_or_err(&config)?;
+    Command::new(&ludusavi_exe)
+        .arg("gui")
+        .spawn()
+        .map_err(|e| AppError::Other(format!("failed to spawn ludusavi gui: {e}")))?;
+    Ok(())
 }
 
 /// Identifies a game from its exe path by inferring a search query from
