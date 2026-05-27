@@ -3,6 +3,8 @@
   "version": "0.1.0",
   "description": "",
   "type": "module",
+  "// workspaces": "Empty array — declares this package.json as a workspace root so bun stops walking up the directory tree when resolving install location. Without this, bun was creating a phantom workspace at .claude/worktrees/ because it saw sibling package.json files (tauri/, server/) and inferred a multi-project workspace.",
+  "workspaces": [],
   "scripts": {
     "dev": "vite dev",
     "build": "vite build",
