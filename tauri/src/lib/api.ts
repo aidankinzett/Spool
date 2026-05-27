@@ -4,10 +4,16 @@
 // every component.
 
 import { invoke, convertFileSrc } from '@tauri-apps/api/core';
-import type { GameEntry } from './types';
+import type { ConfigData, GameEntry } from './types';
 
 export const api = {
+  // Library
   listGames: (): Promise<GameEntry[]> => invoke('list_games'),
+
+  // Config
+  getConfig: (): Promise<ConfigData> => invoke('get_config'),
+  updateConfig: (data: ConfigData): Promise<ConfigData> => invoke('update_config', { data }),
+  detectLudusavi: (): Promise<string> => invoke('detect_ludusavi'),
 } as const;
 
 /**

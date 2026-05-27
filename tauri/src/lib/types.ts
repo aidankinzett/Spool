@@ -1,3 +1,31 @@
+// Mirror of the Rust `ConfigData` struct in src-tauri/src/config.rs.
+// Keep field names in lockstep — serde uses these exact snake_case names.
+export type ConfigData = {
+  ludusavi_path: string;
+  steamgriddb_enabled: boolean;
+  steamgriddb_api_key: string;
+  spool_exe: string;
+  theme: string;
+
+  device_id: string;
+  device_name: string;
+
+  sync_server_enabled: boolean;
+  sync_server_url: string;
+  sync_server_api_key: string;
+
+  lan_share_enabled: boolean;
+  lan_share_port: number;
+  lan_install_dir: string;
+
+  torbox_enabled: boolean;
+  torbox_api_key: string;
+  download_dir: string;
+  download_sources: string[];
+
+  touch_mode: string;
+};
+
 // Mirror of the Rust `GameEntry` struct in src-tauri/src/library.rs.
 // Keep field names in lockstep — `serde` on the Rust side serializes with
 // these exact snake_case names.

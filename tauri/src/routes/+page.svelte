@@ -1,11 +1,11 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { Plus, Search, Settings } from '@lucide/svelte';
   import { api } from '$lib/api';
   import GameCard from '$lib/GameCard.svelte';
   import WindowChrome from '$lib/components/WindowChrome.svelte';
   import MonoLabel from '$lib/components/MonoLabel.svelte';
   import Btn from '$lib/components/Btn.svelte';
-  import Icon from '$lib/components/Icon.svelte';
   import type { GameEntry } from '$lib/types';
 
   let games = $state<GameEntry[]>([]);
@@ -39,11 +39,18 @@
       </div>
       <div class="flex items-center gap-2">
         <Btn variant="ghost">
-          {#snippet icon()}<Icon name="search" />{/snippet}
+          {#snippet icon()}<Search size={14} />{/snippet}
           Search
         </Btn>
+        <a
+          href="/settings"
+          aria-label="Settings"
+          class="inline-flex h-7 w-7 items-center justify-center rounded-sm border border-line-1 text-ink-1 transition-colors hover:bg-white/5 hover:text-ink-0"
+        >
+          <Settings size={14} />
+        </a>
         <Btn variant="primary">
-          {#snippet icon()}<Icon name="plus" />{/snippet}
+          {#snippet icon()}<Plus size={14} />{/snippet}
           Add game
         </Btn>
       </div>
@@ -65,7 +72,7 @@
             No games yet. Add an executable to start your collection.
           </p>
           <Btn variant="primary">
-            {#snippet icon()}<Icon name="plus" />{/snippet}
+            {#snippet icon()}<Plus size={14} />{/snippet}
             Add your first game
           </Btn>
         </div>
