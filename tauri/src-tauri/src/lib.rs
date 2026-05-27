@@ -33,6 +33,7 @@ mod ludusavi;
 mod paths;
 mod process;
 mod runner;
+mod steam;
 mod steamgriddb;
 
 use cli::CliMode;
@@ -121,6 +122,8 @@ pub fn run() {
             ludusavi::open_ludusavi_gui,
             // steamgriddb
             steamgriddb::fetch_cover,
+            // steam shortcut
+            steam::add_to_steam,
             // runner
             runner::launch_game,
         ])

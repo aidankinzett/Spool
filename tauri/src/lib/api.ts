@@ -4,7 +4,13 @@
 // every component.
 
 import { invoke, convertFileSrc } from '@tauri-apps/api/core';
-import type { ConfigData, GameEntry, NewGame, SearchCandidate } from './types';
+import type {
+  AddToSteamResult,
+  ConfigData,
+  GameEntry,
+  NewGame,
+  SearchCandidate,
+} from './types';
 
 export const api = {
   // Library
@@ -26,6 +32,9 @@ export const api = {
 
   // SteamGridDB
   fetchCover: (gameId: string): Promise<string | null> => invoke('fetch_cover', { gameId }),
+
+  // Steam shortcut
+  addToSteam: (gameId: string): Promise<AddToSteamResult> => invoke('add_to_steam', { gameId }),
 
   // Run workflow
   launchGame: (gameId: string): Promise<void> => invoke('launch_game', { gameId }),

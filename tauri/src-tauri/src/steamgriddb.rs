@@ -153,6 +153,120 @@ pub async fn fetch_and_save_cover(
     Ok(Some(path_str))
 }
 
+// ── Multi-art bundle for Add-to-Steam ───────────────────────────────────────
+
+/// Fetches hero / wide-grid / logo from SteamGridDB and writes them
+/// straight into Steam's grid dir with the filenames Steam expects:
+///
+///   `<app_id>_hero.<ext>`   — hero banner
+///   `<app_id>.<ext>`        — wide grid (920×430)
+///   `<app_id>_logo.<ext>`   — logo (transparent PNG)
+///
+/// Portrait cover is handled separately by `fetch_and_save_cover` (called
+/// at add-time and reused by `place_grid_art` in `steam.rs`).
+///
+/// Best-effort throughout — silently skips any kind that doesn't resolve.
+/// Returns the list of kinds that landed, suitable for surfacing in a
+/// success toast.
+pub async fn fetch_steam_grid_bundle(
+    app: &AppHandle,
+    steam_id: Option<u64>,
+    game_name: &str,
+    grid_dir: &std::path::Path,
+    app_id: u32,
+) -> AppResult<Vec<String>> {
+    let config = app.state::<SharedConfig>();
+    let client = app.state::<SteamGridDbClient>();
+
+    let (api_key, enabled) = {
+        let cfg = config.lock().map_err(|_| AppError::LockPoisoned)?;
+        (cfg.data.steamgriddb_api_key.clone(), cfg.data.steamgriddb_enabled)
+    };
+    if !enabled || api_key.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let Some(sgdb_id) = resolve_game_id(&client.http, &api_key, steam_id, game_name).await? else {
+        return Ok(Vec::new());
+    };
+
+    std::fs::create_dir_all(grid_dir)?;
+    let mut placed = Vec::new();
+
+    let kinds: [(&str, &str); 3] = [
+        ("hero", "_hero"),
+        ("grid", ""),
+        ("logo", "_logo"),
+    ];
+    for (kind, suffix) in kinds {
+        if let Ok(Some(asset)) = fetch_first_art(&client.http, &api_key, sgdb_id, kind).await {
+            let ext = mime_to_ext(&asset.mime).unwrap_or_else(|| url_ext(&asset.url).unwrap_or("png"));
+            let dest = grid_dir.join(format!("{app_id}{suffix}.{ext}"));
+            if let Ok(bytes) = download_bytes(&client.http, &asset.url).await {
+                if std::fs::write(&dest, &bytes).is_ok() {
+                    placed.push(kind.to_string());
+                }
+            }
+        }
+    }
+
+    Ok(placed)
+}
+
+/// Fetches the first asset of `kind` (hero / grid / logo) for a game.
+/// `kind` is one of "heroes", "grids", "logos" — actually we accept the
+/// short forms "hero" / "grid" / "logo" and map.
+async fn fetch_first_art(
+    http: &reqwest::Client,
+    api_key: &str,
+    sgdb_id: u64,
+    kind: &str,
+) -> AppResult<Option<Asset>> {
+    let endpoint = match kind {
+        "hero" => format!("{BASE}/heroes/game/{sgdb_id}"),
+        // Wide grid — explicit dimensions so we don't grab the portrait.
+        "grid" => format!("{BASE}/grids/game/{sgdb_id}?dimensions=920x430"),
+        "logo" => format!("{BASE}/logos/game/{sgdb_id}"),
+        _ => return Ok(None),
+    };
+    let resp = http
+        .get(&endpoint)
+        .bearer_auth(api_key)
+        .send()
+        .await
+        .map_err(|e| AppError::Other(format!("sgdb {kind} fetch: {e}")))?;
+    if !resp.status().is_success() {
+        return Ok(None);
+    }
+    let body: SgdbResponse<Vec<Asset>> = resp
+        .json()
+        .await
+        .map_err(|e| AppError::Other(format!("sgdb {kind} parse: {e}")))?;
+    Ok(body.data.and_then(|v| v.into_iter().next()))
+}
+
+async fn download_bytes(http: &reqwest::Client, url: &str) -> AppResult<Vec<u8>> {
+    let resp = http
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| AppError::Other(format!("download failed: {e}")))?;
+    let bytes = resp
+        .bytes()
+        .await
+        .map_err(|e| AppError::Other(format!("download body: {e}")))?;
+    Ok(bytes.to_vec())
+}
+
+/// Common shape for hero / grid / logo entries — they all return at least
+/// `url` and `mime`, sometimes more fields we don't need.
+#[derive(Debug, Deserialize)]
+struct Asset {
+    url: String,
+    #[serde(default)]
+    mime: String,
+}
+
 // ── Tauri commands ──────────────────────────────────────────────────────────
 
 /// Manual cover refresh for an existing game (re-runs lookup + download).

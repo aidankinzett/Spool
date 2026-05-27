@@ -97,6 +97,15 @@ export type SearchCandidate = {
   manifest_install_dir: string | null;
 };
 
+/** Result returned by `add_to_steam`. Mirrors `AddToSteamResult` in steam.rs. */
+export type AddToSteamResult = {
+  steam_user_id: string;
+  app_id: number;
+  shortcuts_path: string;
+  portrait_placed: boolean;
+  extras_placed: string[];
+};
+
 /**
  * Phases emitted by the Run workflow as `run:phase` events. The frontend
  * uses these to update the Play button label / lock the UI for the

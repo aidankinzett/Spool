@@ -28,6 +28,7 @@
   } from '@lucide/svelte';
   import { openPath } from '@tauri-apps/plugin-opener';
   import { api, assetUrl } from '$lib/api';
+  import { toasts } from '$lib/toasts.svelte';
   import type { GameEntry, RunPhase } from '$lib/types';
   import {
     absDate,
@@ -112,6 +113,33 @@
     if (!confirm(`Remove "${game.game_name}" from your library?`)) return;
     await api.removeGame(game.id);
     // library:changed event will cause the parent page to clear selection.
+  }
+
+  let addingToSteam = $state(false);
+  async function addToSteam() {
+    addingToSteam = true;
+    try {
+      const result = await api.addToSteam(game.id);
+      const extras = result.extras_placed.length
+        ? ` · ${result.extras_placed.join(', ')} art placed`
+        : '';
+      toasts.show({
+        kind: 'ok',
+        label: 'STEAM',
+        title: 'Added to Steam',
+        sub: `Restart Steam to see "${game.game_name}" in your library${extras}.`,
+        catalog: fmtCatalog(game.catalog_number),
+      });
+    } catch (e) {
+      toasts.show({
+        kind: 'bad',
+        label: 'STEAM · FAILED',
+        title: "Couldn't add to Steam",
+        sub: String(e),
+      });
+    } finally {
+      addingToSteam = false;
+    }
   }
 </script>
 
@@ -269,9 +297,13 @@
       {#snippet icon()}<Sparkles size={14} />{/snippet}
       Armoury Crate
     </Btn>
-    <Btn variant="ghost" disabled>
+    <Btn
+      variant="ghost"
+      onclick={addToSteam}
+      disabled={!game.exe_path || addingToSteam}
+    >
       {#snippet icon()}<Play size={14} />{/snippet}
-      Add to Steam
+      {addingToSteam ? 'Adding…' : 'Add to Steam'}
     </Btn>
     <Btn variant="ghost" disabled>
       {#snippet icon()}<Share2 size={14} />{/snippet}
