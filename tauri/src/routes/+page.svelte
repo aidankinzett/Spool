@@ -1,33 +1,46 @@
 <script lang="ts">
-  import { invoke } from "@tauri-apps/api/core";
-  import { onMount } from "svelte";
-
-  type GameEntry = {
-    id: string;
-    game_name: string;
-    exe_path: string;
-    cover_image_path: string | null;
-  };
+  import { onMount } from 'svelte';
+  import { api } from '$lib/api';
+  import GameCard from '$lib/GameCard.svelte';
+  import type { GameEntry } from '$lib/types';
 
   let games = $state<GameEntry[]>([]);
   let error = $state<string | null>(null);
+  let loaded = $state(false);
 
   onMount(async () => {
     try {
-      games = await invoke<GameEntry[]>("list_games");
+      games = await api.listGames();
     } catch (e) {
       error = String(e);
+    } finally {
+      loaded = true;
     }
   });
 </script>
 
-{#if error}
-  <p style="color: red">Error: {error}</p>
-{:else}
-  <h1 class="text-3xl font-bold text-blue-500">Library ({games.length} games)</h1>
-  <ul>
-    {#each games as game (game.id)}
-      <li>{game.game_name} <small>— {game.exe_path}</small></li>
-    {/each}
-  </ul>
-{/if}
+<main class="min-h-screen bg-neutral-950 px-6 py-8 text-neutral-100">
+  <header class="mb-6 flex items-baseline justify-between">
+    <h1 class="text-2xl font-semibold">Library</h1>
+    {#if loaded && !error}
+      <span class="text-sm text-neutral-400">{games.length} games</span>
+    {/if}
+  </header>
+
+  {#if error}
+    <div class="rounded-md border border-red-900 bg-red-950/50 p-4 text-sm text-red-200">
+      <div class="mb-1 font-medium">Failed to load library</div>
+      <code class="text-xs text-red-300">{error}</code>
+    </div>
+  {:else if !loaded}
+    <p class="text-sm text-neutral-500">Loading…</p>
+  {:else if games.length === 0}
+    <p class="text-sm text-neutral-500">No games in library yet.</p>
+  {:else}
+    <div class="flex flex-wrap gap-5">
+      {#each games as game (game.id)}
+        <GameCard {game} />
+      {/each}
+    </div>
+  {/if}
+</main>
