@@ -58,6 +58,16 @@
   let activeDownload = $state<BrowseDownloadProgress | null>(null);
   let unlistenBrowseDownload: (() => void) | undefined;
 
+  // ── Virtualized list ───────────────────────────────────────────────────
+  // Hydra feeds easily hit 70k+ entries; rendering that many DOM rows
+  // freezes the webview. We window the visible slice ourselves —
+  // rows are fixed height so the math stays trivial. No dep needed.
+  const ROW_HEIGHT = 56;
+  const OVERSCAN = 6;
+  let listViewportHeight = $state(600);
+  let listScrollTop = $state(0);
+  let listScrollEl = $state<HTMLDivElement | null>(null);
+
   const downloadInFlight = $derived(
     activeDownload != null &&
       (activeDownload.status === 'starting' ||
@@ -132,6 +142,29 @@
   const picked = $derived(
     filtered.find((g) => g.title === pickedTitle) ?? filtered[0] ?? null,
   );
+
+  // Window the visible slice based on scroll position. start/end are
+  // index bounds into `filtered`; padTop/padBottom are spacer heights
+  // that preserve the natural scrollbar size without rendering
+  // off-screen rows.
+  const visible = $derived.by(() => {
+    const total = filtered.length;
+    if (total === 0) {
+      return { start: 0, end: 0, items: [] as Grouped[], padTop: 0, padBottom: 0 };
+    }
+    const start = Math.max(0, Math.floor(listScrollTop / ROW_HEIGHT) - OVERSCAN);
+    const end = Math.min(
+      total,
+      Math.ceil((listScrollTop + listViewportHeight) / ROW_HEIGHT) + OVERSCAN,
+    );
+    return {
+      start,
+      end,
+      items: filtered.slice(start, end),
+      padTop: start * ROW_HEIGHT,
+      padBottom: (total - end) * ROW_HEIGHT,
+    };
+  });
 
   // ── Helpers ────────────────────────────────────────────────────────────
   function pickTop(releases: HydraEntry[]): HydraEntry {
@@ -256,6 +289,17 @@
     if (b < 1024 * 1024 * 1024) return `${(b / (1024 * 1024)).toFixed(1)} MB`;
     return `${(b / (1024 * 1024 * 1024)).toFixed(2)} GB`;
   }
+
+  // When the user changes filter inputs the visible row set can shrink
+  // dramatically. Reset the scroll position so the new (small) result
+  // shows up instead of leaving us scrolled past the end. The string
+  // read on the next line is solely to tell Svelte to re-run this
+  // effect whenever any of the three filter inputs change.
+  $effect(() => {
+    const filterKey = `${searchQuery}|${selectedFeed}|${sort}`;
+    if (filterKey.length >= 0 && listScrollEl) listScrollEl.scrollTop = 0;
+    listScrollTop = 0;
+  });
 
   onMount(async () => {
     await refresh();
@@ -517,8 +561,13 @@
         <MonoLabel size={9}>Posted</MonoLabel>
       </div>
 
-      <!-- List -->
-      <div class="flex-1 overflow-y-auto">
+      <!-- List (virtualized) -->
+      <div
+        bind:this={listScrollEl}
+        bind:clientHeight={listViewportHeight}
+        onscroll={(e) => (listScrollTop = e.currentTarget.scrollTop)}
+        class="flex-1 overflow-y-auto"
+      >
         {#if loading && result.entries.length === 0}
           <div class="flex h-full items-center justify-center text-[12px] text-ink-3">
             <Loader2 size={16} class="mr-2 animate-[spool-spin_1s_linear_infinite]" />
@@ -538,55 +587,58 @@
             {/if}
           </div>
         {:else}
-          {#each filtered as group (group.title)}
-            {@const isPicked = picked?.title === group.title}
-            <button
-              type="button"
-              onclick={() => (pickedTitle = group.title)}
-              class="grid w-full cursor-pointer items-center gap-2.5 border-b border-dashed border-line-1 px-4 py-2.5 text-left transition-colors"
-              style:grid-template-columns="1fr 96px 88px 80px"
-              style:background={isPicked
-                ? 'color-mix(in srgb, var(--color-spool) 8%, transparent)'
-                : 'transparent'}
-              style:border-left="2px solid {isPicked ? 'var(--color-spool)' : 'transparent'}"
-            >
-              <div class="min-w-0">
-                <div class="flex items-center gap-2">
-                  <span
-                    class="truncate text-[12.5px] font-medium text-ink-0"
-                    title={group.title}
-                  >
-                    {group.title}
-                  </span>
-                  {#if group.inLibrary}
-                    <Pill kind="ok">In library</Pill>
-                  {/if}
-                </div>
-                <div class="mt-0.5 flex gap-2.5">
-                  {#each group.releases.slice(0, 4) as r (r.source_url + r.upload_date)}
+          <div style:padding-top="{visible.padTop}px" style:padding-bottom="{visible.padBottom}px">
+            {#each visible.items as group (group.title)}
+              {@const isPicked = picked?.title === group.title}
+              <button
+                type="button"
+                onclick={() => (pickedTitle = group.title)}
+                class="grid w-full cursor-pointer items-center gap-2.5 border-b border-dashed border-line-1 px-4 text-left transition-colors"
+                style:height="{ROW_HEIGHT}px"
+                style:grid-template-columns="1fr 96px 88px 80px"
+                style:background={isPicked
+                  ? 'color-mix(in srgb, var(--color-spool) 8%, transparent)'
+                  : 'transparent'}
+                style:border-left="2px solid {isPicked ? 'var(--color-spool)' : 'transparent'}"
+              >
+                <div class="min-w-0">
+                  <div class="flex items-center gap-2">
                     <span
-                      class="font-mono inline-flex items-center gap-1 text-[9.5px] tracking-[0.04em] text-ink-2"
+                      class="truncate text-[12.5px] font-medium text-ink-0"
+                      title={group.title}
                     >
-                      <span
-                        class="h-[5px] w-[5px] rounded-full"
-                        style:background={feedColor(r.source_name)}
-                      ></span>
-                      {r.source_name || new URL(r.source_url).host}
+                      {group.title}
                     </span>
-                  {/each}
+                    {#if group.inLibrary}
+                      <Pill kind="ok">In library</Pill>
+                    {/if}
+                  </div>
+                  <div class="mt-0.5 flex gap-2.5 overflow-hidden">
+                    {#each group.releases.slice(0, 4) as r, i (r.source_url + r.upload_date + i)}
+                      <span
+                        class="font-mono inline-flex items-center gap-1 whitespace-nowrap text-[9.5px] tracking-[0.04em] text-ink-2"
+                      >
+                        <span
+                          class="h-[5px] w-[5px] rounded-full"
+                          style:background={feedColor(r.source_name)}
+                        ></span>
+                        {r.source_name || new URL(r.source_url).host}
+                      </span>
+                    {/each}
+                  </div>
                 </div>
-              </div>
-              <span class="font-mono text-[10.5px] text-ink-2">
-                {group.releases.length} release{group.releases.length === 1 ? '' : 's'}
-              </span>
-              <span class="font-mono text-[10.5px] text-ink-2">
-                {group.top.file_size || '—'}
-              </span>
-              <span class="font-mono text-[10.5px] text-ink-3">
-                {relDate(group.top.upload_date)}
-              </span>
-            </button>
-          {/each}
+                <span class="font-mono text-[10.5px] text-ink-2">
+                  {group.releases.length} release{group.releases.length === 1 ? '' : 's'}
+                </span>
+                <span class="font-mono text-[10.5px] text-ink-2">
+                  {group.top.file_size || '—'}
+                </span>
+                <span class="font-mono text-[10.5px] text-ink-3">
+                  {relDate(group.top.upload_date)}
+                </span>
+              </button>
+            {/each}
+          </div>
         {/if}
       </div>
     </section>

@@ -33,10 +33,14 @@ pub struct HydraEntry {
     #[serde(default)]
     pub uris: Vec<String>,
     /// ISO 8601 string. Some feeds use yyyy-mm-dd, some include time.
-    #[serde(default, rename = "uploadDate")]
+    /// Source JSON uses camelCase `uploadDate`; we accept that on
+    /// deserialize but serialize back as snake_case so the frontend's
+    /// TypeScript types (and `entry.upload_date` access) line up.
+    #[serde(default, alias = "uploadDate")]
     pub upload_date: String,
     /// Free-form human size string ("38.4 GB"). We pass through as-is.
-    #[serde(default, rename = "fileSize")]
+    /// Same camelCase-in / snake_case-out story as `upload_date`.
+    #[serde(default, alias = "fileSize")]
     pub file_size: String,
     /// Filled in by the merger — not present in the source JSON.
     #[serde(default)]
