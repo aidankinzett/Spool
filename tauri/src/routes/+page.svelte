@@ -17,6 +17,7 @@
    * entry vanishes, falls back to the first remaining game.
    */
   import { onMount } from 'svelte';
+  import { SvelteSet } from 'svelte/reactivity';
   import {
     ArrowLeft,
     BookOpen,
@@ -99,7 +100,7 @@
   // Install tokens we've already shown a terminal toast for. Lives
   // outside `$state` because changing it never affects rendering —
   // it's just a dedup set for the `lan:download` event handler.
-  const toastedDownloadTokens = new Set<string>();
+  const toastedDownloadTokens = new SvelteSet<string>();
   // Active uploads — peers currently downloading FROM us. The host
   // side of LAN sharing.
   let activeUploads = $state<UploadSnapshot[]>([]);
