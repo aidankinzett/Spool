@@ -65,6 +65,13 @@ const REAPER_INTERVAL: Duration = Duration::from_secs(5);
 /// on the same LAN should respond in milliseconds; anything past this is
 /// almost certainly a dropped peer or a firewall hole.
 const PEER_FETCH_TIMEOUT: Duration = Duration::from_secs(5);
+/// Cap on the manifest fetch. The host's `/manifest` handler walks the
+/// game folder and blake3-hashes every byte on the first request
+/// (~1 s/GB on modern hardware), so the snappy `PEER_FETCH_TIMEOUT` is
+/// far too short — a multi-GB game routinely takes longer than 5 s to
+/// hash. Five minutes covers ~300 GB at 1 GB/s while still bounding a
+/// wedged peer.
+const MANIFEST_FETCH_TIMEOUT: Duration = Duration::from_secs(300);
 /// How many files to stream from a peer at once. 4 is a sweet spot:
 /// enough to keep gigabit pipes full when games are full of tiny files,
 /// few enough that a peer's HTTP server (or a residential router) isn't
@@ -1628,6 +1635,22 @@ fn resolve_install_dirs(root: &Path, safe_name: &str) -> (PathBuf, PathBuf, bool
     (final_dir, partial, false)
 }
 
+/// Formats a reqwest error including its full cause chain. reqwest's own
+/// Display only shows the top-level wrapper ("error sending request for
+/// url (...)"), which hides whether the underlying problem was a timeout,
+/// connection refusal, or TCP reset — exactly the detail you need to
+/// debug a LAN download failure.
+fn format_reqwest_error(e: &reqwest::Error) -> String {
+    let mut out = e.to_string();
+    let mut src: Option<&dyn std::error::Error> = std::error::Error::source(e);
+    while let Some(s) = src {
+        out.push_str(": ");
+        out.push_str(&s.to_string());
+        src = s.source();
+    }
+    out
+}
+
 fn emit_progress(app: &AppHandle, progress: &DownloadProgress) {
     if let Err(e) = app.emit("lan:download", progress) {
         tracing::warn!(error = %e, "failed to emit lan:download");
@@ -1735,14 +1758,17 @@ pub async fn start_peer_install(
 
     // Fetch the manifest synchronously so we can fail fast with a clean
     // error message if the peer 404s or the entry isn't shareable.
+    // Uses MANIFEST_FETCH_TIMEOUT rather than PEER_FETCH_TIMEOUT — the
+    // host hashes every byte of the game folder on first request, and a
+    // 5 s budget reliably times out on anything bigger than a few GB.
     let manifest_url = format!("http://{peer_addr}:{peer_port}/games/{game_id}/manifest");
     let resp = app
         .state::<reqwest::Client>()
         .get(&manifest_url)
-        .timeout(PEER_FETCH_TIMEOUT)
+        .timeout(MANIFEST_FETCH_TIMEOUT)
         .send()
         .await
-        .map_err(|e| AppError::Other(format!("GET manifest: {e}")))?;
+        .map_err(|e| AppError::Other(format!("GET manifest: {}", format_reqwest_error(&e))))?;
     if !resp.status().is_success() {
         return Err(AppError::Other(format!(
             "peer responded {} to /manifest",
