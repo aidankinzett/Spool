@@ -381,7 +381,14 @@ pub struct PeerGameManifest {
 /// next manifest fetch. Persistence across process restarts is a
 /// future polish item; for now we re-hash on first manifest after
 /// each launch.
-type HashCache = Arc<Mutex<HashMap<PathBuf, (std::time::SystemTime, String)>>>;
+///
+/// `RwLock` (not `Mutex`) because reads dominate: every manifest
+/// request walks every shared game and probes the cache for each
+/// file; writes only happen for genuine cache misses (first time we
+/// see a file, or when its mtime changes). Per `domain-web`'s
+/// "read-heavy shared state → Arc<RwLock<T>>" rule, concurrent
+/// manifest requests get to read in parallel.
+type HashCache = Arc<std::sync::RwLock<HashMap<PathBuf, (std::time::SystemTime, String)>>>;
 
 #[derive(Clone)]
 struct ServerState {
@@ -423,7 +430,7 @@ async fn start_http_server(app: AppHandle, preferred_port: u16) -> AppResult<u16
         .route("/games/:id/cancel-check", get(get_cancel_check_handler))
         .with_state(ServerState {
             app,
-            hash_cache: Arc::new(Mutex::new(HashMap::new())),
+            hash_cache: Arc::new(std::sync::RwLock::new(HashMap::new())),
         });
 
     // Server runs forever — tokio::spawn detaches it. If the listener dies
@@ -898,9 +905,10 @@ fn walk_game_files_with_hashes(
 
         // Cache lookup keyed on the absolute path. Mtime mismatch
         // invalidates so we always serve a hash that matches what we'd
-        // stream right now.
+        // stream right now. Read-side uses a shared lock so concurrent
+        // manifest requests don't serialise on the probe.
         let abs = entry.path().to_path_buf();
-        let cached = match (mtime, cache.lock().ok()) {
+        let cached = match (mtime, cache.read().ok()) {
             (Some(mt), Some(g)) => g
                 .get(&abs)
                 .filter(|(cached_mt, _)| *cached_mt == mt)
@@ -914,7 +922,10 @@ fn walk_game_files_with_hashes(
             h
         } else {
             let h = hash_file_blocking(&abs)?;
-            if let (Some(mt), Ok(mut g)) = (mtime, cache.lock()) {
+            // Exclusive lock only on the write path. Failure to acquire
+            // is non-fatal — the hash still gets used for this request,
+            // we just don't cache it for next time.
+            if let (Some(mt), Ok(mut g)) = (mtime, cache.write()) {
                 g.insert(abs.clone(), (mt, h.clone()));
             }
             h
