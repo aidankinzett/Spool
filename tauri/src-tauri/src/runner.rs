@@ -20,6 +20,7 @@ use crate::config::SharedConfig;
 use crate::error::{AppError, AppResult};
 use crate::library::SharedLibrary;
 use crate::ludusavi::LudusaviClient;
+use crate::sync::{self, AcquireOutcome};
 use crate::{process, paths, registry};
 use chrono::Utc;
 use serde::Serialize;
@@ -230,6 +231,25 @@ async fn run_workflow(
             .map(|o| o.total_games == 0)
             .unwrap_or(false);
 
+    // Record the restore event on the sync server (best-effort, fires
+    // only when sync is configured + reachable). The server uses these
+    // events to power the cross-device save sync status badges.
+    sync::record_restore_event(app, game_name).await;
+
+    // ── Phase 1.5: acquire play-state lock ────────────────────────────
+    // Asks the sync server to lock this game to this device so a
+    // second device can't simultaneously launch and trample the
+    // save. No-op when sync is disabled / unreachable; only blocks on
+    // a real 409 conflict.
+    match sync::acquire_lock(app, game_name).await {
+        AcquireOutcome::Acquired => {}
+        AcquireOutcome::Conflict { device_name } => {
+            return Err(AppError::Other(format!(
+                "Already playing on {device_name}. Close it there before launching here."
+            )));
+        }
+    }
+
     // ── Phase 2: launch + wait ───────────────────────────────────────
     emit_phase(app, game_id, "launching", Some("Launching game…"));
     let exe_pathbuf = PathBuf::from(exe_path);
@@ -242,8 +262,23 @@ async fn run_workflow(
     emit_phase(app, game_id, "playing", None);
     tracing::info!(exe_path, run_as_admin, "launching game process");
     let session_start = Utc::now();
+
+    // Spawn the lock-heartbeat task. Pings /heartbeat every 30s so
+    // the sync server doesn't mark our lock stale during long
+    // sessions. Aborted unconditionally on exit so it doesn't
+    // outlive the game.
+    let heartbeat = sync::start_heartbeat(app.clone(), game_name.to_string());
+
     let spawn_result = process::run_game(&exe_pathbuf, run_as_admin).await;
     let session_end = Utc::now();
+
+    // Always abort the heartbeat + release the lock — even if launch
+    // failed mid-spawn. Lock release is fire-and-forget; the server
+    // stale-detection would eventually reclaim a missed release but
+    // we want the next device to be able to launch immediately.
+    heartbeat.abort();
+    sync::release_lock(app, game_name).await;
+
     tracing::info!(
         game_name,
         duration_min = (session_end - session_start).num_minutes(),
@@ -294,6 +329,9 @@ async fn run_workflow(
                         let _ = app.emit("library:changed", &game_id.to_string());
                     }
                 }
+                // Tell the sync server we backed up — peers can use
+                // this to know they're behind on saves. Best-effort.
+                sync::record_backup_event(app, game_name).await;
             }
             Err(e) => {
                 // Don't fail the workflow — the user already played the game

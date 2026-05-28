@@ -266,3 +266,189 @@ pub async fn sync_register_account(
         .map_err(|e| AppError::Other(format!("parse register response: {e}")))?;
     Ok(body.api_key)
 }
+
+// ── Lock + event API used by the run workflow ──────────────────────────────
+
+/// Outcome of an `acquire_lock` attempt.
+///
+/// We return `Acquired` even on server errors so a flaky network /
+/// offline NAS doesn't prevent the user from playing — matching the
+/// C# Spool "Sync server unavailable — launching anyway…" path. The
+/// only path that returns `Conflict` is an explicit HTTP 409 with the
+/// other device's name in the body.
+#[derive(Debug, Clone)]
+pub enum AcquireOutcome {
+    /// Either we got the lock, sync is disabled, or the server is
+    /// unreachable — the workflow should proceed.
+    Acquired,
+    /// Another device currently holds the lock. The body carries
+    /// their device name so we can show a useful error toast.
+    Conflict { device_name: String },
+}
+
+/// Body shape POSTed to /locks/:game/acquire.
+#[derive(Debug, Serialize)]
+struct AcquireBody<'a> {
+    device_id: &'a str,
+    device_name: &'a str,
+}
+
+/// 409 response body for an acquire conflict.
+#[derive(Debug, Deserialize, Default)]
+struct AcquireConflictBody {
+    #[serde(default)]
+    device_name: Option<String>,
+}
+
+/// Asks the sync server to acquire a per-game play lock. Returns
+/// `Acquired` on success / disabled / server error; `Conflict` only
+/// when another device holds an unexpired lock. Best-effort:
+/// network/timeout errors log a warning and resolve as `Acquired`.
+pub async fn acquire_lock(app: &AppHandle, game_name: &str) -> AcquireOutcome {
+    let Ok((url, key)) = config_snapshot(app) else {
+        return AcquireOutcome::Acquired;
+    };
+    let (device_id, device_name) = device_identity(app);
+    if device_id.is_empty() {
+        return AcquireOutcome::Acquired;
+    }
+    let endpoint = join_url(&url, &format!("locks/{}/acquire", urlencode(game_name)));
+    let client = (*app.state::<reqwest::Client>()).clone();
+    let resp = match client
+        .post(&endpoint)
+        .timeout(ENDPOINT_TIMEOUT)
+        .bearer_auth(&key)
+        .json(&AcquireBody {
+            device_id: &device_id,
+            device_name: &device_name,
+        })
+        .send()
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!(error = %e, "sync: acquire_lock network error — proceeding without lock");
+            return AcquireOutcome::Acquired;
+        }
+    };
+    let status = resp.status();
+    if status.is_success() {
+        return AcquireOutcome::Acquired;
+    }
+    if status.as_u16() == 409 {
+        let body: AcquireConflictBody = resp.json().await.unwrap_or_default();
+        return AcquireOutcome::Conflict {
+            device_name: body
+                .device_name
+                .unwrap_or_else(|| "another device".to_string()),
+        };
+    }
+    tracing::warn!(status = %status, "sync: acquire_lock unexpected status — proceeding without lock");
+    AcquireOutcome::Acquired
+}
+
+/// Fire-and-forget POST /locks/:game/release. Failures are logged
+/// and ignored — the server's stale-lock detection will eventually
+/// reclaim if we never released.
+pub async fn release_lock(app: &AppHandle, game_name: &str) {
+    let Ok((url, key)) = config_snapshot(app) else {
+        return;
+    };
+    let endpoint = join_url(&url, &format!("locks/{}/release", urlencode(game_name)));
+    let client = (*app.state::<reqwest::Client>()).clone();
+    match client
+        .post(&endpoint)
+        .timeout(ENDPOINT_TIMEOUT)
+        .bearer_auth(&key)
+        .send()
+        .await
+    {
+        Ok(resp) if resp.status().is_success() => {}
+        Ok(resp) => tracing::warn!(status = %resp.status(), "sync: release_lock non-200"),
+        Err(e) => tracing::warn!(error = %e, "sync: release_lock failed"),
+    }
+}
+
+/// Starts a tokio task that pings /locks/:game/heartbeat every 30s
+/// so the server knows we're still playing. Returns the JoinHandle —
+/// caller `.abort()`s it when the session ends.
+pub fn start_heartbeat(app: AppHandle, game_name: String) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_secs(30)).await;
+            let Ok((url, key)) = config_snapshot(&app) else {
+                return; // sync got disabled mid-session — stop pinging
+            };
+            let endpoint =
+                join_url(&url, &format!("locks/{}/heartbeat", urlencode(&game_name)));
+            let client = (*app.state::<reqwest::Client>()).clone();
+            if let Err(e) = client
+                .post(&endpoint)
+                .timeout(ENDPOINT_TIMEOUT)
+                .bearer_auth(&key)
+                .send()
+                .await
+            {
+                tracing::warn!(error = %e, "sync: heartbeat failed");
+            }
+        }
+    })
+}
+
+/// POST /events/:game/backup — records the device that just backed
+/// up. Best-effort. Headers include the device identity so the server
+/// can attribute the event.
+pub async fn record_backup_event(app: &AppHandle, game_name: &str) {
+    record_event(app, game_name, "backup").await;
+}
+
+/// POST /events/:game/restore.
+pub async fn record_restore_event(app: &AppHandle, game_name: &str) {
+    record_event(app, game_name, "restore").await;
+}
+
+async fn record_event(app: &AppHandle, game_name: &str, kind: &str) {
+    let Ok((url, key)) = config_snapshot(app) else {
+        return;
+    };
+    let (device_id, device_name) = device_identity(app);
+    if device_id.is_empty() {
+        return;
+    }
+    let endpoint = join_url(&url, &format!("events/{}/{}", urlencode(game_name), kind));
+    let client = (*app.state::<reqwest::Client>()).clone();
+    if let Err(e) = client
+        .post(&endpoint)
+        .timeout(ENDPOINT_TIMEOUT)
+        .bearer_auth(&key)
+        .header("X-Device-Id", &device_id)
+        .header("X-Device-Name", &device_name)
+        .send()
+        .await
+    {
+        tracing::warn!(error = %e, kind, "sync: record_event failed");
+    }
+}
+
+/// Reads (device_id, device_name) from config. Empty strings when
+/// the config lock is poisoned — callers treat that as "skip the
+/// sync interaction".
+fn device_identity(app: &AppHandle) -> (String, String) {
+    // Bind State to a local first so the MutexGuard's borrow has a
+    // stable anchor — the borrow checker chokes on the chained
+    // `app.state::<T>().lock()` form here.
+    let cfg = app.state::<SharedConfig>();
+    let guard = match cfg.lock() {
+        Ok(g) => g,
+        Err(_) => return (String::new(), String::new()),
+    };
+    (guard.data.device_id.clone(), guard.data.device_name.clone())
+}
+
+/// Percent-encodes a path segment so game names with spaces /
+/// punctuation survive in the URL. We re-export the `urlencoding`
+/// crate's helper rather than depending on `url::form_urlencoded`
+/// (already pulled in elsewhere for the LAN client).
+fn urlencode(s: &str) -> String {
+    urlencoding::encode(s).into_owned()
+}
