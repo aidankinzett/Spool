@@ -1288,3 +1288,75 @@ async fn fetch_and_save_peer_image(
     tokio::fs::write(&path, &bytes).await.ok()?;
     Some(path)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn allocate_uses_preferred_name_when_free() {
+        let root = tempdir().unwrap();
+        assert_eq!(
+            allocate_install_dir(root.path(), "Hades"),
+            root.path().join("Hades")
+        );
+    }
+
+    #[test]
+    fn allocate_suffixes_on_collision() {
+        let root = tempdir().unwrap();
+        std::fs::create_dir(root.path().join("Hades")).unwrap();
+        assert_eq!(
+            allocate_install_dir(root.path(), "Hades"),
+            root.path().join("Hades (2)")
+        );
+        std::fs::create_dir(root.path().join("Hades (2)")).unwrap();
+        assert_eq!(
+            allocate_install_dir(root.path(), "Hades"),
+            root.path().join("Hades (3)")
+        );
+    }
+
+    #[test]
+    fn allocate_falls_back_to_game_for_empty_name() {
+        let root = tempdir().unwrap();
+        assert_eq!(
+            allocate_install_dir(root.path(), ""),
+            root.path().join("Game")
+        );
+    }
+
+    #[test]
+    fn resolve_fresh_install_picks_base_and_partial() {
+        let root = tempdir().unwrap();
+        let (final_dir, partial, resuming) = resolve_install_dirs(root.path(), "Hades");
+        assert_eq!(final_dir, root.path().join("Hades"));
+        assert_eq!(partial, root.path().join("Hades.partial"));
+        assert!(!resuming);
+    }
+
+    #[test]
+    fn resolve_resumes_into_existing_partial() {
+        let root = tempdir().unwrap();
+        std::fs::create_dir(root.path().join("Hades.partial")).unwrap();
+        let (final_dir, partial, resuming) = resolve_install_dirs(root.path(), "Hades");
+        assert_eq!(final_dir, root.path().join("Hades"));
+        assert_eq!(partial, root.path().join("Hades.partial"));
+        assert!(resuming, "a leftover .partial with a free final dir resumes");
+    }
+
+    #[test]
+    fn resolve_allocates_fresh_when_final_already_installed() {
+        let root = tempdir().unwrap();
+        // Both a finished install and a stale partial exist — we must not
+        // resume into the partial because the final name is taken, so a
+        // fresh non-colliding pair is allocated instead.
+        std::fs::create_dir(root.path().join("Hades")).unwrap();
+        std::fs::create_dir(root.path().join("Hades.partial")).unwrap();
+        let (final_dir, partial, resuming) = resolve_install_dirs(root.path(), "Hades");
+        assert_eq!(final_dir, root.path().join("Hades (2)"));
+        assert_eq!(partial, root.path().join("Hades (2).partial"));
+        assert!(!resuming);
+    }
+}

@@ -724,3 +724,79 @@ pub fn cancel_upload(
     }
     ok
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_range_accepts_open_ended() {
+        assert_eq!(parse_range_start("bytes=0-"), Some(0));
+        assert_eq!(parse_range_start("bytes=500-"), Some(500));
+    }
+
+    #[test]
+    fn parse_range_ignores_end_bound() {
+        // We seek to the start and stream to EOF, so an explicit end is fine.
+        assert_eq!(parse_range_start("bytes=500-999"), Some(500));
+    }
+
+    #[test]
+    fn parse_range_rejects_unsupported_forms() {
+        assert_eq!(parse_range_start("bytes=-500"), None, "suffix range");
+        assert_eq!(parse_range_start("bytes=0-,100-"), None, "multi range");
+        assert_eq!(parse_range_start("bytes=abc-"), None, "non-numeric start");
+        assert_eq!(parse_range_start("items=0-"), None, "wrong unit");
+        assert_eq!(parse_range_start("0-"), None, "missing prefix");
+    }
+
+    #[test]
+    fn safe_join_keeps_normal_segments() {
+        let root = Path::new("/games/Hades");
+        assert_eq!(
+            safe_join(root, "saves/profile.sav"),
+            Some(PathBuf::from("/games/Hades/saves/profile.sav"))
+        );
+    }
+
+    #[test]
+    fn safe_join_normalizes_backslashes() {
+        let root = Path::new("/games/Hades");
+        assert_eq!(
+            safe_join(root, "dir\\sub\\file.dat"),
+            Some(PathBuf::from("/games/Hades/dir/sub/file.dat"))
+        );
+    }
+
+    #[test]
+    fn safe_join_rejects_escapes() {
+        let root = Path::new("/games/Hades");
+        assert_eq!(safe_join(root, ".."), None, "parent dir");
+        assert_eq!(safe_join(root, "a/../../b"), None, "nested parent escape");
+        assert_eq!(safe_join(root, "/etc/passwd"), None, "absolute path");
+    }
+
+    #[test]
+    fn relative_unix_strips_folder_prefix() {
+        let folder = Path::new("/games/Hades");
+        assert_eq!(
+            relative_unix(Path::new("/games/Hades/bin/game.exe"), folder),
+            Some("bin/game.exe".to_string())
+        );
+    }
+
+    #[test]
+    fn relative_unix_rejects_outside_and_self() {
+        let folder = Path::new("/games/Hades");
+        assert_eq!(
+            relative_unix(Path::new("/elsewhere/game.exe"), folder),
+            None,
+            "exe outside the folder"
+        );
+        assert_eq!(
+            relative_unix(folder, folder),
+            None,
+            "exe equal to the folder yields no segments"
+        );
+    }
+}
