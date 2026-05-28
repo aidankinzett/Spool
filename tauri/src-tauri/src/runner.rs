@@ -80,7 +80,7 @@ fn emit_phase(app: &AppHandle, game_id: &str, phase: &str, message: Option<&str>
         message: message.map(String::from),
     };
     if let Err(e) = app.emit("run:phase", &payload) {
-        eprintln!("[runner] failed to emit run:phase ({phase}): {e}");
+        tracing::warn!(phase = phase, error = %e, "failed to emit run:phase");
     }
 }
 
@@ -141,8 +141,11 @@ async fn run_workflow(
     ludusavi_exe: &Path,
     ludusavi_client: &LudusaviClient,
 ) -> AppResult<()> {
+    tracing::info!(game_id, game_name, "starting run workflow");
+
     // ── Phase 1: restore ──────────────────────────────────────────────
     emit_phase(app, game_id, "restoring", Some("Restoring saves…"));
+    tracing::info!(game_name, "ludusavi restore");
     let restore = ludusavi_client.restore(ludusavi_exe, game_name).await?;
     if restore
         .errors
@@ -176,9 +179,15 @@ async fn run_workflow(
     }
 
     emit_phase(app, game_id, "playing", None);
+    tracing::info!(exe_path, "launching game process");
     let session_start = Utc::now();
     let spawn_result = process::run_game(&exe_pathbuf).await;
     let session_end = Utc::now();
+    tracing::info!(
+        game_name,
+        duration_min = (session_end - session_start).num_minutes(),
+        "game exited"
+    );
 
     if let Err(e) = spawn_result {
         return Err(AppError::Other(format!("Game failed to launch: {e}")));
@@ -200,6 +209,7 @@ async fn run_workflow(
     // ── Phase 3: backup (skip if ludusavi didn't recognise the game) ──
     if !no_saves {
         emit_phase(app, game_id, "backing-up", Some("Backing up saves…"));
+        tracing::info!(game_name, "ludusavi backup");
         match ludusavi_client.backup(ludusavi_exe, game_name).await {
             Ok(out) => {
                 if let Some(overall) = &out.overall {
@@ -221,11 +231,12 @@ async fn run_workflow(
                 // Don't fail the workflow — the user already played the game
                 // successfully and getting a red toast for a flaky network
                 // call would be misleading. Surface it in the log instead.
-                eprintln!("[runner] backup failed for {game_id}: {e}");
+                tracing::warn!(game_id = %game_id, error = %e, "post-session backup failed");
             }
         }
     }
 
     emit_phase(app, game_id, "done", None);
+    tracing::info!(game_name, "run workflow complete");
     Ok(())
 }

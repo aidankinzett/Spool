@@ -33,3 +33,13 @@ pub fn covers_dir() -> PathBuf {
 pub fn launchers_dir() -> PathBuf {
     app_data_dir().join("launchers")
 }
+
+/// Persistent log file for `tracing` output. Matches the C# app's path so
+/// users (and we) know where to look when something goes wrong. The path
+/// is constructed inline in `init_tracing` for the appender's
+/// directory-plus-filename API; this helper is kept available for future
+/// callers (e.g. a "show debug log" menu item).
+#[allow(dead_code)]
+pub fn log_file() -> PathBuf {
+    app_data_dir().join("debug.log")
+}

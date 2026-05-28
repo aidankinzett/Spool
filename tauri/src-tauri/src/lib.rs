@@ -76,13 +76,19 @@ fn take_pending_run(state: State<'_, PendingRun>) -> Option<String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Initialize tracing first — everything below logs through it. The
+    // worker guard is bound to the function frame so background log
+    // writes flush before the process exits.
+    let _log_guard = init_tracing();
+    tracing::info!("spool starting up");
+
     // Load persistent state synchronously — both files are small.
     let library = Library::load().unwrap_or_else(|err| {
-        eprintln!("failed to load library, starting empty: {err}");
+        tracing::warn!(error = %err, "failed to load library, starting empty");
         Library::default()
     });
     let config = Config::load().unwrap_or_else(|err| {
-        eprintln!("failed to load config, starting with defaults: {err}");
+        tracing::warn!(error = %err, "failed to load config, starting with defaults");
         Config::default()
     });
 
@@ -156,7 +162,7 @@ pub fn run() {
                 if let Some(id) = find_game_id_by_name(&library, game_name) {
                     pending.set(id);
                 } else {
-                    eprintln!("[cli] --run: no library entry matches '{game_name}'");
+                    tracing::warn!(name = %game_name, "startup --run: no library entry matches");
                 }
             }
 
@@ -254,6 +260,46 @@ fn find_game_id_by_name(library: &SharedLibrary, name: &str) -> Option<String> {
         .map(|e| e.id.clone())
 }
 
+/// Initialises the global `tracing` subscriber. Two layers:
+///
+///   * **stderr** — what `cargo run` / `tauri dev` show in the terminal
+///   * **file**   — appended to `%LOCALAPPDATA%\Spool\debug.log`, the same
+///                  path the C# app used, so existing support workflows
+///                  ("send me your debug.log") still work.
+///
+/// Default verbosity: `info`, with the noisy crates (tauri / hyper /
+/// reqwest / h2) clamped to `warn`. Override with `SPOOL_LOG=debug` (or
+/// any standard `EnvFilter` spec) to widen.
+///
+/// Returns the non-blocking worker guard; binding it to the call frame
+/// keeps the writer alive and flushes buffered lines at shutdown.
+fn init_tracing() -> tracing_appender::non_blocking::WorkerGuard {
+    use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+
+    let log_dir = paths::app_data_dir();
+    let _ = std::fs::create_dir_all(&log_dir);
+
+    let file_appender = tracing_appender::rolling::never(&log_dir, "debug.log");
+    let (file_writer, guard) = tracing_appender::non_blocking(file_appender);
+
+    let env_filter = EnvFilter::try_from_env("SPOOL_LOG").unwrap_or_else(|_| {
+        EnvFilter::new("info,tauri=warn,h2=warn,hyper=warn,hyper_util=warn,reqwest=warn,rustls=warn")
+    });
+
+    tracing_subscriber::registry()
+        .with(env_filter)
+        .with(fmt::layer().with_target(false).with_writer(std::io::stderr))
+        .with(
+            fmt::layer()
+                .with_ansi(false)
+                .with_target(true)
+                .with_writer(file_writer),
+        )
+        .init();
+
+    guard
+}
+
 /// Fires `tray:first-hide` the first time the user hides Spool to the
 /// tray, then marks the flag in Config so it never fires again. No-op on
 /// subsequent hides. All-or-nothing — if either the flag read or the save
@@ -277,7 +323,7 @@ fn emit_tray_intro_once(app: &AppHandle) {
         }
     }
     if let Err(e) = app.emit("tray:first-hide", &()) {
-        eprintln!("[tray] failed to emit tray:first-hide: {e}");
+        tracing::warn!(error = %e, "failed to emit tray:first-hide");
     }
 }
 
@@ -288,13 +334,13 @@ fn handle_forwarded_launch(app: &AppHandle, argv: &[String]) {
         CliMode::Run { game_name, .. } => {
             show_library(app); // bring the window up so the user sees the workflow run
             let Some(id) = find_game_id_by_name(&app.state::<SharedLibrary>(), &game_name) else {
-                eprintln!("[cli] forwarded --run: no library entry matches '{game_name}'");
+                tracing::warn!(name = %game_name, "forwarded --run: no library entry matches");
                 return;
             };
             let app_clone = app.clone();
             tauri::async_runtime::spawn(async move {
                 if let Err(e) = runner::launch_game_inner(&app_clone, &id).await {
-                    eprintln!("[cli] forwarded --run workflow failed: {e}");
+                    tracing::error!(error = %e, "forwarded --run workflow failed");
                 }
             });
         }

@@ -154,7 +154,7 @@ pub async fn fetch_and_save_cover(
 
     // 7. Notify the UI.
     if let Err(e) = app.emit("library:changed", &game_entry_id.to_string()) {
-        eprintln!("[sgdb] failed to emit library:changed after cover: {e}");
+        tracing::warn!(error = %e, "failed to emit library:changed after cover download");
     }
 
     Ok(Some(path_str))

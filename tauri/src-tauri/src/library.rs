@@ -310,7 +310,7 @@ pub fn add_game(
         entry
     };
     if let Err(e) = app.emit("library:changed", &entry.id) {
-        eprintln!("[library] failed to emit library:changed after add_game: {e}");
+        tracing::warn!(error = %e, "failed to emit library:changed after add_game");
     }
 
     // Kick off an async cover-art fetch. Non-blocking — the user sees the
@@ -321,7 +321,7 @@ pub fn add_game(
     tauri::async_runtime::spawn(async move {
         if let Err(e) = crate::steamgriddb::fetch_and_save_cover(&app_for_task, &id_for_task).await
         {
-            eprintln!("[sgdb] cover fetch failed for {id_for_task}: {e}");
+            tracing::warn!(game_id = %id_for_task, error = %e, "cover fetch failed");
         }
     });
 
@@ -349,7 +349,7 @@ pub fn update_game(
         entry
     };
     if let Err(e) = app.emit("library:changed", &updated.id) {
-        eprintln!("[library] failed to emit library.changed after update_game: {e}");
+        tracing::warn!(error = %e, "failed to emit library:changed after update_game");
     }
     Ok(updated)
 }
@@ -375,7 +375,7 @@ pub fn remove_game(
     };
     if removed {
         if let Err(e) = app.emit("library:changed", &id) {
-            eprintln!("[library] failed to emit library.changed after remove_game: {e}");
+            tracing::warn!(error = %e, "failed to emit library:changed after remove_game");
         }
     }
     Ok(removed)
