@@ -18,9 +18,10 @@
    * → request_download_link → stream) and the local LAN cache. For
    * now Download is a stub that surfaces a toast.
    */
-  import { onMount } from 'svelte';
+  import { onMount, onDestroy } from 'svelte';
   import {
     ChevronLeft,
+    Cloud,
     Download,
     Loader2,
     RefreshCw,
@@ -29,9 +30,11 @@
     X,
   } from '@lucide/svelte';
   import { getCurrentWindow } from '@tauri-apps/api/window';
+  import { listen } from '@tauri-apps/api/event';
   import { api } from '$lib/api';
   import { toasts } from '$lib/toasts.svelte';
   import type {
+    BrowseDownloadProgress,
     BrowseFetchResult,
     GameEntry,
     HydraEntry,
@@ -52,7 +55,15 @@
   let searchQuery = $state('');
   let sort = $state<'newest' | 'size' | 'az'>('newest');
   let pickedTitle = $state<string | null>(null);
-  let downloading = $state(false);
+  let activeDownload = $state<BrowseDownloadProgress | null>(null);
+  let unlistenBrowseDownload: (() => void) | undefined;
+
+  const downloadInFlight = $derived(
+    activeDownload != null &&
+      (activeDownload.status === 'starting' ||
+        activeDownload.status === 'queuing' ||
+        activeDownload.status === 'downloading'),
+  );
 
   // ── Derived ────────────────────────────────────────────────────────────
   // Group entries by case-insensitive title — across feeds the same
@@ -206,35 +217,100 @@
     }
   }
 
-  function startDownload(release: HydraEntry) {
-    // Phase 4: dispatch the magnet to TorBox or direct URL via a
-    // backend orchestrator + Transfers panel. For now we surface a
-    // toast so the click feedback is honest.
-    const magnet = release.uris.find((u) => uriKind(u) === 'magnet');
-    const http = release.uris.find((u) => uriKind(u) === 'http');
-    const kind = magnet ? 'magnet' : http ? 'http' : 'unknown';
-    if (kind === 'unknown') {
+  async function startDownload(release: HydraEntry) {
+    if (downloadInFlight) {
       toasts.show({
         kind: 'warn',
         label: 'BROWSE',
-        title: 'No supported URI',
-        sub: `${release.title} has no magnet or HTTPS link in this source.`,
+        title: 'A download is already in progress',
+        sub: `Finish ${activeDownload?.game_name ?? 'the current one'} first.`,
       });
       return;
     }
-    toasts.show({
-      kind: 'info',
-      label: 'BROWSE',
-      title: `Queued ${release.title}`,
-      sub: `${kind === 'magnet' ? 'TorBox' : 'Direct'} download wiring lands in Phase 4 — coming soon.`,
-    });
+    try {
+      await api.startBrowseDownload(release);
+      toasts.show({
+        kind: 'info',
+        label: 'BROWSE',
+        title: `Queued ${release.title}`,
+        sub: 'Progress shown at the top of the window.',
+      });
+    } catch (e) {
+      toasts.show({
+        kind: 'bad',
+        label: 'BROWSE',
+        title: "Couldn't start download",
+        sub: String(e),
+      });
+    }
+  }
+
+  async function cancelActiveDownload() {
+    if (!activeDownload) return;
+    try {
+      await api.cancelBrowseDownload(activeDownload.install_token);
+    } catch (e) {
+      console.error('[browse] cancel failed:', e);
+    }
+  }
+
+  function fmtBytes(b: number): string {
+    if (b <= 0) return '—';
+    if (b < 1024) return `${b} B`;
+    if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} KB`;
+    if (b < 1024 * 1024 * 1024) return `${(b / (1024 * 1024)).toFixed(1)} MB`;
+    return `${(b / (1024 * 1024 * 1024)).toFixed(2)} GB`;
   }
 
   async function close() {
     await getCurrentWindow().close();
   }
 
-  onMount(refresh);
+  onMount(async () => {
+    await refresh();
+    // Pick up an in-flight download if the window was just opened
+    // while one is running.
+    try {
+      activeDownload = await api.currentBrowseDownload();
+    } catch (e) {
+      console.error('[browse] currentBrowseDownload failed:', e);
+    }
+    listen<BrowseDownloadProgress>('browse:download', (event) => {
+      const p = event.payload;
+      const prev = activeDownload;
+      activeDownload = p;
+      // Surface terminal states as toasts so the user notices even if
+      // they've scrolled away.
+      if (p.status === 'done' && prev?.install_token !== p.install_token) {
+        toasts.show({
+          kind: 'ok',
+          label: 'DOWNLOAD',
+          title: 'Download complete',
+          sub: p.dest_path ?? p.game_name,
+        });
+      } else if (p.status === 'error') {
+        toasts.show({
+          kind: 'bad',
+          label: 'DOWNLOAD',
+          title: 'Download failed',
+          sub: p.message ?? p.game_name,
+        });
+      } else if (p.status === 'canceled') {
+        toasts.show({
+          kind: 'info',
+          label: 'DOWNLOAD',
+          title: 'Cancelled',
+          sub: `${p.game_name} — partial files may remain in your downloads folder.`,
+        });
+      }
+    })
+      .then((fn) => (unlistenBrowseDownload = fn))
+      .catch((e) => console.error('[browse] listener failed:', e));
+  });
+
+  onDestroy(() => {
+    unlistenBrowseDownload?.();
+  });
 </script>
 
 <div class="flex h-screen flex-col bg-bg-0 text-ink-0">
@@ -262,6 +338,63 @@
       </button>
     </div>
   </WindowChrome>
+
+  {#if activeDownload && downloadInFlight}
+    {@const pct =
+      activeDownload.bytes_total > 0
+        ? Math.round((activeDownload.bytes_done / activeDownload.bytes_total) * 100)
+        : 0}
+    <div
+      class="flex items-center gap-3 border-b border-line-1 px-5 py-2.5"
+      style:background="color-mix(in srgb, var(--color-spool) 6%, transparent)"
+    >
+      {#if activeDownload.source_kind === 'torbox'}
+        <Cloud size={14} class="text-info" />
+      {:else}
+        <Download size={14} class="text-spool" />
+      {/if}
+      <div class="min-w-0 flex-1">
+        <div class="flex items-center gap-2">
+          <span class="truncate text-[12.5px] font-medium text-ink-0">
+            {activeDownload.game_name}
+          </span>
+          <span
+            class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-3"
+          >
+            via {activeDownload.source_name}
+          </span>
+        </div>
+        <div class="mt-1 h-1 w-full overflow-hidden rounded-full bg-bg-0">
+          <div
+            class="h-full transition-[width] duration-150 ease-out"
+            style:width="{activeDownload.bytes_total > 0 ? pct : 0}%"
+            style:background="var(--color-spool)"
+          ></div>
+        </div>
+        <div
+          class="font-mono mt-1 flex justify-between text-[10px] tracking-[0.04em] text-ink-3"
+        >
+          <span class="min-w-0 truncate" title={activeDownload.current_file}>
+            {activeDownload.current_file || activeDownload.status}
+          </span>
+          <span>
+            {activeDownload.bytes_total > 0
+              ? `${fmtBytes(activeDownload.bytes_done)} / ${fmtBytes(activeDownload.bytes_total)} · ${pct}%`
+              : activeDownload.status}
+          </span>
+        </div>
+      </div>
+      <button
+        type="button"
+        onclick={cancelActiveDownload}
+        aria-label="Cancel download"
+        title="Cancel"
+        class="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-sm border border-line-2 bg-bg-2 text-ink-2 transition-colors hover:border-bad/60 hover:text-bad"
+      >
+        <X size={13} />
+      </button>
+    </div>
+  {/if}
 
   <div class="grid min-h-0 flex-1" style:grid-template-columns="240px 1fr 380px">
     <!-- ── Feed sidebar ──────────────────────────────────────────────── -->
@@ -486,7 +619,7 @@
           <div class="flex-1">
             <Btn
               onclick={() => picked && startDownload(picked.top)}
-              disabled={downloading}
+              disabled={downloadInFlight}
             >
               {#snippet icon()}<Download size={14} />{/snippet}
               Download · best match

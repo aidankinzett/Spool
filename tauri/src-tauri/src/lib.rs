@@ -26,6 +26,7 @@
 //!   - [`steamgriddb`] — cover art fetch
 
 mod accent_backfill;
+mod browse_download;
 mod cli;
 mod config;
 mod error;
@@ -149,6 +150,9 @@ pub fn run() {
         .manage::<LanUploadsState>(LanUploadsState::default())
         .manage::<LanServerShutdown>(LanServerShutdown::default())
         .manage::<SyncStatusState>(SyncStatusState::default())
+        .manage::<browse_download::BrowseDownloadState>(
+            browse_download::BrowseDownloadState::default(),
+        )
         .invoke_handler(tauri::generate_handler![
             take_pending_run,
             // library
@@ -185,6 +189,10 @@ pub fn run() {
             hydra::hydra_fetch_all,
             hydra::hydra_add_source,
             hydra::hydra_remove_source,
+            // browse-games download orchestrator
+            browse_download::start_browse_download,
+            browse_download::cancel_browse_download,
+            browse_download::current_browse_download,
             // lan discovery
             lan::list_lan_peers,
             lan::fetch_peer_games,

@@ -234,6 +234,27 @@ export type BrowseFetchResult = {
 };
 
 /**
+ * In-flight progress for a Browse Games download. Same shape as the
+ * Rust `BrowseDownloadProgress` in browse_download.rs. Emitted on
+ * `browse:download` events; queryable via `currentBrowseDownload`.
+ *
+ *   source_kind  "torbox" | "direct"
+ *   status       starting | queuing | downloading | done | error | canceled
+ */
+export type BrowseDownloadProgress = {
+  install_token: string;
+  source_kind: string;
+  source_name: string;
+  game_name: string;
+  bytes_done: number;
+  bytes_total: number;
+  current_file: string;
+  status: string;
+  message: string | null;
+  dest_path: string | null;
+};
+
+/**
  * Reachability state for the configured sync server. Mirrors the
  * Rust `SyncReachability` in sync.rs.
  *
