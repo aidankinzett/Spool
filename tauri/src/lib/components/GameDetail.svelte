@@ -27,6 +27,7 @@
     Trash2,
   } from '@lucide/svelte';
   import { openPath } from '@tauri-apps/plugin-opener';
+  import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
   import { api, assetUrl } from '$lib/api';
   import { toasts } from '$lib/toasts.svelte';
   import type { GameEntry, RunPhase } from '$lib/types';
@@ -121,6 +122,30 @@
     if (!confirm(`Remove "${game.game_name}" from your library?`)) return;
     await api.removeGame(game.id);
     // library:changed event will cause the parent page to clear selection.
+  }
+
+  /** Opens the Edit Game dialog as a child WebviewWindow. */
+  function openEditGame() {
+    const url = `/edit?id=${encodeURIComponent(game.id)}`;
+    WebviewWindow.getByLabel('edit-game').then((win) => {
+      if (win) {
+        // Reload to point at the newly-selected game in case the user
+        // had it open for another entry.
+        win.setFocus();
+        return;
+      }
+      new WebviewWindow('edit-game', {
+        url,
+        title: `Edit · ${game.game_name}`,
+        width: 720,
+        height: 660,
+        minWidth: 600,
+        minHeight: 480,
+        decorations: false,
+        resizable: true,
+        center: true,
+      });
+    });
   }
 
   let addingToSteam = $state(false);
@@ -320,7 +345,7 @@
       Share on LAN
     </Btn>
     <div class="flex-1"></div>
-    <Btn variant="ghost" disabled>
+    <Btn variant="ghost" onclick={openEditGame}>
       {#snippet icon()}<Pencil size={14} />{/snippet}
       Edit
     </Btn>
