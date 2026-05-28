@@ -44,7 +44,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager, State};
 use std::io::SeekFrom;
-use tokio::io::{AsyncSeekExt, AsyncWriteExt};
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::net::UdpSocket;
 use tokio_util::io::ReaderStream;
 
@@ -215,10 +215,16 @@ impl PeerGame {
 /// File entry in a peer-game manifest. `path` is `/`-separated and
 /// relative to the install root — peers reconstruct local paths by
 /// joining onto their own install dir.
+///
+/// `hash` is the blake3 hex digest of the source file. Empty when the
+/// source hasn't computed one (older peers, or zero-byte files); the
+/// receiver skips verification in that case rather than failing closed.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PeerFile {
     pub path: String,
     pub size: u64,
+    #[serde(default)]
+    pub hash: String,
 }
 
 /// Full transfer manifest for one game. The receiver fetches this
@@ -254,9 +260,17 @@ pub struct PeerGameManifest {
     pub release_date: Option<DateTime<Utc>>,
 }
 
+/// In-memory hash cache keyed by absolute file path. Invalidated by
+/// mtime — if the source file changes the hash is recomputed on the
+/// next manifest fetch. Persistence across process restarts is a
+/// future polish item; for now we re-hash on first manifest after
+/// each launch.
+type HashCache = Arc<Mutex<HashMap<PathBuf, (std::time::SystemTime, String)>>>;
+
 #[derive(Clone)]
 struct ServerState {
     app: AppHandle,
+    hash_cache: HashCache,
 }
 
 /// Binds the HTTP server and starts serving. Returns the actual port it
@@ -288,7 +302,10 @@ async fn start_http_server(app: AppHandle, preferred_port: u16) -> AppResult<u16
         .route("/games", get(get_games_handler))
         .route("/games/:id/manifest", get(get_manifest_handler))
         .route("/games/:id/files/*path", get(get_file_handler))
-        .with_state(ServerState { app });
+        .with_state(ServerState {
+            app,
+            hash_cache: Arc::new(Mutex::new(HashMap::new())),
+        });
 
     // Server runs forever — tokio::spawn detaches it. If the listener dies
     // we just log and stop; no recovery path right now (the user can
@@ -384,7 +401,21 @@ async fn get_manifest_handler(
         return Err(StatusCode::GONE);
     }
 
-    let files = walk_game_files(&folder).map_err(|e| {
+    // Hashing happens here — blake3 is fast but reads every byte on
+    // disk, so move the whole walk + hash off the async runtime via
+    // spawn_blocking. First request for a big game is slow (~1s/GB on
+    // modern hardware); subsequent requests hit the in-memory cache.
+    let cache = state.hash_cache.clone();
+    let walk_folder = folder.clone();
+    let files = tokio::task::spawn_blocking(move || {
+        walk_game_files_with_hashes(&walk_folder, cache)
+    })
+    .await
+    .map_err(|e| {
+        tracing::warn!(game_id = %id, error = %e, "manifest walk task join failed");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?
+    .map_err(|e| {
         tracing::warn!(game_id = %id, error = %e, "manifest walk failed");
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
@@ -536,11 +567,24 @@ fn parse_range_start(value: &str) -> Option<u64> {
 }
 
 /// Recursive walk that turns a folder into a flat list of `PeerFile`
-/// entries. Paths in the manifest are forward-slash and relative to
-/// `root` so the receiver can reconstruct local paths cleanly across
-/// OSes. Symlinks are followed so installs that use junctions
-/// (Windows) or symlinks on Linux still ship the real bytes.
-fn walk_game_files(root: &Path) -> std::io::Result<Vec<PeerFile>> {
+/// entries with blake3 hashes. Paths in the manifest are forward-slash
+/// and relative to `root` so the receiver can reconstruct local paths
+/// cleanly across OSes. Symlinks are followed so installs that use
+/// junctions (Windows) or symlinks on Linux still ship the real bytes.
+///
+/// `cache` is keyed by absolute path → (mtime, hash). Files whose
+/// mtime matches the cache reuse the cached hash; everything else gets
+/// re-hashed and the cache updated. Empty / zero-byte files get an
+/// empty hash (blake3 of zero bytes is a constant — but we skip it to
+/// keep the wire smaller and the receiver's "empty hash = skip" rule
+/// uniform).
+///
+/// This runs on `spawn_blocking` from the manifest handler — it's
+/// synchronous and disk-bound by design.
+fn walk_game_files_with_hashes(
+    root: &Path,
+    cache: HashCache,
+) -> std::io::Result<Vec<PeerFile>> {
     let mut out = Vec::new();
     for entry in walkdir::WalkDir::new(root).follow_links(true) {
         let entry = entry?;
@@ -550,7 +594,6 @@ fn walk_game_files(root: &Path) -> std::io::Result<Vec<PeerFile>> {
         let rel = entry.path().strip_prefix(root).map_err(|e| {
             std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string())
         })?;
-        // Normalise to forward slashes — the manifest is wire format.
         let rel_str = rel
             .components()
             .filter_map(|c| match c {
@@ -562,13 +605,58 @@ fn walk_game_files(root: &Path) -> std::io::Result<Vec<PeerFile>> {
         if rel_str.is_empty() {
             continue;
         }
-        let size = entry.metadata()?.len();
+        let metadata = entry.metadata()?;
+        let size = metadata.len();
+        let mtime = metadata.modified().ok();
+
+        // Cache lookup keyed on the absolute path. Mtime mismatch
+        // invalidates so we always serve a hash that matches what we'd
+        // stream right now.
+        let abs = entry.path().to_path_buf();
+        let cached = match (mtime, cache.lock().ok()) {
+            (Some(mt), Some(g)) => g
+                .get(&abs)
+                .filter(|(cached_mt, _)| *cached_mt == mt)
+                .map(|(_, h)| h.clone()),
+            _ => None,
+        };
+
+        let hash = if size == 0 {
+            String::new()
+        } else if let Some(h) = cached {
+            h
+        } else {
+            let h = hash_file_blocking(&abs)?;
+            if let (Some(mt), Ok(mut g)) = (mtime, cache.lock()) {
+                g.insert(abs.clone(), (mt, h.clone()));
+            }
+            h
+        };
+
         out.push(PeerFile {
             path: rel_str,
             size,
+            hash,
         });
     }
     Ok(out)
+}
+
+/// blake3 hex digest of a file. Reads in 64 KiB chunks; total memory
+/// is a single buffer + hasher state regardless of file size.
+fn hash_file_blocking(path: &Path) -> std::io::Result<String> {
+    use std::io::Read;
+    let mut file = std::fs::File::open(path)?;
+    let mut hasher = blake3::Hasher::new();
+    let mut buf = vec![0u8; 64 * 1024];
+    loop {
+        let n = file.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(hasher.finalize().to_hex().to_string())
 }
 
 /// Joins `rel` onto `root`, refusing anything that could escape (parent
@@ -1352,6 +1440,33 @@ async fn download_one_file(
         bytes_done.fetch_add(resume_from, Ordering::Relaxed);
     }
 
+    // Hasher running in parallel with disk writes. When the source
+    // didn't include a hash (older peer, empty file), `expected` stays
+    // empty and we skip verification on the way out.
+    let expected = file.hash.clone();
+    let verify = !expected.is_empty();
+    let mut hasher = blake3::Hasher::new();
+    if verify && appending && resume_from > 0 {
+        // Pre-seed the hasher with the already-on-disk prefix so the
+        // final digest covers the whole file (not just the tail we
+        // just downloaded). One sequential read; modest cost vs. the
+        // alternative of re-downloading everything from byte 0.
+        let mut existing = tokio::fs::File::open(&target)
+            .await
+            .map_err(|e| AppError::Other(format!("open existing {target:?}: {e}")))?;
+        let mut buf = vec![0u8; 64 * 1024];
+        loop {
+            let n = existing
+                .read(&mut buf)
+                .await
+                .map_err(|e| AppError::Other(format!("read existing {target:?}: {e}")))?;
+            if n == 0 {
+                break;
+            }
+            hasher.update(&buf[..n]);
+        }
+    }
+
     // Surface "now starting this file" — racy with sibling tasks; that's
     // fine, the UI just shows one representative file name.
     if let Some(snap) = app.state::<LanDownloadState>().update(|p| {
@@ -1371,6 +1486,9 @@ async fn download_one_file(
             return Err(AppError::Other(CANCELED_MSG.into()));
         }
         let chunk = chunk.map_err(|e| AppError::Other(format!("recv chunk: {e}")))?;
+        if verify {
+            hasher.update(&chunk);
+        }
         out.write_all(&chunk)
             .await
             .map_err(|e| AppError::Other(format!("write {target:?}: {e}")))?;
@@ -1380,6 +1498,21 @@ async fn download_one_file(
     out.flush()
         .await
         .map_err(|e| AppError::Other(format!("flush {target:?}: {e}")))?;
+    drop(out);
+
+    // Verify the digest. On mismatch we delete the corrupt file so the
+    // next attempt re-fetches from scratch — leaving a wrong-bytes
+    // file in `.partial` would just trigger the same failure forever.
+    if verify {
+        let actual = hasher.finalize().to_hex().to_string();
+        if actual != expected {
+            let _ = tokio::fs::remove_file(&target).await;
+            return Err(AppError::Other(format!(
+                "checksum mismatch for {} — expected {}, got {}",
+                file.path, expected, actual
+            )));
+        }
+    }
     Ok(())
 }
 
