@@ -80,12 +80,36 @@ jobs:
         working-directory: tauri
         run: bun run lint
 
+      - name: Frontend tests
+        working-directory: tauri
+        run: bun run test
+
       - name: Tauri build (no bundle)
         working-directory: tauri
         # Smoke-test that the full app builds end-to-end (frontend +
         # backend). Skip bundle generation to keep CI fast — `release.yml`
         # is responsible for producing artifacts.
         run: bun run tauri build --no-bundle
+
+  # Sync-server unit tests. Lightweight and platform-independent, so it
+  # runs on Ubuntu in its own job rather than bloating the Windows build.
+  server:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.x"
+
+      - name: Install server dependencies
+        working-directory: server
+        run: bun install --frozen-lockfile
+
+      - name: Server tests
+        working-directory: server
+        run: bun run test
 
   # Mirrors the `build-linux` job in release.yml so the rust-cache key
   # matches. On master pushes this populates the Linux cache; on tag
