@@ -90,6 +90,12 @@
   // the UI tracks the latest event payload + uses it to drive the
   // Install button states inside the peer view.
   let activeDownload = $state<DownloadProgress | null>(null);
+  // ID of the game whose `start_peer_install` call is currently
+  // awaiting the manifest. The backend can sit on this for tens of
+  // seconds while it blake3-hashes a large game folder on first
+  // request; we surface that as a spinner on the Install button so
+  // the click feels responsive.
+  let startingGameId = $state<string | null>(null);
   // Active uploads — peers currently downloading FROM us. The host
   // side of LAN sharing.
   let activeUploads = $state<UploadSnapshot[]>([]);
@@ -333,6 +339,7 @@
       });
       return;
     }
+    startingGameId = game.id;
     try {
       await api.startPeerInstall(peer.addr, peer.file_server_port, game.id);
       toasts.show({
@@ -348,6 +355,8 @@
         title: 'Install failed to start',
         sub: String(e),
       });
+    } finally {
+      if (startingGameId === game.id) startingGameId = null;
     }
   }
 
@@ -722,10 +731,12 @@
                   : null}
               {@const inflight =
                 dl && (dl.status === 'starting' || dl.status === 'transferring')}
+              {@const starting = startingGameId === game.id}
               {@const busy =
-                activeDownload &&
-                (activeDownload.status === 'starting' ||
-                  activeDownload.status === 'transferring')}
+                !!startingGameId ||
+                (activeDownload &&
+                  (activeDownload.status === 'starting' ||
+                    activeDownload.status === 'transferring'))}
               <li class="flex items-start gap-2.5 px-3.5 py-2">
                 <div class="min-w-0 flex-1">
                   <div class="truncate text-[12.5px] text-ink-0" title={game.game_name}>
@@ -780,13 +791,20 @@
                     disabled={!game.shareable || !!busy}
                     title={!game.shareable
                       ? 'Source peer has no install folder configured'
-                      : busy
-                        ? 'Another install is in progress'
-                        : 'Install on this device'}
+                      : starting
+                        ? 'Fetching manifest from peer…'
+                        : busy
+                          ? 'Another install is in progress'
+                          : 'Install on this device'}
                     class="inline-flex h-7 shrink-0 items-center gap-1 rounded-sm border border-line-2 bg-bg-2 px-2 text-[11px] text-ink-1 transition-colors enabled:hover:border-line-3 enabled:hover:text-ink-0 disabled:cursor-not-allowed disabled:opacity-50"
                   >
-                    <Download size={11} />
-                    Install
+                    {#if starting}
+                      <Loader2 size={11} class="animate-[spool-spin_1s_linear_infinite]" />
+                      Starting…
+                    {:else}
+                      <Download size={11} />
+                      Install
+                    {/if}
                   </button>
                 {:else if dl}
                   <button
