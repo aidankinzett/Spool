@@ -627,9 +627,12 @@ async fn get_file_handler(
     };
 
     let abs = safe_join(&folder, &rel_path).ok_or(StatusCode::BAD_REQUEST)?;
-    if !abs.is_file() {
-        return Err(StatusCode::NOT_FOUND);
-    }
+    // Stat asynchronously — per `domain-web`, web handlers must not
+    // block. The metadata call doubles as our existence check.
+    let metadata = match tokio::fs::metadata(&abs).await {
+        Ok(m) if m.is_file() => m,
+        _ => return Err(StatusCode::NOT_FOUND),
+    };
 
     // Host-side cancel check — if the user clicked Cancel on this
     // session in the uploads UI, this request gets 410 Gone so the
@@ -660,9 +663,6 @@ async fn get_file_handler(
         }
     }
 
-    let metadata = tokio::fs::metadata(&abs)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let total_len = metadata.len();
 
     // Parse a Range header if present. We accept just `bytes=N-` —
@@ -775,10 +775,14 @@ async fn serve_artwork_path(
             _ => return Err(StatusCode::NOT_FOUND),
         }
     };
-    if !path.is_file() {
-        return Err(StatusCode::NOT_FOUND);
+    // Existence check via async stat — handlers must not block.
+    // Then read async. `tokio::fs::read` itself fails on missing
+    // file, but the explicit check distinguishes "not found" (404)
+    // from a real I/O error (500).
+    match tokio::fs::metadata(&path).await {
+        Ok(m) if m.is_file() => {}
+        _ => return Err(StatusCode::NOT_FOUND),
     }
-
     let bytes = tokio::fs::read(&path)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -2258,7 +2262,7 @@ async fn fetch_peer_artwork(
     };
 
     let covers_dir = paths::covers_dir();
-    if std::fs::create_dir_all(&covers_dir).is_err() {
+    if tokio::fs::create_dir_all(&covers_dir).await.is_err() {
         return false;
     }
 
@@ -2333,6 +2337,6 @@ async fn fetch_and_save_peer_image(
     let ext = crate::steamgriddb::mime_to_ext(&mime).unwrap_or("jpg");
     let bytes = resp.bytes().await.ok()?;
     let path = dir.join(format!("{safe_name}{suffix}.{ext}"));
-    std::fs::write(&path, &bytes).ok()?;
+    tokio::fs::write(&path, &bytes).await.ok()?;
     Some(path)
 }
