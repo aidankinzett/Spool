@@ -51,6 +51,8 @@ export const api = {
     invoke('start_peer_install', { peerAddr, peerPort, gameId }),
   currentPeerDownload: (): Promise<DownloadProgress | null> =>
     invoke('current_peer_download'),
+  cancelPeerInstall: (installToken: string): Promise<boolean> =>
+    invoke('cancel_peer_install', { installToken }),
 
   // Run workflow
   launchGame: (gameId: string): Promise<void> => invoke('launch_game', { gameId }),

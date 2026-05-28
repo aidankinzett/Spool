@@ -39,7 +39,7 @@ use socket2::{Domain, Protocol, Socket, Type};
 use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::{Component, Path, PathBuf};
-use std::sync::atomic::{AtomicU16, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -174,11 +174,16 @@ pub struct PeerGame {
 
 impl PeerGame {
     fn from_entry(g: &GameEntry) -> Self {
-        let shareable = g
+        // Shareable iff the user opted the game in AND we have a real
+        // folder on disk to stream from. `lan_shared` is set via the
+        // Edit dialog's Sharing tab; default is `false` so newly-added
+        // games are private until the user explicitly flips them on.
+        let has_folder = g
             .game_folder_path
             .as_ref()
             .map(|p| !p.is_empty() && Path::new(p).is_dir())
             .unwrap_or(false);
+        let shareable = g.lan_shared && has_folder;
         Self {
             id: g.id.clone(),
             catalog_number: g.catalog_number,
@@ -307,11 +312,17 @@ async fn get_games_handler(
         return Ok(Json(Vec::new()));
     }
 
+    // Only catalogue games the user has explicitly opted in to sharing.
+    // `from_entry` already encodes the `shareable` flag — we filter the
+    // wire payload to just those so non-shared games stay private. The
+    // user's local library can have hundreds of entries; LAN browsing
+    // should only see what was deliberately offered.
     let games: Vec<PeerGame> = library
         .lock()
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         .entries
         .iter()
+        .filter(|g| g.lan_shared)
         .map(PeerGame::from_entry)
         .collect();
     Ok(Json(games))
@@ -348,6 +359,12 @@ async fn get_manifest_handler(
         .find(&id)
         .cloned()
         .ok_or(StatusCode::NOT_FOUND)?;
+
+    // Per-game opt-in. Return 404 (not 403) so the existence of the id
+    // doesn't leak across the lan_shared boundary.
+    if !entry.lan_shared {
+        return Err(StatusCode::NOT_FOUND);
+    }
 
     let folder = match entry.game_folder_path.as_ref() {
         Some(p) if !p.is_empty() => PathBuf::from(p),
@@ -414,6 +431,11 @@ async fn get_file_handler(
             .lock()
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
         let entry = lib.find(&id).ok_or(StatusCode::NOT_FOUND)?;
+        // Re-check the opt-in — a user could flip `lan_shared` off
+        // mid-transfer and we honour that on the next file request.
+        if !entry.lan_shared {
+            return Err(StatusCode::NOT_FOUND);
+        }
         match entry.game_folder_path.as_ref() {
             Some(p) if !p.is_empty() => PathBuf::from(p),
             _ => return Err(StatusCode::GONE),
@@ -792,10 +814,23 @@ pub struct DownloadProgress {
 /// one transfer at a time keeps the UX (and bandwidth) predictable,
 /// and the next phase can lift this to a HashMap if multi-download
 /// becomes a real ask.
+///
+/// The `cancel_flag` lets the user abort an in-flight install. The
+/// download loop polls it between chunks and between files, so cancel
+/// is cooperative — the partial dir gets cleaned up on the way out
+/// rather than left as orphan junk.
 #[derive(Default)]
 pub struct LanDownloadState {
     current: Mutex<Option<DownloadProgress>>,
+    cancel_flag: AtomicBool,
 }
+
+/// Sentinel error returned by `run_install` when the user cancelled.
+/// We use a string sentinel rather than a new `AppError` variant so the
+/// `?` operator throughout the install loop keeps working. The spawn
+/// handler matches on this string to emit `status: "canceled"` rather
+/// than `"error"`.
+const CANCELED_MSG: &str = "canceled by user";
 
 impl LanDownloadState {
     fn try_start(&self, p: DownloadProgress) -> AppResult<DownloadGuard<'_>> {
@@ -805,8 +840,34 @@ impl LanDownloadState {
                 "Another LAN install is already in progress".into(),
             ));
         }
+        // Reset the cancel flag for the fresh install — any lingering
+        // `true` from a previous cancelled run would otherwise abort us
+        // immediately.
+        self.cancel_flag.store(false, Ordering::Relaxed);
         *guard = Some(p);
         Ok(DownloadGuard { state: self })
+    }
+
+    /// Marks the current install as cancelled iff `token` matches. The
+    /// download loop will notice on its next poll and abort cleanly.
+    /// Returns true if a cancel was actually requested (token matched
+    /// an in-flight install).
+    fn request_cancel(&self, token: &str) -> bool {
+        let guard = match self.current.lock() {
+            Ok(g) => g,
+            Err(_) => return false,
+        };
+        match guard.as_ref() {
+            Some(p) if p.install_token == token => {
+                self.cancel_flag.store(true, Ordering::Relaxed);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn is_canceled(&self) -> bool {
+        self.cancel_flag.load(Ordering::Relaxed)
     }
 
     fn snapshot(&self) -> Option<DownloadProgress> {
@@ -946,6 +1007,19 @@ pub fn current_peer_download(state: State<'_, LanDownloadState>) -> Option<Downl
     state.snapshot()
 }
 
+/// Requests cancellation of an in-flight install. The download task
+/// polls the cancel flag between chunks, cleans up its `.partial` dir,
+/// then emits a final `lan:download` with `status: "canceled"`. Returns
+/// `true` if the token matched an active install, `false` if there was
+/// nothing to cancel (no in-flight transfer, or different token).
+#[tauri::command]
+pub fn cancel_peer_install(
+    state: State<'_, LanDownloadState>,
+    install_token: String,
+) -> bool {
+    state.request_cancel(&install_token)
+}
+
 /// Kicks off a peer install. Acquires the single-slot guard, fetches
 /// the manifest, streams every file to a `.partial` staging dir, then
 /// renames into place and registers a new library entry. Progress is
@@ -1045,19 +1119,40 @@ pub async fn start_peer_install(
                 new_game_id: Some(new_id),
             },
             Err(e) => {
-                tracing::warn!(game = %manifest.game_name, error = %e, "LAN install failed");
-                DownloadProgress {
-                    install_token: install_token.clone(),
-                    source_device_id: manifest.source_device_id.clone(),
-                    source_device_name: manifest.source_device_name.clone(),
-                    source_game_id: manifest.game_id.clone(),
-                    game_name: manifest.game_name.clone(),
-                    bytes_done: 0,
-                    bytes_total: manifest.total_bytes,
-                    current_file: String::new(),
-                    status: "error".into(),
-                    message: Some(e.to_string()),
-                    new_game_id: None,
+                // Cancellation produces a sentinel error; distinguish it
+                // so the UI can show "Cancelled" rather than a scary red
+                // error toast.
+                let msg = e.to_string();
+                if msg == CANCELED_MSG {
+                    tracing::info!(game = %manifest.game_name, "LAN install cancelled");
+                    DownloadProgress {
+                        install_token: install_token.clone(),
+                        source_device_id: manifest.source_device_id.clone(),
+                        source_device_name: manifest.source_device_name.clone(),
+                        source_game_id: manifest.game_id.clone(),
+                        game_name: manifest.game_name.clone(),
+                        bytes_done: 0,
+                        bytes_total: manifest.total_bytes,
+                        current_file: String::new(),
+                        status: "canceled".into(),
+                        message: None,
+                        new_game_id: None,
+                    }
+                } else {
+                    tracing::warn!(game = %manifest.game_name, error = %msg, "LAN install failed");
+                    DownloadProgress {
+                        install_token: install_token.clone(),
+                        source_device_id: manifest.source_device_id.clone(),
+                        source_device_name: manifest.source_device_name.clone(),
+                        source_game_id: manifest.game_id.clone(),
+                        game_name: manifest.game_name.clone(),
+                        bytes_done: 0,
+                        bytes_total: manifest.total_bytes,
+                        current_file: String::new(),
+                        status: "error".into(),
+                        message: Some(msg),
+                        new_game_id: None,
+                    }
                 }
             }
         };
@@ -1118,6 +1213,13 @@ async fn run_install(
     let mut last_emit = Instant::now() - Duration::from_secs(1);
 
     for file in &manifest.files {
+        // Bail before opening a new file if the user has cancelled. The
+        // partial dir gets cleaned up below.
+        if download_state.is_canceled() {
+            let _ = tokio::fs::remove_dir_all(&partial_dir).await;
+            return Err(AppError::Other(CANCELED_MSG.into()));
+        }
+
         // Re-anchor on each file so progress shows the current name.
         download_state.update(|p| {
             p.status = "transferring".into();
@@ -1166,6 +1268,16 @@ async fn run_install(
             .map_err(|e| AppError::Other(format!("create {target:?}: {e}")))?;
         let mut stream = resp.bytes_stream();
         while let Some(chunk) = stream.next().await {
+            // Poll for cancellation between chunks so we abort mid-file
+            // rather than locking the user into "wait for the current
+            // multi-GB file to finish".
+            if download_state.is_canceled() {
+                // Drop the open file before removing the dir on Windows
+                // — locked handles will block the recursive delete.
+                drop(out);
+                let _ = tokio::fs::remove_dir_all(&partial_dir).await;
+                return Err(AppError::Other(CANCELED_MSG.into()));
+            }
             let chunk = chunk.map_err(|e| AppError::Other(format!("recv chunk: {e}")))?;
             out.write_all(&chunk)
                 .await

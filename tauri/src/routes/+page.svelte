@@ -26,6 +26,7 @@
     Search,
     Settings,
     Wifi,
+    X,
   } from '@lucide/svelte';
   import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
   import { listen } from '@tauri-apps/api/event';
@@ -180,6 +181,18 @@
     peerGamesError = null;
   }
 
+  /** Asks the backend to cancel the active install. The download task
+   *  cleans up its `.partial` dir before emitting the final
+   *  `status: "canceled"` event, which we surface as a toast.  */
+  async function cancelActiveInstall() {
+    if (!activeDownload) return;
+    try {
+      await api.cancelPeerInstall(activeDownload.install_token);
+    } catch (e) {
+      console.error('[lan] cancel install failed:', e);
+    }
+  }
+
   /** Kicks off a LAN install for the given peer + game. */
   async function installFromPeer(peer: LanPeer, game: PeerGame) {
     if (activeDownload && activeDownload.status !== 'done' && activeDownload.status !== 'error') {
@@ -301,6 +314,13 @@
           label: 'LAN',
           title: 'Install failed',
           sub: p.message ?? `${p.game_name} could not be installed`,
+        });
+      } else if (p.status === 'canceled') {
+        toasts.show({
+          kind: 'info',
+          label: 'LAN',
+          title: 'Install cancelled',
+          sub: `${p.game_name} · partial files cleaned up`,
         });
       }
     })
@@ -538,10 +558,15 @@
                     Install
                   </button>
                 {:else if dl}
-                  <Loader2
-                    size={13}
-                    class="mt-1 shrink-0 animate-[spool-spin_1s_linear_infinite] text-ink-2"
-                  />
+                  <button
+                    type="button"
+                    onclick={cancelActiveInstall}
+                    aria-label="Cancel install"
+                    title="Cancel install"
+                    class="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-sm border border-line-2 bg-bg-2 text-ink-2 transition-colors hover:border-bad/60 hover:text-bad"
+                  >
+                    <X size={13} />
+                  </button>
                 {/if}
               </li>
             {/each}

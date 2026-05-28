@@ -69,6 +69,35 @@
       await persist();
     }
   }
+
+  async function browseLanInstallDir() {
+    const picked = await openDialog({
+      title: 'Pick the LAN install folder',
+      directory: true,
+      multiple: false,
+    });
+    if (typeof picked === 'string' && config) {
+      config.lan_install_dir = picked;
+      await persist();
+    }
+  }
+
+  /**
+   * Validates the LAN port input. Empty / invalid → fall back to 47632
+   * (the default). The HTTP server's bind logic already falls back to
+   * ephemeral on collision so the only real failure mode here is a
+   * non-numeric string — which the type="number" input mostly prevents.
+   */
+  function onLanPortCommit() {
+    if (!config) return;
+    if (!Number.isFinite(config.lan_share_port) || config.lan_share_port < 1024) {
+      config.lan_share_port = 47632;
+    }
+    if (config.lan_share_port > 65535) {
+      config.lan_share_port = 65535;
+    }
+    persist();
+  }
 </script>
 
 <div class="flex h-screen flex-col bg-bg-0 text-ink-0">
@@ -162,6 +191,72 @@
                   placeholder="Workshop · Desktop"
                   oncommit={persist}
                 />
+              {/snippet}
+            </SettingsRow>
+          </SettingsCard>
+
+          <SettingsCard title="Sharing">
+            <!-- LAN toggle -->
+            <SettingsRow
+              title="Share over LAN"
+              subtitle="Let other Spool devices on your network see this device and the games you flag for sharing."
+            >
+              {#snippet control()}
+                <Toggle
+                  bind:checked={config!.lan_share_enabled}
+                  onchange={persist}
+                  aria-label="LAN sharing enabled"
+                />
+              {/snippet}
+            </SettingsRow>
+
+            {#if config.lan_share_enabled}
+              <!-- Port -->
+              <SettingsRow
+                title="HTTP port"
+                subtitle="The transfer server's preferred port. Falls back to a random port if taken."
+              >
+                {#snippet control()}
+                  <input
+                    type="number"
+                    min="1024"
+                    max="65535"
+                    bind:value={config!.lan_share_port}
+                    onblur={onLanPortCommit}
+                    class="font-mono h-7 w-24 rounded-sm border border-line-1 bg-bg-2 px-2 text-right text-[12px] text-ink-0 outline-none focus:border-line-3"
+                  />
+                {/snippet}
+              </SettingsRow>
+
+              <!-- Install dir -->
+              <SettingsRow
+                title="Install folder"
+                subtitle="Where games downloaded from peers land. Default: %LOCALAPPDATA%\Spool\lan-games."
+              >
+                {#snippet extras()}
+                  <TextField
+                    bind:value={config!.lan_install_dir}
+                    placeholder="(default · lan-games inside Spool app data)"
+                    mono
+                    full
+                    oncommit={persist}
+                  />
+                  <Btn variant="ghost" onclick={browseLanInstallDir}>
+                    {#snippet icon()}<Folder size={14} />{/snippet}
+                    Browse
+                  </Btn>
+                {/snippet}
+              </SettingsRow>
+            {/if}
+
+            <SettingsRow
+              title="Per-game opt-in"
+              subtitle="Open a game's Edit dialog → Sharing tab to flag it for LAN sharing. Off by default."
+            >
+              {#snippet control()}
+                <span class="font-mono text-[10px] uppercase tracking-[0.12em] text-ink-3">
+                  Per game
+                </span>
               {/snippet}
             </SettingsRow>
           </SettingsCard>

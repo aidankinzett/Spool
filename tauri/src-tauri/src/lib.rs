@@ -139,6 +139,7 @@ pub fn run() {
             lan::fetch_peer_games,
             lan::start_peer_install,
             lan::current_peer_download,
+            lan::cancel_peer_install,
             // runner
             runner::launch_game,
         ])

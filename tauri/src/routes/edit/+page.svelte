@@ -32,7 +32,7 @@
   import TextField from '$lib/components/TextField.svelte';
   import Toggle from '$lib/components/Toggle.svelte';
 
-  type Tab = 'identity' | 'install' | 'launch';
+  type Tab = 'identity' | 'install' | 'launch' | 'sharing';
 
   let original = $state<GameEntry | null>(null);
   let form = $state<GameEntry | null>(null);
@@ -50,9 +50,16 @@
       form.game_name !== original.game_name ||
       form.exe_path !== original.exe_path ||
       (form.game_folder_path ?? '') !== (original.game_folder_path ?? '') ||
-      form.run_as_admin !== original.run_as_admin
+      form.run_as_admin !== original.run_as_admin ||
+      form.lan_shared !== original.lan_shared
     );
   });
+
+  // Sharing tab gating: a game can only be flagged for LAN sharing if it
+  // has a real install folder for the server to stream from.
+  const hasFolder = $derived(
+    !!form && (form.game_folder_path ?? '').length > 0,
+  );
 
   onMount(async () => {
     try {
@@ -170,6 +177,7 @@
     { id: 'identity', label: 'Identity' },
     { id: 'install', label: 'Install' },
     { id: 'launch', label: 'Launch' },
+    { id: 'sharing', label: 'Sharing' },
   ];
 </script>
 
@@ -325,6 +333,39 @@
           {/snippet}
           {#snippet launchSoon()}
             <span class="text-[11.5px] text-ink-3">—</span>
+          {/snippet}
+        {:else if tab === 'sharing'}
+          {@render field(
+            'Share over LAN',
+            hasFolder
+              ? "When on, other Spool devices on your network can install this game from you."
+              : "Set an install folder on the Install tab first — there's nothing to stream without it.",
+            sharingToggle,
+          )}
+          {@render field(
+            'Visible to peers',
+            'Peers see the title, catalog number, developer, and install size. They never see local file paths.',
+            sharingVisibility,
+          )}
+
+          {#snippet sharingToggle()}
+            <div class="flex flex-col gap-1.5">
+              <Toggle
+                bind:checked={form!.lan_shared}
+                disabled={!hasFolder}
+                aria-label="Share this game over LAN"
+              />
+              {#if !hasFolder && form!.lan_shared}
+                <span class="font-mono text-[10px] uppercase tracking-[0.12em] text-warn">
+                  Folder required
+                </span>
+              {/if}
+            </div>
+          {/snippet}
+          {#snippet sharingVisibility()}
+            <span class="text-[11.5px] text-ink-2">
+              Title · Catalog # · Developer · Publisher · Genres · Install size · Save metadata
+            </span>
           {/snippet}
         {/if}
       </div>

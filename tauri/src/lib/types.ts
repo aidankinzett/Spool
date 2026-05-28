@@ -152,6 +152,7 @@ export type PeerGame = {
  *   transferring   → bytes flowing; `current_file` + `bytes_done` updating
  *   done           → install complete; `new_game_id` points at the new entry
  *   error          → install aborted; see `message`
+ *   canceled       → user pressed Cancel; partial dir already cleaned up
  */
 export type DownloadProgress = {
   install_token: string;
@@ -162,7 +163,7 @@ export type DownloadProgress = {
   bytes_done: number;
   bytes_total: number;
   current_file: string;
-  status: 'starting' | 'transferring' | 'done' | 'error';
+  status: 'starting' | 'transferring' | 'done' | 'error' | 'canceled';
   message: string | null;
   new_game_id: string | null;
 };
