@@ -136,6 +136,35 @@ export type PeerGame = {
   steam_id: number | null;
   gog_id: number | null;
   lutris_slug: string | null;
+  /** True if the source peer can actually stream this game. False entries
+   *  appear in the catalogue for transparency but the Install button is
+   *  disabled — usually means the peer hasn't set `game_folder_path`. */
+  shareable: boolean;
+};
+
+/**
+ * One in-flight (or just-finished) LAN install. Emitted as `lan:download`
+ * events and also returned by `current_peer_download` for late-mount
+ * catch-up. Mirrors the Rust `DownloadProgress` struct in lan.rs.
+ *
+ * Status values:
+ *   starting       → manifest fetched, transfer about to begin
+ *   transferring   → bytes flowing; `current_file` + `bytes_done` updating
+ *   done           → install complete; `new_game_id` points at the new entry
+ *   error          → install aborted; see `message`
+ */
+export type DownloadProgress = {
+  install_token: string;
+  source_device_id: string;
+  source_device_name: string;
+  source_game_id: string;
+  game_name: string;
+  bytes_done: number;
+  bytes_total: number;
+  current_file: string;
+  status: 'starting' | 'transferring' | 'done' | 'error';
+  message: string | null;
+  new_game_id: string | null;
 };
 
 /** Result returned by `add_to_steam`. Mirrors `AddToSteamResult` in steam.rs. */

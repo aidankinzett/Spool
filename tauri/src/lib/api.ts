@@ -7,6 +7,7 @@ import { invoke, convertFileSrc } from '@tauri-apps/api/core';
 import type {
   AddToSteamResult,
   ConfigData,
+  DownloadProgress,
   GameEntry,
   LanPeer,
   NewGame,
@@ -42,6 +43,14 @@ export const api = {
   listLanPeers: (): Promise<LanPeer[]> => invoke('list_lan_peers'),
   fetchPeerGames: (addr: string, port: number): Promise<PeerGame[]> =>
     invoke('fetch_peer_games', { addr, port }),
+  startPeerInstall: (
+    peerAddr: string,
+    peerPort: number,
+    gameId: string,
+  ): Promise<string> =>
+    invoke('start_peer_install', { peerAddr, peerPort, gameId }),
+  currentPeerDownload: (): Promise<DownloadProgress | null> =>
+    invoke('current_peer_download'),
 
   // Run workflow
   launchGame: (gameId: string): Promise<void> => invoke('launch_game', { gameId }),

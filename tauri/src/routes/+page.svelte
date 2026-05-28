@@ -17,13 +17,29 @@
    * entry vanishes, falls back to the first remaining game.
    */
   import { onMount } from 'svelte';
-  import { ArrowLeft, ChevronRight, Loader2, Plus, Search, Settings, Wifi } from '@lucide/svelte';
+  import {
+    ArrowLeft,
+    ChevronRight,
+    Download,
+    Loader2,
+    Plus,
+    Search,
+    Settings,
+    Wifi,
+  } from '@lucide/svelte';
   import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
   import { listen } from '@tauri-apps/api/event';
   import { api, assetUrl } from '$lib/api';
   import { fmtCatalog, relDate } from '$lib/format';
   import { toasts } from '$lib/toasts.svelte';
-  import type { GameEntry, LanPeer, PeerGame, RunPhase, RunPhaseEvent } from '$lib/types';
+  import type {
+    DownloadProgress,
+    GameEntry,
+    LanPeer,
+    PeerGame,
+    RunPhase,
+    RunPhaseEvent,
+  } from '$lib/types';
   import WindowChrome from '$lib/components/WindowChrome.svelte';
   import MonoLabel from '$lib/components/MonoLabel.svelte';
   import GameDetail from '$lib/components/GameDetail.svelte';
@@ -57,6 +73,10 @@
   let peerGames = $state<PeerGame[]>([]);
   let peerGamesLoading = $state(false);
   let peerGamesError = $state<string | null>(null);
+  // In-flight LAN install. The backend serialises to one at a time;
+  // the UI tracks the latest event payload + uses it to drive the
+  // Install button states inside the peer view.
+  let activeDownload = $state<DownloadProgress | null>(null);
 
   function openContextMenu(e: MouseEvent, g: GameEntry) {
     e.preventDefault();
@@ -111,6 +131,7 @@
   let unlistenRunPhase: (() => void) | undefined;
   let unlistenTrayIntro: (() => void) | undefined;
   let unlistenLanPeers: (() => void) | undefined;
+  let unlistenLanDownload: (() => void) | undefined;
 
   async function refreshLanPeers() {
     try {
@@ -157,6 +178,36 @@
     openPeer = null;
     peerGames = [];
     peerGamesError = null;
+  }
+
+  /** Kicks off a LAN install for the given peer + game. */
+  async function installFromPeer(peer: LanPeer, game: PeerGame) {
+    if (activeDownload && activeDownload.status !== 'done' && activeDownload.status !== 'error') {
+      // Backend would reject too, but a friendly toast saves the round-trip.
+      toasts.show({
+        kind: 'warn',
+        label: 'LAN',
+        title: 'Another install is in progress',
+        sub: `Finish ${activeDownload.game_name} first.`,
+      });
+      return;
+    }
+    try {
+      await api.startPeerInstall(peer.addr, peer.file_server_port, game.id);
+      toasts.show({
+        kind: 'info',
+        label: 'LAN',
+        title: 'Install started',
+        sub: `${game.game_name} · from ${peer.device_name}`,
+      });
+    } catch (e) {
+      toasts.show({
+        kind: 'bad',
+        label: 'LAN',
+        title: 'Install failed to start',
+        sub: String(e),
+      });
+    }
   }
 
   onMount(() => {
@@ -224,6 +275,38 @@
       .then((fn) => (unlistenLanPeers = fn))
       .catch((e) => console.error('[lan] peers listener failed:', e));
 
+    // LAN download progress — pick up any in-flight install on mount,
+    // then track live via events. Terminal states drive a toast.
+    api
+      .currentPeerDownload()
+      .then((p) => {
+        if (p) activeDownload = p;
+      })
+      .catch((e) => console.error('[lan] currentPeerDownload failed:', e));
+    listen<DownloadProgress>('lan:download', (event) => {
+      const p = event.payload;
+      const prevToken = activeDownload?.install_token;
+      activeDownload = p;
+      // Surface terminal states once.
+      if (p.status === 'done' && p.install_token !== prevToken) {
+        toasts.show({
+          kind: 'ok',
+          label: 'LAN',
+          title: 'Install complete',
+          sub: `${p.game_name} · from ${p.source_device_name}`,
+        });
+      } else if (p.status === 'error') {
+        toasts.show({
+          kind: 'bad',
+          label: 'LAN',
+          title: 'Install failed',
+          sub: p.message ?? `${p.game_name} could not be installed`,
+        });
+      }
+    })
+      .then((fn) => (unlistenLanDownload = fn))
+      .catch((e) => console.error('[lan] download listener failed:', e));
+
     document.addEventListener('mousedown', handleLanOutside, true);
 
     return () => {
@@ -231,6 +314,7 @@
       unlistenRunPhase?.();
       unlistenTrayIntro?.();
       unlistenLanPeers?.();
+      unlistenLanDownload?.();
       document.removeEventListener('mousedown', handleLanOutside, true);
     };
   });
@@ -379,6 +463,19 @@
         {:else}
           <ul class="max-h-[360px] overflow-y-auto py-1">
             {#each peerGames as game (game.id)}
+              {@const dl =
+                activeDownload &&
+                activeDownload.source_game_id === game.id &&
+                openPeer &&
+                activeDownload.source_device_id === openPeer.device_id
+                  ? activeDownload
+                  : null}
+              {@const inflight =
+                dl && (dl.status === 'starting' || dl.status === 'transferring')}
+              {@const busy =
+                activeDownload &&
+                (activeDownload.status === 'starting' ||
+                  activeDownload.status === 'transferring')}
               <li class="flex items-start gap-2.5 px-3.5 py-2">
                 <div class="min-w-0 flex-1">
                   <div class="truncate text-[12.5px] text-ink-0" title={game.game_name}>
@@ -399,13 +496,59 @@
                       </span>
                     {/if}
                   </div>
+                  {#if inflight && dl}
+                    <div class="mt-1.5">
+                      <div class="h-1 w-full overflow-hidden rounded-full bg-bg-2">
+                        <div
+                          class="h-full transition-[width] duration-150 ease-out"
+                          style:width={dl.bytes_total > 0
+                            ? Math.min(100, (dl.bytes_done / dl.bytes_total) * 100) + '%'
+                            : '0%'}
+                          style:background="var(--color-spool)"
+                        ></div>
+                      </div>
+                      <div
+                        class="font-mono mt-1 flex justify-between text-[9.5px] text-ink-3 tracking-[0.04em]"
+                      >
+                        <span class="truncate" title={dl.current_file}>
+                          {dl.current_file || '…'}
+                        </span>
+                        <span>
+                          {dl.bytes_total > 0
+                            ? Math.round((dl.bytes_done / dl.bytes_total) * 100) + '%'
+                            : '…'}
+                        </span>
+                      </div>
+                    </div>
+                  {/if}
                 </div>
+                {#if !inflight}
+                  <button
+                    type="button"
+                    onclick={() => openPeer && installFromPeer(openPeer, game)}
+                    disabled={!game.shareable || !!busy}
+                    title={!game.shareable
+                      ? 'Source peer has no install folder configured'
+                      : busy
+                        ? 'Another install is in progress'
+                        : 'Install on this device'}
+                    class="inline-flex h-7 shrink-0 items-center gap-1 rounded-sm border border-line-2 bg-bg-2 px-2 text-[11px] text-ink-1 transition-colors enabled:hover:border-line-3 enabled:hover:text-ink-0 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <Download size={11} />
+                    Install
+                  </button>
+                {:else if dl}
+                  <Loader2
+                    size={13}
+                    class="mt-1 shrink-0 animate-[spool-spin_1s_linear_infinite] text-ink-2"
+                  />
+                {/if}
               </li>
             {/each}
           </ul>
         {/if}
         <div class="border-t border-dashed border-line-1 px-3.5 py-2 text-[10.5px] text-ink-3">
-          Downloads land in Phase&nbsp;C.
+          Installs land in <code class="text-ink-2">lan-games/</code> by default.
         </div>
       {:else}
         <!-- Peer list -->

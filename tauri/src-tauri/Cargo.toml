@@ -29,7 +29,7 @@ tauri-plugin-dialog = "2.7.1"
 tauri-plugin-single-instance = "2"
 tokio = { version = "1", features = ["process", "io-util", "rt", "macros"] }
 uuid = { version = "1.23.1", features = ["v4"] }
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.12", features = ["json", "stream"] }
 steamlocate = "2"
 steam_shortcuts_util = "1"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
@@ -38,4 +38,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-appender = "0.2"
 socket2 = "0.5"
 axum = { version = "0.7", default-features = false, features = ["json", "tokio", "http1"] }
+walkdir = "2"
+tokio-util = { version = "0.7", features = ["io"] }
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+urlencoding = "2"
 

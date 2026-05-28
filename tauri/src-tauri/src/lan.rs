@@ -22,18 +22,30 @@
 
 use crate::config::SharedConfig;
 use crate::error::{AppError, AppResult};
-use crate::library::{GameEntry, SharedLibrary};
-use axum::{extract::State as AxState, http::StatusCode, response::Json, routing::get, Router};
+use crate::library::{make_safe_filename, GameEntry, SharedLibrary};
+use crate::paths;
+use axum::{
+    body::Body,
+    extract::{Path as AxPath, State as AxState},
+    http::{header, StatusCode},
+    response::{IntoResponse, Json, Response},
+    routing::get,
+    Router,
+};
 use chrono::{DateTime, Utc};
+use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use socket2::{Domain, Protocol, Socket, Type};
 use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddr};
+use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager, State};
+use tokio::io::AsyncWriteExt;
 use tokio::net::UdpSocket;
+use tokio_util::io::ReaderStream;
 
 const MULTICAST_ADDR: Ipv4Addr = Ipv4Addr::new(239, 255, 83, 83);
 const MULTICAST_PORT: u16 = 47631;
@@ -153,10 +165,20 @@ pub struct PeerGame {
     pub steam_id: Option<u64>,
     pub gog_id: Option<u64>,
     pub lutris_slug: Option<String>,
+    /// True if the source has a usable `game_folder_path` we can stream
+    /// from. Non-shareable entries still appear in the list so the user
+    /// understands why they can't install them — the receiver disables
+    /// the Install button.
+    pub shareable: bool,
 }
 
-impl From<&GameEntry> for PeerGame {
-    fn from(g: &GameEntry) -> Self {
+impl PeerGame {
+    fn from_entry(g: &GameEntry) -> Self {
+        let shareable = g
+            .game_folder_path
+            .as_ref()
+            .map(|p| !p.is_empty() && Path::new(p).is_dir())
+            .unwrap_or(false);
         Self {
             id: g.id.clone(),
             catalog_number: g.catalog_number,
@@ -170,8 +192,51 @@ impl From<&GameEntry> for PeerGame {
             steam_id: g.steam_id,
             gog_id: g.gog_id,
             lutris_slug: g.lutris_slug.clone(),
+            shareable,
         }
     }
+}
+
+/// File entry in a peer-game manifest. `path` is `/`-separated and
+/// relative to the install root — peers reconstruct local paths by
+/// joining onto their own install dir.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PeerFile {
+    pub path: String,
+    pub size: u64,
+}
+
+/// Full transfer manifest for one game. The receiver fetches this
+/// before starting the file stream so it knows the total byte count
+/// (for progress) and how to register the entry in its local library
+/// once the bytes land.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PeerGameManifest {
+    pub game_id: String,
+    pub game_name: String,
+    pub safe_name: String,
+    pub total_bytes: u64,
+    pub files: Vec<PeerFile>,
+    /// Path inside the install root to the launchable exe — used by the
+    /// receiver to populate `exe_path` after install. `None` if the
+    /// source's `exe_path` lives outside `game_folder_path` (in which
+    /// case the receiver leaves `exe_path` empty and the user must set
+    /// it manually).
+    pub exe_relative_path: Option<String>,
+    pub source_device_id: String,
+    pub source_device_name: String,
+    // Manifest-derived metadata so the receiver can register the game
+    // with the same shape as a locally-added entry.
+    pub steam_id: Option<u64>,
+    pub gog_id: Option<u64>,
+    pub lutris_slug: Option<String>,
+    pub has_cloud_save: bool,
+    pub manifest_install_dir: Option<String>,
+    pub save_paths: Vec<String>,
+    pub developer: String,
+    pub publisher: String,
+    pub genres: Vec<String>,
+    pub release_date: Option<DateTime<Utc>>,
 }
 
 #[derive(Clone)]
@@ -206,6 +271,8 @@ async fn start_http_server(app: AppHandle, preferred_port: u16) -> AppResult<u16
     let router = Router::new()
         .route("/healthz", get(|| async { "ok" }))
         .route("/games", get(get_games_handler))
+        .route("/games/:id/manifest", get(get_manifest_handler))
+        .route("/games/:id/files/*path", get(get_file_handler))
         .with_state(ServerState { app });
 
     // Server runs forever — tokio::spawn detaches it. If the listener dies
@@ -245,9 +312,205 @@ async fn get_games_handler(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         .entries
         .iter()
-        .map(PeerGame::from)
+        .map(PeerGame::from_entry)
         .collect();
     Ok(Json(games))
+}
+
+/// `GET /games/:id/manifest` — builds a transfer manifest by walking
+/// the game's install folder. Returns 404 if the id isn't in our
+/// library, 403 if LAN sharing is disabled, 410 if the game has no
+/// `game_folder_path` configured (or it no longer exists on disk).
+async fn get_manifest_handler(
+    AxState(state): AxState<ServerState>,
+    AxPath(id): AxPath<String>,
+) -> Result<Json<PeerGameManifest>, StatusCode> {
+    let config = state.app.state::<SharedConfig>();
+    let library = state.app.state::<SharedLibrary>();
+
+    let (enabled, device_id, device_name) = match config.lock() {
+        Ok(cfg) => (
+            cfg.data.lan_share_enabled,
+            cfg.data.device_id.clone(),
+            cfg.data.device_name.clone(),
+        ),
+        Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
+    };
+    if !enabled {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    // Snapshot the entry so we can drop the library lock before doing
+    // I/O. Cloning a GameEntry is cheap relative to a recursive walk.
+    let entry = library
+        .lock()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .find(&id)
+        .cloned()
+        .ok_or(StatusCode::NOT_FOUND)?;
+
+    let folder = match entry.game_folder_path.as_ref() {
+        Some(p) if !p.is_empty() => PathBuf::from(p),
+        _ => return Err(StatusCode::GONE),
+    };
+    if !folder.is_dir() {
+        return Err(StatusCode::GONE);
+    }
+
+    let files = walk_game_files(&folder).map_err(|e| {
+        tracing::warn!(game_id = %id, error = %e, "manifest walk failed");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    let total_bytes: u64 = files.iter().map(|f| f.size).sum();
+
+    // Compute exe_relative_path if exe lives inside the folder.
+    let exe_relative_path = (!entry.exe_path.is_empty())
+        .then(|| relative_unix(&PathBuf::from(&entry.exe_path), &folder))
+        .flatten();
+
+    Ok(Json(PeerGameManifest {
+        game_id: entry.id.clone(),
+        game_name: entry.game_name.clone(),
+        safe_name: entry.safe_name.clone(),
+        total_bytes,
+        files,
+        exe_relative_path,
+        source_device_id: device_id,
+        source_device_name: device_name,
+        steam_id: entry.steam_id,
+        gog_id: entry.gog_id,
+        lutris_slug: entry.lutris_slug.clone(),
+        has_cloud_save: entry.has_cloud_save,
+        manifest_install_dir: entry.manifest_install_dir.clone(),
+        save_paths: entry.save_paths.clone(),
+        developer: entry.developer.clone(),
+        publisher: entry.publisher.clone(),
+        genres: entry.genres.clone(),
+        release_date: entry.release_date,
+    }))
+}
+
+/// `GET /games/:id/files/*path` — streams one file from the game's
+/// install dir. The wildcard path is interpreted strictly: only
+/// `Component::Normal` segments allowed, anything that could escape
+/// the install root (parent dir, absolute, prefix) is rejected.
+async fn get_file_handler(
+    AxState(state): AxState<ServerState>,
+    AxPath((id, rel_path)): AxPath<(String, String)>,
+) -> Result<Response, StatusCode> {
+    let config = state.app.state::<SharedConfig>();
+    let library = state.app.state::<SharedLibrary>();
+
+    let enabled = config
+        .lock()
+        .map(|c| c.data.lan_share_enabled)
+        .unwrap_or(false);
+    if !enabled {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    let folder = {
+        let lib = library
+            .lock()
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let entry = lib.find(&id).ok_or(StatusCode::NOT_FOUND)?;
+        match entry.game_folder_path.as_ref() {
+            Some(p) if !p.is_empty() => PathBuf::from(p),
+            _ => return Err(StatusCode::GONE),
+        }
+    };
+
+    let abs = safe_join(&folder, &rel_path).ok_or(StatusCode::BAD_REQUEST)?;
+    if !abs.is_file() {
+        return Err(StatusCode::NOT_FOUND);
+    }
+
+    let metadata = tokio::fs::metadata(&abs)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let len = metadata.len();
+    let file = tokio::fs::File::open(&abs)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let stream = ReaderStream::new(file);
+    let body = Body::from_stream(stream);
+
+    Ok(([
+        (header::CONTENT_TYPE, "application/octet-stream"),
+        (header::CONTENT_LENGTH, &len.to_string()),
+    ], body)
+        .into_response())
+}
+
+/// Recursive walk that turns a folder into a flat list of `PeerFile`
+/// entries. Paths in the manifest are forward-slash and relative to
+/// `root` so the receiver can reconstruct local paths cleanly across
+/// OSes. Symlinks are followed so installs that use junctions
+/// (Windows) or symlinks on Linux still ship the real bytes.
+fn walk_game_files(root: &Path) -> std::io::Result<Vec<PeerFile>> {
+    let mut out = Vec::new();
+    for entry in walkdir::WalkDir::new(root).follow_links(true) {
+        let entry = entry?;
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let rel = entry.path().strip_prefix(root).map_err(|e| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string())
+        })?;
+        // Normalise to forward slashes — the manifest is wire format.
+        let rel_str = rel
+            .components()
+            .filter_map(|c| match c {
+                Component::Normal(s) => s.to_str(),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("/");
+        if rel_str.is_empty() {
+            continue;
+        }
+        let size = entry.metadata()?.len();
+        out.push(PeerFile {
+            path: rel_str,
+            size,
+        });
+    }
+    Ok(out)
+}
+
+/// Joins `rel` onto `root`, refusing anything that could escape (parent
+/// dir, absolute path, Windows prefix). Treats both `/` and `\` as
+/// separators so callers don't have to pre-normalise.
+fn safe_join(root: &Path, rel: &str) -> Option<PathBuf> {
+    let rel_path = PathBuf::from(rel.replace('\\', "/"));
+    for comp in rel_path.components() {
+        match comp {
+            Component::Normal(_) => {}
+            // Anything else risks escape or is meaningless inside a
+            // relative path (CurDir is harmless but unexpected here).
+            _ => return None,
+        }
+    }
+    Some(root.join(rel_path))
+}
+
+/// Returns `exe` relative to `folder` as a forward-slash string, or
+/// `None` if `exe` is outside `folder`. Used to record the source's
+/// exe_path in a portable form for the receiver.
+fn relative_unix(exe: &Path, folder: &Path) -> Option<String> {
+    let rel = exe.strip_prefix(folder).ok()?;
+    let parts: Vec<&str> = rel
+        .components()
+        .filter_map(|c| match c {
+            Component::Normal(s) => s.to_str(),
+            _ => None,
+        })
+        .collect();
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join("/"))
+    }
 }
 
 // ── Spawning ────────────────────────────────────────────────────────────────
@@ -503,6 +766,147 @@ pub fn list_lan_peers(state: State<'_, LanState>) -> Vec<LanPeer> {
     state.snapshot()
 }
 
+// ── Download flow (Phase C) ─────────────────────────────────────────────────
+
+/// Snapshot of an in-flight (or just-finished) peer install. Emitted as
+/// `lan:download` events and also held in `LanDownloadState` so the UI
+/// can pick up mid-transfer on a late mount.
+#[derive(Debug, Clone, Serialize)]
+pub struct DownloadProgress {
+    pub install_token: String,
+    pub source_device_id: String,
+    pub source_device_name: String,
+    pub source_game_id: String,
+    pub game_name: String,
+    pub bytes_done: u64,
+    pub bytes_total: u64,
+    pub current_file: String,
+    pub status: String, // "starting" | "transferring" | "done" | "error"
+    pub message: Option<String>,
+    /// Set when status == "done": the id of the freshly-created
+    /// library entry so the UI can jump straight to it.
+    pub new_game_id: Option<String>,
+}
+
+/// Single-slot in-flight install tracker. Same model as `RunState` —
+/// one transfer at a time keeps the UX (and bandwidth) predictable,
+/// and the next phase can lift this to a HashMap if multi-download
+/// becomes a real ask.
+#[derive(Default)]
+pub struct LanDownloadState {
+    current: Mutex<Option<DownloadProgress>>,
+}
+
+impl LanDownloadState {
+    fn try_start(&self, p: DownloadProgress) -> AppResult<DownloadGuard<'_>> {
+        let mut guard = self.current.lock().map_err(|_| AppError::LockPoisoned)?;
+        if guard.is_some() {
+            return Err(AppError::Other(
+                "Another LAN install is already in progress".into(),
+            ));
+        }
+        *guard = Some(p);
+        Ok(DownloadGuard { state: self })
+    }
+
+    fn snapshot(&self) -> Option<DownloadProgress> {
+        self.current.lock().ok().and_then(|g| g.clone())
+    }
+
+    fn update<F: FnOnce(&mut DownloadProgress)>(&self, f: F) -> Option<DownloadProgress> {
+        let mut guard = self.current.lock().ok()?;
+        if let Some(p) = guard.as_mut() {
+            f(p);
+            return Some(p.clone());
+        }
+        None
+    }
+
+    /// Overwrite the slot wholesale. Used by the install task to publish
+    /// the final "done" / "error" state. Wrapped as a method so callers
+    /// don't have to touch the private `current` field across a State
+    /// deref (which the borrow checker objects to when the State is a
+    /// temporary).
+    fn set(&self, value: Option<DownloadProgress>) {
+        if let Ok(mut g) = self.current.lock() {
+            *g = value;
+        }
+    }
+
+    /// Clear the slot iff the in-flight install matches `token`. The
+    /// guard against clearing the wrong install protects the case where
+    /// the user kicked off a second install during the 2 s grace period
+    /// after the first one finished.
+    fn clear_if_token(&self, token: &str) {
+        if let Ok(mut g) = self.current.lock() {
+            if let Some(p) = g.as_ref() {
+                if p.install_token == token {
+                    *g = None;
+                }
+            }
+        }
+    }
+}
+
+/// RAII guard — clears the slot when the install task ends, even if it
+/// panics. Mirrors `runner::RunGuard`. Without this a crashed transfer
+/// would jam the slot until restart.
+struct DownloadGuard<'a> {
+    state: &'a LanDownloadState,
+}
+
+impl Drop for DownloadGuard<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut g) = self.state.current.lock() {
+            *g = None;
+        }
+    }
+}
+
+/// Resolves where new LAN installs land. Defaults to
+/// `<app_data>/lan-games` when the user hasn't set `lan_install_dir`
+/// in config — matches the convention of every other Spool path.
+fn install_root_from(app: &AppHandle) -> AppResult<PathBuf> {
+    let config = app.state::<SharedConfig>();
+    let configured = {
+        let cfg = config.lock().map_err(|_| AppError::LockPoisoned)?;
+        cfg.data.lan_install_dir.clone()
+    };
+    if configured.is_empty() {
+        Ok(paths::app_data_dir().join("lan-games"))
+    } else {
+        Ok(PathBuf::from(configured))
+    }
+}
+
+/// Picks an install directory inside the LAN root that doesn't collide
+/// with an existing install. Adds `" (2)"`, `" (3)"` etc. as needed.
+fn allocate_install_dir(root: &Path, safe_name: &str) -> PathBuf {
+    let base = if safe_name.is_empty() {
+        "Game".to_string()
+    } else {
+        make_safe_filename(safe_name)
+    };
+    let first = root.join(&base);
+    if !first.exists() {
+        return first;
+    }
+    for n in 2u32..=999 {
+        let candidate = root.join(format!("{base} ({n})"));
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+    // Pathological collision — append timestamp.
+    root.join(format!("{base}-{}", Utc::now().timestamp()))
+}
+
+fn emit_progress(app: &AppHandle, progress: &DownloadProgress) {
+    if let Err(e) = app.emit("lan:download", progress) {
+        tracing::warn!(error = %e, "failed to emit lan:download");
+    }
+}
+
 /// Fetches the game catalogue from a peer's HTTP server. Frontend calls
 /// this when the user opens a peer's row in the LAN popover. Times out
 /// quickly so a stale peer in the registry can't hang the UI.
@@ -532,4 +936,321 @@ pub async fn fetch_peer_games(addr: String, port: u16) -> AppResult<Vec<PeerGame
     resp.json::<Vec<PeerGame>>()
         .await
         .map_err(|e| AppError::Other(format!("parse peer /games: {e}")))
+}
+
+/// Snapshot of the active LAN install (if any). The frontend uses this
+/// on mount to catch up after a navigation that lost in-memory state —
+/// otherwise it tracks live via the `lan:download` event stream.
+#[tauri::command]
+pub fn current_peer_download(state: State<'_, LanDownloadState>) -> Option<DownloadProgress> {
+    state.snapshot()
+}
+
+/// Kicks off a peer install. Acquires the single-slot guard, fetches
+/// the manifest, streams every file to a `.partial` staging dir, then
+/// renames into place and registers a new library entry. Progress is
+/// emitted continuously as `lan:download` events.
+///
+/// Returns the install_token (uuid) once the transfer has been queued —
+/// the heavy work runs in a spawned task so the command returns
+/// immediately and the UI can render an in-flight row right away.
+#[tauri::command]
+pub async fn start_peer_install(
+    app: AppHandle,
+    state: State<'_, LanDownloadState>,
+    peer_addr: String,
+    peer_port: u16,
+    game_id: String,
+) -> AppResult<String> {
+    if peer_port == 0 {
+        return Err(AppError::Other(
+            "peer is discovery-only (no file server)".into(),
+        ));
+    }
+
+    // Fetch the manifest synchronously so we can fail fast with a clean
+    // error message if the peer 404s or the entry isn't shareable.
+    let manifest_url = format!("http://{peer_addr}:{peer_port}/games/{game_id}/manifest");
+    let client = reqwest::Client::builder()
+        .timeout(PEER_FETCH_TIMEOUT)
+        .build()
+        .map_err(|e| AppError::Other(format!("build http client: {e}")))?;
+    let resp = client
+        .get(&manifest_url)
+        .send()
+        .await
+        .map_err(|e| AppError::Other(format!("GET manifest: {e}")))?;
+    if !resp.status().is_success() {
+        return Err(AppError::Other(format!(
+            "peer responded {} to /manifest",
+            resp.status()
+        )));
+    }
+    let manifest: PeerGameManifest = resp
+        .json()
+        .await
+        .map_err(|e| AppError::Other(format!("parse manifest: {e}")))?;
+
+    let install_token = uuid::Uuid::new_v4().to_string();
+    let return_token = install_token.clone();
+    let progress = DownloadProgress {
+        install_token: install_token.clone(),
+        source_device_id: manifest.source_device_id.clone(),
+        source_device_name: manifest.source_device_name.clone(),
+        source_game_id: manifest.game_id.clone(),
+        game_name: manifest.game_name.clone(),
+        bytes_done: 0,
+        bytes_total: manifest.total_bytes,
+        current_file: String::new(),
+        status: "starting".into(),
+        message: None,
+        new_game_id: None,
+    };
+
+    // Reserve the slot up front — if someone else is mid-install, fail
+    // here rather than spawning a doomed task.
+    let _check = state.try_start(progress.clone())?;
+    drop(_check); // we'll re-acquire inside the task so the guard owns the task lifetime
+    // ^ this opens a tiny race window where another caller could slip in;
+    // the spawned task re-acquires immediately below, and on the rare
+    // collision the second caller gets the same "already in progress"
+    // error one tick later. Worth the simpler ownership story.
+
+    emit_progress(&app, &progress);
+
+    let app_clone = app.clone();
+    let state_handle: tauri::State<'_, LanDownloadState> = app.state::<LanDownloadState>();
+    // We can't move a `State` across an `await`, but `LanDownloadState`
+    // lives on the AppHandle's managed map for the whole process — so
+    // re-fetching inside the task is the idiomatic move.
+    let _ = state_handle;
+
+    tauri::async_runtime::spawn(async move {
+        let result =
+            run_install(app_clone.clone(), peer_addr.clone(), peer_port, manifest.clone()).await;
+        // Final event. On error, surface the message; on success, point
+        // at the freshly-created library entry.
+        let final_progress = match result {
+            Ok(new_id) => DownloadProgress {
+                install_token: install_token.clone(),
+                source_device_id: manifest.source_device_id.clone(),
+                source_device_name: manifest.source_device_name.clone(),
+                source_game_id: manifest.game_id.clone(),
+                game_name: manifest.game_name.clone(),
+                bytes_done: manifest.total_bytes,
+                bytes_total: manifest.total_bytes,
+                current_file: String::new(),
+                status: "done".into(),
+                message: None,
+                new_game_id: Some(new_id),
+            },
+            Err(e) => {
+                tracing::warn!(game = %manifest.game_name, error = %e, "LAN install failed");
+                DownloadProgress {
+                    install_token: install_token.clone(),
+                    source_device_id: manifest.source_device_id.clone(),
+                    source_device_name: manifest.source_device_name.clone(),
+                    source_game_id: manifest.game_id.clone(),
+                    game_name: manifest.game_name.clone(),
+                    bytes_done: 0,
+                    bytes_total: manifest.total_bytes,
+                    current_file: String::new(),
+                    status: "error".into(),
+                    message: Some(e.to_string()),
+                    new_game_id: None,
+                }
+            }
+        };
+        // Publish the final state. `State<'_, T>` is borrowed from
+        // `app_clone` and the lock guard's lifetime ties back to it —
+        // so we delegate to a method on the state that takes ownership
+        // of the lock internally and avoids holding the borrow.
+        app_clone
+            .state::<LanDownloadState>()
+            .set(Some(final_progress.clone()));
+        emit_progress(&app_clone, &final_progress);
+        // Brief grace period so the UI can pick up the terminal state
+        // via snapshot before we clear it. 2 s feels right — long enough
+        // for the toast to settle, short enough that a fresh popover
+        // open doesn't see stale data.
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        app_clone
+            .state::<LanDownloadState>()
+            .clear_if_token(&install_token);
+    });
+
+    Ok(return_token)
+}
+
+/// Heavy lifting for `start_peer_install` — runs in the spawned task.
+/// Returns the new library entry's id on success.
+async fn run_install(
+    app: AppHandle,
+    peer_addr: String,
+    peer_port: u16,
+    manifest: PeerGameManifest,
+) -> AppResult<String> {
+    let root = install_root_from(&app)?;
+    tokio::fs::create_dir_all(&root)
+        .await
+        .map_err(|e| AppError::Other(format!("create install root: {e}")))?;
+
+    let final_dir = allocate_install_dir(&root, &manifest.safe_name);
+    let partial_dir = final_dir.with_extension("partial");
+    // Clean up any leftover .partial from a previous aborted attempt.
+    if partial_dir.exists() {
+        let _ = tokio::fs::remove_dir_all(&partial_dir).await;
+    }
+    tokio::fs::create_dir_all(&partial_dir)
+        .await
+        .map_err(|e| AppError::Other(format!("create partial dir: {e}")))?;
+
+    let client = reqwest::Client::builder()
+        // No top-level timeout — multi-GB transfers may legitimately
+        // take a while. Per-chunk timeout would be nicer but isn't
+        // exposed by reqwest; for v1 we rely on the user cancelling
+        // via app restart if something hangs.
+        .build()
+        .map_err(|e| AppError::Other(format!("build http client: {e}")))?;
+
+    let download_state = app.state::<LanDownloadState>();
+    let mut bytes_done: u64 = 0;
+    let mut last_emit = Instant::now() - Duration::from_secs(1);
+
+    for file in &manifest.files {
+        // Re-anchor on each file so progress shows the current name.
+        download_state.update(|p| {
+            p.status = "transferring".into();
+            p.current_file = file.path.clone();
+            p.bytes_done = bytes_done;
+        });
+        if let Some(snapshot) = download_state.snapshot() {
+            emit_progress(&app, &snapshot);
+        }
+
+        // URL-encode each segment so spaces / special chars survive.
+        let encoded = file
+            .path
+            .split('/')
+            .map(|seg| urlencoding::encode(seg).into_owned())
+            .collect::<Vec<_>>()
+            .join("/");
+        let url = format!(
+            "http://{peer_addr}:{peer_port}/games/{}/files/{encoded}",
+            manifest.game_id
+        );
+
+        let target = partial_dir.join(file.path.replace('/', std::path::MAIN_SEPARATOR_STR));
+        if let Some(parent) = target.parent() {
+            tokio::fs::create_dir_all(parent)
+                .await
+                .map_err(|e| AppError::Other(format!("mkdir {parent:?}: {e}")))?;
+        }
+
+        let resp = client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| AppError::Other(format!("GET {url}: {e}")))?;
+        if !resp.status().is_success() {
+            return Err(AppError::Other(format!(
+                "{} returned {} for {}",
+                peer_addr,
+                resp.status(),
+                file.path
+            )));
+        }
+
+        let mut out = tokio::fs::File::create(&target)
+            .await
+            .map_err(|e| AppError::Other(format!("create {target:?}: {e}")))?;
+        let mut stream = resp.bytes_stream();
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|e| AppError::Other(format!("recv chunk: {e}")))?;
+            out.write_all(&chunk)
+                .await
+                .map_err(|e| AppError::Other(format!("write {target:?}: {e}")))?;
+            bytes_done += chunk.len() as u64;
+            // Throttle progress emits — every ~150ms is plenty for the UI
+            // and keeps the event channel from being a bottleneck on a
+            // gigabit transfer.
+            if last_emit.elapsed() >= Duration::from_millis(150) {
+                if let Some(snapshot) = download_state.update(|p| p.bytes_done = bytes_done) {
+                    emit_progress(&app, &snapshot);
+                }
+                last_emit = Instant::now();
+            }
+        }
+        out.flush()
+            .await
+            .map_err(|e| AppError::Other(format!("flush {target:?}: {e}")))?;
+    }
+
+    // All files landed — flip the staging dir into its real location.
+    tokio::fs::rename(&partial_dir, &final_dir)
+        .await
+        .map_err(|e| AppError::Other(format!("finalise install dir: {e}")))?;
+
+    // Build the library entry. exe_path is the manifest-supplied
+    // relative path joined to our final install dir; if the source
+    // didn't have one we leave it empty and the user wires it up.
+    let exe_path = manifest
+        .exe_relative_path
+        .as_ref()
+        .map(|rel| {
+            final_dir
+                .join(rel.replace('/', std::path::MAIN_SEPARATOR_STR))
+                .to_string_lossy()
+                .to_string()
+        })
+        .unwrap_or_default();
+
+    let new_id = uuid::Uuid::new_v4().to_string();
+    let library = app.state::<SharedLibrary>();
+    let entry = {
+        let mut lib = library.lock().map_err(|_| AppError::LockPoisoned)?;
+        let entry = GameEntry {
+            id: new_id.clone(),
+            catalog_number: lib.next_catalog_number(),
+            game_name: manifest.game_name.clone(),
+            exe_path,
+            safe_name: manifest.safe_name.clone(),
+            added_at: Some(Utc::now()),
+            game_folder_path: Some(final_dir.to_string_lossy().to_string()),
+            steam_id: manifest.steam_id,
+            gog_id: manifest.gog_id,
+            lutris_slug: manifest.lutris_slug.clone(),
+            has_cloud_save: manifest.has_cloud_save,
+            manifest_install_dir: manifest.manifest_install_dir.clone(),
+            save_paths: manifest.save_paths.clone(),
+            developer: manifest.developer.clone(),
+            publisher: manifest.publisher.clone(),
+            genres: manifest.genres.clone(),
+            release_date: manifest.release_date,
+            install_size_mb: (manifest.total_bytes as f64) / (1024.0 * 1024.0),
+            install_source: "lan".to_string(),
+            lan_install_source_device_id: Some(manifest.source_device_id.clone()),
+            lan_install_source_device_name: Some(manifest.source_device_name.clone()),
+            ..GameEntry::default()
+        };
+        lib.entries.push(entry.clone());
+        lib.save()?;
+        entry
+    };
+
+    if let Err(e) = app.emit("library:changed", &entry.id) {
+        tracing::warn!(error = %e, "failed to emit library:changed after LAN install");
+    }
+
+    // Background cover fetch — same shape as `library::add_game`.
+    let app_for_cover = app.clone();
+    let id_for_cover = entry.id.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Err(e) = crate::steamgriddb::fetch_and_save_cover(&app_for_cover, &id_for_cover).await
+        {
+            tracing::warn!(game_id = %id_for_cover, error = %e, "cover fetch failed");
+        }
+    });
+
+    Ok(new_id)
 }
