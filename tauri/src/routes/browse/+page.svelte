@@ -29,7 +29,6 @@
     Wifi,
     X,
   } from '@lucide/svelte';
-  import { getCurrentWindow } from '@tauri-apps/api/window';
   import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
   import { listen } from '@tauri-apps/api/event';
   import { api } from '$lib/api';
@@ -81,6 +80,7 @@
 
   const groups = $derived.by<Grouped[]>(() => {
     if (!result.entries.length) return [];
+    // eslint-disable-next-line svelte/prefer-svelte-reactivity -- local computation, not reactive state
     const map = new Map<string, HydraEntry[]>();
     for (const entry of result.entries) {
       const key = entry.title.trim().toLowerCase();
@@ -184,12 +184,6 @@
     return palette[hash % palette.length];
   }
 
-  function uriKind(uri: string): 'magnet' | 'http' | 'unknown' {
-    if (uri.startsWith('magnet:')) return 'magnet';
-    if (uri.startsWith('http://') || uri.startsWith('https://')) return 'http';
-    return 'unknown';
-  }
-
   // ── Actions ────────────────────────────────────────────────────────────
   async function refresh() {
     loading = true;
@@ -261,10 +255,6 @@
     if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} KB`;
     if (b < 1024 * 1024 * 1024) return `${(b / (1024 * 1024)).toFixed(1)} MB`;
     return `${(b / (1024 * 1024 * 1024)).toFixed(2)} GB`;
-  }
-
-  async function close() {
-    await getCurrentWindow().close();
   }
 
   onMount(async () => {
