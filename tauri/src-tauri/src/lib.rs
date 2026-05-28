@@ -113,6 +113,10 @@ pub fn run() {
         // tell the user "Saves backed up" / "Save restore failed"
         // while Spool itself is hidden in the tray during gameplay.
         .plugin(tauri_plugin_notification::init())
+        // Auto-update via Tauri's updater. Polls a signed JSON
+        // manifest (URL configured in tauri.conf.json), verifies the
+        // ed25519 signature, then runs the NSIS installer silently.
+        .plugin(tauri_plugin_updater::Builder::new().build())
         // Single-instance: secondary `spool` invocations land here. We
         // dispatch on argv to either focus the library or kick off a
         // game launch. Must come early — adds the IPC channel.

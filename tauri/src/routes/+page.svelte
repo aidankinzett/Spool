@@ -42,6 +42,7 @@
     RunPhaseEvent,
     UploadSnapshot,
   } from '$lib/types';
+  import { checkForUpdateOnStartup } from '$lib/updater';
   import WindowChrome from '$lib/components/WindowChrome.svelte';
   import MonoLabel from '$lib/components/MonoLabel.svelte';
   import GameDetail from '$lib/components/GameDetail.svelte';
@@ -282,6 +283,14 @@
 
   onMount(() => {
     refresh();
+    // Run the updater check a moment after mount so the library
+    // refresh has settled. Fire-and-forget — failures are surfaced
+    // via the toast system; nothing here blocks the UI.
+    setTimeout(() => {
+      checkForUpdateOnStartup().catch((e) =>
+        console.error('[updater] startup check failed:', e),
+      );
+    }, 2000);
     listen<string>('library:changed', () => refresh())
       .then((fn) => (unlistenLibraryChanged = fn))
       .catch((e) => console.error('[library] listener failed:', e));
