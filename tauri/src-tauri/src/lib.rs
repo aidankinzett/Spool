@@ -29,6 +29,7 @@ mod accent_backfill;
 mod cli;
 mod config;
 mod error;
+mod hydra;
 mod lan;
 mod launcher;
 mod library;
@@ -180,6 +181,10 @@ pub fn run() {
             torbox::torbox_torrent_info,
             torbox::torbox_request_download_link,
             torbox::torbox_ping,
+            // hydra feeds (Browse Games)
+            hydra::hydra_fetch_all,
+            hydra::hydra_add_source,
+            hydra::hydra_remove_source,
             // lan discovery
             lan::list_lan_peers,
             lan::fetch_peer_games,

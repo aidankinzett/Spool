@@ -50,6 +50,13 @@ export const api = {
   getRunAsAdminInRegistry: (exePath: string): Promise<boolean> =>
     invoke('get_run_as_admin_in_registry', { exePath }),
 
+  // Hydra source feeds (Browse Games)
+  hydraFetchAll: (): Promise<unknown> => invoke('hydra_fetch_all'),
+  hydraAddSource: (url: string): Promise<string[]> =>
+    invoke('hydra_add_source', { url }),
+  hydraRemoveSource: (url: string): Promise<string[]> =>
+    invoke('hydra_remove_source', { url }),
+
   // TorBox debrid
   torboxPing: (): Promise<void> => invoke('torbox_ping'),
   torboxAddMagnet: (magnetUri: string): Promise<number> =>

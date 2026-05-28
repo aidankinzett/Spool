@@ -9,7 +9,7 @@
    * features in v2.
    */
   import { onMount } from 'svelte';
-  import { Check, ChevronLeft, Folder, KeyRound, Sparkles } from '@lucide/svelte';
+  import { Check, ChevronLeft, Folder, KeyRound, Plus, Sparkles, Trash2 } from '@lucide/svelte';
   import { open as openDialog } from '@tauri-apps/plugin-dialog';
   import { api } from '$lib/api';
   import { toasts } from '$lib/toasts.svelte';
@@ -179,6 +179,37 @@
 
   let torboxPinging = $state(false);
   let torboxLastPing = $state<{ ok: boolean; message: string } | null>(null);
+  let newSourceUrl = $state('');
+  let addingSource = $state(false);
+
+  async function addSourceFeed() {
+    if (!config || !newSourceUrl.trim()) return;
+    addingSource = true;
+    try {
+      const list = await api.hydraAddSource(newSourceUrl.trim());
+      config.download_sources = list;
+      newSourceUrl = '';
+    } catch (e) {
+      toasts.show({
+        kind: 'bad',
+        label: 'SOURCE',
+        title: "Couldn't add feed",
+        sub: String(e),
+      });
+    } finally {
+      addingSource = false;
+    }
+  }
+
+  async function removeSourceFeed(url: string) {
+    if (!config) return;
+    try {
+      const list = await api.hydraRemoveSource(url);
+      config.download_sources = list;
+    } catch (e) {
+      console.error('[settings] remove source failed:', e);
+    }
+  }
   async function testTorBoxConnection() {
     if (!config) return;
     torboxPinging = true;
@@ -533,6 +564,60 @@
           </SettingsCard>
 
           <SettingsCard title="Sources & Downloads">
+            <!-- Hydra source feeds — the Browse Games window aggregates
+                 everything listed here. -->
+            <SettingsRow
+              title="Source feeds"
+              subtitle="Hydra-compatible JSON catalogues. Spool refetches them on every Browse Games open."
+            >
+              {#snippet control()}
+                <span class="font-mono text-[10px] uppercase tracking-[0.12em] text-ink-3">
+                  {config!.download_sources.length} feed{config!.download_sources.length === 1 ? '' : 's'}
+                </span>
+              {/snippet}
+              {#snippet extras()}
+                <div class="flex w-full flex-col gap-1.5">
+                  {#each config!.download_sources as url (url)}
+                    <div
+                      class="flex items-center gap-2 rounded-sm border border-line-1 bg-bg-2 px-2.5 py-1.5"
+                    >
+                      <code
+                        class="font-mono min-w-0 flex-1 truncate text-[11px] text-ink-1"
+                        title={url}
+                      >
+                        {url}
+                      </code>
+                      <button
+                        type="button"
+                        onclick={() => removeSourceFeed(url)}
+                        aria-label="Remove feed"
+                        title="Remove feed"
+                        class="inline-flex h-6 w-6 items-center justify-center rounded-sm text-ink-3 transition-colors hover:bg-white/10 hover:text-bad"
+                      >
+                        <Trash2 size={12} />
+                      </button>
+                    </div>
+                  {/each}
+                  <div class="flex gap-1.5">
+                    <TextField
+                      bind:value={newSourceUrl}
+                      placeholder="https://example.com/sources.json"
+                      mono
+                      full
+                    />
+                    <Btn
+                      variant="ghost"
+                      onclick={addSourceFeed}
+                      disabled={addingSource || !newSourceUrl.trim()}
+                    >
+                      {#snippet icon()}<Plus size={14} />{/snippet}
+                      {addingSource ? 'Adding…' : 'Add'}
+                    </Btn>
+                  </div>
+                </div>
+              {/snippet}
+            </SettingsRow>
+
             <!-- TorBox debrid -->
             <SettingsRow
               title="TorBox"
