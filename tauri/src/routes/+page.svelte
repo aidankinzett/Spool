@@ -87,6 +87,7 @@
 
   let unlistenLibraryChanged: (() => void) | undefined;
   let unlistenRunPhase: (() => void) | undefined;
+  let unlistenTrayIntro: (() => void) | undefined;
 
   onMount(() => {
     refresh();
@@ -131,9 +132,26 @@
         }
       })
       .catch((e) => console.error('[library] run-phase listener failed:', e));
+    // First-time close-to-tray explainer. Backend fires this exactly
+    // once (on the first hide; idempotent via config.tray_intro_seen).
+    // We make it sticky so it survives the window being hidden — when
+    // the user next reopens, they see it in the toast stack.
+    listen<null>('tray:first-hide', () => {
+      toasts.show({
+        kind: 'info',
+        label: 'TRAY',
+        title: 'Spool is still running',
+        sub: "Click the tray icon to bring the window back. You can quit fully from the tray menu.",
+        duration: 0,
+      });
+    })
+      .then((fn) => (unlistenTrayIntro = fn))
+      .catch((e) => console.error('[tray] intro listener failed:', e));
+
     return () => {
       unlistenLibraryChanged?.();
       unlistenRunPhase?.();
+      unlistenTrayIntro?.();
     };
   });
 

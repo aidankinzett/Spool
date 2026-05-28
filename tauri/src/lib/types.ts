@@ -24,6 +24,9 @@ export type ConfigData = {
   download_sources: string[];
 
   touch_mode: string;
+
+  /** True after the close-to-tray intro toast has been shown once. */
+  tray_intro_seen: boolean;
 };
 
 // Mirror of the Rust `GameEntry` struct in src-tauri/src/library.rs.

@@ -46,7 +46,7 @@ use steamgriddb::SteamGridDbClient;
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Manager, RunEvent, State, WindowEvent,
+    AppHandle, Emitter, Manager, RunEvent, State, WindowEvent,
 };
 
 /// Holds a game id queued for launch at startup. The cold-start path
@@ -132,12 +132,18 @@ pub fn run() {
             mount_tray(app.handle())?;
 
             // Intercept the main window's close button → hide instead.
+            // First time the user does this, emit `tray:first-hide` so the
+            // library page can surface a sticky info toast explaining where
+            // Spool went. The toast survives the hide (it's in component
+            // state) so the user sees it next time they re-open the window.
             if let Some(main) = app.get_webview_window("main") {
                 let win = main.clone();
+                let app_handle = app.handle().clone();
                 main.on_window_event(move |event| {
                     if let WindowEvent::CloseRequested { api, .. } = event {
                         api.prevent_close();
                         let _ = win.hide();
+                        emit_tray_intro_once(&app_handle);
                     }
                 });
             }
@@ -246,6 +252,33 @@ fn find_game_id_by_name(library: &SharedLibrary, name: &str) -> Option<String> {
         .iter()
         .find(|e| e.game_name == name)
         .map(|e| e.id.clone())
+}
+
+/// Fires `tray:first-hide` the first time the user hides Spool to the
+/// tray, then marks the flag in Config so it never fires again. No-op on
+/// subsequent hides. All-or-nothing — if either the flag read or the save
+/// fails we just skip the event (the worst case is the user never sees
+/// the intro, which is a minor regression, not a crash).
+fn emit_tray_intro_once(app: &AppHandle) {
+    let config = app.state::<SharedConfig>();
+    let needs_intro = match config.lock() {
+        Ok(cfg) => !cfg.data.tray_intro_seen,
+        Err(_) => false,
+    };
+    if !needs_intro {
+        return;
+    }
+    if let Ok(mut cfg) = config.lock() {
+        cfg.data.tray_intro_seen = true;
+        if cfg.save().is_err() {
+            // Save failed — bail without emitting so we'll try again next
+            // close (rather than emitting now and never marking seen).
+            return;
+        }
+    }
+    if let Err(e) = app.emit("tray:first-hide", &()) {
+        eprintln!("[tray] failed to emit tray:first-hide: {e}");
+    }
 }
 
 /// Dispatches a forwarded secondary-launch's argv. Either focuses the

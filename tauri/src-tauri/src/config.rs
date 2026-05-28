@@ -47,6 +47,11 @@ pub struct ConfigData {
 
     /// `"auto"`, `"on"`, or `"off"`. Touch-optimised UI mode (handheld).
     pub touch_mode: String,
+
+    /// Set to true after the user has been shown the "Spool is in the tray"
+    /// intro toast at least once. Defaults to false on legacy configs (and
+    /// new installs) so the toast appears on the first close-to-tray.
+    pub tray_intro_seen: bool,
 }
 
 impl Default for ConfigData {
@@ -70,6 +75,7 @@ impl Default for ConfigData {
             download_dir: String::new(),
             download_sources: Vec::new(),
             touch_mode: "auto".to_string(),
+            tray_intro_seen: false,
         }
     }
 }
