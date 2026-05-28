@@ -50,6 +50,7 @@
   let result = $state<BrowseFetchResult>({ entries: [], feeds: [] });
   let localGames = $state<GameEntry[]>([]);
   let lanPeers = $state<LanPeer[]>([]);
+  let lanGameNames = $state<string[]>([]);
 
   let selectedFeed = $state<string>('all'); // 'all' | source_url
   let searchQuery = $state('');
@@ -101,7 +102,7 @@
     }
     const out: Grouped[] = [];
     const localNames = new Set(localGames.map((g) => g.game_name.toLowerCase()));
-    const lanNames = new Set<string>(); // TODO: peer-game cross-ref (needs cached peer game lists)
+    const lanNames = new Set(lanGameNames);
     for (const [, releases] of map) {
       const top = pickTop(releases);
       out.push({
@@ -229,6 +230,9 @@
       result = browseResult;
       localGames = games;
       lanPeers = peers;
+      // Fire-and-forget — peer catalogues only drive the "On LAN" badge,
+      // so don't gate the list render on the round-trips to each peer.
+      void refreshPeerGames(peers);
       if (!pickedTitle && groups.length > 0) {
         pickedTitle = groups[0].title;
       }
@@ -243,6 +247,31 @@
     } finally {
       loading = false;
     }
+  }
+
+  // Pull each serving peer's catalogue and flatten the titles into a
+  // lookup set so groups can flag games already available on the LAN.
+  // Peers still in discovery mode (file_server_port == 0) can't serve a
+  // catalogue, so skip them; a failed fetch just drops that peer's games.
+  async function refreshPeerGames(peers: LanPeer[]) {
+    const serving = peers.filter((p) => p.file_server_port !== 0);
+    if (serving.length === 0) {
+      lanGameNames = [];
+      return;
+    }
+    const results = await Promise.allSettled(
+      serving.map((p) => api.fetchPeerGames(p.addr, p.file_server_port)),
+    );
+    // eslint-disable-next-line svelte/prefer-svelte-reactivity -- local computation, not reactive state
+    const names = new Set<string>();
+    for (const r of results) {
+      if (r.status !== 'fulfilled') continue;
+      for (const game of r.value) {
+        const name = game.game_name.trim().toLowerCase();
+        if (name) names.add(name);
+      }
+    }
+    lanGameNames = [...names];
   }
 
   async function startDownload(release: HydraEntry) {
