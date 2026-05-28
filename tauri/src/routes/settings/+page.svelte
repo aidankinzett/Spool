@@ -242,7 +242,7 @@
 
       <!-- ── Sidebar nav ── -->
       <nav class="overflow-y-auto border-r border-line-1 bg-bg-1 p-[20px_14px]">
-        {#each NAV_GROUPS as group}
+        {#each NAV_GROUPS as group (group.id)}
           <div class="mb-[22px]">
             <!-- Group header -->
             <div class="flex items-center gap-2 px-2 pb-1.5">
@@ -257,7 +257,7 @@
             </div>
 
             <!-- Nav items -->
-            {#each group.items as item}
+            {#each group.items as item (item.id)}
               {@const isActive = activeSection === item.id}
               <button
                 onclick={() => scrollToSection(item.id)}
@@ -472,7 +472,7 @@
                                 UDP · BROADCAST · {config.lan_share_port}
                               </span>
                             </div>
-                            {#each peers as peer, i}
+                            {#each peers as peer, i (peer.device_id)}
                               <div
                                 class="grid items-center gap-3 px-3 py-2"
                                 style="grid-template-columns: 14px 1fr auto auto auto"
