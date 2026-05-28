@@ -12,6 +12,7 @@ import type {
   LanPeer,
   NewGame,
   PeerGame,
+  SyncStatus,
   UploadSnapshot,
   SearchCandidate,
 } from './types';
@@ -48,6 +49,16 @@ export const api = {
   // exe flagged "always run as administrator" via AppCompatFlags.
   getRunAsAdminInRegistry: (exePath: string): Promise<boolean> =>
     invoke('get_run_as_admin_in_registry', { exePath }),
+
+  // Sync server
+  currentSyncStatus: (): Promise<SyncStatus> => invoke('current_sync_status'),
+  refreshSyncStatus: (): Promise<SyncStatus> => invoke('refresh_sync_status'),
+  syncRegisterAccount: (
+    serverUrl: string,
+    adminSecret: string,
+    username: string,
+  ): Promise<string> =>
+    invoke('sync_register_account', { serverUrl, adminSecret, username }),
 
   // LAN
   listLanPeers: (): Promise<LanPeer[]> => invoke('list_lan_peers'),

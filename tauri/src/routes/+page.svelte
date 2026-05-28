@@ -20,6 +20,8 @@
   import {
     ArrowLeft,
     ChevronRight,
+    Cloud,
+    CloudOff,
     Download,
     Loader2,
     Plus,
@@ -40,6 +42,7 @@
     PeerGame,
     RunPhase,
     RunPhaseEvent,
+    SyncStatus,
     UploadSnapshot,
   } from '$lib/types';
   import { checkForUpdateOnStartup } from '$lib/updater';
@@ -85,6 +88,25 @@
   // Active uploads — peers currently downloading FROM us. The host
   // side of LAN sharing.
   let activeUploads = $state<UploadSnapshot[]>([]);
+
+  // ── Sync server status (chrome cloud icon) ──────────────────────
+  // Polled in the backend every 30s; we listen to status-change
+  // events to update the icon tint + tooltip.
+  let syncStatus = $state<SyncStatus>({
+    reachability: 'unconfigured',
+    server_version: null,
+    error: null,
+    last_ok_ago_secs: null,
+  });
+  const syncOk = $derived(syncStatus.reachability === 'online');
+  const syncOff = $derived(syncStatus.reachability === 'offline');
+  const syncTitle = $derived(
+    syncStatus.reachability === 'unconfigured'
+      ? 'Sync server not configured — open Settings to set it up'
+      : syncOk
+        ? `Sync server online${syncStatus.server_version ? ` · v${syncStatus.server_version}` : ''}`
+        : `Sync server unreachable${syncStatus.error ? ` · ${syncStatus.error}` : ''}`,
+  );
 
   // ── Transfers central hub (per the redesign) ─────────────────────
   // Title-bar pill + slide-out panel. Houses BOTH directions —
@@ -168,6 +190,7 @@
   let unlistenLanPeers: (() => void) | undefined;
   let unlistenLanDownload: (() => void) | undefined;
   let unlistenLanUploads: (() => void) | undefined;
+  let unlistenSyncStatus: (() => void) | undefined;
 
   async function refreshLanPeers() {
     try {
@@ -362,6 +385,17 @@
         if (p) activeDownload = p;
       })
       .catch((e) => console.error('[lan] currentPeerDownload failed:', e));
+    // Sync server status — initial fetch then event-driven updates.
+    api
+      .currentSyncStatus()
+      .then((s) => (syncStatus = s))
+      .catch((e) => console.error('[sync] currentSyncStatus failed:', e));
+    listen<SyncStatus>('sync:status-changed', (event) => {
+      syncStatus = event.payload;
+    })
+      .then((fn) => (unlistenSyncStatus = fn))
+      .catch((e) => console.error('[sync] status listener failed:', e));
+
     // Active uploads (the host side of LAN sharing).
     refreshActiveUploads();
     listen<null>('lan:uploads-changed', () => {
@@ -414,6 +448,7 @@
       unlistenLanPeers?.();
       unlistenLanDownload?.();
       unlistenLanUploads?.();
+      unlistenSyncStatus?.();
       document.removeEventListener('mousedown', handleLanOutside, true);
       document.removeEventListener('mousedown', handleTransfersOutside, true);
     };
@@ -516,14 +551,34 @@
             </span>
           {/if}
         </button>
+        <!-- Sync server status — cloud icon, tinted by reachability.
+             Clicking jumps straight to Settings → Sync Server. -->
+        <a
+          href="/settings"
+          aria-label="Sync server status"
+          title={syncTitle}
+          class="inline-flex h-7 w-7 items-center justify-center rounded-sm transition-colors hover:bg-white/10"
+          style:color={syncOk
+            ? 'var(--color-ok)'
+            : syncOff
+              ? 'var(--color-bad)'
+              : 'var(--color-ink-3)'}
+          data-tauri-drag-region="false"
+        >
+          {#if syncOff}
+            <CloudOff size={14} />
+          {:else}
+            <Cloud size={14} />
+          {/if}
+        </a>
         <a
           href="/settings"
           aria-label="Settings"
           class="inline-flex h-7 w-7 items-center justify-center rounded-sm text-ink-2 transition-colors hover:bg-white/10 hover:text-ink-0"
           data-tauri-drag-region="false"
         >
-        <Settings size={14} />
-      </a>
+          <Settings size={14} />
+        </a>
     </div>
   </WindowChrome>
 

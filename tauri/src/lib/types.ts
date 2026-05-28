@@ -190,6 +190,29 @@ export type UploadSnapshot = {
   cancelled: boolean;
 };
 
+/**
+ * Reachability state for the configured sync server. Mirrors the
+ * Rust `SyncReachability` in sync.rs.
+ *
+ *   unconfigured → no URL / API key set → icon dimmed
+ *   online       → /health returned 200 within timeout → green
+ *   offline      → network error, non-200, or timeout → red
+ */
+export type SyncReachability = 'unconfigured' | 'online' | 'offline';
+
+/**
+ * Snapshot of the sync-server health poll. Mirrors `SyncStatus` in
+ * sync.rs. Emitted as `sync:status-changed` events whenever any
+ * field changes, also available via `currentSyncStatus()` for
+ * mount-time catch-up.
+ */
+export type SyncStatus = {
+  reachability: SyncReachability;
+  server_version: string | null;
+  error: string | null;
+  last_ok_ago_secs: number | null;
+};
+
 /** Result returned by `add_to_steam`. Mirrors `AddToSteamResult` in steam.rs. */
 export type AddToSteamResult = {
   steam_user_id: string;

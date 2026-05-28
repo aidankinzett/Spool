@@ -39,10 +39,12 @@ mod registry;
 mod runner;
 mod steam;
 mod steamgriddb;
+mod sync;
 
 use cli::CliMode;
 use config::{Config, SharedConfig};
 use lan::{LanDownloadState, LanServerShutdown, LanState, LanUploadsState};
+use sync::SyncStatusState;
 use library::{Library, SharedLibrary};
 use ludusavi::LudusaviClient;
 use runner::RunState;
@@ -144,6 +146,7 @@ pub fn run() {
         .manage::<LanDownloadState>(LanDownloadState::default())
         .manage::<LanUploadsState>(LanUploadsState::default())
         .manage::<LanServerShutdown>(LanServerShutdown::default())
+        .manage::<SyncStatusState>(SyncStatusState::default())
         .invoke_handler(tauri::generate_handler![
             take_pending_run,
             // library
@@ -167,6 +170,10 @@ pub fn run() {
             launcher::generate_armoury_launcher,
             // registry compat-flag probe
             registry::get_run_as_admin_in_registry,
+            // sync server
+            sync::current_sync_status,
+            sync::refresh_sync_status,
+            sync::sync_register_account,
             // lan discovery
             lan::list_lan_peers,
             lan::fetch_peer_games,
@@ -209,6 +216,12 @@ pub fn run() {
             // a cover but no extracted accent yet. Cheap no-op when
             // every entry is already filled.
             accent_backfill::spawn_backfill(app.handle().clone());
+
+            // Sync server health poll. Runs forever, every 30s — emits
+            // `sync:status-changed` so the chrome cloud icon can tint
+            // itself. No-op (Unconfigured) when the user hasn't set
+            // a server URL / API key.
+            sync::spawn_health_poller(app.handle().clone());
 
             // Startup --run dispatch: queue the game id so the frontend
             // can pick it up once its listeners are ready.
