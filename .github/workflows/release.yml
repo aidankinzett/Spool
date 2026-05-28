@@ -221,7 +221,9 @@ jobs:
       - name: Upload AppImage + signature to release
         working-directory: tauri/src-tauri/target/release/bundle/appimage
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Same 403-on-release reason as the tauri-action steps above —
+          # the default GITHUB_TOKEN can't upload assets, use the PAT.
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
         run: |
           gh release upload "${{ github.ref_name }}" \
             Spool_*_amd64.AppImage \
