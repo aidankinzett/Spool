@@ -74,7 +74,7 @@ jobs:
         # Smoke-test that the full app builds end-to-end (frontend +
         # backend). Skip bundle generation to keep CI fast — `release.yml`
         # is responsible for producing artifacts.
-        run: bun run tauri build -- --no-bundle
+        run: bun run tauri build --no-bundle
 
   # Mirrors the `build-linux` job in release.yml so the rust-cache key
   # matches. On master pushes this populates the Linux cache; on tag
@@ -111,4 +111,4 @@ jobs:
         working-directory: tauri
         # Same as the Windows job — release-profile compile populates the
         # cache with the artifacts release.yml will actually reuse.
-        run: bun run tauri build -- --no-bundle
+        run: bun run tauri build --no-bundle
