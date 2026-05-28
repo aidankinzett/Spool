@@ -53,7 +53,7 @@
     <MonoLabel size={10.5} class="text-ink-1">{sub}</MonoLabel>
   {/if}
 
-  <div data-tauri-drag-region class="flex-1">
+  <div class="flex-1">
     {#if children}{@render children()}{/if}
   </div>
 
