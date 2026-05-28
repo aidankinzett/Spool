@@ -119,6 +119,132 @@ fn os_toast_if_hidden(app: &AppHandle, title: &str, body: &str) {
     }
 }
 
+/// Manual backup — runs `ludusavi backup` for a single game outside
+/// the full play workflow. Used by the right-click "Back up saves
+/// now" action so users can snapshot saves before risky operations
+/// without launching the game.
+///
+/// Returns the count of backup bundles ludusavi produced and the
+/// total size in bytes. Persists the entry's
+/// `save_last_backed_up_at` / `save_backup_count` / `save_backup_size_mb`
+/// the same way the post-session backup phase does, then records a
+/// sync event so peers can see the new save.
+#[tauri::command]
+pub async fn manual_backup(app: AppHandle, game_id: String) -> AppResult<ManualBackupResult> {
+    // Snapshot config + library entry first; drop the locks before
+    // the long-running subprocess await.
+    let (game_name, ludusavi_exe) = manual_prep(&app, &game_id)?;
+    let ludusavi_client = app.state::<LudusaviClient>();
+    let out = ludusavi_client
+        .backup(&ludusavi_exe, &game_name)
+        .await
+        .map_err(|e| AppError::Other(format!("ludusavi backup: {e}")))?;
+
+    let (game_count, bytes_total) = out
+        .overall
+        .as_ref()
+        .map(|o| (o.total_games as i32, o.total_bytes))
+        .unwrap_or((0, 0));
+
+    if game_count > 0 {
+        {
+            let library = app.state::<SharedLibrary>();
+            let mut lib = library.lock().map_err(|_| AppError::LockPoisoned)?;
+            if let Some(entry) = lib.entries.iter_mut().find(|e| e.id == game_id) {
+                entry.save_backup_count += 1;
+                entry.save_last_backed_up_at = Some(Utc::now());
+                entry.save_backup_size_mb = (bytes_total as f64) / (1024.0 * 1024.0);
+                entry.sync_badge = Some("synced".to_string());
+            }
+            lib.save()?;
+        }
+        let _ = app.emit("library:changed", &game_id);
+        // Record on the sync server so peers see the new event.
+        sync::record_backup_event(&app, &game_name).await;
+    }
+
+    Ok(ManualBackupResult {
+        game_count,
+        bytes_total: bytes_total as u64,
+    })
+}
+
+/// Manual restore — runs `ludusavi restore` for a single game.
+/// Surfaces cloud-sync conflicts as an explicit error so the UI can
+/// prompt the user to open Ludusavi (same behaviour as the launch
+/// path).
+#[tauri::command]
+pub async fn manual_restore(app: AppHandle, game_id: String) -> AppResult<ManualRestoreResult> {
+    let (game_name, ludusavi_exe) = manual_prep(&app, &game_id)?;
+    let ludusavi_client = app.state::<LudusaviClient>();
+    let out = ludusavi_client
+        .restore(&ludusavi_exe, &game_name)
+        .await
+        .map_err(|e| AppError::Other(format!("ludusavi restore: {e}")))?;
+
+    if out
+        .errors
+        .as_ref()
+        .and_then(|e| e.cloud_conflict.as_ref())
+        .is_some()
+    {
+        return Err(AppError::Other(
+            "Cloud sync conflict — open Ludusavi to resolve before restoring.".into(),
+        ));
+    }
+
+    let game_count = out
+        .overall
+        .as_ref()
+        .map(|o| o.total_games as i32)
+        .unwrap_or(0);
+
+    // Record the restore on the sync server so peers know we just
+    // pulled the latest. Best-effort.
+    if game_count > 0 {
+        sync::record_restore_event(&app, &game_name).await;
+    }
+
+    Ok(ManualRestoreResult { game_count })
+}
+
+#[derive(Debug, Serialize)]
+pub struct ManualBackupResult {
+    pub game_count: i32,
+    pub bytes_total: u64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ManualRestoreResult {
+    pub game_count: i32,
+}
+
+/// Shared snapshot for the manual backup/restore commands. Pulls the
+/// game name + validated ludusavi path so the caller has everything
+/// it needs to await on the subprocess.
+fn manual_prep(app: &AppHandle, game_id: &str) -> AppResult<(String, PathBuf)> {
+    let game_name = {
+        let library = app.state::<SharedLibrary>();
+        let lib = library.lock().map_err(|_| AppError::LockPoisoned)?;
+        let entry = lib
+            .find(game_id)
+            .ok_or_else(|| AppError::Other(format!("game not found: {game_id}")))?;
+        entry.game_name.clone()
+    };
+    let ludusavi_exe = {
+        let config = app.state::<SharedConfig>();
+        let cfg = config.lock().map_err(|_| AppError::LockPoisoned)?;
+        let p = cfg.data.ludusavi_path.clone();
+        if p.is_empty() || !PathBuf::from(&p).is_file() {
+            return Err(AppError::Other(
+                "Ludusavi is not configured. Set its path in Settings.".into(),
+            ));
+        }
+        PathBuf::from(p)
+    };
+    Ok((game_name, ludusavi_exe))
+}
+
 #[tauri::command]
 pub async fn launch_game(app: AppHandle, game_id: String) -> AppResult<()> {
     launch_game_inner(&app, &game_id).await

@@ -203,6 +203,8 @@ pub fn run() {
             lan::cancel_upload,
             // runner
             runner::launch_game,
+            runner::manual_backup,
+            runner::manual_restore,
         ])
         .setup(move |app| {
             // Mount tray icon + menu.

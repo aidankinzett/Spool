@@ -107,6 +107,12 @@ export const api = {
 
   // Run workflow
   launchGame: (gameId: string): Promise<void> => invoke('launch_game', { gameId }),
+  manualBackup: (
+    gameId: string,
+  ): Promise<{ game_count: number; bytes_total: number }> =>
+    invoke('manual_backup', { gameId }),
+  manualRestore: (gameId: string): Promise<{ game_count: number }> =>
+    invoke('manual_restore', { gameId }),
 
   // Lifecycle — pulls + clears the game id queued by a startup `--run` invocation.
   takePendingRun: (): Promise<string | null> => invoke('take_pending_run'),

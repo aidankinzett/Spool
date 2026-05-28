@@ -14,7 +14,7 @@
    * non-danger rows, red hover for Remove.
    */
   import { onMount, onDestroy } from 'svelte';
-  import { Folder, Package, Pencil, Play, Trash2 } from '@lucide/svelte';
+  import { ArrowDownToLine, ArrowUpFromLine, Folder, Package, Pencil, Play, Trash2 } from '@lucide/svelte';
   import { openPath } from '@tauri-apps/plugin-opener';
   import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
   import { api, assetUrl } from '$lib/api';
@@ -139,6 +139,90 @@
         title: "Couldn't generate launcher",
         sub: String(e),
         catalog: fmtCatalog(game.catalog_number),
+      });
+    }
+  }
+
+  async function manualBackup() {
+    onclose();
+    try {
+      const r = await api.manualBackup(game.id);
+      if (r.game_count === 0) {
+        toasts.show({
+          kind: 'info',
+          label: 'LUDUSAVI',
+          title: 'Nothing to back up',
+          sub: `${game.game_name} has no save data ludusavi recognises.`,
+          catalog: fmtCatalog(game.catalog_number),
+        });
+        return;
+      }
+      const mb = (r.bytes_total / (1024 * 1024)).toFixed(1);
+      toasts.show({
+        kind: 'ok',
+        label: 'LUDUSAVI',
+        title: 'Saves backed up',
+        sub: `${game.game_name} · ${mb} MB`,
+        catalog: fmtCatalog(game.catalog_number),
+      });
+    } catch (e) {
+      toasts.show({
+        kind: 'bad',
+        label: 'LUDUSAVI · BACKUP',
+        title: "Couldn't back up",
+        sub: String(e),
+        catalog: fmtCatalog(game.catalog_number),
+      });
+    }
+  }
+
+  async function manualRestore() {
+    onclose();
+    if (
+      !confirm(
+        `Restore saves for "${game.game_name}"?\n\nThis overwrites your current local saves with the most recent backup.`,
+      )
+    ) {
+      return;
+    }
+    try {
+      const r = await api.manualRestore(game.id);
+      if (r.game_count === 0) {
+        toasts.show({
+          kind: 'info',
+          label: 'LUDUSAVI',
+          title: 'No backups found',
+          sub: `${game.game_name} has nothing to restore yet.`,
+          catalog: fmtCatalog(game.catalog_number),
+        });
+        return;
+      }
+      toasts.show({
+        kind: 'ok',
+        label: 'LUDUSAVI',
+        title: 'Saves restored',
+        sub: `${game.game_name} is ready to play.`,
+        catalog: fmtCatalog(game.catalog_number),
+      });
+    } catch (e) {
+      const msg = String(e);
+      const isConflict = /cloud sync conflict/i.test(msg);
+      toasts.show({
+        kind: isConflict ? 'warn' : 'bad',
+        label: isConflict ? 'LUDUSAVI · CONFLICT' : 'LUDUSAVI · RESTORE',
+        title: isConflict ? 'Cloud sync conflict' : "Couldn't restore",
+        sub: msg,
+        catalog: fmtCatalog(game.catalog_number),
+        cta: isConflict
+          ? {
+              label: 'Open Ludusavi',
+              onClick: () => {
+                api.openLudusaviGui().catch((err) =>
+                  console.error('[ludusavi] open failed:', err),
+                );
+              },
+            }
+          : undefined,
       });
     }
   }
@@ -287,10 +371,17 @@
     {@render item('Generate Armoury Crate launcher', armouryIcon, generateArmouryLauncher, !game.exe_path)}
   </div>
 
+  <div class="border-t border-dashed border-line-1 py-1">
+    {@render item('Back up saves now', backupIcon, manualBackup)}
+    {@render item('Restore saves…', restoreIcon, manualRestore)}
+  </div>
+
   {#snippet playIcon()}<Play size={13} fill="currentColor" />{/snippet}
   {#snippet folderIcon()}<Folder size={13} />{/snippet}
   {#snippet steamIcon()}<Play size={13} />{/snippet}
   {#snippet armouryIcon()}<Package size={13} />{/snippet}
+  {#snippet backupIcon()}<ArrowUpFromLine size={13} />{/snippet}
+  {#snippet restoreIcon()}<ArrowDownToLine size={13} />{/snippet}
   {#snippet pencilIcon()}<Pencil size={13} />{/snippet}
   {#snippet trashIcon()}<Trash2 size={13} />{/snippet}
 
