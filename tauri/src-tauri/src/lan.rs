@@ -1,7 +1,7 @@
 //! LAN peer discovery + library exchange.
 //!
-//! **Phase A** (already shipped): every 5 s we broadcast a small JSON
-//! announce packet over UDP multicast (`239.255.83.83:47631`) and
+//! **Phase A** (already shipped): every 5 s we send a small JSON
+//! announce packet over UDP broadcast (`255.255.255.255:47631`) and
 //! collect everyone else's announces into a peer registry that stales
 //! out after 30 s.
 //!
@@ -16,9 +16,16 @@
 //! Future phases will add the download flow (Phase C — actual file
 //! transfer) and the settings UI + per-game share toggles (Phase D).
 //!
-//! Multicast group `239.255.83.83` is in the admin-scoped range
-//! (`239.255.0.0/16`) which routers won't forward beyond the local
-//! network — exactly the scope we want.
+//! Why broadcast (`255.255.255.255`) and not multicast: consumer mesh
+//! routers — notably Google / Nest Wi-Fi — aggressively filter
+//! arbitrary admin-scoped multicast groups while still flooding limited
+//! broadcasts normally. Broadcast is "ruder" (every host on the link
+//! sees the packet) but reliably traverses Wi-Fi ↔ Ethernet bridges
+//! where multicast quietly disappears. The packet is tiny and the
+//! `magic` + `device_id` checks make junk easy to ignore. Routers
+//! won't forward `255.255.255.255` beyond the local network either, so
+//! the scope is the same as the previous multicast design. Matches
+//! what the original C# build did.
 
 use crate::config::SharedConfig;
 use crate::error::{AppError, AppResult};
@@ -48,8 +55,8 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::net::UdpSocket;
 use tokio_util::io::ReaderStream;
 
-const MULTICAST_ADDR: Ipv4Addr = Ipv4Addr::new(239, 255, 83, 83);
-const MULTICAST_PORT: u16 = 47631;
+const BROADCAST_ADDR: Ipv4Addr = Ipv4Addr::BROADCAST;
+const DISCOVERY_PORT: u16 = 47631;
 const PROTOCOL_VERSION: u32 = 1;
 const ANNOUNCE_INTERVAL: Duration = Duration::from_secs(5);
 const PEER_STALE_AFTER: Duration = Duration::from_secs(30);
@@ -75,7 +82,9 @@ const PROGRESS_EMIT_INTERVAL: Duration = Duration::from_millis(200);
 #[serde(default)]
 struct AnnouncePacket {
     /// Magic prefix so we can ignore unrelated UDP traffic on the
-    /// multicast port quickly.
+    /// discovery port quickly. Broadcast means anything on the LAN
+    /// sending to `:47631` lands in our recv buffer, so this check is
+    /// the first line of "is this even ours?" filtering.
     magic: String,
     version: u32,
     device_id: String,
@@ -1083,7 +1092,7 @@ async fn run_discovery(app: AppHandle) -> AppResult<()> {
         ));
     }
 
-    let socket = make_multicast_socket()?;
+    let socket = make_discovery_socket()?;
     let socket = Arc::new(socket);
 
     // Start the HTTP server first so we can advertise its real port in
@@ -1107,7 +1116,7 @@ async fn run_discovery(app: AppHandle) -> AppResult<()> {
     tracing::info!(
         device_id = %device_id,
         device_name = %device_name,
-        "LAN discovery started on {MULTICAST_ADDR}:{MULTICAST_PORT}"
+        "LAN discovery started on {BROADCAST_ADDR}:{DISCOVERY_PORT}"
     );
 
     let lan_state = app.state::<LanState>().peers.clone();
@@ -1155,30 +1164,32 @@ async fn run_discovery(app: AppHandle) -> AppResult<()> {
     Ok(())
 }
 
-/// Configures the UDP socket: bind to `0.0.0.0:MULTICAST_PORT` with
-/// SO_REUSEADDR (multiple processes can listen — useful in dev), join
-/// the multicast group on all interfaces. Tokio's UdpSocket can't set
-/// these pre-bind, so we go through socket2 then convert.
-fn make_multicast_socket() -> AppResult<UdpSocket> {
+/// Configures the UDP socket: bind to `0.0.0.0:DISCOVERY_PORT` with
+/// SO_REUSEADDR (multiple processes can listen — useful in dev) and
+/// SO_BROADCAST (required on Windows/Linux to send to
+/// `255.255.255.255`). Tokio's UdpSocket can't set these pre-bind, so
+/// we go through socket2 then convert.
+///
+/// Two Spool instances on the same machine still see each other: a
+/// broadcast sent locally is delivered back to every socket bound to
+/// `0.0.0.0:DISCOVERY_PORT`, and `device_id`-self-suppression in
+/// `listen_loop` drops our own announces. No explicit loopback toggle
+/// needed — that was a multicast-specific concern.
+fn make_discovery_socket() -> AppResult<UdpSocket> {
     let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))
         .map_err(|e| AppError::Other(format!("socket create: {e}")))?;
     socket
         .set_reuse_address(true)
         .map_err(|e| AppError::Other(format!("set SO_REUSEADDR: {e}")))?;
     socket
+        .set_broadcast(true)
+        .map_err(|e| AppError::Other(format!("set SO_BROADCAST: {e}")))?;
+    socket
         .set_nonblocking(true)
         .map_err(|e| AppError::Other(format!("set nonblocking: {e}")))?;
     socket
-        .bind(&SocketAddr::from((Ipv4Addr::UNSPECIFIED, MULTICAST_PORT)).into())
-        .map_err(|e| AppError::Other(format!("bind {MULTICAST_PORT}: {e}")))?;
-    socket
-        .join_multicast_v4(&MULTICAST_ADDR, &Ipv4Addr::UNSPECIFIED)
-        .map_err(|e| AppError::Other(format!("join multicast: {e}")))?;
-    // Loopback ON so two Spool instances on the same machine see each
-    // other; we filter by device_id rather than dropping our own loop.
-    socket
-        .set_multicast_loop_v4(true)
-        .map_err(|e| AppError::Other(format!("set multicast loopback: {e}")))?;
+        .bind(&SocketAddr::from((Ipv4Addr::UNSPECIFIED, DISCOVERY_PORT)).into())
+        .map_err(|e| AppError::Other(format!("bind {DISCOVERY_PORT}: {e}")))?;
 
     let std_socket: std::net::UdpSocket = socket.into();
     UdpSocket::from_std(std_socket).map_err(|e| AppError::Other(format!("tokio from_std: {e}")))
@@ -1191,7 +1202,7 @@ async fn announce_loop(
     device_name: String,
     server_port: Arc<AtomicU16>,
 ) {
-    let target = SocketAddr::from((MULTICAST_ADDR, MULTICAST_PORT));
+    let target = SocketAddr::from((BROADCAST_ADDR, DISCOVERY_PORT));
     loop {
         // Read current game count fresh each tick so peers see growth as
         // the user adds games.
@@ -1236,7 +1247,7 @@ async fn listen_loop(
         };
         let packet: AnnouncePacket = match serde_json::from_slice(&buf[..len]) {
             Ok(p) => p,
-            Err(_) => continue, // ignore stray UDP / unrelated multicast traffic
+            Err(_) => continue, // ignore stray UDP / unrelated broadcast traffic
         };
         if packet.magic != "spool" {
             continue;
