@@ -1534,19 +1534,21 @@ fn emit_progress(app: &AppHandle, progress: &DownloadProgress) {
 /// this when the user opens a peer's row in the LAN popover. Times out
 /// quickly so a stale peer in the registry can't hang the UI.
 #[tauri::command]
-pub async fn fetch_peer_games(addr: String, port: u16) -> AppResult<Vec<PeerGame>> {
+pub async fn fetch_peer_games(
+    app: AppHandle,
+    addr: String,
+    port: u16,
+) -> AppResult<Vec<PeerGame>> {
     if port == 0 {
         return Err(AppError::Other(
             "peer is discovery-only (no file server)".into(),
         ));
     }
     let url = format!("http://{addr}:{port}/games");
-    let client = reqwest::Client::builder()
-        .timeout(PEER_FETCH_TIMEOUT)
-        .build()
-        .map_err(|e| AppError::Other(format!("build http client: {e}")))?;
-    let resp = client
+    let resp = app
+        .state::<reqwest::Client>()
         .get(&url)
+        .timeout(PEER_FETCH_TIMEOUT)
         .send()
         .await
         .map_err(|e| AppError::Other(format!("GET {url}: {e}")))?;
@@ -1630,12 +1632,10 @@ pub async fn start_peer_install(
     // Fetch the manifest synchronously so we can fail fast with a clean
     // error message if the peer 404s or the entry isn't shareable.
     let manifest_url = format!("http://{peer_addr}:{peer_port}/games/{game_id}/manifest");
-    let client = reqwest::Client::builder()
-        .timeout(PEER_FETCH_TIMEOUT)
-        .build()
-        .map_err(|e| AppError::Other(format!("build http client: {e}")))?;
-    let resp = client
+    let resp = app
+        .state::<reqwest::Client>()
         .get(&manifest_url)
+        .timeout(PEER_FETCH_TIMEOUT)
         .send()
         .await
         .map_err(|e| AppError::Other(format!("GET manifest: {e}")))?;
@@ -2006,13 +2006,12 @@ async fn run_install(
             .map_err(|e| AppError::Other(format!("create partial dir: {e}")))?;
     }
 
-    let client = reqwest::Client::builder()
-        // No top-level timeout — multi-GB transfers may legitimately
-        // take a while. Per-chunk timeout would be nicer but isn't
-        // exposed by reqwest; for v1 we rely on the user cancelling
-        // via app restart if something hangs.
-        .build()
-        .map_err(|e| AppError::Other(format!("build http client: {e}")))?;
+    // Reuse the process-wide shared client. The shared client has no
+    // top-level timeout so multi-GB transfers can run as long as they
+    // need; the heartbeat uses RequestBuilder::timeout for the short
+    // poll. (Per `m07` + `domain-web`: one client per process, share
+    // its connection pool + DNS cache.)
+    let client: reqwest::Client = (*app.state::<reqwest::Client>()).clone();
 
     // Shared counters for the parallel file downloads. `bytes_done`
     // accumulates across all tasks; `last_emit` throttles the progress
@@ -2078,18 +2077,13 @@ async fn run_install(
         let session = session_id_for_url.clone();
         let game_id = manifest_game_id.clone();
         let peer_addr = peer_addr.clone();
+        // Reuse the shared client; per-request timeout via RequestBuilder.
+        let hb_client: reqwest::Client = (*app.state::<reqwest::Client>()).clone();
         tokio::spawn(async move {
             let url = format!(
                 "http://{peer_addr}:{peer_port}/games/{game_id}/cancel-check?session={}",
                 urlencoding::encode(&session)
             );
-            let hb_client = match reqwest::Client::builder()
-                .timeout(Duration::from_secs(3))
-                .build()
-            {
-                Ok(c) => c,
-                Err(_) => return,
-            };
             loop {
                 tokio::time::sleep(Duration::from_secs(3)).await;
                 let state = app_for_hb.state::<LanDownloadState>();
@@ -2097,7 +2091,12 @@ async fn run_install(
                     return;
                 }
                 // GONE (410) is the "host cancelled" signal.
-                if let Ok(resp) = hb_client.get(&url).send().await {
+                if let Ok(resp) = hb_client
+                    .get(&url)
+                    .timeout(Duration::from_secs(3))
+                    .send()
+                    .await
+                {
                     if resp.status() == reqwest::StatusCode::GONE {
                         tracing::info!("LAN install: host cancelled the upload");
                         state.request_host_cancel();
@@ -2254,12 +2253,8 @@ async fn fetch_peer_artwork(
     peer_port: u16,
     source_game_id: &str,
 ) -> bool {
-    let Ok(client) = reqwest::Client::builder()
-        .timeout(Duration::from_secs(30))
-        .build()
-    else {
-        return false;
-    };
+    // Shared client; the 30s budget is applied per request below.
+    let client: reqwest::Client = (*app.state::<reqwest::Client>()).clone();
 
     let covers_dir = paths::covers_dir();
     if tokio::fs::create_dir_all(&covers_dir).await.is_err() {
@@ -2324,7 +2319,12 @@ async fn fetch_and_save_peer_image(
     safe_name: &str,
     suffix: &str,
 ) -> Option<PathBuf> {
-    let resp = client.get(url).send().await.ok()?;
+    let resp = client
+        .get(url)
+        .timeout(Duration::from_secs(30))
+        .send()
+        .await
+        .ok()?;
     if !resp.status().is_success() {
         return None;
     }

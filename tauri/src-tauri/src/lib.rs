@@ -114,6 +114,17 @@ pub fn run() {
         .manage::<RunState>(RunState::default())
         .manage::<PendingRun>(PendingRun::default())
         .manage::<LanState>(LanState::new())
+        // Single reqwest::Client shared across LAN code — reqwest is
+        // designed for reuse (connection pooling, DNS cache). Per
+        // `domain-web` best practice + `m07-concurrency`'s "avoid
+        // per-call allocations in hot paths", every LAN call gets
+        // this client via `app.state::<reqwest::Client>()` and uses
+        // RequestBuilder::timeout for per-request limits.
+        .manage::<reqwest::Client>(
+            reqwest::Client::builder()
+                .build()
+                .expect("reqwest client build"),
+        )
         .manage::<LanDownloadState>(LanDownloadState::default())
         .manage::<LanUploadsState>(LanUploadsState::default())
         .invoke_handler(tauri::generate_handler![
