@@ -25,6 +25,7 @@
 //!   - [`cli`]         — argv parsing for `--run` mode
 //!   - [`steamgriddb`] — cover art fetch
 
+mod accent_backfill;
 mod cli;
 mod config;
 mod error;
@@ -192,6 +193,11 @@ pub fn run() {
             // — peer count stays at 0 in that case but everything else
             // keeps working.
             lan::spawn_discovery(app.handle().clone());
+
+            // Backfill accent colours for any legacy entries that have
+            // a cover but no extracted accent yet. Cheap no-op when
+            // every entry is already filled.
+            accent_backfill::spawn_backfill(app.handle().clone());
 
             // Startup --run dispatch: queue the game id so the frontend
             // can pick it up once its listeners are ready.
