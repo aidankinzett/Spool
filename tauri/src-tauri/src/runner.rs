@@ -20,7 +20,7 @@ use crate::config::SharedConfig;
 use crate::error::{AppError, AppResult};
 use crate::library::SharedLibrary;
 use crate::ludusavi::LudusaviClient;
-use crate::{process, paths};
+use crate::{process, paths, registry};
 use chrono::Utc;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
@@ -98,8 +98,11 @@ pub async fn launch_game_inner(app: &AppHandle, game_id: &str) -> AppResult<()> 
     let _guard = run_state.try_acquire(game_id)?;
 
     // Snapshot what we need from state up front so we don't hold any
-    // sync Mutex across the long-running awaits below.
-    let (game_name, exe_path) = {
+    // sync Mutex across the long-running awaits below. We also fold
+    // the registry-level Run-As-Admin compat flag into the effective
+    // `needs_admin` here so the launch path doesn't have to know
+    // about the registry concept.
+    let (game_name, exe_path, needs_admin) = {
         let library = app.state::<SharedLibrary>();
         let lib = library.lock().map_err(|_| AppError::LockPoisoned)?;
         let entry = lib
@@ -108,7 +111,9 @@ pub async fn launch_game_inner(app: &AppHandle, game_id: &str) -> AppResult<()> 
         if entry.exe_path.is_empty() {
             return Err(AppError::Other("Game has no executable configured".into()));
         }
-        (entry.game_name.clone(), entry.exe_path.clone())
+        let needs_admin =
+            entry.run_as_admin || registry::run_as_admin_in_registry(&entry.exe_path);
+        (entry.game_name.clone(), entry.exe_path.clone(), needs_admin)
     };
 
     let ludusavi_exe = {
@@ -124,8 +129,16 @@ pub async fn launch_game_inner(app: &AppHandle, game_id: &str) -> AppResult<()> 
     };
 
     let ludusavi_client = app.state::<LudusaviClient>();
-    let result =
-        run_workflow(app, game_id, &game_name, &exe_path, &ludusavi_exe, &ludusavi_client).await;
+    let result = run_workflow(
+        app,
+        game_id,
+        &game_name,
+        &exe_path,
+        needs_admin,
+        &ludusavi_exe,
+        &ludusavi_client,
+    )
+    .await;
 
     if let Err(e) = &result {
         emit_phase(app, game_id, "error", Some(&e.to_string()));
@@ -138,6 +151,7 @@ async fn run_workflow(
     game_id: &str,
     game_name: &str,
     exe_path: &str,
+    run_as_admin: bool,
     ludusavi_exe: &Path,
     ludusavi_client: &LudusaviClient,
 ) -> AppResult<()> {
@@ -179,9 +193,9 @@ async fn run_workflow(
     }
 
     emit_phase(app, game_id, "playing", None);
-    tracing::info!(exe_path, "launching game process");
+    tracing::info!(exe_path, run_as_admin, "launching game process");
     let session_start = Utc::now();
-    let spawn_result = process::run_game(&exe_pathbuf).await;
+    let spawn_result = process::run_game(&exe_pathbuf, run_as_admin).await;
     let session_end = Utc::now();
     tracing::info!(
         game_name,

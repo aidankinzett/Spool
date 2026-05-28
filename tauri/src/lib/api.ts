@@ -44,6 +44,11 @@ export const api = {
   generateArmouryLauncher: (gameId: string): Promise<string> =>
     invoke('generate_armoury_launcher', { gameId }),
 
+  // Windows registry compat-flag probe — true when the OS has the
+  // exe flagged "always run as administrator" via AppCompatFlags.
+  getRunAsAdminInRegistry: (exePath: string): Promise<boolean> =>
+    invoke('get_run_as_admin_in_registry', { exePath }),
+
   // LAN
   listLanPeers: (): Promise<LanPeer[]> => invoke('list_lan_peers'),
   fetchPeerGames: (addr: string, port: number): Promise<PeerGame[]> =>

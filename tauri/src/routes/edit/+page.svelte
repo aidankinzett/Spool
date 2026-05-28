@@ -61,6 +61,25 @@
     !!form && (form.game_folder_path ?? '').length > 0,
   );
 
+  // Tracks whether Windows itself has the exe flagged for elevation via
+  // AppCompatFlags. When true, the per-entry Run-As-Admin toggle is
+  // informational only — the launch will elevate regardless of the
+  // entry's setting. Re-checked whenever exe_path changes.
+  let registryRunAsAdmin = $state(false);
+  $effect(() => {
+    const exe = form?.exe_path ?? '';
+    if (!exe) {
+      registryRunAsAdmin = false;
+      return;
+    }
+    api
+      .getRunAsAdminInRegistry(exe)
+      .then((v) => {
+        registryRunAsAdmin = v;
+      })
+      .catch((e) => console.error('[edit] registry probe failed:', e));
+  });
+
   onMount(async () => {
     try {
       const params = new URLSearchParams(window.location.search);
@@ -319,7 +338,9 @@
         {:else if tab === 'launch'}
           {@render field(
             'Run as administrator',
-            "Required by some games (mostly older / DRM-laden). Off by default.",
+            registryRunAsAdmin
+              ? 'Already enabled by Windows for this exe — Spool will elevate either way.'
+              : 'Required by some games (mostly older / DRM-laden). Off by default. Triggers a UAC prompt at launch.',
             launchRunAs,
           )}
           {@render field(
@@ -329,7 +350,19 @@
           )}
 
           {#snippet launchRunAs()}
-            <Toggle bind:checked={form!.run_as_admin} aria-label="Run as administrator" />
+            <div class="flex flex-col items-end gap-1.5">
+              <Toggle bind:checked={form!.run_as_admin} aria-label="Run as administrator" />
+              {#if registryRunAsAdmin}
+                <span
+                  class="font-mono inline-flex items-center gap-1 rounded-[3px] px-1.5 py-0.5 text-[9.5px] uppercase tracking-[0.08em]"
+                  style:background="rgba(126,198,255,0.10)"
+                  style:color="var(--color-info)"
+                  title="Windows AppCompatFlags layers has RUNASADMIN set for this exe"
+                >
+                  Registry
+                </span>
+              {/if}
+            </div>
           {/snippet}
           {#snippet launchSoon()}
             <span class="text-[11.5px] text-ink-3">—</span>

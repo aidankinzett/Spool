@@ -35,6 +35,7 @@ mod library;
 mod ludusavi;
 mod paths;
 mod process;
+mod registry;
 mod runner;
 mod steam;
 mod steamgriddb;
@@ -156,6 +157,8 @@ pub fn run() {
             steam::add_to_steam,
             // armoury crate launcher
             launcher::generate_armoury_launcher,
+            // registry compat-flag probe
+            registry::get_run_as_admin_in_registry,
             // lan discovery
             lan::list_lan_peers,
             lan::fetch_peer_games,
