@@ -2290,9 +2290,18 @@ async fn fetch_peer_artwork(
 
     // Accent extraction is best-effort and only meaningful from the
     // portrait cover. Heroes are wide and would skew the colour.
-    let accent = cover_path
-        .as_ref()
-        .and_then(|p| crate::steamgriddb::extract_vibrant_color(p));
+    // Image decode + histogram is sync CPU/disk work (~10ms for a
+    // typical cover), so per `m07-concurrency` it lives on
+    // `spawn_blocking` rather than blocking the async runtime.
+    let accent = if let Some(p) = cover_path.as_ref() {
+        let p = p.clone();
+        tokio::task::spawn_blocking(move || crate::steamgriddb::extract_vibrant_color(&p))
+            .await
+            .ok()
+            .flatten()
+    } else {
+        None
+    };
 
     // Update the library entry. Same shape as the pattern in
     // `run_install` above (line ~1825): bind State to a local first

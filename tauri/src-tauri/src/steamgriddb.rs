@@ -138,7 +138,16 @@ pub async fn fetch_and_save_cover(
 
     // 6. Extract a vibrant accent colour from the cover. Best-effort —
     //    failure here just leaves the brand `spool` default on the UI.
-    let accent = extract_vibrant_color(&path);
+    //    Image decode + histogram is sync CPU work; per
+    //    `m07-concurrency` we punt to `spawn_blocking` so the async
+    //    runtime stays responsive while it's chewing on a 1 MB image.
+    let accent = {
+        let p = path.clone();
+        tokio::task::spawn_blocking(move || extract_vibrant_color(&p))
+            .await
+            .ok()
+            .flatten()
+    };
 
     // 7. Update library entry + persist.
     {
