@@ -19,6 +19,7 @@
   import { onMount } from 'svelte';
   import {
     ArrowLeft,
+    BookOpen,
     ChevronRight,
     Cloud,
     CloudOff,
@@ -36,6 +37,7 @@
   import { fmtCatalog, fmtRate, relDate } from '$lib/format';
   import { toasts } from '$lib/toasts.svelte';
   import type {
+    ConfigData,
     DownloadProgress,
     GameEntry,
     LanPeer,
@@ -54,6 +56,9 @@
   import TransfersPanel from '$lib/components/TransfersPanel.svelte';
 
   let games = $state<GameEntry[]>([]);
+  // Snapshot of app config — only used to decide whether to show the
+  // Browse Games chrome button (gated on download_sources.length > 0).
+  let config = $state<ConfigData | null>(null);
   let loaded = $state(false);
   let error = $state<string | null>(null);
 
@@ -262,6 +267,26 @@
     peerGamesError = null;
   }
 
+  /** Opens (or focuses) the Browse Games child window. */
+  async function openBrowseWindow() {
+    const existing = await WebviewWindow.getByLabel('browse-games');
+    if (existing) {
+      await existing.setFocus();
+      return;
+    }
+    new WebviewWindow('browse-games', {
+      url: '/browse',
+      title: 'Browse Games',
+      width: 1280,
+      height: 800,
+      minWidth: 1100,
+      minHeight: 600,
+      decorations: false,
+      resizable: true,
+      center: true,
+    });
+  }
+
   /** Asks the backend to cancel the active install. The download task
    *  cleans up its `.partial` dir before emitting the final
    *  `status: "canceled"` event, which we surface as a toast.  */
@@ -306,6 +331,10 @@
 
   onMount(() => {
     refresh();
+    api
+      .getConfig()
+      .then((c) => (config = c))
+      .catch((e) => console.error('[library] getConfig failed:', e));
     // Run the updater check a moment after mount so the library
     // refresh has settled. Fire-and-forget — failures are surfaced
     // via the toast system; nothing here blocks the UI.
@@ -521,6 +550,21 @@
 <div class="flex h-screen flex-col bg-bg-0 text-ink-0">
   <WindowChrome sub="LIBRARY">
     <div class="flex h-full items-center justify-end gap-1.5 pr-2">
+      <!-- Browse Games: opens the Hydra source aggregator as a child
+           window. Hidden when no feeds are configured so users
+           without TorBox/Hydra setup don't see a dead button. -->
+      {#if config && config.download_sources.length > 0}
+        <button
+          type="button"
+          onclick={openBrowseWindow}
+          title="Browse games · {config.download_sources.length} feeds"
+          aria-label="Browse games"
+          class="inline-flex h-7 w-7 cursor-pointer items-center justify-center rounded-sm text-ink-2 transition-colors hover:bg-white/10 hover:text-ink-0"
+          data-tauri-drag-region="false"
+        >
+          <BookOpen size={14} />
+        </button>
+      {/if}
       <!-- Transfers pill — central hub for both downloads and uploads -->
       <span bind:this={transferPillEl} class="inline-flex">
         <TransferPill

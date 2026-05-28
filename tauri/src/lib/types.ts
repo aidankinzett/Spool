@@ -207,6 +207,33 @@ export type UploadSnapshot = {
 };
 
 /**
+ * One Hydra source entry (a downloadable game). Mirrors
+ * `HydraEntry` in hydra.rs.
+ */
+export type HydraEntry = {
+  title: string;
+  uris: string[];
+  upload_date: string;
+  file_size: string;
+  source_name: string;
+  source_url: string;
+};
+
+/** Per-feed fetch outcome reported by `hydra_fetch_all`. */
+export type FeedStatus = {
+  url: string;
+  name: string | null;
+  entry_count: number;
+  error: string | null;
+};
+
+/** Top-level result from `hydra_fetch_all`. */
+export type BrowseFetchResult = {
+  entries: HydraEntry[];
+  feeds: FeedStatus[];
+};
+
+/**
  * Reachability state for the configured sync server. Mirrors the
  * Rust `SyncReachability` in sync.rs.
  *

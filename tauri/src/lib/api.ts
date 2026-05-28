@@ -6,6 +6,7 @@
 import { invoke, convertFileSrc } from '@tauri-apps/api/core';
 import type {
   AddToSteamResult,
+  BrowseFetchResult,
   ConfigData,
   DownloadProgress,
   GameEntry,
@@ -51,7 +52,7 @@ export const api = {
     invoke('get_run_as_admin_in_registry', { exePath }),
 
   // Hydra source feeds (Browse Games)
-  hydraFetchAll: (): Promise<unknown> => invoke('hydra_fetch_all'),
+  hydraFetchAll: (): Promise<BrowseFetchResult> => invoke('hydra_fetch_all'),
   hydraAddSource: (url: string): Promise<string[]> =>
     invoke('hydra_add_source', { url }),
   hydraRemoveSource: (url: string): Promise<string[]> =>
