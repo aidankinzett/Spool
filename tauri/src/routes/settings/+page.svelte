@@ -9,10 +9,11 @@
    * features in v2.
    */
   import { onMount } from 'svelte';
-  import { ChevronLeft, Folder, Sparkles } from '@lucide/svelte';
+  import { ChevronLeft, Folder, KeyRound, Sparkles } from '@lucide/svelte';
   import { open as openDialog } from '@tauri-apps/plugin-dialog';
   import { api } from '$lib/api';
-  import type { ConfigData } from '$lib/types';
+  import { toasts } from '$lib/toasts.svelte';
+  import type { ConfigData, SyncStatus } from '$lib/types';
   import WindowChrome from '$lib/components/WindowChrome.svelte';
   import MonoLabel from '$lib/components/MonoLabel.svelte';
   import Btn from '$lib/components/Btn.svelte';
@@ -28,13 +29,95 @@
     config !== null && config.ludusavi_path.length > 0,
   );
 
+  // ── Sync server state — current reachability + register form ─────
+  let syncStatus = $state<SyncStatus>({
+    reachability: 'unconfigured',
+    server_version: null,
+    error: null,
+    last_ok_ago_secs: null,
+  });
+  let registerOpen = $state(false);
+  let registerAdminSecret = $state('');
+  let registerUsername = $state('');
+  let registerSubmitting = $state(false);
+
   onMount(async () => {
     try {
       config = await api.getConfig();
+      syncStatus = await api.currentSyncStatus();
     } catch (e) {
       error = String(e);
     }
   });
+
+  /** Tell the backend to immediately re-poll /health so the badge
+   *  updates without waiting for the next 30s tick. Called after
+   *  the user edits the URL / API key fields. */
+  async function refreshSync() {
+    try {
+      syncStatus = await api.refreshSyncStatus();
+    } catch (e) {
+      console.error('[settings] refreshSyncStatus failed:', e);
+    }
+  }
+
+  /** Persist + immediately re-probe so the user sees status update. */
+  async function persistAndRefresh() {
+    await persist();
+    await refreshSync();
+  }
+
+  async function submitRegister() {
+    if (!config) return;
+    const url = config.sync_server_url.trim();
+    if (!url) {
+      toasts.show({
+        kind: 'warn',
+        label: 'SYNC',
+        title: 'Server URL required',
+        sub: 'Set the URL above before registering.',
+      });
+      return;
+    }
+    if (!registerAdminSecret.trim() || !registerUsername.trim()) {
+      toasts.show({
+        kind: 'warn',
+        label: 'SYNC',
+        title: 'Missing fields',
+        sub: 'Admin secret and username are both required.',
+      });
+      return;
+    }
+    registerSubmitting = true;
+    try {
+      const apiKey = await api.syncRegisterAccount(
+        url,
+        registerAdminSecret.trim(),
+        registerUsername.trim(),
+      );
+      config.sync_server_api_key = apiKey;
+      config.sync_server_enabled = true;
+      await persistAndRefresh();
+      registerAdminSecret = '';
+      registerUsername = '';
+      registerOpen = false;
+      toasts.show({
+        kind: 'ok',
+        label: 'SYNC',
+        title: 'Registered',
+        sub: 'API key filled in. Sync server is now configured.',
+      });
+    } catch (e) {
+      toasts.show({
+        kind: 'bad',
+        label: 'SYNC · REGISTER',
+        title: "Couldn't register",
+        sub: String(e),
+      });
+    } finally {
+      registerSubmitting = false;
+    }
+  }
 
   async function persist() {
     if (!config) return;
@@ -193,6 +276,131 @@
                 />
               {/snippet}
             </SettingsRow>
+          </SettingsCard>
+
+          <SettingsCard title="Sync server">
+            <!-- Enable toggle -->
+            <SettingsRow
+              title="Cloud save sync"
+              subtitle="Acquire a play-state lock so two devices can't play the same game at once, and record save backup / restore events for cross-device sync."
+            >
+              {#snippet control()}
+                <Toggle
+                  bind:checked={config!.sync_server_enabled}
+                  onchange={persistAndRefresh}
+                  aria-label="Sync server enabled"
+                />
+              {/snippet}
+            </SettingsRow>
+
+            {#if config.sync_server_enabled}
+              <!-- URL field -->
+              <SettingsRow
+                title="Server URL"
+                subtitle={syncStatus.reachability === 'online'
+                  ? `Online${syncStatus.server_version ? ` · v${syncStatus.server_version}` : ''}`
+                  : syncStatus.reachability === 'offline'
+                    ? `Unreachable · ${syncStatus.error ?? 'no response'}`
+                    : 'Not yet configured.'}
+              >
+                {#snippet control()}
+                  {#if syncStatus.reachability === 'online'}
+                    <Pill kind="ok">Online</Pill>
+                  {:else if syncStatus.reachability === 'offline'}
+                    <Pill kind="warn">Offline</Pill>
+                  {:else}
+                    <Pill kind="warn">Set URL</Pill>
+                  {/if}
+                {/snippet}
+                {#snippet extras()}
+                  <TextField
+                    bind:value={config!.sync_server_url}
+                    placeholder="http://raspberrypi.local:47633"
+                    mono
+                    full
+                    oncommit={persistAndRefresh}
+                  />
+                {/snippet}
+              </SettingsRow>
+
+              <!-- API key field -->
+              <SettingsRow
+                title="API key"
+                subtitle="Generated when you register an account on the server. The Register button below fills this in for you."
+              >
+                {#snippet extras()}
+                  <TextField
+                    bind:value={config!.sync_server_api_key}
+                    placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+                    mono
+                    masked
+                    full
+                    oncommit={persistAndRefresh}
+                  />
+                  <Btn
+                    variant="ghost"
+                    onclick={() => (registerOpen = !registerOpen)}
+                  >
+                    {#snippet icon()}<KeyRound size={14} />{/snippet}
+                    {registerOpen ? 'Cancel' : 'Register…'}
+                  </Btn>
+                {/snippet}
+              </SettingsRow>
+
+              {#if registerOpen}
+                <!-- Inline register form. Slides in under the API key row. -->
+                <div
+                  class="border-l-2 border-spool/40 bg-bg-2/40 px-4 py-3"
+                  style:margin-left="-4px"
+                >
+                  <div
+                    class="font-mono mb-2 text-[10px] uppercase tracking-[0.1em] text-spool"
+                  >
+                    Register new account
+                  </div>
+                  <p class="mb-3 text-[11.5px] leading-[1.45] text-ink-2">
+                    Enter the admin secret you set in the server's compose file,
+                    plus a username for this device. The server returns an API
+                    key that gets pasted into the field above automatically.
+                  </p>
+                  <div class="flex flex-col gap-2">
+                    <div class="flex items-center gap-2">
+                      <span
+                        class="font-mono w-[120px] text-[10.5px] uppercase tracking-[0.08em] text-ink-2"
+                      >
+                        Admin secret
+                      </span>
+                      <TextField
+                        bind:value={registerAdminSecret}
+                        placeholder="ADMIN_SECRET from docker-compose.yml"
+                        mono
+                        masked
+                        full
+                      />
+                    </div>
+                    <div class="flex items-center gap-2">
+                      <span
+                        class="font-mono w-[120px] text-[10.5px] uppercase tracking-[0.08em] text-ink-2"
+                      >
+                        Username
+                      </span>
+                      <TextField
+                        bind:value={registerUsername}
+                        placeholder="my-pc"
+                        mono
+                        full
+                      />
+                    </div>
+                    <div class="mt-1 flex justify-end">
+                      <Btn onclick={submitRegister} disabled={registerSubmitting}>
+                        {#snippet icon()}<KeyRound size={14} />{/snippet}
+                        {registerSubmitting ? 'Registering…' : 'Register'}
+                      </Btn>
+                    </div>
+                  </div>
+                </div>
+              {/if}
+            {/if}
           </SettingsCard>
 
           <SettingsCard title="Sharing">
