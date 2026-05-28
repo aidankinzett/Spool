@@ -10,20 +10,50 @@ jobs:
     runs-on: windows-latest
     permissions:
       contents: write
+    defaults:
+      run:
+        shell: pwsh
 
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Setup .NET SDK
-        uses: actions/setup-dotnet@v4
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
         with:
-          dotnet-version: '10.x'
+          bun-version: latest
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: tauri/src-tauri -> target
+
+      - name: Resolve version
+        id: ver
+        run: |
+          $version = "${{ github.ref_name }}".TrimStart('v')
+          "value=$version" >> $env:GITHUB_OUTPUT
+
+      - name: Stamp version into Tauri config + Cargo.toml
+        # tauri-action reads `version` from tauri.conf.json to name the
+        # bundle and to populate the updater manifest. Sync both files
+        # to the git tag — neither is meant to be committed back, so
+        # this stays as an in-CI overwrite.
+        run: |
+          $version = "${{ steps.ver.outputs.value }}"
+          $conf = Get-Content tauri/src-tauri/tauri.conf.json -Raw | ConvertFrom-Json
+          $conf.version = $version
+          $conf | ConvertTo-Json -Depth 32 | Set-Content tauri/src-tauri/tauri.conf.json -Encoding utf8
+          (Get-Content tauri/src-tauri/Cargo.toml) `
+            -replace '^version = ".*"$', "version = `"$version`"" `
+            | Set-Content tauri/src-tauri/Cargo.toml -Encoding utf8
 
       - name: Generate changelog
         id: changelog
-        shell: pwsh
         run: |
           $prevTag = git describe --tags --abbrev=0 HEAD^
           $commits = git log "$prevTag..HEAD" --pretty=format:"%s" | Where-Object { $_ -ne "" }
@@ -41,50 +71,34 @@ jobs:
           $body.TrimEnd() >> $env:GITHUB_OUTPUT
           "EOF" >> $env:GITHUB_OUTPUT
 
-      - name: Set version from tag
-        shell: pwsh
-        run: |
-          $version = "${{ github.ref_name }}".TrimStart('v')
-          $tag = "${{ github.ref_name }}"
-          # Bump auto-updater manifest (the only file that needs a committed version string)
-          (Get-Content update.xml) -replace '<version>.*</version>', "<version>$version</version>" | Set-Content update.xml -Encoding utf8
-          (Get-Content update.xml) -replace '<url>.*</url>', "<url>https://github.com/aidankinzett/Spool/releases/download/$tag/spool-setup.exe</url>" | Set-Content update.xml -Encoding utf8
-
-      - name: Compile Launcher Stub
-        shell: pwsh
+      - name: Compile launcher stub
+        # The launcher stub is a tiny standalone .NET console exe embedded
+        # into the Rust binary via `include_bytes!`. Compiled with the
+        # framework csc.exe shipped with Windows — no .NET SDK required.
         run: |
           & "C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe" /target:winexe /win32icon:launcher_stub.ico /out:launcher_stub.exe launcher_stub.cs
 
-      - name: Restore dependencies
-        run: dotnet restore
+      - name: Install frontend dependencies
+        working-directory: tauri
+        run: bun install --frozen-lockfile
 
-      - name: Publish Single-File App
-        shell: pwsh
-        run: |
-          $version = "${{ github.ref_name }}".TrimStart('v')
-          dotnet publish -c Release -r win-x64 --self-contained true /p:PublishSingleFile=true /p:Version=$version
-
-      - name: Build Installer
-        run: iscc installer.iss
-
-      - name: Upload release
-        uses: softprops/action-gh-release@v2
+      - name: Build Tauri bundle
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Updater signing — required by the tauri-plugin-updater
+          # config in `tauri.conf.json`. See
+          # https://v2.tauri.app/plugin/updater for key generation.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
-          files: |
-            bin/Release/net10.0-windows10.0.17763.0/win-x64/publish/spool.exe
-            dist/spool-setup.exe
-          body: ${{ steps.changelog.outputs.CHANGELOG }}
-
-      - name: Commit update.xml to master
-        shell: pwsh
-        run: |
-          $xmlContent = Get-Content update.xml -Raw
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git fetch origin master
-          git checkout -f master
-          git reset --hard origin/master
-          Set-Content update.xml $xmlContent -Encoding utf8 -NoNewline
-          git add update.xml
-          git commit -m "chore: bump update.xml to ${{ github.ref_name }}"
-          git push origin master
+          projectPath: tauri
+          tagName: ${{ github.ref_name }}
+          releaseName: "Spool ${{ github.ref_name }}"
+          releaseBody: ${{ steps.changelog.outputs.CHANGELOG }}
+          releaseDraft: false
+          prerelease: false
+          # NSIS installer + updater artifacts (.sig + latest.json).
+          # `app` here is the unbundled exe, which we skip — only the
+          # NSIS installer is published.
+          args: --bundles nsis

@@ -9,22 +9,65 @@ on:
       - master
 
 jobs:
-  test:
+  build:
     runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup .NET SDK
-        uses: actions/setup-dotnet@v4
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
         with:
-          dotnet-version: '10.x'
+          bun-version: latest
 
-      - name: Restore dependencies
-        run: dotnet restore Spool.Tests\Spool.Tests.csproj
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
 
-      - name: Build
-        run: dotnet build Spool.Tests\Spool.Tests.csproj --no-restore
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: tauri/src-tauri -> target
 
-      - name: Test
-        run: dotnet test Spool.Tests\Spool.Tests.csproj --no-build --logger "console;verbosity=normal"
+      - name: Install frontend dependencies
+        working-directory: tauri
+        run: bun install --frozen-lockfile
+
+      - name: Compile launcher stub
+        # The launcher stub is a tiny standalone .NET console exe embedded
+        # into the Rust binary via `include_bytes!`. Compiled with the
+        # framework csc.exe that ships with Windows — no .NET SDK install
+        # needed on the runner.
+        run: |
+          & "C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe" /target:winexe /win32icon:launcher_stub.ico /out:launcher_stub.exe launcher_stub.cs
+
+      - name: Cargo check
+        working-directory: tauri/src-tauri
+        run: cargo check --all-targets
+
+      - name: Cargo clippy
+        working-directory: tauri/src-tauri
+        run: cargo clippy --all-targets
+
+      - name: Cargo test
+        working-directory: tauri/src-tauri
+        run: cargo test --all
+
+      - name: Svelte check
+        working-directory: tauri
+        run: bun run check
+
+      - name: ESLint
+        working-directory: tauri
+        run: bun run lint
+
+      - name: Tauri build (no bundle)
+        working-directory: tauri
+        # Smoke-test that the full app builds end-to-end (frontend +
+        # backend). Skip bundle generation to keep CI fast — `release.yml`
+        # is responsible for producing artifacts.
+        run: bun run tauri build -- --no-bundle

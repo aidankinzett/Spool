@@ -1,0 +1,18 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Capability applied to all Spool windows (main library + transient popups like Add Game).",
+  "windows": ["main", "add-game", "edit-game", "browse-games"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-close",
+    "core:window:allow-minimize",
+    "core:window:allow-toggle-maximize",
+    "core:window:allow-start-dragging",
+    "core:webview:allow-create-webview-window",
+    "dialog:default",
+    "opener:default",
+    "notification:default",
+    "updater:default"
+  ]
+}

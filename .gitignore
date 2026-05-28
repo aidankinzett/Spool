@@ -1,20 +1,30 @@
-# Python legacy
-.venv/
-__pycache__/
-*.pyc
-*.pyo
-*.spec
+# Rust / Cargo
+target/
+**/*.rs.bk
+Cargo.lock.bak
 
-# C# / dotnet
-bin/
-obj/
-.vs/
-*.user
-*.suo
+# Node / Bun
+node_modules/
+.svelte-kit/
+build/
+.vite/
+
+# Tauri build artifacts
+tauri/src-tauri/gen/
+tauri/src-tauri/target/
 
 # Project specifics
 config.json
 dist/
+
+# Editor / OS
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+.DS_Store
+Thumbs.db
 
 # Claude Code local settings (contain machine-specific paths)
 .claude/settings.local.json

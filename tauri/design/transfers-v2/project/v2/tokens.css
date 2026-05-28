@@ -1,0 +1,135 @@
+/* ============================================================
+   SPOOL v2 — design tokens
+   Cassette-forward, dark, cross-platform.
+
+   Naming conventions:
+     --c-*    colors
+     --t-*    type sizes / weights
+     --r-*    border radius
+     --s-*    spacing scale
+============================================================ */
+
+@import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Sans+Condensed:wght@600;700&display=swap");
+
+:root {
+  /* ── color: surfaces (warm graphite stack) ───────────── */
+  --c-bg:           #161312;          /* window root */
+  --c-bg-tint:      #1c1816;          /* radial accent base */
+  --c-surface-1:    #1f1b19;          /* default cards */
+  --c-surface-2:    #262220;          /* raised / hover */
+  --c-surface-3:    #2f2a27;          /* selected row */
+
+  /* ── color: ink ──────────────────────────────────────── */
+  --c-fg:           #f1ece4;          /* primary text */
+  --c-fg-1:         #d6cfc4;          /* secondary text */
+  --c-fg-2:         #948c80;          /* tertiary / meta */
+  --c-fg-3:         #6a6359;          /* labels, captions */
+  --c-fg-4:         #4a443c;          /* faint / disabled */
+
+  /* ── color: hairlines ────────────────────────────────── */
+  --c-line:         rgba(241,236,228,0.07);
+  --c-line-strong:  rgba(241,236,228,0.12);
+  --c-line-soft:    rgba(241,236,228,0.04);
+
+  /* ── color: house accent (oxide / tape amber) ────────── */
+  --c-oxide:        #e3a25b;          /* the tape itself */
+  --c-oxide-dim:    #b27e44;
+  --c-oxide-bg:     rgba(227,162,91,0.10);
+
+  /* ── color: status ───────────────────────────────────── */
+  --c-ok:           #8fc879;
+  --c-ok-dim:       rgba(143,200,121,0.16);
+  --c-warn:         #e3a25b;
+  --c-warn-dim:     rgba(227,162,91,0.15);
+  --c-err:          #d97470;
+  --c-err-dim:      rgba(217,116,112,0.18);
+
+  /* ── type ────────────────────────────────────────────── */
+  --f-sans:    "IBM Plex Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --f-cond:    "IBM Plex Sans Condensed", "IBM Plex Sans", -apple-system, sans-serif;
+  --f-mono:    "IBM Plex Mono", ui-monospace, "Cascadia Code", monospace;
+
+  --t-mono-eyebrow: 10px;
+  --t-mono-sm:      11px;
+  --t-mono:         12px;
+  --t-sm:           12px;
+  --t-body:         13px;
+  --t-lg:           15px;
+  --t-title-sm:     16px;
+  --t-title:        20px;
+  --t-hero:         32px;
+  --t-hero-lg:      44px;
+
+  /* ── radius (sharper than W11; cassettes aren't pillowy) */
+  --r-0: 0px;
+  --r-1: 2px;
+  --r-2: 4px;
+  --r-3: 6px;
+  --r-4: 8px;
+
+  /* ── spacing ─────────────────────────────────────────── */
+  --s-0:  0px;
+  --s-1:  2px;
+  --s-2:  4px;
+  --s-3:  6px;
+  --s-4:  8px;
+  --s-5:  12px;
+  --s-6:  16px;
+  --s-7:  20px;
+  --s-8:  24px;
+  --s-9:  32px;
+  --s-10: 40px;
+  --s-11: 56px;
+  --s-12: 72px;
+
+  /* shadows */
+  --shadow-window: 0 24px 70px rgba(0,0,0,0.62), 0 6px 20px rgba(0,0,0,0.45);
+  --shadow-pop:    0 12px 32px rgba(0,0,0,0.5);
+
+  /* common */
+  --tape-stripe: repeating-linear-gradient(
+    90deg,
+    rgba(241,236,228,0.08) 0 6px,
+    transparent 6px 9px
+  );
+}
+
+/* Reset-ish defaults for elements rendered inside the canvas */
+.spool-v2,
+.spool-v2 * {
+  box-sizing: border-box;
+}
+.spool-v2 {
+  font-family: var(--f-sans);
+  font-size: var(--t-body);
+  color: var(--c-fg);
+  -webkit-font-smoothing: antialiased;
+  font-feature-settings: "ss01", "cv05", "cv06"; /* Plex stylistic alts where supported */
+}
+
+.spool-v2 ::-webkit-scrollbar { width: 10px; height: 10px; }
+.spool-v2 ::-webkit-scrollbar-track { background: transparent; }
+.spool-v2 ::-webkit-scrollbar-thumb {
+  background: rgba(241,236,228,0.12);
+  border-radius: 4px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+.spool-v2 ::-webkit-scrollbar-thumb:hover {
+  background: rgba(241,236,228,0.22);
+  background-clip: content-box;
+  border: 2px solid transparent;
+}
+
+.spool-v2 .mono { font-family: var(--f-mono); font-feature-settings: "zero", "ss01"; }
+.spool-v2 .cond { font-family: var(--f-cond); }
+.spool-v2 .eyebrow {
+  font-family: var(--f-mono);
+  font-size: var(--t-mono-eyebrow);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--c-fg-2);
+  font-weight: 500;
+}
+
+.spool-v2 .num { font-variant-numeric: tabular-nums; }

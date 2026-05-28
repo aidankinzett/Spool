@@ -1,0 +1,70 @@
+//! Command-line argument parsing.
+//!
+//! Used in two places:
+//!   1. App startup — the initial argv determines whether to open the
+//!      library window normally or queue a `--run` workflow.
+//!   2. The single-instance forwarding callback — when a secondary
+//!      `spool` invocation lands on the running primary, its argv tells
+//!      us whether to focus the library or kick off a game launch.
+//!
+//! Format:
+//!   spool                            → normal library launch
+//!   spool --run "Game Name" "ExePath"→ launch this game's workflow
+//!
+//! Anything else is currently treated as `Normal`. We can extend with
+//! more subcommands (--quit, --backup-all, etc.) as use cases arrive.
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CliMode {
+    /// Open / focus the library window.
+    Normal,
+    /// Find a game by name and run its launch workflow.
+    Run { game_name: String, exe_path: String },
+}
+
+/// Parses argv, skipping the program-name arg at position 0.
+pub fn parse_args<S: AsRef<str>>(args: &[S]) -> CliMode {
+    let rest: Vec<&str> = args.iter().skip(1).map(|s| s.as_ref()).collect();
+    if rest.len() >= 3 && rest[0] == "--run" {
+        return CliMode::Run {
+            game_name: rest[1].to_string(),
+            exe_path: rest[2].to_string(),
+        };
+    }
+    CliMode::Normal
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_args_means_normal() {
+        assert_eq!(parse_args::<&str>(&["spool.exe"]), CliMode::Normal);
+        assert_eq!(parse_args::<&str>(&[]), CliMode::Normal);
+    }
+
+    #[test]
+    fn run_with_two_args_parses() {
+        let argv = ["spool.exe", "--run", "Hades", "C:/Games/Hades/Hades.exe"];
+        assert_eq!(
+            parse_args(&argv),
+            CliMode::Run {
+                game_name: "Hades".to_string(),
+                exe_path: "C:/Games/Hades/Hades.exe".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn run_with_missing_args_falls_back_to_normal() {
+        let argv = ["spool.exe", "--run", "Hades"];
+        assert_eq!(parse_args(&argv), CliMode::Normal);
+    }
+
+    #[test]
+    fn unknown_flags_fall_through() {
+        let argv = ["spool.exe", "--help"];
+        assert_eq!(parse_args(&argv), CliMode::Normal);
+    }
+}

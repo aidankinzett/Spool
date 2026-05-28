@@ -1,0 +1,47 @@
+{
+  "name": "spool",
+  "version": "0.1.0",
+  "description": "",
+  "type": "module",
+  "// workspaces": "Empty array — declares this package.json as a workspace root so bun stops walking up the directory tree when resolving install location. Without this, bun was creating a phantom workspace at .claude/worktrees/ because it saw sibling package.json files (tauri/, server/) and inferred a multi-project workspace.",
+  "workspaces": [],
+  "scripts": {
+    "dev": "vite dev",
+    "build": "vite build",
+    "preview": "vite preview",
+    "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
+    "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
+    "tauri": "tauri",
+    "lint": "eslint src",
+    "lint:fix": "eslint src --fix"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "@fontsource/geist-sans": "^5.2.5",
+    "@fontsource/jetbrains-mono": "^5.2.8",
+    "@fontsource/space-grotesk": "^5.2.10",
+    "@lucide/svelte": "^1.16.0",
+    "@tauri-apps/api": "^2",
+    "@tauri-apps/plugin-dialog": "^2.7.1",
+    "@tauri-apps/plugin-notification": "^2",
+    "@tauri-apps/plugin-opener": "^2",
+    "@tauri-apps/plugin-updater": "^2"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@sveltejs/adapter-static": "^3.0.6",
+    "@sveltejs/kit": "^2.9.0",
+    "@sveltejs/vite-plugin-svelte": "^5.0.0",
+    "@tailwindcss/vite": "^4.3.0",
+    "@tauri-apps/cli": "^2",
+    "eslint": "^10.4.0",
+    "eslint-plugin-svelte": "^3.18.0",
+    "globals": "^17.6.0",
+    "svelte": "^5.0.0",
+    "svelte-check": "^4.0.0",
+    "tailwindcss": "^4.3.0",
+    "typescript": "~5.6.2",
+    "typescript-eslint": "^8.60.0",
+    "vite": "^6.0.3"
+  }
+}
