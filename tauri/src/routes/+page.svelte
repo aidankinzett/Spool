@@ -96,6 +96,10 @@
   // request; we surface that as a spinner on the Install button so
   // the click feels responsive.
   let startingGameId = $state<string | null>(null);
+  // Install tokens we've already shown a terminal toast for. Lives
+  // outside `$state` because changing it never affects rendering —
+  // it's just a dedup set for the `lan:download` event handler.
+  const toastedDownloadTokens = new Set<string>();
   // Active uploads — peers currently downloading FROM us. The host
   // side of LAN sharing.
   let activeUploads = $state<UploadSnapshot[]>([]);
@@ -469,24 +473,33 @@
 
     listen<DownloadProgress>('lan:download', (event) => {
       const p = event.payload;
-      const prevToken = activeDownload?.install_token;
+      // Toast on the first terminal event for a given install token.
+      // Track which tokens we've already toasted so a hot-reload
+      // duplicate or a stray redelivery doesn't fire twice. The
+      // previous check compared the new token against the last token
+      // observed in `activeDownload` — but by the time `done` arrived,
+      // earlier events had already set `activeDownload` to that same
+      // token, so the toast never fired in the normal flow.
+      const isTerminal =
+        p.status === 'done' || p.status === 'error' || p.status === 'canceled';
+      const firstTerminal = isTerminal && !toastedDownloadTokens.has(p.install_token);
+      if (firstTerminal) toastedDownloadTokens.add(p.install_token);
       activeDownload = p;
-      // Surface terminal states once.
-      if (p.status === 'done' && p.install_token !== prevToken) {
+      if (p.status === 'done' && firstTerminal) {
         toasts.show({
           kind: 'ok',
           label: 'LAN',
           title: 'Install complete',
           sub: `${p.game_name} · from ${p.source_device_name}`,
         });
-      } else if (p.status === 'error') {
+      } else if (p.status === 'error' && firstTerminal) {
         toasts.show({
           kind: 'bad',
           label: 'LAN',
           title: 'Install failed',
           sub: p.message ?? `${p.game_name} could not be installed`,
         });
-      } else if (p.status === 'canceled') {
+      } else if (p.status === 'canceled' && firstTerminal) {
         toasts.show({
           kind: 'info',
           label: 'LAN',
