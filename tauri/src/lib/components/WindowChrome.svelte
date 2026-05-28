@@ -43,7 +43,7 @@
 </script>
 
 <div
-  data-tauri-drag-region
+  data-tauri-drag-region="deep"
   class="flex h-10 shrink-0 items-center gap-3 border-b border-line-1 bg-black/30 pl-3.5"
 >
   <SpoolMark size={18} color="var(--color-ink-1)" tape={accent ?? 'var(--color-spool)'} />
