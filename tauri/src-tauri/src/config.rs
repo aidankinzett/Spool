@@ -39,6 +39,12 @@ pub struct ConfigData {
     pub lan_share_enabled: bool,
     pub lan_share_port: u16,
     pub lan_install_dir: String,
+    /// Max aggregate LAN download throughput in MB/s. `0` = unlimited.
+    /// Applied across all parallel file fetches by the throttle in
+    /// `download_one_file` — convergent rather than precise, so brief
+    /// bursts can exceed the cap before the next sleep brings the
+    /// average back.
+    pub lan_download_max_mbps: f64,
 
     pub torbox_enabled: bool,
     pub torbox_api_key: String,
@@ -70,6 +76,7 @@ impl Default for ConfigData {
             lan_share_enabled: true,
             lan_share_port: 47632,
             lan_install_dir: String::new(),
+            lan_download_max_mbps: 0.0,
             torbox_enabled: false,
             torbox_api_key: String::new(),
             download_dir: String::new(),

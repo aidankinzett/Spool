@@ -17,6 +17,8 @@ export type ConfigData = {
   lan_share_enabled: boolean;
   lan_share_port: number;
   lan_install_dir: string;
+  /** Max aggregate LAN download throughput in MB/s. `0` = unlimited. */
+  lan_download_max_mbps: number;
 
   torbox_enabled: boolean;
   torbox_api_key: string;

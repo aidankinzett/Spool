@@ -1455,6 +1455,37 @@ impl LanDownloadState {
         }
     }
 
+    /// Computes how long the caller should sleep to drag the
+    /// aggregate transfer rate back under `max_bps`. Each parallel
+    /// file task shares the same `bytes_done` atomic and the same
+    /// `start_instant` anchor, so they collectively converge on the
+    /// cap.
+    ///
+    /// Returns `None` when no throttling is needed (rate is under
+    /// the cap, no cap configured, or first 100 ms of the install
+    /// where the average is noisy). Sleep is capped at 500 ms so
+    /// cancellation stays responsive.
+    pub fn throttle_required(&self, bytes_done: u64, max_bps: f64) -> Option<Duration> {
+        if max_bps <= 0.0 {
+            return None;
+        }
+        let start = self.start_instant.lock().ok()?.as_ref().copied()?;
+        let actual_secs = start.elapsed().as_secs_f64();
+        if actual_secs < 0.1 {
+            return None;
+        }
+        let bd = bytes_done as f64;
+        if bd / actual_secs <= max_bps {
+            return None;
+        }
+        let target_secs = bd / max_bps;
+        let sleep_secs = (target_secs - actual_secs).min(0.5);
+        if sleep_secs <= 0.0 {
+            return None;
+        }
+        Some(Duration::from_millis((sleep_secs * 1000.0) as u64))
+    }
+
     fn snapshot(&self) -> Option<DownloadProgress> {
         self.current.lock().ok().and_then(|g| g.clone())
     }
@@ -1835,6 +1866,8 @@ pub async fn start_peer_install(
 /// between chunks, and bumps the shared `bytes_done` counter as bytes
 /// land. Progress event emission is throttled by `last_emit` so
 /// thousands of tiny chunks don't drown the IPC channel.
+/// One file's worth of LAN install. `max_bps` is the configured
+/// bandwidth cap in bytes/s (0 = unlimited).
 async fn download_one_file(
     file: PeerFile,
     partial_dir: PathBuf,
@@ -1843,6 +1876,7 @@ async fn download_one_file(
     app: AppHandle,
     bytes_done: Arc<AtomicU64>,
     last_emit: Arc<Mutex<Instant>>,
+    max_bps: f64,
 ) -> AppResult<()> {
     {
         let state = app.state::<LanDownloadState>();
@@ -1966,8 +2000,20 @@ async fn download_one_file(
         out.write_all(&chunk)
             .await
             .map_err(|e| AppError::Other(format!("write {target:?}: {e}")))?;
-        bytes_done.fetch_add(chunk.len() as u64, Ordering::Relaxed);
+        let bd_after = bytes_done.fetch_add(chunk.len() as u64, Ordering::Relaxed)
+            + chunk.len() as u64;
         maybe_emit_progress(&app, &bytes_done, &last_emit, &file.path);
+
+        // Bandwidth throttle. Each parallel task consults the same
+        // shared `bytes_done` + start_instant, so they collectively
+        // drag the aggregate rate under the cap rather than each
+        // policing themselves into a too-low rate. No-op when the
+        // user hasn't configured a cap (max_bps == 0).
+        if let Some(sleep) =
+            app.state::<LanDownloadState>().throttle_required(bd_after, max_bps)
+        {
+            tokio::time::sleep(sleep).await;
+        }
     }
     out.flush()
         .await
@@ -2100,6 +2146,20 @@ async fn run_install(
         .map(|p| p.install_token)
         .unwrap_or_default();
     let game_name_for_url = manifest.game_name.clone();
+
+    // Snapshot the bandwidth cap once at install start. Mid-install
+    // setting changes won't take effect until the next install —
+    // simpler than threading config through every chunk loop. Convert
+    // MB/s → bytes/s here so the chunk loop doesn't repeat the math.
+    let max_bps = {
+        let cfg = app.state::<SharedConfig>();
+        let mbps = cfg
+            .lock()
+            .map(|c| c.data.lan_download_max_mbps)
+            .unwrap_or(0.0);
+        mbps * 1024.0 * 1024.0
+    };
+
     let file_futures = manifest.files.clone().into_iter().map(|file| {
         let partial_dir = partial_dir.clone();
         let client = client.clone();
@@ -2125,8 +2185,17 @@ async fn run_install(
                 urlencoding::encode(&session),
                 urlencoding::encode(&game_name),
             );
-            download_one_file(file, partial_dir, url, client, app, bytes_done, last_emit)
-                .await
+            download_one_file(
+                file,
+                partial_dir,
+                url,
+                client,
+                app,
+                bytes_done,
+                last_emit,
+                max_bps,
+            )
+            .await
         }
     });
 
