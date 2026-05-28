@@ -31,7 +31,7 @@
   import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
   import { listen } from '@tauri-apps/api/event';
   import { api, assetUrl } from '$lib/api';
-  import { fmtCatalog, relDate } from '$lib/format';
+  import { fmtCatalog, fmtRate, relDate } from '$lib/format';
   import { toasts } from '$lib/toasts.svelte';
   import type {
     DownloadProgress,
@@ -528,15 +528,16 @@
                         ></div>
                       </div>
                       <div
-                        class="font-mono mt-1 flex justify-between text-[9.5px] text-ink-3 tracking-[0.04em]"
+                        class="font-mono mt-1 flex justify-between gap-2 text-[9.5px] text-ink-3 tracking-[0.04em]"
                       >
                         <span class="truncate" title={dl.current_file}>
                           {dl.current_file || '…'}
                         </span>
-                        <span>
-                          {dl.bytes_total > 0
-                            ? Math.round((dl.bytes_done / dl.bytes_total) * 100) + '%'
-                            : '…'}
+                        <span class="shrink-0 whitespace-nowrap">
+                          {fmtRate(dl.bytes_per_second)}
+                          {#if dl.bytes_total > 0}
+                            · {Math.round((dl.bytes_done / dl.bytes_total) * 100)}%
+                          {/if}
                         </span>
                       </div>
                     </div>

@@ -166,6 +166,9 @@ export type DownloadProgress = {
   status: 'starting' | 'transferring' | 'done' | 'error' | 'canceled';
   message: string | null;
   new_game_id: string | null;
+  /** Average throughput since the install started, in bytes per second.
+   *  `0` for the first half-second so the UI doesn't flash silly values. */
+  bytes_per_second: number;
 };
 
 /** Result returned by `add_to_steam`. Mirrors `AddToSteamResult` in steam.rs. */

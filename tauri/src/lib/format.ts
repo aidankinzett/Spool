@@ -62,6 +62,19 @@ export function fmtSize(mb: number | null | undefined): string {
   return `${(mb / 1024).toFixed(1)} GB`;
 }
 
+/**
+ * Bytes-per-second → "12.4 MB/s" / "342 KB/s" / "…" when 0. We jump
+ * straight to MB/s once we cross 1 MiB because LAN transfers rarely
+ * sit in the KB range for long.
+ */
+export function fmtRate(bps: number | null | undefined): string {
+  if (!bps || bps <= 0) return '…';
+  if (bps < 1024) return `${bps.toFixed(0)} B/s`;
+  if (bps < 1024 * 1024) return `${(bps / 1024).toFixed(1)} KB/s`;
+  if (bps < 1024 * 1024 * 1024) return `${(bps / (1024 * 1024)).toFixed(1)} MB/s`;
+  return `${(bps / (1024 * 1024 * 1024)).toFixed(2)} GB/s`;
+}
+
 /** Sequential catalog number → "SPL-0042". */
 export function fmtCatalog(num: number): string {
   return `SPL-${num.toString().padStart(4, '0')}`;

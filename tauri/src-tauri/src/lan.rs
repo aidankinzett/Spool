@@ -219,12 +219,20 @@ impl PeerGame {
 /// `hash` is the blake3 hex digest of the source file. Empty when the
 /// source hasn't computed one (older peers, or zero-byte files); the
 /// receiver skips verification in that case rather than failing closed.
+///
+/// `mtime_unix_ms` is the source file's mtime in unix milliseconds. The
+/// receiver restamps the destination to match so repeated installs
+/// across machines stay consistent and tooling that keys off mtime
+/// (build systems, sync utilities) doesn't see spurious "changed"
+/// every time. `0` means "no mtime info" (older peers).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PeerFile {
     pub path: String,
     pub size: u64,
     #[serde(default)]
     pub hash: String,
+    #[serde(default)]
+    pub mtime_unix_ms: u64,
 }
 
 /// Full transfer manifest for one game. The receiver fetches this
@@ -633,10 +641,16 @@ fn walk_game_files_with_hashes(
             h
         };
 
+        let mtime_unix_ms = mtime
+            .and_then(|mt| mt.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+
         out.push(PeerFile {
             path: rel_str,
             size,
             hash,
+            mtime_unix_ms,
         });
     }
     Ok(out)
@@ -962,11 +976,16 @@ pub struct DownloadProgress {
     pub bytes_done: u64,
     pub bytes_total: u64,
     pub current_file: String,
-    pub status: String, // "starting" | "transferring" | "done" | "error"
+    pub status: String, // "starting" | "transferring" | "done" | "error" | "canceled"
     pub message: Option<String>,
     /// Set when status == "done": the id of the freshly-created
     /// library entry so the UI can jump straight to it.
     pub new_game_id: Option<String>,
+    /// Average download throughput in bytes per second since the
+    /// install started. Set by `LanDownloadState::update` after the
+    /// caller's mutation runs. 0 during the first half-second so
+    /// the UI doesn't flash a silly "9999 GB/s" off the first chunk.
+    pub bytes_per_second: f64,
 }
 
 /// Single-slot in-flight install tracker. Same model as `RunState` —
@@ -982,6 +1001,11 @@ pub struct DownloadProgress {
 pub struct LanDownloadState {
     current: Mutex<Option<DownloadProgress>>,
     cancel_flag: AtomicBool,
+    /// Wall-clock anchor for computing `bytes_per_second`. Set in
+    /// `try_start`, cleared (implicitly) when a new install replaces
+    /// it. Stored separately from `current` because `Instant` isn't
+    /// serializable and doesn't belong in the wire-format DTO.
+    start_instant: Mutex<Option<Instant>>,
 }
 
 /// Sentinel error returned by `run_install` when the user cancelled.
@@ -1003,6 +1027,12 @@ impl LanDownloadState {
         // `true` from a previous cancelled run would otherwise abort us
         // immediately.
         self.cancel_flag.store(false, Ordering::Relaxed);
+        // Anchor the throughput clock here, not at command-receive
+        // time, so the first few hundred ms of manifest-fetch don't
+        // skew the average down.
+        if let Ok(mut g) = self.start_instant.lock() {
+            *g = Some(Instant::now());
+        }
         *guard = Some(p);
         Ok(DownloadGuard { state: self })
     }
@@ -1037,6 +1067,19 @@ impl LanDownloadState {
         let mut guard = self.current.lock().ok()?;
         if let Some(p) = guard.as_mut() {
             f(p);
+            // Refresh derived throughput after the caller's mutation
+            // so callers don't have to remember to set it. Suppress
+            // the value for the first half-second — a single 64 KB
+            // chunk in 5 ms otherwise reads as "13 MB/s" before the
+            // average smooths out.
+            if let Ok(start_g) = self.start_instant.lock() {
+                if let Some(start) = *start_g {
+                    let elapsed = start.elapsed().as_secs_f64();
+                    if elapsed > 0.5 {
+                        p.bytes_per_second = (p.bytes_done as f64) / elapsed;
+                    }
+                }
+            }
             return Some(p.clone());
         }
         None
@@ -1264,6 +1307,7 @@ pub async fn start_peer_install(
         status: "starting".into(),
         message: None,
         new_game_id: None,
+        bytes_per_second: 0.0,
     };
 
     // Reserve the slot up front — if someone else is mid-install, fail
@@ -1302,6 +1346,7 @@ pub async fn start_peer_install(
                 status: "done".into(),
                 message: None,
                 new_game_id: Some(new_id),
+                bytes_per_second: 0.0,
             },
             Err(e) => {
                 // Cancellation produces a sentinel error; distinguish it
@@ -1322,6 +1367,7 @@ pub async fn start_peer_install(
                         status: "canceled".into(),
                         message: None,
                         new_game_id: None,
+                        bytes_per_second: 0.0,
                     }
                 } else {
                     tracing::warn!(game = %manifest.game_name, error = %msg, "LAN install failed");
@@ -1337,6 +1383,7 @@ pub async fn start_peer_install(
                         status: "error".into(),
                         message: Some(msg),
                         new_game_id: None,
+                        bytes_per_second: 0.0,
                     }
                 }
             }
@@ -1513,6 +1560,22 @@ async fn download_one_file(
             )));
         }
     }
+
+    // Restamp mtime so the destination matches the source. Best-effort:
+    // a failure here is cosmetic (the file is fine), don't fail the
+    // install over it.
+    if file.mtime_unix_ms > 0 {
+        let mtime = filetime::FileTime::from_unix_time(
+            (file.mtime_unix_ms / 1000) as i64,
+            ((file.mtime_unix_ms % 1000) * 1_000_000) as u32,
+        );
+        let target_for_blocking = target.clone();
+        let _ = tokio::task::spawn_blocking(move || {
+            filetime::set_file_mtime(&target_for_blocking, mtime)
+        })
+        .await;
+    }
+
     Ok(())
 }
 
