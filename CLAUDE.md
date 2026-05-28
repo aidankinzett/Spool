@@ -36,6 +36,14 @@ cargo test
 cd tauri
 bun run check     # svelte-check
 bun run lint      # ESLint
+bun run test      # Vitest unit tests
+
+# End-to-end tests (real Tauri window via tauri-driver + WebdriverIO)
+cd tauri
+bun run test:e2e  # builds the app then runs the WebDriver suite
+# Linux needs: libwebkit2gtk-4.1-dev, webkit2gtk-driver, and a display
+# (use `xvfb-run -a bun run e2e` when headless). `cargo install tauri-driver`
+# once. Windows uses msedgedriver. Specs live in tauri/e2e/specs/.
 
 # Compile the embedded C# launcher stub (only when launcher_stub.cs changes)
 # From the repo root, using the framework csc.exe shipped with Windows:

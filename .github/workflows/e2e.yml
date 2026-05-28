@@ -1,0 +1,70 @@
+name: E2E
+
+# WebDriver end-to-end tests against the real Tauri window via tauri-driver
+# (WebKitWebDriver under Xvfb). Runs on PRs and master pushes. Kept in its own
+# workflow so the heavier build + headless display setup doesn't slow the
+# fast-feedback checks in ci.yml.
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+    branches:
+      - master
+
+jobs:
+  e2e-linux:
+    runs-on: ubuntu-22.04
+    env:
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: "sccache"
+      CARGO_INCREMENTAL: "0"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.x"
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.6
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: tauri/src-tauri -> target
+          cache-targets: "false"
+          shared-key: spool-linux-e2e
+
+      - name: Install Linux system dependencies
+        # webkit2gtk-driver provides WebKitWebDriver, which tauri-driver drives.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            webkit2gtk-driver \
+            xvfb
+
+      - name: Install tauri-driver
+        run: cargo install tauri-driver --locked
+
+      - name: Install frontend dependencies
+        working-directory: tauri
+        run: bun install --frozen-lockfile
+
+      - name: Build app (no bundle)
+        working-directory: tauri
+        run: bun run e2e:build
+
+      - name: Run E2E tests
+        working-directory: tauri
+        # Xvfb gives the webview a display in the headless runner.
+        run: xvfb-run -a bun run e2e
