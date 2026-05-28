@@ -308,8 +308,8 @@ fn find_game_id_by_name(library: &SharedLibrary, name: &str) -> Option<String> {
 ///
 ///   * **stderr** — what `cargo run` / `tauri dev` show in the terminal
 ///   * **file**   — appended to `%LOCALAPPDATA%\Spool\debug.log`, the same
-///                  path the C# app used, so existing support workflows
-///                  ("send me your debug.log") still work.
+///     path the C# app used, so existing support workflows
+///     ("send me your debug.log") still work.
 ///
 /// Default verbosity: `info`, with the noisy crates (tauri / hyper /
 /// reqwest / h2) clamped to `warn`. Override with `SPOOL_LOG=debug` (or

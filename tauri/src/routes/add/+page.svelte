@@ -43,7 +43,7 @@
 
   const fileMeta = $derived.by(() => {
     if (!exePath) return null;
-    const parts = exePath.split(/[\\\/]/);
+    const parts = exePath.split(/[\\/]/);
     return {
       name: parts.at(-1) ?? exePath,
       path: exePath,

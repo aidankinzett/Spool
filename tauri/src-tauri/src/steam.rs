@@ -77,7 +77,7 @@ pub fn locate_steam_users() -> AppResult<Vec<SteamUser>> {
             last_modified,
         });
     }
-    users.sort_by(|a, b| b.last_modified.cmp(&a.last_modified));
+    users.sort_by_key(|u| std::cmp::Reverse(u.last_modified));
     Ok(users)
 }
 

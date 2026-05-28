@@ -28,7 +28,7 @@
   } from '@lucide/svelte';
   import { openPath } from '@tauri-apps/plugin-opener';
   import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
-  import { api, assetUrl } from '$lib/api';
+  import { api } from '$lib/api';
   import { toasts } from '$lib/toasts.svelte';
   import type { GameEntry, RunPhase } from '$lib/types';
   import {
@@ -92,8 +92,6 @@
   // CSS-variable form for cases that need a token-style reference; same
   // value either way, just different consumers.
   const accent = $derived(accentHex);
-
-  const coverUrl = $derived(assetUrl(game.cover_image_path));
 
   // Try to derive a folder path for the "Open folder" action: the entry's
   // own game_folder_path if set, else the parent of the exe path.
