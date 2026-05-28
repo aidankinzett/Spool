@@ -137,10 +137,12 @@ pub struct SearchCandidate {
 /// Ludusavi integration handle. Stateless apart from the lazy manifest
 /// cache — methods take the ludusavi exe path as a parameter so changes to
 /// `Config.ludusavi_path` are picked up immediately on the next call.
+type ManifestCache = Arc<RwLock<Option<Arc<HashMap<String, ManifestEntry>>>>>;
+
 pub struct LudusaviClient {
     /// Lazy-loaded full manifest. `Arc<HashMap>` so handing it out is cheap;
     /// inner `RwLock` so the first load is concurrent-safe.
-    manifest: Arc<RwLock<Option<Arc<HashMap<String, ManifestEntry>>>>>,
+    manifest: ManifestCache,
 }
 
 impl LudusaviClient {

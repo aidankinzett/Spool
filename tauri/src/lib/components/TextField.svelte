@@ -46,7 +46,7 @@
 
   function handleKeydown(e: KeyboardEvent) {
     if (e.key === 'Enter') {
-      e.currentTarget instanceof HTMLInputElement && e.currentTarget.blur();
+      if (e.currentTarget instanceof HTMLInputElement) e.currentTarget.blur();
     }
   }
 </script>

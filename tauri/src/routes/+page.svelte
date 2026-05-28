@@ -446,8 +446,7 @@
 
 <div class="flex h-screen flex-col bg-bg-0 text-ink-0">
   <WindowChrome sub="LIBRARY">
-    {#snippet children()}
-      <div class="flex h-full items-center justify-end gap-1 pr-2">
+    <div class="flex h-full items-center justify-end gap-1 pr-2">
         <button
           bind:this={lanWifiBtn}
           type="button"
@@ -476,7 +475,6 @@
           <Settings size={14} />
         </a>
       </div>
-    {/snippet}
   </WindowChrome>
 
   {#if lanOpen}

@@ -201,7 +201,7 @@ pub fn extract_vibrant_color(path: &std::path::Path) -> Option<String> {
                 return None;
             }
             let (_, s, l) = rgb_to_hsl(r, g, b);
-            if s < 0.25 || l < 0.18 || l > 0.85 {
+            if s < 0.25 || !(0.18..=0.85).contains(&l) {
                 return None;
             }
             // Peak score at lightness ~0.55 (slightly above middle —
