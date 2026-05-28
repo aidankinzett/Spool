@@ -17,13 +17,13 @@
    * entry vanishes, falls back to the first remaining game.
    */
   import { onMount } from 'svelte';
-  import { Plus, Search, Settings, Wifi } from '@lucide/svelte';
+  import { ArrowLeft, ChevronRight, Loader2, Plus, Search, Settings, Wifi } from '@lucide/svelte';
   import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
   import { listen } from '@tauri-apps/api/event';
   import { api, assetUrl } from '$lib/api';
   import { fmtCatalog, relDate } from '$lib/format';
   import { toasts } from '$lib/toasts.svelte';
-  import type { GameEntry, LanPeer, RunPhase, RunPhaseEvent } from '$lib/types';
+  import type { GameEntry, LanPeer, PeerGame, RunPhase, RunPhaseEvent } from '$lib/types';
   import WindowChrome from '$lib/components/WindowChrome.svelte';
   import MonoLabel from '$lib/components/MonoLabel.svelte';
   import GameDetail from '$lib/components/GameDetail.svelte';
@@ -51,6 +51,12 @@
   let lanOpen = $state(false);
   let lanWifiBtn: HTMLButtonElement | undefined = $state();
   let lanPopoverEl: HTMLDivElement | undefined = $state();
+  // When the user clicks into a peer in the popover we swap to a drilled
+  // view showing that peer's `/games` payload. Null = peer-list view.
+  let openPeer = $state<LanPeer | null>(null);
+  let peerGames = $state<PeerGame[]>([]);
+  let peerGamesLoading = $state(false);
+  let peerGamesError = $state<string | null>(null);
 
   function openContextMenu(e: MouseEvent, g: GameEntry) {
     e.preventDefault();
@@ -118,7 +124,39 @@
     if (!lanOpen) return;
     if (lanPopoverEl?.contains(e.target as Node)) return;
     if (lanWifiBtn?.contains(e.target as Node)) return;
+    closeLanPopover();
+  }
+
+  function closeLanPopover() {
     lanOpen = false;
+    openPeer = null;
+    peerGames = [];
+    peerGamesError = null;
+  }
+
+  /** Drill into a peer — fetch their /games and swap the popover. */
+  async function openPeerView(peer: LanPeer) {
+    openPeer = peer;
+    peerGames = [];
+    peerGamesError = null;
+    if (peer.file_server_port === 0) {
+      peerGamesError = 'This peer is discovery-only (no file server yet).';
+      return;
+    }
+    peerGamesLoading = true;
+    try {
+      peerGames = await api.fetchPeerGames(peer.addr, peer.file_server_port);
+    } catch (e) {
+      peerGamesError = String(e);
+    } finally {
+      peerGamesLoading = false;
+    }
+  }
+
+  function backToPeerList() {
+    openPeer = null;
+    peerGames = [];
+    peerGamesError = null;
   }
 
   onMount(() => {
@@ -268,7 +306,7 @@
         <button
           bind:this={lanWifiBtn}
           type="button"
-          onclick={() => (lanOpen = !lanOpen)}
+          onclick={() => (lanOpen ? closeLanPopover() : (lanOpen = true))}
           aria-label={`${lanPeers.length} LAN peer${lanPeers.length === 1 ? '' : 's'}`}
           title={`${lanPeers.length} LAN peer${lanPeers.length === 1 ? '' : 's'}`}
           class="relative inline-flex h-7 w-7 cursor-pointer items-center justify-center rounded-sm text-ink-2 transition-colors hover:bg-white/10 hover:text-ink-0"
@@ -300,43 +338,131 @@
     <div
       bind:this={lanPopoverEl}
       role="dialog"
-      class="fixed right-3 top-[44px] z-40 w-[280px] overflow-hidden rounded-md border border-line-2 bg-bg-1"
+      class="fixed right-3 top-[44px] z-40 w-[320px] overflow-hidden rounded-md border border-line-2 bg-bg-1"
       style:box-shadow="0 18px 48px rgb(0 0 0 / 0.6)"
     >
-      <header class="flex items-center justify-between border-b border-line-1 px-3.5 py-2">
-        <MonoLabel size={10}>LAN peers</MonoLabel>
-        <span class="font-mono text-[10px] text-ink-3">
-          {lanPeers.length}
-        </span>
-      </header>
-      {#if lanPeers.length === 0}
-        <div class="px-3.5 py-4 text-center text-[12px] text-ink-3">
-          Nobody else on the LAN.
+      {#if openPeer}
+        <!-- Drilled view: one peer's library -->
+        <header class="flex items-center gap-2 border-b border-line-1 px-2.5 py-2">
+          <button
+            type="button"
+            onclick={backToPeerList}
+            class="flex h-6 w-6 items-center justify-center rounded-sm text-ink-2 transition-colors hover:bg-bg-2 hover:text-ink-0"
+            aria-label="Back to LAN peers"
+            title="Back"
+          >
+            <ArrowLeft size={13} />
+          </button>
+          <div class="min-w-0 flex-1">
+            <div class="truncate text-[12.5px] text-ink-0" title={openPeer.device_name}>
+              {openPeer.device_name}
+            </div>
+            <div class="font-mono mt-0.5 text-[10px] text-ink-3 tracking-[0.04em]">
+              {openPeer.addr}:{openPeer.file_server_port}
+            </div>
+          </div>
+        </header>
+        {#if peerGamesLoading}
+          <div class="flex items-center justify-center gap-2 px-3.5 py-6 text-[12px] text-ink-3">
+            <Loader2 size={14} class="animate-[spool-spin_1s_linear_infinite]" />
+            Loading library…
+          </div>
+        {:else if peerGamesError}
+          <div class="px-3.5 py-4 text-[11.5px] text-ink-2">
+            <div class="font-medium text-ink-1">Couldn't reach peer</div>
+            <div class="mt-1 text-[11px] text-ink-3">{peerGamesError}</div>
+          </div>
+        {:else if peerGames.length === 0}
+          <div class="px-3.5 py-4 text-center text-[12px] text-ink-3">
+            Peer isn't sharing any games.
+          </div>
+        {:else}
+          <ul class="max-h-[360px] overflow-y-auto py-1">
+            {#each peerGames as game (game.id)}
+              <li class="flex items-start gap-2.5 px-3.5 py-2">
+                <div class="min-w-0 flex-1">
+                  <div class="truncate text-[12.5px] text-ink-0" title={game.game_name}>
+                    {game.game_name}
+                  </div>
+                  <div class="font-mono mt-0.5 flex gap-2 text-[10px] text-ink-3 tracking-[0.04em]">
+                    <span>{fmtCatalog(game.catalog_number)}</span>
+                    {#if game.developer}
+                      <span>·</span>
+                      <span class="truncate">{game.developer}</span>
+                    {/if}
+                    {#if game.install_size_mb > 0}
+                      <span>·</span>
+                      <span>
+                        {game.install_size_mb >= 1024
+                          ? (game.install_size_mb / 1024).toFixed(1) + ' GB'
+                          : game.install_size_mb.toFixed(0) + ' MB'}
+                      </span>
+                    {/if}
+                  </div>
+                </div>
+              </li>
+            {/each}
+          </ul>
+        {/if}
+        <div class="border-t border-dashed border-line-1 px-3.5 py-2 text-[10.5px] text-ink-3">
+          Downloads land in Phase&nbsp;C.
         </div>
       {:else}
-        <ul class="max-h-[320px] overflow-y-auto py-1">
-          {#each lanPeers as peer (peer.device_id)}
-            <li class="flex items-start gap-2.5 px-3.5 py-2">
-              <Wifi size={12} class="mt-0.5 shrink-0 text-ink-2" />
-              <div class="min-w-0 flex-1">
-                <div class="truncate text-[12.5px] text-ink-0" title={peer.device_name}>
-                  {peer.device_name}
-                </div>
-                <div class="font-mono mt-0.5 flex gap-2 text-[10px] text-ink-3 tracking-[0.04em]">
-                  <span>{peer.addr}</span>
-                  <span>·</span>
-                  <span>{peer.game_count} game{peer.game_count === 1 ? '' : 's'}</span>
-                  <span>·</span>
-                  <span>{peer.last_seen_ago_secs}s ago</span>
-                </div>
-              </div>
-            </li>
-          {/each}
-        </ul>
+        <!-- Peer list -->
+        <header class="flex items-center justify-between border-b border-line-1 px-3.5 py-2">
+          <MonoLabel size={10}>LAN peers</MonoLabel>
+          <span class="font-mono text-[10px] text-ink-3">
+            {lanPeers.length}
+          </span>
+        </header>
+        {#if lanPeers.length === 0}
+          <div class="px-3.5 py-4 text-center text-[12px] text-ink-3">
+            Nobody else on the LAN.
+          </div>
+        {:else}
+          <ul class="max-h-[320px] overflow-y-auto py-1">
+            {#each lanPeers as peer (peer.device_id)}
+              {@const browsable = peer.file_server_port !== 0}
+              <li>
+                <button
+                  type="button"
+                  onclick={() => openPeerView(peer)}
+                  disabled={!browsable}
+                  class="flex w-full items-start gap-2.5 px-3.5 py-2 text-left transition-colors enabled:hover:bg-bg-2 disabled:cursor-not-allowed"
+                >
+                  <Wifi
+                    size={12}
+                    class={'mt-0.5 shrink-0 ' + (browsable ? 'text-ink-2' : 'text-ink-3')}
+                  />
+                  <div class="min-w-0 flex-1">
+                    <div class="truncate text-[12.5px] text-ink-0" title={peer.device_name}>
+                      {peer.device_name}
+                    </div>
+                    <div class="font-mono mt-0.5 flex gap-2 text-[10px] text-ink-3 tracking-[0.04em]">
+                      <span>{peer.addr}</span>
+                      <span>·</span>
+                      <span>{peer.game_count} game{peer.game_count === 1 ? '' : 's'}</span>
+                      <span>·</span>
+                      <span>{peer.last_seen_ago_secs}s ago</span>
+                    </div>
+                    {#if !browsable}
+                      <div class="font-mono mt-0.5 text-[9.5px] text-ink-3 tracking-[0.04em]">
+                        DISCOVERY ONLY
+                      </div>
+                    {/if}
+                  </div>
+                  {#if browsable}
+                    <ChevronRight size={13} class="mt-0.5 shrink-0 text-ink-3" />
+                  {/if}
+                </button>
+              </li>
+            {/each}
+          </ul>
+        {/if}
+        <div class="border-t border-dashed border-line-1 px-3.5 py-2 text-[10.5px] text-ink-3">
+          Click a peer to browse their library. Downloads arrive in Phase&nbsp;C.
+        </div>
       {/if}
-      <div class="border-t border-dashed border-line-1 px-3.5 py-2 text-[10.5px] text-ink-3">
-        Game browsing + downloads coming in Phase&nbsp;B.
-      </div>
     </div>
   {/if}
 

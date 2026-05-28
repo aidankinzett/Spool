@@ -135,6 +135,7 @@ pub fn run() {
             steam::add_to_steam,
             // lan discovery
             lan::list_lan_peers,
+            lan::fetch_peer_games,
             // runner
             runner::launch_game,
         ])

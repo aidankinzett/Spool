@@ -118,6 +118,26 @@ export type LanPeer = {
   last_seen_ago_secs: number;
 };
 
+/**
+ * Game catalogue entry served by a peer's `/games` endpoint. Mirrors the
+ * Rust `PeerGame` struct in lan.rs — a curated subset of `GameEntry` with
+ * local filesystem paths stripped (no `exe_path`, no image paths).
+ */
+export type PeerGame = {
+  id: string;
+  catalog_number: number;
+  game_name: string;
+  developer: string;
+  publisher: string;
+  genres: string[];
+  install_size_mb: number;
+  has_cloud_save: boolean;
+  release_date: string | null;
+  steam_id: number | null;
+  gog_id: number | null;
+  lutris_slug: string | null;
+};
+
 /** Result returned by `add_to_steam`. Mirrors `AddToSteamResult` in steam.rs. */
 export type AddToSteamResult = {
   steam_user_id: string;

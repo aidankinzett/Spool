@@ -10,6 +10,7 @@ import type {
   GameEntry,
   LanPeer,
   NewGame,
+  PeerGame,
   SearchCandidate,
 } from './types';
 
@@ -39,6 +40,8 @@ export const api = {
 
   // LAN
   listLanPeers: (): Promise<LanPeer[]> => invoke('list_lan_peers'),
+  fetchPeerGames: (addr: string, port: number): Promise<PeerGame[]> =>
+    invoke('fetch_peer_games', { addr, port }),
 
   // Run workflow
   launchGame: (gameId: string): Promise<void> => invoke('launch_game', { gameId }),
