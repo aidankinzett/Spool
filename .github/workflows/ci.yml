@@ -15,6 +15,12 @@ on:
 jobs:
   build:
     runs-on: windows-latest
+    env:
+      # Mirror release.yml so this workflow populates the same sccache
+      # entries that release.yml will restore on tag pushes.
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: "sccache"
+      CARGO_INCREMENTAL: "0"
     defaults:
       run:
         shell: pwsh
@@ -32,10 +38,15 @@ jobs:
         with:
           components: clippy
 
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.6
+
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: tauri/src-tauri -> target
+          # sccache owns object caching; rust-cache only does registry.
+          cache-targets: "false"
 
       - name: Install frontend dependencies
         working-directory: tauri
@@ -81,6 +92,10 @@ jobs:
   # pushes the release job restores from it.
   build-linux:
     runs-on: ubuntu-22.04
+    env:
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: "sccache"
+      CARGO_INCREMENTAL: "0"
 
     steps:
       - uses: actions/checkout@v4
@@ -93,10 +108,14 @@ jobs:
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.6
+
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: tauri/src-tauri -> target
+          cache-targets: "false"
 
       - name: Install Linux system dependencies
         run: |
