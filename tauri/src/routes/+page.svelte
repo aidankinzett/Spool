@@ -529,6 +529,10 @@
         uploads={activeUploads}
         onCancelDownload={cancelActiveInstall}
         onCancelUpload={(u) => kickUpload(u)}
+        coverFor={(id) => {
+          const g = games.find((g) => g.id === id);
+          return assetUrl(g?.cover_image_path);
+        }}
       />
     </div>
   {/if}

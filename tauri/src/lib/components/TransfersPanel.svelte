@@ -25,9 +25,25 @@
     onCancelDownload?: () => void;
     /** Called when the user clicks the X on an upload row. */
     onCancelUpload?: (session: UploadSnapshot) => void;
+    /**
+     * Resolves a local library game id to its cover URL (already
+     * wrapped through `assetUrl` so the webview can load it). Returns
+     * `null` when the game isn't in the local library or has no
+     * cover yet — the row falls back to a sleeve gradient. Used for
+     * uploads where we ARE the source so the entry exists locally;
+     * downloads stay as gradient placeholders until install completes
+     * and a library entry is created.
+     */
+    coverFor?: (gameId: string) => string | null;
   }
 
-  let { download, uploads, onCancelDownload, onCancelUpload }: Props = $props();
+  let {
+    download,
+    uploads,
+    onCancelDownload,
+    onCancelUpload,
+    coverFor,
+  }: Props = $props();
 
   // ── Derived totals ──────────────────────────────────────────────────────
   const downloadActive = $derived(
@@ -168,6 +184,7 @@
     {:else}
       {#each uploads as upload, i (upload.session_id)}
         {@const fresh = upload.last_seen_ago_secs < 2}
+        {@const cover = coverFor?.(upload.game_id) ?? null}
         <div
           class="grid items-center gap-3 px-3.5 py-3"
           class:border-b={i !== uploads.length - 1}
@@ -176,12 +193,19 @@
           style:grid-template-columns="40px 1fr auto"
           style:opacity={upload.cancelled ? '0.6' : '1'}
         >
-          <!-- Sleeve placeholder — local game's cover would go here once
-               we look it up via library; brand spool gradient for now -->
-          <div
-            class="h-[56px] w-[40px] shrink-0 overflow-hidden rounded-sm border border-line-1"
-            style:background="linear-gradient(160deg, #2a2622 0%, #0a0807 100%)"
-          ></div>
+          <!-- Local game's cover if available, else sleeve gradient. -->
+          {#if cover}
+            <img
+              src={cover}
+              alt={upload.game_name}
+              class="h-[56px] w-[40px] shrink-0 rounded-sm border border-line-1 object-cover"
+            />
+          {:else}
+            <div
+              class="h-[56px] w-[40px] shrink-0 overflow-hidden rounded-sm border border-line-1"
+              style:background="linear-gradient(160deg, #2a2622 0%, #0a0807 100%)"
+            ></div>
+          {/if}
 
           <div class="min-w-0">
             <div class="mb-1 flex items-center gap-2">

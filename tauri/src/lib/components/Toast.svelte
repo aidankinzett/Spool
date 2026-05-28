@@ -5,7 +5,7 @@
    * dismiss X in the corner.
    */
   import { X } from '@lucide/svelte';
-  import { toasts, type Toast } from '$lib/toasts.svelte';
+  import { toasts, fmtToastTime, type Toast } from '$lib/toasts.svelte';
   import MonoLabel from './MonoLabel.svelte';
 
   let { toast }: { toast: Toast } = $props();
@@ -19,6 +19,15 @@
       bad: 'var(--color-bad)',
     }[toast.kind],
   );
+
+  // Relative-time chip. Reading `toasts.tick` (which bumps every
+  // second) keeps the $derived live so "12s" updates without a
+  // separate setInterval in the component.
+  const timeText = $derived.by(() => {
+    // eslint-disable-next-line @typescript-eslint/no-unused-expressions
+    toasts.tick;
+    return fmtToastTime(toast.createdAt);
+  });
 </script>
 
 <div
@@ -42,6 +51,11 @@
           </span>
         {/if}
       </div>
+      <span
+        class="font-mono shrink-0 text-[9.5px] uppercase tracking-[0.06em] text-ink-3"
+      >
+        {timeText}
+      </span>
     </div>
 
     <div
