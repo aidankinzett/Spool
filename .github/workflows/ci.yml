@@ -84,16 +84,22 @@ jobs:
         run: bun run lint
 
       - name: Tauri build (no bundle)
+        # master pushes only. This is the slow release-profile compile —
+        # PRs get fast feedback from check/clippy/test above, while master
+        # smoke-tests the full app build and warms the release-profile
+        # sccache cache that release.yml restores on tag pushes. Skip
+        # bundle generation; release.yml produces the artifacts.
+        if: github.event_name == 'push'
         working-directory: tauri
-        # Smoke-test that the full app builds end-to-end (frontend +
-        # backend). Skip bundle generation to keep CI fast — `release.yml`
-        # is responsible for producing artifacts.
         run: bun run tauri build --no-bundle
 
   # Mirrors the `build-linux` job in release.yml so the rust-cache key
-  # matches. On master pushes this populates the Linux cache; on tag
-  # pushes the release job restores from it.
+  # matches. master pushes only — this job is a pure release-profile
+  # build (no separate lint/test steps), so it both smoke-tests the
+  # Linux build and populates the Linux cache that the release job
+  # restores on tag pushes. PRs skip it for fast feedback.
   build-linux:
+    if: github.event_name == 'push'
     runs-on: ubuntu-22.04
     env:
       SCCACHE_GHA_ENABLED: "true"
