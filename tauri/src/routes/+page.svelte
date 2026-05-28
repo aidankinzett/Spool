@@ -628,7 +628,7 @@
           </ul>
         {/if}
         <div class="border-t border-dashed border-line-1 px-3.5 py-2 text-[10.5px] text-ink-3">
-          Click a peer to browse their library. Downloads arrive in Phase&nbsp;C.
+          Click a peer to browse and install games from their library.
         </div>
       {/if}
     </div>
