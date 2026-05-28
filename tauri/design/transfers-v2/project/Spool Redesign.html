@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Spool — Tauri Redesign</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap">
+
+<style>
+  html, body {
+    margin: 0; padding: 0;
+    background: #07080a;
+    color: #f4f4f5;
+    font-family: "Geist", system-ui, sans-serif;
+    overflow: hidden;
+    height: 100vh;
+  }
+  * { box-sizing: border-box; }
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.08); border-radius: 4px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  button { font-family: inherit; }
+  a { color: inherit; }
+</style>
+</head>
+<body>
+
+<div id="root"></div>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+<script type="text/babel" src="redesign/tokens.jsx"></script>
+<script type="text/babel" src="redesign/brand.jsx"></script>
+<script type="text/babel" src="redesign/library.jsx"></script>
+<script type="text/babel" src="redesign/settings.jsx"></script>
+<script type="text/babel" src="redesign/settings_routes.jsx"></script>
+<script type="text/babel" src="redesign/controller.jsx"></script>
+<script type="text/babel" src="redesign/progress_notifications.jsx"></script>
+<script type="text/babel" src="redesign/conflict_and_onboarding.jsx"></script>
+<script type="text/babel" src="redesign/browse.jsx"></script>
+<script type="text/babel" src="redesign/lan_peer.jsx"></script>
+<script type="text/babel" src="redesign/save_history.jsx"></script>
+<script type="text/babel" src="redesign/nav_map.jsx"></script>
+<script type="text/babel" src="redesign/dialogs.jsx"></script>
+<script type="text/babel" src="redesign/dialogs2.jsx"></script>
+<script type="text/babel" src="redesign/addgame_v2.jsx"></script>
+<script type="text/babel" src="redesign/addgame_and_touch.jsx"></script>
+<script type="text/babel" src="redesign/design-canvas.jsx"></script>
+
+<script type="text/babel">
+function App() {
+  return (
+    <DesignCanvas
+      title="Spool · Tauri redesign"
+      subtitle="cassette-forward · dark-only · cross-platform"
+    >
+      <DCSection id="brand" title="Brand · System">
+        <DCArtboard id="identity" label="Design system at a glance" width={920} height={600}>
+          <IdentitySheet />
+        </DCArtboard>
+        <DCArtboard id="marks" label="Mark · variants" width={920} height={460}>
+          <MarkSheet />
+        </DCArtboard>
+        <DCArtboard id="splash" label="Splash / boot" width={600} height={380}>
+          <SplashScreen />
+        </DCArtboard>
+        <DCArtboard id="empty" label="Empty library" width={940} height={560}>
+          <EmptyLibrary />
+        </DCArtboard>
+      </DCSection>
+
+      <DCSection id="library" title="Library · Main window">
+        <DCArtboard id="lib-nightreign" label="Detail · Elden Ring: Nightreign" width={1280} height={760}>
+          <LibraryWindow initialId="elden-ring-nightreign" />
+        </DCArtboard>
+        <DCArtboard id="lib-hades-playing" label="Detail · Hades II — playing now" width={1280} height={760}>
+          <LibraryWindow initialId="hades-2" nowPlayingId="hades-2" />
+        </DCArtboard>
+        <DCArtboard id="lib-outerwilds" label="Detail · Outer Wilds — never played" width={1280} height={760}>
+          <LibraryWindow initialId="outer-wilds" />
+        </DCArtboard>
+      </DCSection>
+
+      <DCSection id="settings" title="Settings · Restructured">
+        <DCArtboard id="settings-main" label="Full scroll · all sections" width={1180} height={760}>
+          <SettingsWindow />
+        </DCArtboard>
+        <DCArtboard id="settings-ludusavi" label="/ludusavi · engine + manifest + ignored" width={1180} height={760}>
+          <SettingsRoute active="ludusavi" />
+        </DCArtboard>
+        <DCArtboard id="settings-backups" label="/backups · triggers · retention" width={1180} height={760}>
+          <SettingsRoute active="backups" />
+        </DCArtboard>
+        <DCArtboard id="settings-appearance" label="/appearance · density · accent · motion" width={1180} height={760}>
+          <SettingsRoute active="appearance" />
+        </DCArtboard>
+        <DCArtboard id="settings-sync" label="/sync · server + registered devices" width={1180} height={760}>
+          <SettingsRoute active="sync" />
+        </DCArtboard>
+        <DCArtboard id="settings-feeds" label="/hydra · feeds with detail card" width={1180} height={760}>
+          <SettingsRoute active="hydra" />
+        </DCArtboard>
+        <DCArtboard id="settings-notifs" label="/notifs · per-event toggles" width={1180} height={760}>
+          <SettingsRoute active="notifs" />
+        </DCArtboard>
+        <DCArtboard id="settings-updates" label="/updates · Spool + games" width={1180} height={760}>
+          <SettingsRoute active="updates" />
+        </DCArtboard>
+        <DCArtboard id="settings-shortcuts" label="/shortcuts · keyboard reference" width={1180} height={760}>
+          <SettingsRoute active="shortcuts" />
+        </DCArtboard>
+        <DCArtboard id="settings-about" label="/about · version · deps · diagnostics" width={1180} height={760}>
+          <SettingsRoute active="about" />
+        </DCArtboard>
+      </DCSection>
+
+      <DCSection id="addgame" title="Add Game · Simplified (v2)">
+        <DCArtboard id="addgame-matches" label="3 candidates · save paths + Steam · cloud badges" width={720} height={560}>
+          <AddGameV2 state="matches" />
+        </DCArtboard>
+        <DCArtboard id="addgame-identifying" label="Identifying · ludusavi running" width={720} height={560}>
+          <AddGameV2 state="identifying" />
+        </DCArtboard>
+        <DCArtboard id="addgame-nomatch" label="No automatic match" width={720} height={560}>
+          <AddGameV2 state="no-match" />
+        </DCArtboard>
+        <DCArtboard id="addgame-search" label="Manual search · 7 results · scores shown when ambiguous" width={720} height={560}>
+          <AddGameV2 state="search" />
+        </DCArtboard>
+        <DCArtboard id="addgame-touch" label="Deck · touch density" width={940} height={760}>
+          <AddGameV2Touch />
+        </DCArtboard>
+      </DCSection>
+
+      <DCSection id="progress" title="Transfers · Notifications">
+        <DCArtboard id="lib-active" label="Library · transfers panel + toast" width={1280} height={760}>
+          <LibraryWithProgressScene />
+        </DCArtboard>
+        <DCArtboard id="dl-panel" label="Transfers panel · downloads + uploads" width={520} height={680}>
+          <div style={{ padding: 20, background: TOK.c.bg0, height: "100%", display: "flex", alignItems: "center", justifyContent: "center" }}>
+            <TransfersPanel downloads={DOWNLOADS} uploads={UPLOADS} />
+          </div>
+        </DCArtboard>
+        <DCArtboard id="toasts" label="Toast notifications · 5 states" width={460} height={760}>
+          <div style={{
+            padding: 20, background: TOK.c.bg0, height: "100%",
+            display: "flex", alignItems: "flex-start", justifyContent: "center",
+          }}>
+            <ToastStack />
+          </div>
+        </DCArtboard>
+      </DCSection>
+
+      <DCSection id="touch" title="Steam Deck · Touch shelf">
+        <DCArtboard id="deck" label="Native 1280×800 · controller-aware" width={1280} height={800}>
+          <DeckShelf />
+        </DCArtboard>
+      </DCSection>
+
+      <DCSection id="windows" title="Other windows · Browse + LAN">
+        <DCArtboard id="nav-map" label="How to reach each window" width={960} height={600}>
+          <NavMap />
+        </DCArtboard>
+        <DCArtboard id="browse" label="Browse games · 3 feeds aggregated" width={1280} height={800}>
+          <BrowseGamesWindow />
+        </DCArtboard>
+        <DCArtboard id="lan-peer" label="LAN peer · Living room · Deck" width={1240} height={760}>
+          <LanPeerWindow />
+        </DCArtboard>
+      </DCSection>
+
+      <DCSection id="save-history" title="Save history · Detail card">
+        <DCArtboard id="history-card" label="Save history · 12 revisions timeline" width={920} height={460}>
+          <div style={{ padding: 0, background: TOK.c.bg0, height: "100%" }}>
+            <SaveHistoryCard
+              game={LIB.find(g => g.id === "elden-ring-nightreign")}
+              acc={LIB.find(g => g.id === "elden-ring-nightreign").art.accent}
+              height={460}
+            />
+          </div>
+        </DCArtboard>
+      </DCSection>
+
+      <DCSection id="dialogs" title="Dialogs · Overlays">
+        <DCArtboard id="restore" label="Restore · revision picker" width={640} height={560}>
+          <RestoreDialog />
+        </DCArtboard>
+        <DCArtboard id="edit-game" label="Edit game · 5 tabs" width={720} height={660}>
+          <EditGameDialog />
+        </DCArtboard>
+        <DCArtboard id="context" label="Right-click context menu" width={1280} height={760}>
+          <LibraryWithContextMenu />
+        </DCArtboard>
+        <DCArtboard id="confirms" label="Confirm dialogs · 4 destructive flows" width={1000} height={600}>
+          <ConfirmGrid />
+        </DCArtboard>
+        <DCArtboard id="deck-overlay" label="Deck in-game overlay · Steam button" width={1280} height={800}>
+          <DeckInGameOverlay />
+        </DCArtboard>
+        <DCArtboard id="errors" label="Error states · 4 critical paths" width={1100} height={760}>
+          <ErrorStatesGrid />
+        </DCArtboard>
+      </DCSection>
+
+      <DCSection id="flows" title="Flows · Conflict + First-run">
+        <DCArtboard id="conflict" label="Conflict · two devices, one save" width={720} height={580}>
+          <ConflictDialog />
+        </DCArtboard>
+        <DCArtboard id="onboard-0" label="First-run · Welcome" width={860} height={600}>
+          <Onboarding step={0} />
+        </DCArtboard>
+        <DCArtboard id="onboard-1" label="First-run · Ludusavi" width={860} height={600}>
+          <Onboarding step={1} />
+        </DCArtboard>
+        <DCArtboard id="onboard-2" label="First-run · This device" width={860} height={600}>
+          <Onboarding step={2} />
+        </DCArtboard>
+        <DCArtboard id="onboard-3" label="First-run · Sync" width={860} height={600}>
+          <Onboarding step={3} />
+        </DCArtboard>
+        <DCArtboard id="onboard-5" label="First-run · Done" width={860} height={600}>
+          <Onboarding step={5} />
+        </DCArtboard>
+      </DCSection>
+    </DesignCanvas>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+
+</body>
+</html>
