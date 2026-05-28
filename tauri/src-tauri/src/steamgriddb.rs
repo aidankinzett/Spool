@@ -445,7 +445,7 @@ async fn fetch_portrait_grids(
     Ok(body.data.unwrap_or_default())
 }
 
-fn mime_to_ext(mime: &str) -> Option<&'static str> {
+pub(crate) fn mime_to_ext(mime: &str) -> Option<&'static str> {
     match mime {
         "image/png" => Some("png"),
         "image/jpeg" => Some("jpg"),

@@ -310,6 +310,8 @@ async fn start_http_server(app: AppHandle, preferred_port: u16) -> AppResult<u16
         .route("/games", get(get_games_handler))
         .route("/games/:id/manifest", get(get_manifest_handler))
         .route("/games/:id/files/*path", get(get_file_handler))
+        .route("/games/:id/cover", get(get_cover_handler))
+        .route("/games/:id/hero", get(get_hero_handler))
         .with_state(ServerState {
             app,
             hash_cache: Arc::new(Mutex::new(HashMap::new())),
@@ -555,6 +557,94 @@ async fn get_file_handler(
     h.insert(header::CONTENT_TYPE, "application/octet-stream".parse().unwrap());
     h.insert(header::CONTENT_LENGTH, total_len.to_string().parse().unwrap());
     h.insert(header::ACCEPT_RANGES, "bytes".parse().unwrap());
+    Ok(resp)
+}
+
+/// `GET /games/:id/cover` — serves the source's cover image so
+/// receivers don't have to round-trip through SteamGridDB. Picks the
+/// `cover_image_path` recorded on the local entry and ships the raw
+/// bytes with a content-type sniffed from the file extension. 404 if
+/// the entry doesn't share or has no cover.
+async fn get_cover_handler(
+    state: AxState<ServerState>,
+    id: AxPath<String>,
+) -> Result<Response, StatusCode> {
+    serve_artwork_path(state, id, ArtworkKind::Cover).await
+}
+
+/// `GET /games/:id/hero` — counterpart of `/cover` for the wide hero
+/// image. Same rules: respects opt-in, 404s when there's nothing on
+/// disk to serve.
+async fn get_hero_handler(
+    state: AxState<ServerState>,
+    id: AxPath<String>,
+) -> Result<Response, StatusCode> {
+    serve_artwork_path(state, id, ArtworkKind::Hero).await
+}
+
+#[derive(Copy, Clone)]
+enum ArtworkKind {
+    Cover,
+    Hero,
+}
+
+async fn serve_artwork_path(
+    AxState(state): AxState<ServerState>,
+    AxPath(id): AxPath<String>,
+    kind: ArtworkKind,
+) -> Result<Response, StatusCode> {
+    let config = state.app.state::<SharedConfig>();
+    let library = state.app.state::<SharedLibrary>();
+
+    let enabled = config
+        .lock()
+        .map(|c| c.data.lan_share_enabled)
+        .unwrap_or(false);
+    if !enabled {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    let path = {
+        let lib = library
+            .lock()
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let entry = lib.find(&id).ok_or(StatusCode::NOT_FOUND)?;
+        if !entry.lan_shared {
+            return Err(StatusCode::NOT_FOUND);
+        }
+        let p = match kind {
+            ArtworkKind::Cover => entry.cover_image_path.clone(),
+            ArtworkKind::Hero => entry.hero_image_path.clone(),
+        };
+        match p {
+            Some(p) if !p.is_empty() => PathBuf::from(p),
+            _ => return Err(StatusCode::NOT_FOUND),
+        }
+    };
+    if !path.is_file() {
+        return Err(StatusCode::NOT_FOUND);
+    }
+
+    let bytes = tokio::fs::read(&path)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    // Sniff content-type from the extension so receivers can save with
+    // a sensible filename.
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_lowercase)
+        .unwrap_or_else(|| "jpg".to_string());
+    let mime = match ext.as_str() {
+        "png" => "image/png",
+        "webp" => "image/webp",
+        "gif" => "image/gif",
+        _ => "image/jpeg",
+    };
+
+    let mut resp = Response::new(Body::from(bytes));
+    let h = resp.headers_mut();
+    h.insert(header::CONTENT_TYPE, mime.parse().unwrap());
     Ok(resp)
 }
 
@@ -1768,15 +1858,139 @@ async fn run_install(
         tracing::warn!(error = %e, "failed to emit library:changed after LAN install");
     }
 
-    // Background cover fetch — same shape as `library::add_game`.
-    let app_for_cover = app.clone();
-    let id_for_cover = entry.id.clone();
+    // Background artwork fetch. Try the peer's `/cover` and `/hero`
+    // first — that gives us pixel-identical art with no SteamGridDB
+    // API key requirement and works for games SGDB doesn't index.
+    // If the peer 404s the cover (older Spool, no local cover), fall
+    // back to the regular SteamGridDB fetch.
+    let app_for_art = app.clone();
+    let id_for_art = entry.id.clone();
+    let safe_name_for_art = entry.safe_name.clone();
+    let peer_addr_for_art = peer_addr.clone();
+    let source_id_for_art = manifest.game_id.clone();
     tauri::async_runtime::spawn(async move {
-        if let Err(e) = crate::steamgriddb::fetch_and_save_cover(&app_for_cover, &id_for_cover).await
-        {
-            tracing::warn!(game_id = %id_for_cover, error = %e, "cover fetch failed");
+        let got_cover = fetch_peer_artwork(
+            &app_for_art,
+            &id_for_art,
+            &safe_name_for_art,
+            &peer_addr_for_art,
+            peer_port,
+            &source_id_for_art,
+        )
+        .await;
+        if !got_cover {
+            if let Err(e) =
+                crate::steamgriddb::fetch_and_save_cover(&app_for_art, &id_for_art).await
+            {
+                tracing::warn!(
+                    game_id = %id_for_art,
+                    error = %e,
+                    "cover fetch failed (peer 404 + SteamGridDB fallback)"
+                );
+            }
         }
     });
 
     Ok(new_id)
+}
+
+/// Fetches cover + hero artwork from a peer and writes them into the
+/// covers/ dir, then updates the library entry's image paths +
+/// accent_color. Best-effort: each fetch (cover and hero) is
+/// independent — if hero 404s we still keep the cover, and vice
+/// versa. Returns `true` if a cover landed, which is what the caller
+/// uses to decide whether to fall back to SteamGridDB.
+async fn fetch_peer_artwork(
+    app: &AppHandle,
+    new_game_id: &str,
+    safe_name: &str,
+    peer_addr: &str,
+    peer_port: u16,
+    source_game_id: &str,
+) -> bool {
+    let Ok(client) = reqwest::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+    else {
+        return false;
+    };
+
+    let covers_dir = paths::covers_dir();
+    if std::fs::create_dir_all(&covers_dir).is_err() {
+        return false;
+    }
+
+    let cover_url =
+        format!("http://{peer_addr}:{peer_port}/games/{source_game_id}/cover");
+    let hero_url =
+        format!("http://{peer_addr}:{peer_port}/games/{source_game_id}/hero");
+
+    // Fetch both in parallel — they're tiny relative to the game
+    // bytes and there's no point serialising them.
+    let (cover_path, hero_path) = tokio::join!(
+        fetch_and_save_peer_image(&client, &cover_url, &covers_dir, safe_name, ""),
+        fetch_and_save_peer_image(&client, &hero_url, &covers_dir, safe_name, "-hero"),
+    );
+
+    if cover_path.is_none() && hero_path.is_none() {
+        return false;
+    }
+
+    // Accent extraction is best-effort and only meaningful from the
+    // portrait cover. Heroes are wide and would skew the colour.
+    let accent = cover_path
+        .as_ref()
+        .and_then(|p| crate::steamgriddb::extract_vibrant_color(p));
+
+    // Update the library entry. Same shape as the pattern in
+    // `run_install` above (line ~1825): bind State to a local first
+    // so the MutexGuard's borrow has a stable anchor — Tauri's
+    // `State<'_, T>` lifetime + a chained `.lock()` confuses the
+    // borrow checker otherwise.
+    let library = app.state::<SharedLibrary>();
+    if let Ok(mut lib) = library.lock() {
+        if let Some(entry) = lib.entries.iter_mut().find(|e| e.id == new_game_id) {
+            if let Some(p) = &cover_path {
+                entry.cover_image_path = Some(p.to_string_lossy().to_string());
+            }
+            if let Some(p) = &hero_path {
+                entry.hero_image_path = Some(p.to_string_lossy().to_string());
+            }
+            if let Some(a) = accent {
+                entry.accent_color = Some(a);
+            }
+        }
+        let _ = lib.save();
+    }
+    drop(library);
+    let _ = app.emit("library:changed", &new_game_id.to_string());
+    cover_path.is_some()
+}
+
+/// Downloads one image from `url` and saves it as
+/// `<dir>/<safe_name><suffix>.<ext>` where the extension is sniffed
+/// from the response's Content-Type. Returns the path on success,
+/// `None` on any failure (404, network, write error).
+async fn fetch_and_save_peer_image(
+    client: &reqwest::Client,
+    url: &str,
+    dir: &Path,
+    safe_name: &str,
+    suffix: &str,
+) -> Option<PathBuf> {
+    let resp = client.get(url).send().await.ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let mime = resp
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string)
+        .unwrap_or_default();
+    let ext = crate::steamgriddb::mime_to_ext(&mime).unwrap_or("jpg");
+    let bytes = resp.bytes().await.ok()?;
+    let path = dir.join(format!("{safe_name}{suffix}.{ext}"));
+    std::fs::write(&path, &bytes).ok()?;
+    Some(path)
 }
