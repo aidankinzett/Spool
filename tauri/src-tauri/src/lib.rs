@@ -39,6 +39,7 @@ mod paths;
 mod process;
 mod registry;
 mod runner;
+mod size_backfill;
 mod steam;
 mod steamgriddb;
 mod sync;
@@ -237,6 +238,12 @@ pub fn run() {
             // a cover but no extracted accent yet. Cheap no-op when
             // every entry is already filled.
             accent_backfill::spawn_backfill(app.handle().clone());
+
+            // Backfill install sizes for entries that have a folder on
+            // disk but no recorded size — legacy C# library entries land
+            // here with `install_size_mb: 0`. Walks the folder, sums file
+            // sizes, saves once at the end.
+            size_backfill::spawn_backfill(app.handle().clone());
 
             // Sync server health poll. Runs forever, every 30s — emits
             // `sync:status-changed` so the chrome cloud icon can tint
