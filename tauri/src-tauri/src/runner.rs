@@ -221,6 +221,8 @@ async fn run_workflow(
                             entry.save_last_backed_up_at = Some(Utc::now());
                             entry.save_backup_size_mb =
                                 (overall.total_bytes as f64) / (1024.0 * 1024.0);
+                        } else {
+                            tracing::warn!(game_id, "backup stats not persisted: library entry missing after session");
                         }
                         lib.save()?;
                         let _ = app.emit("library:changed", &game_id.to_string());

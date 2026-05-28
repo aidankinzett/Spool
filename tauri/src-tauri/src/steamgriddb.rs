@@ -130,6 +130,8 @@ pub async fn fetch_and_save_cover(
         .send()
         .await
         .map_err(|e| AppError::Other(format!("sgdb image fetch failed: {e}")))?
+        .error_for_status()
+        .map_err(|e| AppError::Other(format!("sgdb image non-2xx: {e}")))?
         .bytes()
         .await
         .map_err(|e| AppError::Other(format!("sgdb image body failed: {e}")))?;
@@ -157,6 +159,8 @@ pub async fn fetch_and_save_cover(
             if let Some(a) = accent.clone() {
                 entry.accent_color = Some(a);
             }
+        } else {
+            tracing::warn!(game_entry_id, "cover downloaded but library entry gone; skipping update");
         }
         lib.save()?;
     }
@@ -344,12 +348,13 @@ async fn fetch_first_art(
 }
 
 async fn download_bytes(http: &reqwest::Client, url: &str) -> AppResult<Vec<u8>> {
-    let resp = http
+    let bytes = http
         .get(url)
         .send()
         .await
-        .map_err(|e| AppError::Other(format!("download failed: {e}")))?;
-    let bytes = resp
+        .map_err(|e| AppError::Other(format!("download failed: {e}")))?
+        .error_for_status()
+        .map_err(|e| AppError::Other(format!("download non-2xx: {e}")))?
         .bytes()
         .await
         .map_err(|e| AppError::Other(format!("download body: {e}")))?;

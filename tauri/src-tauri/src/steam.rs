@@ -105,8 +105,8 @@ pub fn upsert_spool_shortcut(
     launch_options: &str,
 ) -> u32 {
     // Steam stores exe / start_dir with their own quoting.
-    let quoted_exe = format!("\"{}\"", spool_exe);
-    let quoted_start = format!("\"{}\"", spool_start_dir);
+    let quoted_exe = format!("\"{}\"", spool_exe.replace('"', "\\\""));
+    let quoted_start = format!("\"{}\"", spool_start_dir.replace('"', "\\\""));
     let app_id = calculate_app_id(&quoted_exe, app_name);
 
     if let Some(existing) = shortcuts.iter_mut().find(|s| s.app_name == app_name) {
@@ -195,9 +195,12 @@ pub fn place_grid_art(
 
 /// Build the `--run "<name>" "<exe>"` launch-options string. Steam stores
 /// the value verbatim and splits args by shell rules at launch time, so
-/// each token gets its own quoted block.
+/// each token gets its own quoted block. Interior `"` are escaped as `\"`
+/// so names/paths containing quotes don't corrupt the field.
 pub fn build_launch_options(game_name: &str, exe_path: &str) -> String {
-    format!("--run \"{}\" \"{}\"", game_name, exe_path)
+    let name = game_name.replace('"', "\\\"");
+    let exe = exe_path.replace('"', "\\\"");
+    format!("--run \"{name}\" \"{exe}\"")
 }
 
 // ── Tauri command ───────────────────────────────────────────────────────────
