@@ -26,7 +26,7 @@ use crate::library::{make_safe_filename, GameEntry, SharedLibrary};
 use crate::paths;
 use axum::{
     body::Body,
-    extract::{Path as AxPath, State as AxState},
+    extract::{ConnectInfo, Path as AxPath, Query as AxQuery, State as AxState},
     http::{header, HeaderMap, StatusCode},
     response::{Json, Response},
     routing::get,
@@ -95,6 +95,114 @@ impl Default for AnnouncePacket {
             device_name: String::new(),
             game_count: 0,
             file_server_port: 0,
+        }
+    }
+}
+
+/// Snapshot of one upload session — i.e., a peer currently downloading
+/// from us. Surfaced to the host UI so they can see and (optionally)
+/// cancel in-flight uploads. Multiple parallel file fetches from one
+/// receiver share a single session id (and therefore a single row).
+///
+/// `last_seen_ago_secs` is the freshness signal — the UI treats anything
+/// under ~2 s as "actively transferring", older as "winding down". The
+/// reaper drops sessions ~8 s after the last touch so cancelled /
+/// finished transfers fall off naturally.
+#[derive(Debug, Clone, Serialize)]
+pub struct UploadSnapshot {
+    pub session_id: String,
+    pub game_id: String,
+    pub game_name: String,
+    pub peer_addr: String,
+    pub last_seen_ago_secs: u64,
+    /// Set when the host has hit cancel; the next `cancel-check` poll
+    /// from the receiver will see this and propagate.
+    pub cancelled: bool,
+}
+
+struct UploadSession {
+    session_id: String,
+    game_id: String,
+    game_name: String,
+    peer_addr: String,
+    last_active: Instant,
+    cancelled: bool,
+}
+
+/// Shared state for the active-uploads ledger. Same lock discipline as
+/// `LanState` — never hold the guard across an `.await`.
+#[derive(Default)]
+pub struct LanUploadsState {
+    sessions: Arc<Mutex<HashMap<String, UploadSession>>>,
+}
+
+impl LanUploadsState {
+    fn snapshot(&self) -> Vec<UploadSnapshot> {
+        let now = Instant::now();
+        let g = match self.sessions.lock() {
+            Ok(g) => g,
+            Err(_) => return Vec::new(),
+        };
+        g.values()
+            .map(|s| UploadSnapshot {
+                session_id: s.session_id.clone(),
+                game_id: s.game_id.clone(),
+                game_name: s.game_name.clone(),
+                peer_addr: s.peer_addr.clone(),
+                last_seen_ago_secs: now.saturating_duration_since(s.last_active).as_secs(),
+                cancelled: s.cancelled,
+            })
+            .collect()
+    }
+
+    fn touch(
+        &self,
+        session_id: &str,
+        game_id: &str,
+        game_name: &str,
+        peer_addr: &str,
+    ) -> bool {
+        let mut g = match self.sessions.lock() {
+            Ok(g) => g,
+            Err(_) => return false,
+        };
+        let now = Instant::now();
+        let is_new = !g.contains_key(session_id);
+        let entry = g
+            .entry(session_id.to_string())
+            .or_insert_with(|| UploadSession {
+                session_id: session_id.to_string(),
+                game_id: game_id.to_string(),
+                game_name: game_name.to_string(),
+                peer_addr: peer_addr.to_string(),
+                last_active: now,
+                cancelled: false,
+            });
+        entry.last_active = now;
+        is_new
+    }
+
+    fn is_cancelled(&self, session_id: &str) -> bool {
+        self.sessions
+            .lock()
+            .ok()
+            .and_then(|g| g.get(session_id).map(|s| s.cancelled))
+            .unwrap_or(false)
+    }
+
+    /// Marks the named session cancelled. Returns true if found.
+    fn mark_cancelled(&self, session_id: &str) -> bool {
+        let mut g = match self.sessions.lock() {
+            Ok(g) => g,
+            Err(_) => return false,
+        };
+        match g.get_mut(session_id) {
+            Some(s) => {
+                s.cancelled = true;
+                s.last_active = Instant::now();
+                true
+            }
+            None => false,
         }
     }
 }
@@ -312,6 +420,7 @@ async fn start_http_server(app: AppHandle, preferred_port: u16) -> AppResult<u16
         .route("/games/:id/files/*path", get(get_file_handler))
         .route("/games/:id/cover", get(get_cover_handler))
         .route("/games/:id/hero", get(get_hero_handler))
+        .route("/games/:id/cancel-check", get(get_cancel_check_handler))
         .with_state(ServerState {
             app,
             hash_cache: Arc::new(Mutex::new(HashMap::new())),
@@ -319,10 +428,12 @@ async fn start_http_server(app: AppHandle, preferred_port: u16) -> AppResult<u16
 
     // Server runs forever — tokio::spawn detaches it. If the listener dies
     // we just log and stop; no recovery path right now (the user can
-    // restart Spool). Wrap in async block so axum::serve's return type
-    // doesn't leak.
+    // restart Spool). `into_make_service_with_connect_info` is what
+    // lets the file handler pull the peer's IP via the `ConnectInfo`
+    // extractor for the upload ledger.
     tokio::spawn(async move {
-        if let Err(e) = axum::serve(listener, router).await {
+        let svc = router.into_make_service_with_connect_info::<SocketAddr>();
+        if let Err(e) = axum::serve(listener, svc).await {
             tracing::error!(error = %e, "LAN HTTP server exited");
         }
     });
@@ -469,9 +580,23 @@ async fn get_manifest_handler(
 /// multi-range and suffix forms (`bytes=-N`) return 416 Range Not
 /// Satisfiable. `Accept-Ranges: bytes` is set on every response so
 /// clients know resume is supported even without trying.
+/// Query string accepted by `/games/:id/files/*path`. The receiver
+/// passes a `session` UUID so we can group its parallel file fetches
+/// into a single host-visible upload, plus the human-friendly
+/// `game_name` so the UI doesn't have to cross-reference by id.
+#[derive(Debug, Deserialize, Default)]
+struct FileQuery {
+    #[serde(default)]
+    session: String,
+    #[serde(default)]
+    game_name: String,
+}
+
 async fn get_file_handler(
     AxState(state): AxState<ServerState>,
     AxPath((id, rel_path)): AxPath<(String, String)>,
+    AxQuery(query): AxQuery<FileQuery>,
+    ConnectInfo(peer_addr): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
 ) -> Result<Response, StatusCode> {
     let config = state.app.state::<SharedConfig>();
@@ -504,6 +629,35 @@ async fn get_file_handler(
     let abs = safe_join(&folder, &rel_path).ok_or(StatusCode::BAD_REQUEST)?;
     if !abs.is_file() {
         return Err(StatusCode::NOT_FOUND);
+    }
+
+    // Host-side cancel check — if the user clicked Cancel on this
+    // session in the uploads UI, this request gets 410 Gone so the
+    // receiver knows to abort cleanly.
+    if !query.session.is_empty() {
+        let uploads = state.app.state::<LanUploadsState>();
+        if uploads.is_cancelled(&query.session) {
+            return Err(StatusCode::GONE);
+        }
+        // Otherwise, register this fetch against the session ledger so
+        // the host can see what's happening.
+        let game_name = if query.game_name.is_empty() {
+            id.as_str()
+        } else {
+            query.game_name.as_str()
+        };
+        let is_new = uploads.touch(
+            &query.session,
+            &id,
+            game_name,
+            &peer_addr.ip().to_string(),
+        );
+        // Emit only on session creation so the UI refreshes when a peer
+        // starts pulling; per-file touches are already covered by the
+        // 5 s "last_seen" the snapshot exposes.
+        if is_new {
+            let _ = state.app.emit("lan:uploads-changed", &());
+        }
     }
 
     let metadata = tokio::fs::metadata(&abs)
@@ -646,6 +800,37 @@ async fn serve_artwork_path(
     let h = resp.headers_mut();
     h.insert(header::CONTENT_TYPE, mime.parse().unwrap());
     Ok(resp)
+}
+
+/// Query shape for `/games/:id/cancel-check?session=<token>`. The
+/// receiver polls this between file fetches so a host-initiated
+/// cancel takes effect even when there's no `/files/*path` request
+/// in flight.
+#[derive(Debug, Deserialize, Default)]
+struct CancelCheckQuery {
+    #[serde(default)]
+    session: String,
+}
+
+/// `GET /games/:id/cancel-check?session=<token>` — 200 if the session
+/// is still allowed to keep downloading, 410 Gone if the host clicked
+/// cancel. Receivers poll this from `start_peer_install`'s heartbeat
+/// loop. We return 410 (rather than 200 with a `cancelled` body) so
+/// older clients that don't parse the body still treat the response
+/// as fatal.
+async fn get_cancel_check_handler(
+    AxState(state): AxState<ServerState>,
+    AxPath(_id): AxPath<String>,
+    AxQuery(query): AxQuery<CancelCheckQuery>,
+) -> Result<&'static str, StatusCode> {
+    if query.session.is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let uploads = state.app.state::<LanUploadsState>();
+    if uploads.is_cancelled(&query.session) {
+        return Err(StatusCode::GONE);
+    }
+    Ok("active")
 }
 
 /// Parses `bytes=N-`. Returns `Some(N)` on match. Returns `None` for
@@ -887,8 +1072,20 @@ async fn run_discovery(app: AppHandle) -> AppResult<()> {
             reaper_loop(app, peers).await;
         })
     };
+    let upload_reaper_handle = {
+        let app = app.clone();
+        let uploads = app.state::<LanUploadsState>().sessions.clone();
+        tokio::spawn(async move {
+            upload_reaper_loop(app, uploads).await;
+        })
+    };
 
-    let _ = tokio::try_join!(announce_handle, listen_handle, reaper_handle);
+    let _ = tokio::try_join!(
+        announce_handle,
+        listen_handle,
+        reaper_handle,
+        upload_reaper_handle
+    );
     Ok(())
 }
 
@@ -1040,6 +1237,30 @@ async fn reaper_loop(app: AppHandle, peers: Arc<Mutex<HashMap<String, PeerEntry>
         };
         if removed {
             let _ = app.emit("lan:peers-changed", &());
+        }
+    }
+}
+
+/// Drops upload sessions whose last file-fetch is more than ~8 s old.
+/// Each parallel file request from the receiver touches `last_active`,
+/// so an in-flight transfer keeps refreshing the entry; a session
+/// that's truly done (no more requests coming) falls off after a brief
+/// grace window so the host UI doesn't flap.
+async fn upload_reaper_loop(app: AppHandle, uploads: Arc<Mutex<HashMap<String, UploadSession>>>) {
+    const UPLOAD_STALE: Duration = Duration::from_secs(8);
+    loop {
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        let removed = {
+            let mut g = match uploads.lock() {
+                Ok(g) => g,
+                Err(_) => continue,
+            };
+            let before = g.len();
+            g.retain(|_, s| s.last_active.elapsed() < UPLOAD_STALE);
+            g.len() != before
+        };
+        if removed {
+            let _ = app.emit("lan:uploads-changed", &());
         }
     }
 }
@@ -1336,6 +1557,29 @@ pub fn cancel_peer_install(
     install_token: String,
 ) -> bool {
     state.request_cancel(&install_token)
+}
+
+/// Snapshot of peers currently downloading from us. Used by the host UI
+/// to render the "Uploads" list; also re-fetched on `lan:uploads-changed`.
+#[tauri::command]
+pub fn list_active_uploads(state: State<'_, LanUploadsState>) -> Vec<UploadSnapshot> {
+    state.snapshot()
+}
+
+/// Marks an upload session cancelled. The receiver's next
+/// `/cancel-check` poll (or its next `/files/*` fetch) will see 410
+/// Gone and abort its install. Returns `true` if a session matched.
+#[tauri::command]
+pub fn cancel_upload(
+    state: State<'_, LanUploadsState>,
+    app: AppHandle,
+    session_id: String,
+) -> bool {
+    let ok = state.mark_cancelled(&session_id);
+    if ok {
+        let _ = app.emit("lan:uploads-changed", &());
+    }
+    ok
 }
 
 /// Kicks off a peer install. Acquires the single-slot guard, fetches
@@ -1752,6 +1996,17 @@ async fn run_install(
     // even when individual files vary wildly in size. A first-error
     // short-circuit drops the rest cooperatively.
     let manifest_game_id = manifest.game_id.clone();
+    // The install_token doubles as the upload session id seen by the
+    // source — its host UI groups all 4 of our parallel file fetches
+    // into a single row, and host-side cancel keys off it. Reach for
+    // it via the public `snapshot()` so we don't touch the private
+    // `current` field through a temporary `State<'_, _>`.
+    let session_id_for_url = app
+        .state::<LanDownloadState>()
+        .snapshot()
+        .map(|p| p.install_token)
+        .unwrap_or_default();
+    let game_name_for_url = manifest.game_name.clone();
     let file_futures = manifest.files.clone().into_iter().map(|file| {
         let partial_dir = partial_dir.clone();
         let client = client.clone();
@@ -1760,6 +2015,8 @@ async fn run_install(
         let last_emit = last_emit.clone();
         let peer_addr = peer_addr.clone();
         let game_id = manifest_game_id.clone();
+        let session = session_id_for_url.clone();
+        let game_name = game_name_for_url.clone();
         async move {
             // URL-encode each segment so spaces / special chars survive.
             let encoded = file
@@ -1768,29 +2025,84 @@ async fn run_install(
                 .map(|seg| urlencoding::encode(seg).into_owned())
                 .collect::<Vec<_>>()
                 .join("/");
-            let url =
-                format!("http://{peer_addr}:{peer_port}/games/{game_id}/files/{encoded}");
+            // Session + game_name query params let the source group us
+            // into a single "uploads" row and show a friendly title.
+            let url = format!(
+                "http://{peer_addr}:{peer_port}/games/{game_id}/files/{encoded}?session={}&game_name={}",
+                urlencoding::encode(&session),
+                urlencoding::encode(&game_name),
+            );
             download_one_file(file, partial_dir, url, client, app, bytes_done, last_emit)
                 .await
         }
     });
 
+    // Heartbeat: poll the source's /cancel-check every ~3 s so a
+    // host-initiated cancel takes effect promptly even between file
+    // fetches. On 410 we set the same cancel_flag the user-initiated
+    // path uses, so the rest of the code converges to a clean abort.
+    let heartbeat = {
+        let app_for_hb = app.clone();
+        let session = session_id_for_url.clone();
+        let game_id = manifest_game_id.clone();
+        let peer_addr = peer_addr.clone();
+        tokio::spawn(async move {
+            let url = format!(
+                "http://{peer_addr}:{peer_port}/games/{game_id}/cancel-check?session={}",
+                urlencoding::encode(&session)
+            );
+            let hb_client = match reqwest::Client::builder()
+                .timeout(Duration::from_secs(3))
+                .build()
+            {
+                Ok(c) => c,
+                Err(_) => return,
+            };
+            loop {
+                tokio::time::sleep(Duration::from_secs(3)).await;
+                let state = app_for_hb.state::<LanDownloadState>();
+                if state.is_canceled() {
+                    return;
+                }
+                // GONE (410) is the "host cancelled" signal.
+                if let Ok(resp) = hb_client.get(&url).send().await {
+                    if resp.status() == reqwest::StatusCode::GONE {
+                        tracing::info!("LAN install: host cancelled the upload");
+                        state.cancel_flag.store(true, Ordering::Relaxed);
+                        return;
+                    }
+                }
+            }
+        })
+    };
+
     let mut stream = futures_util::stream::iter(file_futures)
         .buffer_unordered(LAN_PARALLEL_FILES);
+    // Drain until cancel or first error. We capture the terminal state
+    // into `maybe_err` so we can finish cleanup (drop stream → cancel
+    // in-flight tasks; abort heartbeat) before propagating up.
+    let mut maybe_err: Option<AppError> = None;
     while let Some(result) = stream.next().await {
-        // Check cancel between completed-task boundaries — individual
-        // tasks also poll cancel between chunks, so this is a
-        // backstop in case all of them finished before noticing.
         if app.state::<LanDownloadState>().is_canceled() {
-            drop(stream);
-            let _ = tokio::fs::remove_dir_all(&partial_dir).await;
-            return Err(AppError::Other(CANCELED_MSG.into()));
+            maybe_err = Some(AppError::Other(CANCELED_MSG.into()));
+            break;
         }
-        // A task error short-circuits — dropping the stream cancels any
-        // still-in-flight peers at their next await point. The .partial
-        // dir stays so the user can resume on next attempt (unless it
-        // was a cancel, handled above).
-        result?;
+        if let Err(e) = result {
+            maybe_err = Some(e);
+            break;
+        }
+    }
+    drop(stream);
+    heartbeat.abort();
+    if let Some(e) = maybe_err {
+        // A user-cancel or host-cancel both surface as CANCELED_MSG —
+        // wipe the partial dir so the next attempt isn't picking up
+        // half-written state. Other errors keep the partial dir so the
+        // user can retry with resume.
+        if e.to_string() == CANCELED_MSG {
+            let _ = tokio::fs::remove_dir_all(&partial_dir).await;
+        }
+        return Err(e);
     }
     // Final progress flush — make sure the UI shows 100% before we
     // emit the terminal "done" event.

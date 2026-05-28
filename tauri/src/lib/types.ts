@@ -171,6 +171,23 @@ export type DownloadProgress = {
   bytes_per_second: number;
 };
 
+/**
+ * One peer currently downloading from this device. Surfaced to the host
+ * UI's "Uploads" view; mirrors the Rust `UploadSnapshot` in lan.rs.
+ *
+ * `last_seen_ago_secs` is the freshness signal: under ~2 s = actively
+ * transferring, older = winding down. Sessions get reaped ~8 s after
+ * the last touch, so a stale entry only sits here briefly.
+ */
+export type UploadSnapshot = {
+  session_id: string;
+  game_id: string;
+  game_name: string;
+  peer_addr: string;
+  last_seen_ago_secs: number;
+  cancelled: boolean;
+};
+
 /** Result returned by `add_to_steam`. Mirrors `AddToSteamResult` in steam.rs. */
 export type AddToSteamResult = {
   steam_user_id: string;

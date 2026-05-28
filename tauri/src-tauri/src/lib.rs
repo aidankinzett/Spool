@@ -39,7 +39,7 @@ mod steamgriddb;
 
 use cli::CliMode;
 use config::{Config, SharedConfig};
-use lan::{LanDownloadState, LanState};
+use lan::{LanDownloadState, LanState, LanUploadsState};
 use library::{Library, SharedLibrary};
 use ludusavi::LudusaviClient;
 use runner::RunState;
@@ -115,6 +115,7 @@ pub fn run() {
         .manage::<PendingRun>(PendingRun::default())
         .manage::<LanState>(LanState::new())
         .manage::<LanDownloadState>(LanDownloadState::default())
+        .manage::<LanUploadsState>(LanUploadsState::default())
         .invoke_handler(tauri::generate_handler![
             take_pending_run,
             // library
@@ -140,6 +141,8 @@ pub fn run() {
             lan::start_peer_install,
             lan::current_peer_download,
             lan::cancel_peer_install,
+            lan::list_active_uploads,
+            lan::cancel_upload,
             // runner
             runner::launch_game,
         ])

@@ -37,7 +37,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-appender = "0.2"
 socket2 = "0.5"
-axum = { version = "0.7", default-features = false, features = ["json", "tokio", "http1"] }
+axum = { version = "0.7", default-features = false, features = ["json", "tokio", "http1", "query"] }
 walkdir = "2"
 tokio-util = { version = "0.7", features = ["io"] }
 futures-util = { version = "0.3", default-features = false, features = ["std"] }

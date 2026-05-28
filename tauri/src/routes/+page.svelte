@@ -40,6 +40,7 @@
     PeerGame,
     RunPhase,
     RunPhaseEvent,
+    UploadSnapshot,
   } from '$lib/types';
   import WindowChrome from '$lib/components/WindowChrome.svelte';
   import MonoLabel from '$lib/components/MonoLabel.svelte';
@@ -78,6 +79,13 @@
   // the UI tracks the latest event payload + uses it to drive the
   // Install button states inside the peer view.
   let activeDownload = $state<DownloadProgress | null>(null);
+  // Active uploads — peers currently downloading FROM us. The host
+  // side of LAN sharing.
+  let activeUploads = $state<UploadSnapshot[]>([]);
+  // Which tab of the LAN popover is open. Defaults to 'peers'; we
+  // auto-switch to 'uploads' when someone starts pulling from us so the
+  // host notices the activity.
+  let lanTab = $state<'peers' | 'uploads'>('peers');
 
   function openContextMenu(e: MouseEvent, g: GameEntry) {
     e.preventDefault();
@@ -133,12 +141,29 @@
   let unlistenTrayIntro: (() => void) | undefined;
   let unlistenLanPeers: (() => void) | undefined;
   let unlistenLanDownload: (() => void) | undefined;
+  let unlistenLanUploads: (() => void) | undefined;
 
   async function refreshLanPeers() {
     try {
       lanPeers = await api.listLanPeers();
     } catch (e) {
       console.error('[lan] listLanPeers failed:', e);
+    }
+  }
+
+  async function refreshActiveUploads() {
+    try {
+      activeUploads = await api.listActiveUploads();
+    } catch (e) {
+      console.error('[lan] listActiveUploads failed:', e);
+    }
+  }
+
+  async function kickUpload(session: UploadSnapshot) {
+    try {
+      await api.cancelUpload(session.session_id);
+    } catch (e) {
+      console.error('[lan] cancelUpload failed:', e);
     }
   }
 
@@ -296,6 +321,21 @@
         if (p) activeDownload = p;
       })
       .catch((e) => console.error('[lan] currentPeerDownload failed:', e));
+    // Active uploads (the host side of LAN sharing).
+    refreshActiveUploads();
+    listen<null>('lan:uploads-changed', () => {
+      const wasEmpty = activeUploads.length === 0;
+      refreshActiveUploads().then(() => {
+        // Auto-switch to the uploads tab the first time a peer starts
+        // pulling from us, so the host notices something's happening.
+        if (wasEmpty && activeUploads.length > 0 && lanOpen) {
+          lanTab = 'uploads';
+        }
+      });
+    })
+      .then((fn) => (unlistenLanUploads = fn))
+      .catch((e) => console.error('[lan] uploads listener failed:', e));
+
     listen<DownloadProgress>('lan:download', (event) => {
       const p = event.payload;
       const prevToken = activeDownload?.install_token;
@@ -335,6 +375,7 @@
       unlistenTrayIntro?.();
       unlistenLanPeers?.();
       unlistenLanDownload?.();
+      unlistenLanUploads?.();
       document.removeEventListener('mousedown', handleLanOutside, true);
     };
   });
@@ -577,14 +618,85 @@
           Installs land in <code class="text-ink-2">lan-games/</code> by default.
         </div>
       {:else}
-        <!-- Peer list -->
-        <header class="flex items-center justify-between border-b border-line-1 px-3.5 py-2">
-          <MonoLabel size={10}>LAN peers</MonoLabel>
-          <span class="font-mono text-[10px] text-ink-3">
-            {lanPeers.length}
-          </span>
-        </header>
-        {#if lanPeers.length === 0}
+        <!-- Peer / Uploads tabs -->
+        <div class="flex border-b border-line-1">
+          {#each [{ id: 'peers' as const, label: 'Peers', count: lanPeers.length }, { id: 'uploads' as const, label: 'Uploads', count: activeUploads.length }] as t (t.id)}
+            {@const active = lanTab === t.id}
+            <button
+              type="button"
+              onclick={() => (lanTab = t.id)}
+              class="flex flex-1 items-center justify-center gap-1.5 border-b-2 px-3 py-2 text-[11.5px] transition-colors"
+              style:border-color={active ? 'var(--color-spool)' : 'transparent'}
+              style:color={active ? 'var(--color-ink-0)' : 'var(--color-ink-2)'}
+              style:font-weight={active ? 500 : 400}
+            >
+              <MonoLabel size={10}>{t.label}</MonoLabel>
+              <span
+                class="font-mono inline-flex h-3.5 min-w-[14px] items-center justify-center rounded-full px-1 text-[9px]"
+                style:background={active ? 'var(--color-bg-3)' : 'transparent'}
+                style:color={active ? 'var(--color-ink-0)' : 'var(--color-ink-3)'}
+              >
+                {t.count}
+              </span>
+            </button>
+          {/each}
+        </div>
+        {#if lanTab === 'uploads'}
+          {#if activeUploads.length === 0}
+            <div class="px-3.5 py-4 text-center text-[12px] text-ink-3">
+              Nobody's downloading from you.
+            </div>
+          {:else}
+            <ul class="max-h-[320px] overflow-y-auto py-1">
+              {#each activeUploads as upload (upload.session_id)}
+                {@const fresh = upload.last_seen_ago_secs < 2}
+                <li class="flex items-start gap-2.5 px-3.5 py-2">
+                  <div
+                    class="mt-1 h-1.5 w-1.5 shrink-0 rounded-full"
+                    style:background={upload.cancelled
+                      ? 'var(--color-ink-3)'
+                      : fresh
+                        ? 'var(--color-spool)'
+                        : 'var(--color-ink-3)'}
+                    title={upload.cancelled
+                      ? 'Cancelled — waiting for peer to notice'
+                      : fresh
+                        ? 'Transferring'
+                        : 'Idle'}
+                  ></div>
+                  <div class="min-w-0 flex-1">
+                    <div class="truncate text-[12.5px] text-ink-0" title={upload.game_name}>
+                      {upload.game_name}
+                    </div>
+                    <div class="font-mono mt-0.5 flex gap-2 text-[10px] text-ink-3 tracking-[0.04em]">
+                      <span>{upload.peer_addr}</span>
+                      <span>·</span>
+                      <span>{upload.last_seen_ago_secs}s ago</span>
+                      {#if upload.cancelled}
+                        <span>·</span>
+                        <span class="text-warn">cancelled</span>
+                      {/if}
+                    </div>
+                  </div>
+                  {#if !upload.cancelled}
+                    <button
+                      type="button"
+                      onclick={() => kickUpload(upload)}
+                      aria-label="Cancel this upload"
+                      title="Cancel upload"
+                      class="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-sm border border-line-2 bg-bg-2 text-ink-2 transition-colors hover:border-bad/60 hover:text-bad"
+                    >
+                      <X size={13} />
+                    </button>
+                  {/if}
+                </li>
+              {/each}
+            </ul>
+          {/if}
+          <div class="border-t border-dashed border-line-1 px-3.5 py-2 text-[10.5px] text-ink-3">
+            Cancelled transfers stop within a few seconds.
+          </div>
+        {:else if lanPeers.length === 0}
           <div class="px-3.5 py-4 text-center text-[12px] text-ink-3">
             Nobody else on the LAN.
           </div>
@@ -627,10 +739,10 @@
               </li>
             {/each}
           </ul>
+          <div class="border-t border-dashed border-line-1 px-3.5 py-2 text-[10.5px] text-ink-3">
+            Click a peer to browse and install games from their library.
+          </div>
         {/if}
-        <div class="border-t border-dashed border-line-1 px-3.5 py-2 text-[10.5px] text-ink-3">
-          Click a peer to browse and install games from their library.
-        </div>
       {/if}
     </div>
   {/if}

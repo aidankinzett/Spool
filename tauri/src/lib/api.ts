@@ -12,6 +12,7 @@ import type {
   LanPeer,
   NewGame,
   PeerGame,
+  UploadSnapshot,
   SearchCandidate,
 } from './types';
 
@@ -53,6 +54,9 @@ export const api = {
     invoke('current_peer_download'),
   cancelPeerInstall: (installToken: string): Promise<boolean> =>
     invoke('cancel_peer_install', { installToken }),
+  listActiveUploads: (): Promise<UploadSnapshot[]> => invoke('list_active_uploads'),
+  cancelUpload: (sessionId: string): Promise<boolean> =>
+    invoke('cancel_upload', { sessionId }),
 
   // Run workflow
   launchGame: (gameId: string): Promise<void> => invoke('launch_game', { gameId }),
