@@ -2,8 +2,12 @@ name: CI
 
 on:
   push:
-    branches-ignore:
-      - master
+    # Run on master too so Swatinem/rust-cache saves a cache in the
+    # default-branch scope — tag-triggered release builds can only
+    # restore caches from the default branch, so without this the
+    # release workflow always starts from cold.
+    branches:
+      - "**"
   pull_request:
     branches:
       - master
