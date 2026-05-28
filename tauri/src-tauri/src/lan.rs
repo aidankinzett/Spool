@@ -986,9 +986,21 @@ fn walk_game_files_with_hashes(
         let hash = if size == 0 {
             String::new()
         } else if let Some(h) = cached {
+            tracing::debug!(
+                path = %rel_str,
+                size,
+                hash = %h,
+                "manifest: hash from cache"
+            );
             h
         } else {
             let h = hash_file_blocking(&abs)?;
+            tracing::debug!(
+                path = %rel_str,
+                size,
+                hash = %h,
+                "manifest: hash freshly computed"
+            );
             // Exclusive lock only on the write path. Failure to acquire
             // is non-fatal — the hash still gets used for this request,
             // we just don't cache it for next time.
@@ -2057,13 +2069,37 @@ async fn download_one_file(
         .map_err(|e| AppError::Other(format!("flush {target:?}: {e}")))?;
     drop(out);
 
-    // Verify the digest. On mismatch we delete the corrupt file so the
-    // next attempt re-fetches from scratch — leaving a wrong-bytes
-    // file in `.partial` would just trigger the same failure forever.
+    // Verify the digest. On mismatch we move the corrupt file aside as
+    // `<name>.bad` (instead of deleting it) so it can be inspected —
+    // size, content, hash with an external tool — to figure out where
+    // the bytes diverged. The next attempt still re-fetches from
+    // scratch because the renamed file no longer occupies the target
+    // path. Also log the on-disk size so a wire-level truncation shows
+    // up immediately without needing the inspection step.
     if verify {
         let actual = hasher.finalize().to_hex().to_string();
         if actual != expected {
-            let _ = tokio::fs::remove_file(&target).await;
+            let on_disk_size = tokio::fs::metadata(&target)
+                .await
+                .map(|m| m.len())
+                .unwrap_or(0);
+            tracing::warn!(
+                path = %file.path,
+                expected_size = file.size,
+                on_disk_size,
+                expected_hash = %expected,
+                actual_hash = %actual,
+                "LAN install: checksum mismatch (preserving as .bad)"
+            );
+            let bad_path = target.with_extension(
+                target
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .map(|e| format!("{e}.bad"))
+                    .unwrap_or_else(|| "bad".to_string()),
+            );
+            let _ = tokio::fs::remove_file(&bad_path).await;
+            let _ = tokio::fs::rename(&target, &bad_path).await;
             return Err(AppError::ChecksumMismatch {
                 path: file.path.clone(),
                 expected,
