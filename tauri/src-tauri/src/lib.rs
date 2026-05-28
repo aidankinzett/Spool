@@ -85,6 +85,11 @@ pub fn run() {
     let _log_guard = init_tracing();
     tracing::info!("spool starting up");
 
+    // One-shot migration: pull `%LOCALAPPDATA%\ludusavi-wrap\` data
+    // into the new Spool dir on first run. No-op if already migrated,
+    // if there's no legacy dir, or if Spool already has a library.
+    paths::migrate_from_ludusavi_wrap();
+
     // Load persistent state synchronously — both files are small.
     let library = Library::load().unwrap_or_else(|err| {
         tracing::warn!(error = %err, "failed to load library, starting empty");
