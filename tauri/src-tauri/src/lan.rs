@@ -2187,6 +2187,21 @@ async fn run_install(
             .map_err(|e| AppError::Other(format!("create partial dir: {e}")))?;
     }
 
+    // Flip the published status from "starting" to "transferring" as
+    // soon as the worker is actually running. Without this, an install
+    // where every file short-circuits (resume case where the partial
+    // dir already holds everything at the correct size) would stay at
+    // "Preparing transfer…" in the UI until the final "done" event
+    // arrived — no progress bar movement, no feedback at all. The
+    // per-file workers used to publish this transition, but they skip
+    // the update on the size-matches-skip-the-fetch path, which is
+    // the only path that runs for a fully-resumed install.
+    if let Some(snap) = app.state::<LanDownloadState>().update(|p| {
+        p.status = "transferring".into();
+    }) {
+        emit_progress(&app, &snap);
+    }
+
     // Reuse the process-wide shared client. The shared client has no
     // top-level timeout so multi-GB transfers can run as long as they
     // need; the heartbeat uses RequestBuilder::timeout for the short
