@@ -223,6 +223,12 @@ pub fn run() {
             // a server URL / API key.
             sync::spawn_health_poller(app.handle().clone());
 
+            // One-shot cross-device merge: pull last-played, playtime
+            // and latest-backup events, fold into the library. Runs
+            // ~4 s after launch so the health poll has a chance to
+            // confirm reachability first.
+            sync::spawn_startup_sync(app.handle().clone());
+
             // Startup --run dispatch: queue the game id so the frontend
             // can pick it up once its listeners are ready.
             if let CliMode::Run { ref game_name, .. } = cli::parse_args(&initial_args) {

@@ -452,3 +452,285 @@ fn device_identity(app: &AppHandle) -> (String, String) {
 fn urlencode(s: &str) -> String {
     urlencoding::encode(s).into_owned()
 }
+
+// ── Cross-device sync queries (latest-backup, last-played, playtime) ───────
+
+#[derive(Debug, Deserialize, Default)]
+pub struct LatestBackupResponse {
+    #[serde(default)]
+    pub found: bool,
+    #[serde(default)]
+    pub device_id: Option<String>,
+    /// Other device's display name. Currently only consumed by future
+    /// "Last backup from X on date" tooltip work — kept here so the
+    /// JSON deserialization captures it for that follow-up.
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub device_name: Option<String>,
+    /// ISO 8601 timestamp. Same future-use story as `device_name`.
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub occurred_at: Option<String>,
+}
+
+/// `GET /events/:game/latest-backup`. Returns `None` when sync is
+/// disabled, the server is unreachable, or the response can't be
+/// parsed — callers treat that as "no badge change".
+pub async fn fetch_latest_backup(
+    app: &AppHandle,
+    game_name: &str,
+) -> Option<LatestBackupResponse> {
+    let (url, key) = config_snapshot(app).ok()?;
+    let endpoint = join_url(&url, &format!("events/{}/latest-backup", urlencode(game_name)));
+    let client = (*app.state::<reqwest::Client>()).clone();
+    let resp = client
+        .get(&endpoint)
+        .timeout(ENDPOINT_TIMEOUT)
+        .bearer_auth(&key)
+        .send()
+        .await
+        .ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    resp.json::<LatestBackupResponse>().await.ok()
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct LastPlayedRecord {
+    pub game_name: String,
+    pub last_played_at: String,
+}
+
+/// `GET /last-played` — every game this user has played on any
+/// device. Used at startup to backfill our local `last_played_at`
+/// for games that other devices have played more recently.
+pub async fn fetch_all_last_played(app: &AppHandle) -> Vec<LastPlayedRecord> {
+    let Ok((url, key)) = config_snapshot(app) else {
+        return Vec::new();
+    };
+    let endpoint = join_url(&url, "last-played");
+    let client = (*app.state::<reqwest::Client>()).clone();
+    let resp = match client
+        .get(&endpoint)
+        .timeout(ENDPOINT_TIMEOUT)
+        .bearer_auth(&key)
+        .send()
+        .await
+    {
+        Ok(r) if r.status().is_success() => r,
+        _ => return Vec::new(),
+    };
+    resp.json::<Vec<LastPlayedRecord>>().await.unwrap_or_default()
+}
+
+/// `POST /last-played` — push a single record. Best-effort.
+pub async fn push_last_played(app: &AppHandle, game_name: &str, last_played_at: &str) {
+    let Ok((url, key)) = config_snapshot(app) else {
+        return;
+    };
+    let endpoint = join_url(&url, "last-played");
+    let client = (*app.state::<reqwest::Client>()).clone();
+    if let Err(e) = client
+        .post(&endpoint)
+        .timeout(ENDPOINT_TIMEOUT)
+        .bearer_auth(&key)
+        .json(&serde_json::json!({
+            "game_name": game_name,
+            "last_played_at": last_played_at,
+        }))
+        .send()
+        .await
+    {
+        tracing::warn!(error = %e, "sync: push_last_played failed");
+    }
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct PlaytimeRecord {
+    pub game_name: String,
+    pub total_minutes: i64,
+}
+
+/// `GET /playtime` — server's per-game cumulative total across all
+/// devices. We take `max(local, server)` so if the server has more
+/// (because another device played offline and synced), we adopt it.
+pub async fn fetch_all_playtime(app: &AppHandle) -> Vec<PlaytimeRecord> {
+    let Ok((url, key)) = config_snapshot(app) else {
+        return Vec::new();
+    };
+    let endpoint = join_url(&url, "playtime");
+    let client = (*app.state::<reqwest::Client>()).clone();
+    let resp = match client
+        .get(&endpoint)
+        .timeout(ENDPOINT_TIMEOUT)
+        .bearer_auth(&key)
+        .send()
+        .await
+    {
+        Ok(r) if r.status().is_success() => r,
+        _ => return Vec::new(),
+    };
+    resp.json::<Vec<PlaytimeRecord>>().await.unwrap_or_default()
+}
+
+/// `POST /playtime/:game` with `{ delta_minutes }`. Server requires
+/// a positive integer; non-positive values short-circuit (no point
+/// telling the server "the session was 0 minutes").
+pub async fn push_playtime_delta(app: &AppHandle, game_name: &str, delta_minutes: i32) {
+    if delta_minutes <= 0 {
+        return;
+    }
+    let Ok((url, key)) = config_snapshot(app) else {
+        return;
+    };
+    let endpoint = join_url(&url, &format!("playtime/{}", urlencode(game_name)));
+    let client = (*app.state::<reqwest::Client>()).clone();
+    if let Err(e) = client
+        .post(&endpoint)
+        .timeout(ENDPOINT_TIMEOUT)
+        .bearer_auth(&key)
+        .json(&serde_json::json!({ "delta_minutes": delta_minutes }))
+        .send()
+        .await
+    {
+        tracing::warn!(error = %e, "sync: push_playtime_delta failed");
+    }
+}
+
+// ── Startup sync: merge cross-device state into the local library ──────────
+
+/// One-shot pull of every cross-device data point: last-played
+/// timestamps, playtime totals, and per-game latest-backup events.
+/// Spawned at startup; runs once, then exits. Updates the library in
+/// a single atomic save and emits `library:changed`.
+///
+/// No-op when sync is disabled / unreachable. The first poll after
+/// startup may briefly see "Probing" before this fires — by design,
+/// we don't want a slow server to delay the library showing.
+pub fn spawn_startup_sync(app: AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        // Wait a few seconds so the first health poll can resolve —
+        // no point firing this against an unreachable server.
+        tokio::time::sleep(Duration::from_secs(4)).await;
+        run_startup_sync(&app).await;
+    });
+}
+
+async fn run_startup_sync(app: &AppHandle) {
+    if config_snapshot(app).is_err() {
+        return;
+    }
+    let status = app.state::<SyncStatusState>().snapshot();
+    if status.reachability != SyncReachability::Online {
+        return;
+    }
+
+    tracing::info!("sync: pulling cross-device state");
+
+    // Pull everything in parallel.
+    let (last_played, playtime) = tokio::join!(
+        fetch_all_last_played(app),
+        fetch_all_playtime(app),
+    );
+
+    // Snapshot the local game names so we can fetch /latest-backup
+    // for each shared entry (drop the lock before the I/O).
+    let local_names: Vec<(String, String)> = {
+        let library = app.state::<crate::library::SharedLibrary>();
+        let lib = match library.lock() {
+            Ok(g) => g,
+            Err(_) => return,
+        };
+        lib.entries
+            .iter()
+            .map(|e| (e.id.clone(), e.game_name.clone()))
+            .collect()
+    };
+
+    // Fetch latest-backup per game. Sequential rather than parallel —
+    // most users have <100 games and per-request overhead dominates,
+    // so a single in-flight at a time keeps the server polite.
+    let mut latest_backups: Vec<(String, LatestBackupResponse)> = Vec::new();
+    for (_id, name) in &local_names {
+        if let Some(info) = fetch_latest_backup(app, name).await {
+            if info.found {
+                latest_backups.push((name.clone(), info));
+            }
+        }
+    }
+
+    // Now apply everything in a single library save.
+    let (device_id, _device_name) = device_identity(app);
+    let library = app.state::<crate::library::SharedLibrary>();
+    let mut applied = 0usize;
+    if let Ok(mut lib) = library.lock() {
+        // last-played: take max(local, server)
+        for record in &last_played {
+            if let Some(entry) = lib
+                .entries
+                .iter_mut()
+                .find(|e| e.game_name == record.game_name)
+            {
+                let server_time = chrono::DateTime::parse_from_rfc3339(&record.last_played_at)
+                    .ok()
+                    .map(|d| d.with_timezone(&chrono::Utc));
+                if let Some(server_time) = server_time {
+                    if entry.last_played_at.map(|t| server_time > t).unwrap_or(true) {
+                        entry.last_played_at = Some(server_time);
+                        applied += 1;
+                    }
+                }
+            }
+        }
+        // playtime: take max(local, server)
+        for record in &playtime {
+            if let Some(entry) = lib
+                .entries
+                .iter_mut()
+                .find(|e| e.game_name == record.game_name)
+            {
+                let server_mins = record.total_minutes as i32;
+                if server_mins > entry.playtime_minutes {
+                    entry.playtime_minutes = server_mins;
+                    applied += 1;
+                }
+            }
+        }
+        // sync badge: derive from latest backup vs our local mtime
+        for (name, info) in &latest_backups {
+            let badge = compute_badge(&device_id, info);
+            if let Some(entry) = lib.entries.iter_mut().find(|e| e.game_name == *name) {
+                if entry.sync_badge.as_deref() != Some(badge) {
+                    entry.sync_badge = Some(badge.to_string());
+                    applied += 1;
+                }
+            }
+        }
+
+        if applied > 0 {
+            if let Err(e) = lib.save() {
+                tracing::warn!(error = %e, "startup sync: library save failed");
+            }
+        }
+    }
+
+    tracing::info!(applied, "startup sync: done");
+    if applied > 0 {
+        let _ = app.emit("library:changed", &());
+    }
+}
+
+/// Maps a latest-backup response into one of "synced" / "cloud-newer"
+/// based on whether the most-recent backup came from us. We don't
+/// have enough info here to detect `local-newer` (would need to
+/// compare against our local `save_last_backed_up_at`); the runner
+/// sets that explicitly after a local backup that fails to record
+/// against the server.
+fn compute_badge(our_device_id: &str, info: &LatestBackupResponse) -> &'static str {
+    match info.device_id.as_deref() {
+        Some(id) if id == our_device_id => "synced",
+        Some(_) => "cloud-newer",
+        None => "cloud-newer", // server has info but no device id — treat conservatively
+    }
+}

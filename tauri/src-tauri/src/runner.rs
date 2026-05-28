@@ -302,6 +302,14 @@ async fn run_workflow(
     }
     let _ = app.emit("library:changed", &game_id.to_string());
 
+    // Cross-device sync — push the session timestamps to the server
+    // so other devices pick them up on their next startup_sync. The
+    // timestamp is RFC 3339 / ISO 8601; the server requires the
+    // playtime delta to be a positive integer, which `push_playtime_delta`
+    // already enforces.
+    sync::push_last_played(app, game_name, &session_end.to_rfc3339()).await;
+    sync::push_playtime_delta(app, game_name, session_minutes).await;
+
     // ── Phase 3: backup (skip if ludusavi didn't recognise the game) ──
     if !no_saves {
         emit_phase(app, game_id, "backing-up", Some("Backing up saves…"));
@@ -332,6 +340,32 @@ async fn run_workflow(
                 // Tell the sync server we backed up — peers can use
                 // this to know they're behind on saves. Best-effort.
                 sync::record_backup_event(app, game_name).await;
+
+                // Mark the entry as synced. After a successful backup
+                // we ARE the most recent device on the server (assuming
+                // the event recorded). If the event recording failed
+                // silently (offline), the badge will flip to
+                // local-newer on the next startup_sync.
+                let library = app.state::<SharedLibrary>();
+                let badge_changed = if let Ok(mut lib) = library.lock() {
+                    let mut changed = false;
+                    if let Some(entry) = lib.entries.iter_mut().find(|e| e.id == game_id) {
+                        if entry.sync_badge.as_deref() != Some("synced") {
+                            entry.sync_badge = Some("synced".to_string());
+                            changed = true;
+                        }
+                    }
+                    if changed {
+                        let _ = lib.save();
+                    }
+                    changed
+                } else {
+                    false
+                };
+                drop(library);
+                if badge_changed {
+                    let _ = app.emit("library:changed", &game_id.to_string());
+                }
             }
             Err(e) => {
                 // Don't fail the workflow — the user already played the game

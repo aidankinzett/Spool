@@ -870,6 +870,22 @@
             {@const selected = selectedId === g.id}
             {@const cover = assetUrl(g.cover_image_path)}
             {@const rowAccent = g.accent_color ?? '#d7c9a0'}
+            {@const badgeColor =
+              g.sync_badge === 'synced'
+                ? 'var(--color-ok)'
+                : g.sync_badge === 'cloud-newer'
+                  ? 'var(--color-info)'
+                  : g.sync_badge === 'local-newer'
+                    ? 'var(--color-warn)'
+                    : null}
+            {@const badgeTitle =
+              g.sync_badge === 'synced'
+                ? 'Saves synced'
+                : g.sync_badge === 'cloud-newer'
+                  ? 'Cloud has newer saves — restore on launch'
+                  : g.sync_badge === 'local-newer'
+                    ? 'Local saves newer than cloud — backup pending'
+                    : ''}
             <button
               type="button"
               onclick={() => (selectedId = g.id)}
@@ -881,7 +897,7 @@
               style:border-left-color={selected ? rowAccent : 'transparent'}
             >
               <div
-                class="h-11 w-8 shrink-0 overflow-hidden rounded-sm border border-line-1 bg-bg-2"
+                class="relative h-11 w-8 shrink-0 overflow-hidden rounded-sm border border-line-1 bg-bg-2"
               >
                 {#if cover}
                   <img
@@ -900,6 +916,17 @@
                       {g.game_name.slice(0, 1)}
                     </span>
                   </div>
+                {/if}
+                {#if badgeColor}
+                  <!-- Sync status dot: top-right of the cover thumb.
+                       The 1px ink-0 border keeps it readable against
+                       any cover artwork. -->
+                  <span
+                    class="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full border"
+                    style:background={badgeColor}
+                    style:border-color="var(--color-bg-0)"
+                    title={badgeTitle}
+                  ></span>
                 {/if}
               </div>
               <div class="min-w-0 flex-1">

@@ -84,6 +84,22 @@ export type GameEntry = {
 
   /** Dominant cover-art colour as `#rrggbb`, or null to use the brand default. */
   accent_color: string | null;
+
+  /**
+   * Cross-device save-sync status. Set by the sync server's
+   * `/events/:game/latest-backup` probe; refreshed at startup +
+   * after each successful backup.
+   *
+   *   "synced"       most recent server event came from this device
+   *   "cloud-newer"  another device backed up more recently than us
+   *   "local-newer"  we backed up locally but the event didn't reach
+   *                  the server (offline / sync disabled)
+   *
+   * `null` means we don't have enough info to badge — sync off,
+   * no backup history, or we never queried. The sidebar shows a
+   * small coloured dot on the cover when this is set.
+   */
+  sync_badge: string | null;
 };
 
 /**

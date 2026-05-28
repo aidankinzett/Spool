@@ -83,6 +83,21 @@ pub struct GameEntry {
     /// downloads. Drives hero / button / accent tinting in the detail
     /// view; falls back to the brand `spool` colour when None.
     pub accent_color: Option<String>,
+
+    /// Cross-device save-sync status, set by the sync server's
+    /// `/events/:game/latest-backup` probe. One of:
+    ///
+    ///   "synced"        latest server event came from this device
+    ///                   and our local mtime matches
+    ///   "local-newer"   we backed up more recently than the server
+    ///                   knows (offline backup or sync was disabled)
+    ///   "cloud-newer"   another device backed up after us — our
+    ///                   local saves are behind
+    ///
+    /// `None` means we don't have enough info to badge (sync off,
+    /// no backup history, or never queried). The library sidebar
+    /// renders a small coloured dot on the cover when this is set.
+    pub sync_badge: Option<String>,
 }
 
 impl Default for GameEntry {
@@ -122,6 +137,7 @@ impl Default for GameEntry {
             manifest_install_dir: None,
             save_paths: Vec::new(),
             accent_color: None,
+            sync_badge: None,
         }
     }
 }
