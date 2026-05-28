@@ -4,9 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**Spool** (formerly ludusavi-wrap) is a Windows-native game library + save-management wrapper built with [Tauri 2](https://v2.tauri.app/) (Rust backend) and [SvelteKit 5](https://kit.svelte.dev/) frontend. It maintains a persistent **game library** with cover art (via SteamGridDB) and lets users launch games directly from the app — automatically restoring saves before launch and backing them up on exit, with cloud-sync conflict detection via [ludusavi](https://github.com/mtkennerly/ludusavi). It also generates standalone launcher shortcuts for ASUS Armoury Crate and Steam, shares games over the LAN, locks play state across devices via a Bun/Hono sync server, and downloads games from Hydra-format catalogues via TorBox.
+**Spool** (formerly ludusavi-wrap) is a Windows-native game library + save-management wrapper built with [Tauri 2](https://v2.tauri.app/) (Rust backend) and [SvelteKit 5](https://kit.svelte.dev/) frontend. It maintains a persistent **game library** with cover art (via SteamGridDB) and lets users launch games directly from the app — automatically restoring saves before launch and backing them up on exit, with cloud-sync conflict detection via [ludusavi](https://github.com/mtkennerly/ludusavi). It also generates standalone launcher shortcuts for ASUS Armoury Crate and Steam, shares games over the LAN, locks play state across devices via a self-hosted Hono (Node) sync server, and downloads games from Hydra-format catalogues via TorBox.
 
-For design rationale see [`tauri/BACKEND.md`](tauri/BACKEND.md); for the port retrospective see [`tauri/REWRITE.md`](tauri/REWRITE.md).
+For the user-facing feature tour see [`README.md`](README.md); the self-hosted sync server is documented in [`server/README.md`](server/README.md).
 
 ## Commands
 
@@ -50,10 +50,12 @@ The `launcher_stub.exe` is embedded into the Rust binary via `include_bytes!` at
 
 A single long-lived Tauri process owns all persistence, subprocess orchestration, OS integration, HTTP clients, and workflow state. The SvelteKit frontend is purely a view onto that state — every file IO, subprocess call, and HTTP request lives in Rust.
 
+**Tray-resident lifecycle**: Spool runs as one long-lived process. The library window is a *view* on it — closing the window hides it to the system tray rather than quitting. Quit is **only** via the tray menu's "Quit Spool" item (`app.exit(0)`); window close and `RunEvent::ExitRequested` are otherwise prevented. Secondary `spool` invocations (from Steam shortcuts / Armoury Crate launchers) are caught by `tauri-plugin-single-instance` and forwarded as argv to the running primary — no cold-start cost on game launch.
+
 ### Rust backend (`tauri/src-tauri/src/`)
 
 Foundation:
-* **`main.rs` / `lib.rs`** — entry point, module wiring, Tauri command registration, per-concern `State<T>` setup, single-instance plugin, tray (planned), CLI dispatch.
+* **`main.rs` / `lib.rs`** — entry point, module wiring, Tauri command registration (the `generate_handler!` list is the source of truth for every IPC command), per-concern `State<T>` setup, single-instance plugin, tray icon + menu (`mount_tray`, emits `tray:show` / `tray:first-hide` / `tray:quit`), `RunEvent`/`WindowEvent` lifecycle hooks, CLI dispatch.
 * **`error.rs`** — `AppError` enum + `AppResult` alias. Serialisable so errors round-trip across the IPC boundary as strings.
 * **`paths.rs`** — centralised filesystem path resolution. Every module that touches an app file goes through here. Layout mirrors the legacy C# app so existing user data is picked up without migration.
 * **`cli.rs`** — argv parsing for `--run "Name" "Exe"` vs normal launch. Used both at startup and by the single-instance forwarding callback.
@@ -68,8 +70,10 @@ External integrations:
 * **`steam.rs`** — non-Steam shortcut creation. Writes to `<steam>/userdata/<uid>/config/shortcuts.vdf` via `steam_shortcuts_util` with `--run` launch options, plus grid art placement under `grid/<appid>{suffix}.{ext}`. Uses `steamlocate` for Steam install discovery.
 * **`hydra.rs`** — fetches and merges user-configured Hydra-format JSON catalogues (community game-download lists) for the Browse Games window.
 * **`torbox.rs`** — HTTP client for the TorBox debrid service (POST magnet → poll until cached → request signed per-file URL). Pure request wrappers exposed as Tauri commands.
-* **`sync.rs`** — sync-server HTTP client (Bun/Hono server in `server/`). Account registration, per-game play-state lock acquire/release/heartbeat, save event recording, playtime + last-played cross-device sync. Background task polls `/health` every 30 s and emits `sync:status-changed`.
-* **`lan.rs`** — LAN peer discovery (UDP multicast on `239.255.83.83:47631`) + an axum HTTP file server that exposes the game library and serves files for transfer. Peers appear automatically in the library grid; downloads add the game on completion.
+* **`sync.rs`** — sync-server HTTP client (Hono/Node server in `server/`). Account registration, per-game play-state lock acquire/release/heartbeat, save event recording, playtime + last-played cross-device sync. Background task polls `/health` every 30 s and emits `sync:status-changed`.
+* **`lan.rs`** — the largest module (~100 KB). Two halves:
+  * **Discovery** — every 5 s sends a small JSON announce packet over **UDP broadcast** (`255.255.255.255:47631`, *not* multicast — consumer mesh routers filter admin-scoped multicast but flood limited broadcasts). Peers stale out after 30 s. Announce carries the live `file_server_port`. Emits `lan:peers-changed`.
+  * **Transfer** — an in-process axum HTTP server exposes `/games`, `/manifest` (walks a game folder and **blake3-hashes** every file; cached after first request), per-file `/file` downloads (HTTP range requests for resume), and cover/hero artwork. The install side (`start_peer_install` → `run_install`) downloads up to `LAN_PARALLEL_FILES` (4) files concurrently into a `<name>.partial` dir, verifies each file's blake3 hash, resumes interrupted transfers, then renames `.partial` → final and adds the game to the library. Single in-flight install slot with a cancel flag; throttled `lan:download` progress events. The serving side tracks `UploadSession`s (reaped when idle), exposed via `list_active_uploads` / `cancel_upload`, emitting `lan:uploads-changed`. Installs land in `lan_install_dir` from config, defaulting to `%LOCALAPPDATA%\Spool\lan-games\`.
 
 Windows-only:
 * **`launcher.rs`** — extracts the embedded `launcher_stub.exe` to `%LOCALAPPDATA%\Spool\launchers\<safe_name>.exe` and appends a config payload bracketed by marker strings. The stub at runtime reads its own bytes and exec's `spool.exe --run`. Payload format matches the C# generator exactly so existing launchers stay compatible.
@@ -96,6 +100,12 @@ Routes under `tauri/src/routes/`:
 * **`edit/+page.svelte`** — per-game settings dialog (install folder, run-as-admin, manual cover refresh).
 * **`settings/+page.svelte`** — application settings (Ludusavi path with autodetect, SteamGridDB key, theme, LAN share, sync server, TorBox, download sources, device name). Live save on commit, no Save button.
 
+Shared code under `tauri/src/lib/`:
+* **`api.ts`** — the single typed wrapper around Tauri's `invoke` IPC bridge. Every backend command is a method on the exported `api` object (e.g. `api.listGames()`, `api.startPeerInstall(...)`); components never call `invoke` directly. Also exports `assetUrl()` which wraps `convertFileSrc` for loading local files (covers, art) into the webview via the `asset:` protocol. **When you add a Rust `#[tauri::command]`, add its typed wrapper here.**
+* **`types.ts`** — TypeScript mirrors of the Rust serde types (`GameEntry`, `ConfigData`, `LanPeer`, `PeerGame`, `DownloadProgress`, `SyncStatus`, `HydraEntry`, `SearchCandidate`, etc.). Keep these in sync with the Rust structs they mirror.
+* **`components/`** — reusable Svelte components: primitives (`Btn`, `Toggle`, `TextField`, `Pill`, `Icon`), layout/chrome (`WindowChrome`, `SettingsCard`, `SettingsRow`, `DetailCard`), the toast stack (`Toast`, `ToastStack`), the LAN transfer UI (`TransfersPanel`, `TransferPill`), `GameDetail`, `LibraryContextMenu`, `CassetteProgress`, and `CandidateRow`.
+* **`toasts.svelte.ts`** — global toast store (Svelte 5 runes). `format.ts` / `tokens.ts` — display helpers (sizes, durations, design tokens). `updater.ts` — wraps `tauri-plugin-updater` (checks `latest.json`, prompts, applies). `GameCard.svelte` — sidebar/grid cover thumbnail.
+
 ### Data Files
 
 | File | Location | Contents |
@@ -104,6 +114,7 @@ Routes under `tauri/src/routes/`:
 | `library.json` | `%LOCALAPPDATA%\Spool\` | Game library — list of `GameEntry` objects |
 | `covers/` | `%LOCALAPPDATA%\Spool\` | Downloaded SteamGridDB cover images |
 | `launchers/` | `%LOCALAPPDATA%\Spool\` | Generated per-game `.exe` launcher stubs (Armoury Crate) |
+| `lan-games/` | `%LOCALAPPDATA%\Spool\` | Default install root for games downloaded from LAN peers (overridable via `lan_install_dir` config) |
 | `debug.log` | `%LOCALAPPDATA%\Spool\` | App log (errors, startup events) |
 
 ### Key Patterns
@@ -111,13 +122,37 @@ Routes under `tauri/src/routes/`:
 * **Per-concern Tauri `State<T>`**: every command declares its dependencies as parameters (e.g. `library: State<'_, SharedLibrary>`, `config: State<'_, SharedConfig>`) — explicit, compiler-enforced, refactor-friendly. No single `AppState` god object.
 * **Lock discipline**: never hold a `std::sync::Mutex` guard across `.await`. Every async command snapshots what it needs from state, drops the guard, then awaits. If state must cross an await point, that specific state moves to `tokio::sync::Mutex`.
 * **Atomic JSON saves**: `library.rs` writes to a temp file then `rename`s over the target, rotating a `.bak` of the previous good file. Survives crash mid-write without corrupting either copy.
-* **`AppHandle::emit` cross-window broadcast**: events like `library:changed`, `run:phase`, `sync:status-changed`, `browse:download` go to all open webviews. The Add Game popup mutating the library triggers a refresh in the main window for free — no targeted emit needed.
+* **`AppHandle::emit` cross-window broadcast**: events go to all open webviews. The Add Game popup mutating the library triggers a refresh in the main window for free — no targeted emit needed. Current events: `library:changed`, `run:phase`, `sync:status-changed`, `browse:download`, `lan:peers-changed`, `lan:download`, `lan:uploads-changed`, and the tray events `tray:show` / `tray:first-hide` / `tray:quit`.
 * **Event naming**: colon-namespaced (`library:changed`, `run:phase`). Tauri 2 rejects `.` in event names at runtime (allowed charset is `[A-Za-z0-9_\-/:]+`).
 * **RAII run-lock**: `runner.rs` acquires a single-launch guard whose `Drop` impl releases the slot. Releases on panic too — without it a crashed workflow would leave Spool unable to launch any game until restart.
 * **Backfill tasks**: legacy library entries (pre-rename `ludusavi-wrap` users) lack newer fields like `accent_color` or `install_size_mb`. `accent_backfill.rs` and `size_backfill.rs` walk the library at startup, fill in the gaps via `walkdir` + colour extraction, save once at the end, emit `library:changed` so the UI repaints.
-* **axum LAN server**: `lan.rs` runs a tiny axum HTTP server in-process exposing `/games`, file downloads, and cover art. Bind tries the user's preferred port first, falls back to ephemeral if taken — so multiple Spool instances on the same box still come up clean.
+* **axum LAN server**: `lan.rs` runs a tiny axum HTTP server in-process exposing `/games`, `/manifest`, file downloads, and cover art. Bind tries the user's preferred port first, falls back to ephemeral if taken — so multiple Spool instances on the same box still come up clean.
+* **Content-addressed LAN transfer**: the host blake3-hashes each file (`/manifest`); the installer verifies hashes per file and resumes via HTTP range requests into a `.partial` dir, renaming to final only on full success — an interrupted transfer is safe to retry.
 * **`tracing` for logs**: the `tracing` crate with a file appender writes to `%LOCALAPPDATA%\Spool\debug.log` (same path as the C# app for continuity). Spans wrap RunWorkflow phases for clean trace output.
 * **JSON shape compatibility with the legacy C# app**: both `library.json` and `config.json` round-trip cleanly because every field carries `#[serde(default)]`. Existing users get a zero-touch upgrade.
+
+## Sync server (`server/`)
+
+A small self-hostable [Hono](https://hono.dev/) app (TypeScript) served via `@hono/node-server` on Node, backed by SQLite through `better-sqlite3`. Its job is to stop two devices playing the same game at once and to sync playtime / last-played / save events. Mounted routers in `src/index.ts`:
+
+| Route | Purpose |
+|-------|---------|
+| `/health` | Liveness + version probe (polled by the app every 30 s). |
+| `/auth` | Admin-secret-gated account registration → returns an API key. |
+| `/locks` | Per-game play-state lock acquire / release / heartbeat. |
+| `/events` | Save-event recording. |
+| `/last-played` | Cross-device last-played sync. |
+| `/playtime` | Cross-device playtime accumulation. |
+
+`src/db.ts` owns schema + queries; `src/middleware/auth.ts` validates the API key. Run locally with `npm run dev` (tsx, from `server/`); self-host via the `Dockerfile` / `docker-compose.yml` (see `server/README.md`). The Rust client is `tauri/src-tauri/src/sync.rs`.
+
+## CI / CD
+
+GitHub Actions workflows in `.github/workflows/`:
+* **`ci.yml`** — runs on push to `master` and on PRs. Windows runner; builds the backend and runs clippy/check (`sccache` + `Swatinem/rust-cache` for speed). The push/PR split is deliberate so the cache saves to the default-branch scope that the tag-triggered release build can later restore.
+* **`release.yml`** — tag-triggered release build (see below).
+* **`server-publish.yml`** — on `v*` tags, builds and pushes the sync-server Docker image to GHCR, but only when `server/` actually changed since the previous tag.
+* **`debug-token.yml`** — manual token/permissions diagnostics.
 
 ## Releasing
 
