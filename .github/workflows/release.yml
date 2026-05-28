@@ -47,8 +47,10 @@ jobs:
 
       - name: Resolve version
         id: ver
+        env:
+          REF_NAME: ${{ github.ref_name }}
         run: |
-          $version = "${{ github.ref_name }}".TrimStart('v')
+          $version = "$env:REF_NAME".TrimStart('v')
           "value=$version" >> $env:GITHUB_OUTPUT
 
       - name: Stamp version into Tauri config + Cargo.toml
@@ -139,9 +141,10 @@ jobs:
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
 
       - name: Stamp version into Tauri config + Cargo.toml
+        env:
+          REF_NAME: ${{ github.ref_name }}
         run: |
-          VERSION="${{ github.ref_name }}"
-          VERSION="${VERSION#v}"
+          VERSION="${REF_NAME#v}"
           jq --arg v "$VERSION" '.version = $v' tauri/src-tauri/tauri.conf.json > /tmp/tauri.conf.json && mv /tmp/tauri.conf.json tauri/src-tauri/tauri.conf.json
           sed -i "s/^version = \".*\"/version = \"$VERSION\"/" tauri/src-tauri/Cargo.toml
 
@@ -262,14 +265,15 @@ jobs:
         # this repo. Publish via `gh release create` with the PAT.
         env:
           GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          TAG_NAME: ${{ github.ref_name }}
         run: |
           set -euo pipefail
           WIN_EXE=$(ls artifacts/windows-bundle/Spool_*_x64-setup.exe)
           WIN_SIG=$(ls artifacts/windows-bundle/Spool_*_x64-setup.exe.sig)
           LIN_APP=$(ls artifacts/linux-bundle/Spool_*_amd64.AppImage)
           LIN_SIG=$(ls artifacts/linux-bundle/Spool_*_amd64.AppImage.sig)
-          gh release create "${{ github.ref_name }}" \
-            --title "Spool ${{ github.ref_name }}" \
+          gh release create "$TAG_NAME" \
+            --title "Spool $TAG_NAME" \
             --notes-file notes.md \
             "$WIN_EXE" "$WIN_SIG" "$LIN_APP" "$LIN_SIG"
 
@@ -280,10 +284,12 @@ jobs:
         # ourselves here from the uploaded artifacts.
         env:
           GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          TAG_NAME: ${{ github.ref_name }}
+          REPO_NAME: ${{ github.repository }}
         run: |
           set -euo pipefail
-          TAG="${{ github.ref_name }}"
-          REPO="${{ github.repository }}"
+          TAG="$TAG_NAME"
+          REPO="$REPO_NAME"
           VERSION="${TAG#v}"
 
           WIN_SIG_FILE=$(ls artifacts/windows-bundle/Spool_*_x64-setup.exe.sig)
