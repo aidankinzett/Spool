@@ -109,6 +109,10 @@ pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        // Native OS toast notifications. Used by the run workflow to
+        // tell the user "Saves backed up" / "Save restore failed"
+        // while Spool itself is hidden in the tray during gameplay.
+        .plugin(tauri_plugin_notification::init())
         // Single-instance: secondary `spool` invocations land here. We
         // dispatch on argv to either focus the library or kick off a
         // game launch. Must come early — adds the IPC channel.

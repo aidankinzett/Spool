@@ -84,6 +84,40 @@ fn emit_phase(app: &AppHandle, game_id: &str, phase: &str, message: Option<&str>
     }
 }
 
+/// Fires a native OS notification, but only when the main Spool
+/// window isn't visible — otherwise we'd double up with the in-app
+/// toasts the frontend renders for the same run-phase events.
+///
+/// The intent is: while the user is in-game (Spool hidden / tray-
+/// resident), they get desktop toasts in the OS notification centre
+/// for things they need to know about ("saves backed up", "launch
+/// failed"). While Spool's window is in focus they see the in-app
+/// toast instead.
+///
+/// Best-effort: a notification failure is logged and otherwise
+/// ignored — never blocks the workflow.
+fn os_toast_if_hidden(app: &AppHandle, title: &str, body: &str) {
+    use tauri_plugin_notification::NotificationExt;
+
+    let visible = app
+        .get_webview_window("main")
+        .and_then(|w| w.is_visible().ok())
+        .unwrap_or(false);
+    if visible {
+        return;
+    }
+
+    if let Err(e) = app
+        .notification()
+        .builder()
+        .title(title)
+        .body(body)
+        .show()
+    {
+        tracing::warn!(error = %e, "OS toast failed");
+    }
+}
+
 #[tauri::command]
 pub async fn launch_game(app: AppHandle, game_id: String) -> AppResult<()> {
     launch_game_inner(&app, &game_id).await
@@ -142,6 +176,14 @@ pub async fn launch_game_inner(app: &AppHandle, game_id: &str) -> AppResult<()> 
 
     if let Err(e) = &result {
         emit_phase(app, game_id, "error", Some(&e.to_string()));
+        // Surface the failure via the OS notification centre too —
+        // most workflow errors happen while the user is mid-launch
+        // with Spool tucked into the tray.
+        os_toast_if_hidden(
+            app,
+            "Spool: launch failed",
+            &format!("{game_name} — {e}"),
+        );
     }
     result
 }
@@ -159,6 +201,11 @@ async fn run_workflow(
 
     // ── Phase 1: restore ──────────────────────────────────────────────
     emit_phase(app, game_id, "restoring", Some("Restoring saves…"));
+    os_toast_if_hidden(
+        app,
+        "Restoring saves",
+        &format!("{game_name} — restoring before launch"),
+    );
     tracing::info!(game_name, "ludusavi restore");
     let restore = ludusavi_client.restore(ludusavi_exe, game_name).await?;
     if restore
@@ -223,6 +270,11 @@ async fn run_workflow(
     // ── Phase 3: backup (skip if ludusavi didn't recognise the game) ──
     if !no_saves {
         emit_phase(app, game_id, "backing-up", Some("Backing up saves…"));
+        os_toast_if_hidden(
+            app,
+            "Backing up saves",
+            &format!("{game_name} — session ended"),
+        );
         tracing::info!(game_name, "ludusavi backup");
         match ludusavi_client.backup(ludusavi_exe, game_name).await {
             Ok(out) => {
@@ -253,6 +305,13 @@ async fn run_workflow(
     }
 
     emit_phase(app, game_id, "done", None);
+    // Final completion ping — the most useful native toast since the
+    // user may have closed the game and walked away from the PC.
+    os_toast_if_hidden(
+        app,
+        "Saves backed up",
+        &format!("{game_name} — session complete"),
+    );
     tracing::info!(game_name, "run workflow complete");
     Ok(())
 }
