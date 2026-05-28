@@ -27,6 +27,7 @@
   import WindowChrome from '$lib/components/WindowChrome.svelte';
   import MonoLabel from '$lib/components/MonoLabel.svelte';
   import GameDetail from '$lib/components/GameDetail.svelte';
+  import LibraryContextMenu from '$lib/components/LibraryContextMenu.svelte';
 
   let games = $state<GameEntry[]>([]);
   let loaded = $state(false);
@@ -40,6 +41,14 @@
   // GameDetail uses these to drive the Play button label.
   let runningId = $state<string | null>(null);
   let runningPhase = $state<RunPhase | null>(null);
+
+  // Sidebar right-click context menu — open at {x, y} for {game} or null.
+  let ctxMenu = $state<{ game: GameEntry; x: number; y: number } | null>(null);
+
+  function openContextMenu(e: MouseEvent, g: GameEntry) {
+    e.preventDefault();
+    ctxMenu = { game: g, x: e.clientX, y: e.clientY };
+  }
 
   // ── Derived ────────────────────────────────────────────────────────────
   const filteredGames = $derived.by(() => {
@@ -310,6 +319,7 @@
             <button
               type="button"
               onclick={() => (selectedId = g.id)}
+              oncontextmenu={(e) => openContextMenu(e, g)}
               class="flex w-full items-center gap-2.5 border-l-2 px-3 py-2 text-left transition-colors"
               style:background={selected
                 ? `color-mix(in srgb, ${rowAccent} 12%, transparent)`
@@ -399,3 +409,12 @@
     {/if}
   </div>
 </div>
+
+{#if ctxMenu}
+  <LibraryContextMenu
+    game={ctxMenu.game}
+    x={ctxMenu.x}
+    y={ctxMenu.y}
+    onclose={() => (ctxMenu = null)}
+  />
+{/if}
