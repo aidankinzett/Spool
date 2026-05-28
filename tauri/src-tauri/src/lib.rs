@@ -29,6 +29,7 @@ mod cli;
 mod config;
 mod error;
 mod lan;
+mod launcher;
 mod library;
 mod ludusavi;
 mod paths;
@@ -147,6 +148,8 @@ pub fn run() {
             steamgriddb::fetch_cover,
             // steam shortcut
             steam::add_to_steam,
+            // armoury crate launcher
+            launcher::generate_armoury_launcher,
             // lan discovery
             lan::list_lan_peers,
             lan::fetch_peer_games,

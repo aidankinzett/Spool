@@ -14,7 +14,7 @@
    * non-danger rows, red hover for Remove.
    */
   import { onMount, onDestroy } from 'svelte';
-  import { Folder, Pencil, Play, Trash2 } from '@lucide/svelte';
+  import { Folder, Package, Pencil, Play, Trash2 } from '@lucide/svelte';
   import { openPath } from '@tauri-apps/plugin-opener';
   import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
   import { api, assetUrl } from '$lib/api';
@@ -106,6 +106,41 @@
     onclose();
     const f = folderForGame(game);
     if (f) await openPath(f);
+  }
+
+  async function generateArmouryLauncher() {
+    onclose();
+    try {
+      const path = await api.generateArmouryLauncher(game.id);
+      // Pull the dir off the end of the path string so the "Open
+      // folder" CTA reveals the .exe in Explorer without needing
+      // a separate IPC.
+      const sep = path.includes('\\') ? '\\' : '/';
+      const idx = path.lastIndexOf(sep);
+      const dir = idx > 0 ? path.slice(0, idx) : path;
+      toasts.show({
+        kind: 'ok',
+        label: 'ARMOURY CRATE',
+        title: 'Launcher generated',
+        sub: `In Armoury Crate: Library → Manage Library → Add → browse to ${path}`,
+        catalog: fmtCatalog(game.catalog_number),
+        duration: 0,
+        cta: {
+          label: 'Open folder',
+          onClick: () => {
+            openPath(dir).catch((e) => console.error('[launcher] open folder failed:', e));
+          },
+        },
+      });
+    } catch (e) {
+      toasts.show({
+        kind: 'bad',
+        label: 'ARMOURY CRATE · FAILED',
+        title: "Couldn't generate launcher",
+        sub: String(e),
+        catalog: fmtCatalog(game.catalog_number),
+      });
+    }
   }
 
   async function addToSteam() {
@@ -249,11 +284,13 @@
       !folderForGame(game),
     )}
     {@render item('Add to Steam', steamIcon, addToSteam, !game.exe_path)}
+    {@render item('Generate Armoury Crate launcher', armouryIcon, generateArmouryLauncher, !game.exe_path)}
   </div>
 
   {#snippet playIcon()}<Play size={13} fill="currentColor" />{/snippet}
   {#snippet folderIcon()}<Folder size={13} />{/snippet}
   {#snippet steamIcon()}<Play size={13} />{/snippet}
+  {#snippet armouryIcon()}<Package size={13} />{/snippet}
   {#snippet pencilIcon()}<Pencil size={13} />{/snippet}
   {#snippet trashIcon()}<Trash2 size={13} />{/snippet}
 

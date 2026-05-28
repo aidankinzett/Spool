@@ -40,6 +40,10 @@ export const api = {
   // Steam shortcut
   addToSteam: (gameId: string): Promise<AddToSteamResult> => invoke('add_to_steam', { gameId }),
 
+  // Armoury Crate launcher
+  generateArmouryLauncher: (gameId: string): Promise<string> =>
+    invoke('generate_armoury_launcher', { gameId }),
+
   // LAN
   listLanPeers: (): Promise<LanPeer[]> => invoke('list_lan_peers'),
   fetchPeerGames: (addr: string, port: number): Promise<PeerGame[]> =>
