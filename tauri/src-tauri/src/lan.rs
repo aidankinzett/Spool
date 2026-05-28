@@ -376,6 +376,47 @@ pub struct PeerGameManifest {
     pub release_date: Option<DateTime<Utc>>,
 }
 
+/// Shutdown coordinator for the LAN HTTP server. Holds two things:
+///
+///   * `notify`  — what axum's `with_graceful_shutdown` awaits. Firing
+///                 this stops the listener from accepting new
+///                 connections and lets in-flight responses drain.
+///   * `handle`  — the tokio `JoinHandle` of the spawned `axum::serve`
+///                 task. After notifying we `.await` this handle so we
+///                 know the server is actually done before the process
+///                 exits (otherwise the runtime gets dropped and the
+///                 task is cancelled mid-drain).
+///
+/// Per `domain-web` "graceful shutdown for in-flight drain" — without
+/// this an `app.exit(0)` from the tray rips the rug out from under
+/// peers downloading from us.
+#[derive(Default)]
+pub struct LanServerShutdown {
+    pub notify: Arc<tokio::sync::Notify>,
+    handle: Mutex<Option<tokio::task::JoinHandle<()>>>,
+}
+
+impl LanServerShutdown {
+    fn install(&self, h: tokio::task::JoinHandle<()>) {
+        if let Ok(mut g) = self.handle.lock() {
+            *g = Some(h);
+        }
+    }
+
+    /// Triggers graceful shutdown and awaits the server task. Idempotent
+    /// — a second call after shutdown is a no-op. Bounded by an internal
+    /// timeout so a wedged client can't keep us from exiting forever.
+    pub async fn shutdown(&self) {
+        self.notify.notify_waiters();
+        let handle = self.handle.lock().ok().and_then(|mut g| g.take());
+        if let Some(h) = handle {
+            // 2 s is enough for any reasonable in-flight chunk write to
+            // land; longer and we're better off ripping the connection.
+            let _ = tokio::time::timeout(Duration::from_secs(2), h).await;
+        }
+    }
+}
+
 /// In-memory hash cache keyed by absolute file path. Invalidated by
 /// mtime — if the source file changes the hash is recomputed on the
 /// next manifest fetch. Persistence across process restarts is a
@@ -427,23 +468,33 @@ async fn start_http_server(app: AppHandle, preferred_port: u16) -> AppResult<u16
         .route("/games/:id/files/*path", get(get_file_handler))
         .route("/games/:id/cover", get(get_cover_handler))
         .route("/games/:id/hero", get(get_hero_handler))
-        .route("/games/:id/cancel-check", get(get_cancel_check_handler))
-        .with_state(ServerState {
-            app,
-            hash_cache: Arc::new(std::sync::RwLock::new(HashMap::new())),
-        });
+        .route("/games/:id/cancel-check", get(get_cancel_check_handler));
 
-    // Server runs forever — tokio::spawn detaches it. If the listener dies
-    // we just log and stop; no recovery path right now (the user can
-    // restart Spool). `into_make_service_with_connect_info` is what
-    // lets the file handler pull the peer's IP via the `ConnectInfo`
-    // extractor for the upload ledger.
-    tokio::spawn(async move {
+    // Pull the shutdown bits off managed state before `app` moves into
+    // ServerState. The Notify lives on managed state so the tray quit
+    // menu (and any future "disable LAN sharing" flow) can signal
+    // graceful drain.
+    let notify = app.state::<LanServerShutdown>().notify.clone();
+    let shutdown_app = app.clone();
+    let router = router.with_state(ServerState {
+        app,
+        hash_cache: Arc::new(std::sync::RwLock::new(HashMap::new())),
+    });
+
+    // Server runs until graceful shutdown is signalled (or the listener
+    // dies). `into_make_service_with_connect_info` lets the file
+    // handler pull the peer's IP via the `ConnectInfo` extractor for
+    // the upload ledger.
+    let handle = tokio::spawn(async move {
         let svc = router.into_make_service_with_connect_info::<SocketAddr>();
-        if let Err(e) = axum::serve(listener, svc).await {
+        let server = axum::serve(listener, svc).with_graceful_shutdown(async move {
+            notify.notified().await;
+        });
+        if let Err(e) = server.await {
             tracing::error!(error = %e, "LAN HTTP server exited");
         }
     });
+    shutdown_app.state::<LanServerShutdown>().install(handle);
 
     Ok(port)
 }

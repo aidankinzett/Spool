@@ -3809,6 +3809,39 @@ dependencies = [
 ]
 
 [[package]]
+name = "spool"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "blake3",
+ "chrono",
+ "dirs 5.0.1",
+ "filetime",
+ "futures-util",
+ "image",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "socket2 0.5.10",
+ "steam_shortcuts_util",
+ "steamlocate",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-dialog",
+ "tauri-plugin-opener",
+ "tauri-plugin-single-instance",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "tracing-appender",
+ "tracing-subscriber",
+ "urlencoding",
+ "uuid",
+ "walkdir",
+]
+
+[[package]]
 name = "stable_deref_trait"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4027,39 +4060,6 @@ checksum = "61c41af27dd6d1e27b1b16b489db798443478cef1f06a660c96db617ba5de3b1"
 
 [[package]]
 name = "tauri"
-version = "0.1.0"
-dependencies = [
- "axum",
- "blake3",
- "chrono",
- "dirs 5.0.1",
- "filetime",
- "futures-util",
- "image",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "socket2 0.5.10",
- "steam_shortcuts_util",
- "steamlocate",
- "tauri 2.11.2",
- "tauri-build",
- "tauri-plugin-dialog",
- "tauri-plugin-opener",
- "tauri-plugin-single-instance",
- "thiserror 2.0.18",
- "tokio",
- "tokio-util",
- "tracing",
- "tracing-appender",
- "tracing-subscriber",
- "urlencoding",
- "uuid",
- "walkdir",
-]
-
-[[package]]
-name = "tauri"
 version = "2.11.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "437404997acf375d85f1177afa7e11bb971f274ed6a7b83a2a3e339015f4cc28"
@@ -4199,7 +4199,7 @@ dependencies = [
  "rfd",
  "serde",
  "serde_json",
- "tauri 2.11.2",
+ "tauri",
  "tauri-plugin",
  "tauri-plugin-fs",
  "thiserror 2.0.18",
@@ -4222,7 +4222,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_repr",
- "tauri 2.11.2",
+ "tauri",
  "tauri-plugin",
  "tauri-utils",
  "thiserror 2.0.18",
@@ -4244,7 +4244,7 @@ dependencies = [
  "schemars 0.8.22",
  "serde",
  "serde_json",
- "tauri 2.11.2",
+ "tauri",
  "tauri-plugin",
  "thiserror 2.0.18",
  "url",
@@ -4260,7 +4260,7 @@ checksum = "5c8f29386f5e9fdc699182388a33ee80a56de436d91b67459e86afef426282af"
 dependencies = [
  "serde",
  "serde_json",
- "tauri 2.11.2",
+ "tauri",
  "thiserror 2.0.18",
  "tracing",
  "windows-sys 0.60.2",

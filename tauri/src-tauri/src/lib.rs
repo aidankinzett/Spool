@@ -39,7 +39,7 @@ mod steamgriddb;
 
 use cli::CliMode;
 use config::{Config, SharedConfig};
-use lan::{LanDownloadState, LanState, LanUploadsState};
+use lan::{LanDownloadState, LanServerShutdown, LanState, LanUploadsState};
 use library::{Library, SharedLibrary};
 use ludusavi::LudusaviClient;
 use runner::RunState;
@@ -127,6 +127,7 @@ pub fn run() {
         )
         .manage::<LanDownloadState>(LanDownloadState::default())
         .manage::<LanUploadsState>(LanUploadsState::default())
+        .manage::<LanServerShutdown>(LanServerShutdown::default())
         .invoke_handler(tauri::generate_handler![
             take_pending_run,
             // library
@@ -238,7 +239,7 @@ fn mount_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
         )
         .on_menu_event(|app, event| match event.id.as_ref() {
             "tray:show" => show_library(app),
-            "tray:quit" => app.exit(0),
+            "tray:quit" => quit_with_graceful_drain(app),
             _ => {}
         })
         .on_tray_icon_event(|tray, event| {
@@ -279,6 +280,19 @@ fn toggle_library(app: &AppHandle) {
             }
         }
     }
+}
+
+/// Triggers a clean shutdown: signals the LAN HTTP server to stop
+/// accepting new connections, waits for in-flight responses to drain
+/// (bounded by `LanServerShutdown::shutdown`'s internal 2 s timeout),
+/// then calls `app.exit(0)`. Spawned on the runtime so the menu
+/// callback returns immediately.
+fn quit_with_graceful_drain(app: &AppHandle) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        app.state::<LanServerShutdown>().shutdown().await;
+        app.exit(0);
+    });
 }
 
 /// Looks up a game by exact `game_name` match. Returns the entry id.
