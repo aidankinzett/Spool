@@ -27,8 +27,8 @@ use crate::paths;
 use axum::{
     body::Body,
     extract::{Path as AxPath, State as AxState},
-    http::{header, StatusCode},
-    response::{IntoResponse, Json, Response},
+    http::{header, HeaderMap, StatusCode},
+    response::{Json, Response},
     routing::get,
     Router,
 };
@@ -43,7 +43,8 @@ use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager, State};
-use tokio::io::AsyncWriteExt;
+use std::io::SeekFrom;
+use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 use tokio::net::UdpSocket;
 use tokio_util::io::ReaderStream;
 
@@ -411,9 +412,17 @@ async fn get_manifest_handler(
 /// install dir. The wildcard path is interpreted strictly: only
 /// `Component::Normal` segments allowed, anything that could escape
 /// the install root (parent dir, absolute, prefix) is rejected.
+///
+/// Supports HTTP `Range: bytes=N-` requests for resume — the client
+/// sends the size it already has on disk, the server seeks past those
+/// bytes and streams the rest. We only handle the `bytes=N-` form;
+/// multi-range and suffix forms (`bytes=-N`) return 416 Range Not
+/// Satisfiable. `Accept-Ranges: bytes` is set on every response so
+/// clients know resume is supported even without trying.
 async fn get_file_handler(
     AxState(state): AxState<ServerState>,
     AxPath((id, rel_path)): AxPath<(String, String)>,
+    headers: HeaderMap,
 ) -> Result<Response, StatusCode> {
     let config = state.app.state::<SharedConfig>();
     let library = state.app.state::<SharedLibrary>();
@@ -450,18 +459,71 @@ async fn get_file_handler(
     let metadata = tokio::fs::metadata(&abs)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let len = metadata.len();
-    let file = tokio::fs::File::open(&abs)
+    let total_len = metadata.len();
+
+    // Parse a Range header if present. We accept just `bytes=N-` —
+    // suffix ranges (`bytes=-N`) and multi-range stay unsupported (the
+    // client never sends them; an outside caller doing so gets 416).
+    let range_start = headers
+        .get(header::RANGE)
+        .and_then(|v| v.to_str().ok())
+        .map(parse_range_start);
+
+    let mut file = tokio::fs::File::open(&abs)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    if let Some(parsed) = range_start {
+        // A Range header was sent — must be a form we support and
+        // must fall inside the file.
+        let start = parsed.ok_or(StatusCode::RANGE_NOT_SATISFIABLE)?;
+        if start >= total_len {
+            return Err(StatusCode::RANGE_NOT_SATISFIABLE);
+        }
+        file.seek(SeekFrom::Start(start))
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let body_len = total_len - start;
+        let end = total_len - 1;
+        let stream = ReaderStream::new(file);
+        let body = Body::from_stream(stream);
+        let mut resp = Response::new(body);
+        *resp.status_mut() = StatusCode::PARTIAL_CONTENT;
+        let h = resp.headers_mut();
+        h.insert(header::CONTENT_TYPE, "application/octet-stream".parse().unwrap());
+        h.insert(header::CONTENT_LENGTH, body_len.to_string().parse().unwrap());
+        h.insert(
+            header::CONTENT_RANGE,
+            format!("bytes {start}-{end}/{total_len}").parse().unwrap(),
+        );
+        h.insert(header::ACCEPT_RANGES, "bytes".parse().unwrap());
+        return Ok(resp);
+    }
+
     let stream = ReaderStream::new(file);
     let body = Body::from_stream(stream);
+    let mut resp = Response::new(body);
+    let h = resp.headers_mut();
+    h.insert(header::CONTENT_TYPE, "application/octet-stream".parse().unwrap());
+    h.insert(header::CONTENT_LENGTH, total_len.to_string().parse().unwrap());
+    h.insert(header::ACCEPT_RANGES, "bytes".parse().unwrap());
+    Ok(resp)
+}
 
-    Ok(([
-        (header::CONTENT_TYPE, "application/octet-stream"),
-        (header::CONTENT_LENGTH, &len.to_string()),
-    ], body)
-        .into_response())
+/// Parses `bytes=N-`. Returns `Some(N)` on match. Returns `None` for
+/// any unsupported form (suffix ranges, multi-range, junk) — the
+/// caller maps that to 416.
+fn parse_range_start(value: &str) -> Option<u64> {
+    let rest = value.strip_prefix("bytes=")?;
+    // Multi-range comes as `N-,M-` — bail.
+    if rest.contains(',') {
+        return None;
+    }
+    let (start, _end) = rest.split_once('-')?;
+    if start.is_empty() {
+        return None; // suffix-range `bytes=-N` not supported
+    }
+    start.parse::<u64>().ok()
 }
 
 /// Recursive walk that turns a folder into a flat list of `PeerFile`
@@ -962,6 +1024,32 @@ fn allocate_install_dir(root: &Path, safe_name: &str) -> PathBuf {
     root.join(format!("{base}-{}", Utc::now().timestamp()))
 }
 
+/// Resolves the `(final_dir, partial_dir, resuming)` triple for a new
+/// install. If a `<base>.partial` directory already exists from a
+/// previous interrupted attempt — and the would-be final dir is still
+/// free — we resume into it. Otherwise allocate a fresh non-colliding
+/// pair.
+///
+/// We deliberately only check the *preferred* base name (no scanning
+/// for `Name (2).partial`, `Name (3).partial`, …): keeping the rule
+/// simple means a user who genuinely wants a fresh install can get
+/// one by deleting the leftover `.partial` folder.
+fn resolve_install_dirs(root: &Path, safe_name: &str) -> (PathBuf, PathBuf, bool) {
+    let base = if safe_name.is_empty() {
+        "Game".to_string()
+    } else {
+        make_safe_filename(safe_name)
+    };
+    let preferred_final = root.join(&base);
+    let preferred_partial = root.join(format!("{base}.partial"));
+    if preferred_partial.is_dir() && !preferred_final.exists() {
+        return (preferred_final, preferred_partial, true);
+    }
+    let final_dir = allocate_install_dir(root, safe_name);
+    let partial = final_dir.with_extension("partial");
+    (final_dir, partial, false)
+}
+
 fn emit_progress(app: &AppHandle, progress: &DownloadProgress) {
     if let Err(e) = app.emit("lan:download", progress) {
         tracing::warn!(error = %e, "failed to emit lan:download");
@@ -1190,15 +1278,21 @@ async fn run_install(
         .await
         .map_err(|e| AppError::Other(format!("create install root: {e}")))?;
 
-    let final_dir = allocate_install_dir(&root, &manifest.safe_name);
-    let partial_dir = final_dir.with_extension("partial");
-    // Clean up any leftover .partial from a previous aborted attempt.
-    if partial_dir.exists() {
-        let _ = tokio::fs::remove_dir_all(&partial_dir).await;
+    // Resume detection: if a `.partial` exists at the preferred name
+    // we pick up where we left off rather than allocating a fresh
+    // `<name> (2)` install.
+    let (final_dir, partial_dir, resuming) =
+        resolve_install_dirs(&root, &manifest.safe_name);
+    if resuming {
+        tracing::info!(
+            partial = %partial_dir.display(),
+            "resuming previous LAN install"
+        );
+    } else {
+        tokio::fs::create_dir_all(&partial_dir)
+            .await
+            .map_err(|e| AppError::Other(format!("create partial dir: {e}")))?;
     }
-    tokio::fs::create_dir_all(&partial_dir)
-        .await
-        .map_err(|e| AppError::Other(format!("create partial dir: {e}")))?;
 
     let client = reqwest::Client::builder()
         // No top-level timeout — multi-GB transfers may legitimately
@@ -1249,23 +1343,74 @@ async fn run_install(
                 .map_err(|e| AppError::Other(format!("mkdir {parent:?}: {e}")))?;
         }
 
-        let resp = client
-            .get(&url)
+        // Resume support: if a leftover from a previous run sits at
+        // `target`, ask the server for just the tail. Three branches:
+        //   - already complete (size == expected): skip the GET
+        //   - partial (0 < existing < expected): Range request
+        //   - oversized or unknown: truncate, start fresh
+        let existing_size = match tokio::fs::metadata(&target).await {
+            Ok(m) if m.is_file() => m.len(),
+            _ => 0,
+        };
+        if existing_size == file.size && file.size > 0 {
+            // Counts toward total so the progress bar doesn't lie when
+            // resuming a near-complete install. We trust prior bytes
+            // here without re-hashing — Phase E (checksums) will close
+            // that loop.
+            bytes_done += file.size;
+            if let Some(snapshot) =
+                download_state.update(|p| p.bytes_done = bytes_done)
+            {
+                emit_progress(&app, &snapshot);
+            }
+            continue;
+        }
+        let resume_from = if existing_size < file.size {
+            existing_size
+        } else {
+            // Oversized — corrupt remnant; start fresh.
+            0
+        };
+
+        let mut request = client.get(&url);
+        if resume_from > 0 {
+            request = request.header(header::RANGE, format!("bytes={resume_from}-"));
+        }
+        let resp = request
             .send()
             .await
             .map_err(|e| AppError::Other(format!("GET {url}: {e}")))?;
-        if !resp.status().is_success() {
+        let status = resp.status();
+        if !status.is_success() {
             return Err(AppError::Other(format!(
                 "{} returned {} for {}",
-                peer_addr,
-                resp.status(),
-                file.path
+                peer_addr, status, file.path
             )));
         }
+        // 206 means the server honoured our Range; 200 means it served
+        // the whole file (older Spool peer or no Range support — should
+        // never happen against another Spool, but be defensive).
+        let server_served_range = status == reqwest::StatusCode::PARTIAL_CONTENT;
+        let appending = resume_from > 0 && server_served_range;
 
-        let mut out = tokio::fs::File::create(&target)
-            .await
-            .map_err(|e| AppError::Other(format!("create {target:?}: {e}")))?;
+        let mut out = if appending {
+            tokio::fs::OpenOptions::new()
+                .append(true)
+                .open(&target)
+                .await
+                .map_err(|e| AppError::Other(format!("open append {target:?}: {e}")))?
+        } else {
+            // Includes the case where we tried to resume but the server
+            // ignored Range — truncate the partial bytes so the new
+            // stream lands cleanly at offset 0.
+            tokio::fs::File::create(&target)
+                .await
+                .map_err(|e| AppError::Other(format!("create {target:?}: {e}")))?
+        };
+        if appending {
+            // Count the already-on-disk bytes toward the progress total.
+            bytes_done += resume_from;
+        }
         let mut stream = resp.bytes_stream();
         while let Some(chunk) = stream.next().await {
             // Poll for cancellation between chunks so we abort mid-file
