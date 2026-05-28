@@ -241,3 +241,57 @@ jobs:
             Spool_*_amd64.AppImage \
             Spool_*_amd64.AppImage.sig \
             --clobber
+
+      - name: Build and upload latest.json updater manifest
+        # tauri-action only emits latest.json on its own release-creation
+        # path. We publish via `gh release create` with a PAT (the default
+        # GITHUB_TOKEN 403s on this repo), so we synthesize the manifest
+        # ourselves here. Runs at the very end so both the windows .sig
+        # (uploaded by the build job) and the freshly re-signed linux
+        # .sig (above) are available.
+        working-directory: tauri/src-tauri/target/release/bundle
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="${{ github.ref_name }}"
+          REPO="${{ github.repository }}"
+          VERSION="${TAG#v}"
+
+          # The windows .sig lives only on the windows runner — pull it
+          # back from the release that the build job already created.
+          mkdir -p win-sig
+          gh release download "$TAG" -R "$REPO" \
+            --pattern 'Spool_*_x64-setup.exe.sig' \
+            --dir win-sig --clobber
+          WIN_SIG_FILE=$(ls win-sig/Spool_*_x64-setup.exe.sig)
+          WIN_EXE_NAME=$(basename "$WIN_SIG_FILE" .sig)
+          WIN_SIG=$(cat "$WIN_SIG_FILE")
+
+          LIN_APP_FILE=$(ls appimage/Spool_*_amd64.AppImage)
+          LIN_SIG_FILE="${LIN_APP_FILE}.sig"
+          LIN_APP_NAME=$(basename "$LIN_APP_FILE")
+          LIN_SIG=$(cat "$LIN_SIG_FILE")
+
+          PUB_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          BASE_URL="https://github.com/$REPO/releases/download/$TAG"
+
+          jq -n \
+            --arg version "$VERSION" \
+            --arg pub_date "$PUB_DATE" \
+            --arg notes    "See the release notes at $BASE_URL" \
+            --arg win_sig  "$WIN_SIG" \
+            --arg win_url  "$BASE_URL/$WIN_EXE_NAME" \
+            --arg lin_sig  "$LIN_SIG" \
+            --arg lin_url  "$BASE_URL/$LIN_APP_NAME" \
+            '{
+              version: $version,
+              notes: $notes,
+              pub_date: $pub_date,
+              platforms: {
+                "windows-x86_64": { signature: $win_sig, url: $win_url },
+                "linux-x86_64":   { signature: $lin_sig, url: $lin_url }
+              }
+            }' > latest.json
+
+          gh release upload "$TAG" latest.json -R "$REPO" --clobber

@@ -141,8 +141,9 @@ git push origin master v5.0.1
 2. Generates a categorised changelog from commit messages since the previous tag (Features / Bug Fixes / Other).
 3. Compiles the launcher stub (`launcher_stub.cs` → `launcher_stub.exe`) using the runner's framework `csc.exe`.
 4. Installs frontend dependencies with `bun install --frozen-lockfile`.
-5. Runs [`tauri-apps/tauri-action`](https://github.com/tauri-apps/tauri-action) with `--bundles nsis` to produce the NSIS installer plus the updater artifacts (`.sig` + `latest.json`). The bundle is signed with `TAURI_SIGNING_PRIVATE_KEY` so the Tauri updater accepts it.
-6. Creates a GitHub Release with the generated changelog and attaches the installer + updater artifacts.
+5. Runs [`tauri-apps/tauri-action`](https://github.com/tauri-apps/tauri-action) with `--bundles nsis` to produce the NSIS installer plus a detached `.sig` signed with `TAURI_SIGNING_PRIVATE_KEY`. tauri-action's own `latest.json` upload runs only on its release-creation path, which we skip — the default `GITHUB_TOKEN` 403s on this repo, so we publish via `gh release create` with a PAT (`RELEASE_TOKEN`) instead.
+6. Creates a GitHub Release with the generated changelog and attaches the installer + `.sig`.
+7. After the Linux job finishes (`needs: build`), the workflow synthesizes `latest.json` itself — pulls the windows `.sig` back from the release, reads the freshly re-signed linux `.sig` locally, and `jq`s together a Tauri v2 updater manifest with both platforms, then `gh release upload --clobber`s it. This is what `tauri-plugin-updater` in the app fetches from `https://github.com/aidankinzett/Spool/releases/latest/download/latest.json`.
 
 **Version number conventions:**
 - The app version is derived entirely from the git tag — there is no hardcoded version string in source code.
