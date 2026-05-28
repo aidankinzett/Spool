@@ -166,6 +166,9 @@ jobs:
         run: bun install --frozen-lockfile
 
       - name: Build Tauri AppImage
+        # No tagName here — we publish manually after the wayland-strip
+        # fix below, so the broken intermediate AppImage never reaches
+        # the release.
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN }}
@@ -173,8 +176,54 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           projectPath: tauri
-          tagName: ${{ github.ref_name }}
-          releaseName: "Spool ${{ github.ref_name }}"
-          releaseDraft: false
-          prerelease: false
           args: --bundles appimage
+
+      - name: Strip bundled libwayland-* and repack AppImage
+        # linuxdeploy-plugin-gtk over-bundles libwayland-{client,cursor,egl,server}
+        # from the Ubuntu build host. On Wayland sessions with newer
+        # Mesa (Bazzite, CachyOS, modern Fedora, SteamOS) the older
+        # bundled libwayland-client talks to the host's newer EGL via
+        # wl_drm and aborts with `EGL_BAD_PARAMETER. Aborting...` before
+        # WebKit can render. The libs are on linuxdeploy's default
+        # excludelist; the GTK plugin re-adds them. Strip them so
+        # WebKit falls back to host-provided libwayland-* matching the
+        # host compositor's protocol.
+        working-directory: tauri/src-tauri/target/release/bundle/appimage
+        run: |
+          set -euo pipefail
+          APPIMAGE=$(ls Spool_*_amd64.AppImage)
+          chmod +x "$APPIMAGE"
+          ./"$APPIMAGE" --appimage-extract >/dev/null
+          rm -f squashfs-root/usr/lib/libwayland-client.so.* \
+                squashfs-root/usr/lib/libwayland-cursor.so.* \
+                squashfs-root/usr/lib/libwayland-egl.so.* \
+                squashfs-root/usr/lib/libwayland-server.so.*
+          wget -q -O appimagetool \
+            https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x appimagetool
+          rm "$APPIMAGE" "$APPIMAGE.sig"
+          ARCH=x86_64 ./appimagetool --appimage-extract-and-run squashfs-root "$APPIMAGE"
+          rm -rf squashfs-root appimagetool
+
+      - name: Re-sign repacked AppImage
+        # The signature produced by tauri-bundler is tied to the
+        # original AppImage bytes; repacking invalidates it. Re-sign
+        # with the same key so the Tauri updater accepts the artifact.
+        working-directory: tauri/src-tauri/target/release/bundle/appimage
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          APPIMAGE=$(ls Spool_*_amd64.AppImage)
+          bunx @tauri-apps/cli signer sign "$APPIMAGE"
+
+      - name: Upload AppImage + signature to release
+        working-directory: tauri/src-tauri/target/release/bundle/appimage
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "${{ github.ref_name }}" \
+            Spool_*_amd64.AppImage \
+            Spool_*_amd64.AppImage.sig \
+            --clobber
