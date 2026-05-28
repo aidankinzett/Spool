@@ -8,8 +8,10 @@ describe('Spool library window', () => {
     const settings = await $('[aria-label="Settings"]');
     await settings.waitForDisplayed({ timeout: 30_000 });
 
-    const browse = await $('[aria-label="Browse games"]');
-    await expect(browse).toBeDisplayed();
+    // Sync-status button is always present (unlike Browse, which is hidden
+    // when no download sources are configured).
+    const sync = await $('[aria-label="Sync server status"]');
+    await expect(sync).toBeDisplayed();
   });
 
   it('shows the game search field', async () => {

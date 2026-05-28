@@ -32,6 +32,10 @@ export const config: Options.Testrunner = {
   capabilities: [
     {
       browserName: 'wry',
+      // tauri-driver speaks classic W3C WebDriver only; WDIO v9 defaults to
+      // BiDi (webSocketUrl), which the driver rejects with "failed to match
+      // capabilities". Force classic to get a session.
+      'wdio:enforceWebDriverClassic': true,
       // @ts-expect-error tauri:options is a tauri-driver extension capability.
       'tauri:options': {
         application: binary,
