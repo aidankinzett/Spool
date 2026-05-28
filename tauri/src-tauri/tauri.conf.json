@@ -43,7 +43,8 @@
       "nsis": {
         "displayLanguageSelector": false,
         "installerIcon": "icons/icon.ico",
-        "installMode": "currentUser"
+        "installMode": "currentUser",
+        "installationPath": "{LocalAppData}\\Programs\\Spool"
       }
     }
   },
