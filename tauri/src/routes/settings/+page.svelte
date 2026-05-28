@@ -9,7 +9,7 @@
    * features in v2.
    */
   import { onMount } from 'svelte';
-  import { ChevronLeft, Folder, KeyRound, Sparkles } from '@lucide/svelte';
+  import { Check, ChevronLeft, Folder, KeyRound, Sparkles } from '@lucide/svelte';
   import { open as openDialog } from '@tauri-apps/plugin-dialog';
   import { api } from '$lib/api';
   import { toasts } from '$lib/toasts.svelte';
@@ -162,6 +162,34 @@
     if (typeof picked === 'string' && config) {
       config.lan_install_dir = picked;
       await persist();
+    }
+  }
+
+  async function browseDownloadDir() {
+    const picked = await openDialog({
+      title: 'Pick the TorBox download folder',
+      directory: true,
+      multiple: false,
+    });
+    if (typeof picked === 'string' && config) {
+      config.download_dir = picked;
+      await persist();
+    }
+  }
+
+  let torboxPinging = $state(false);
+  let torboxLastPing = $state<{ ok: boolean; message: string } | null>(null);
+  async function testTorBoxConnection() {
+    if (!config) return;
+    torboxPinging = true;
+    torboxLastPing = null;
+    try {
+      await api.torboxPing();
+      torboxLastPing = { ok: true, message: 'API key works — TorBox is reachable.' };
+    } catch (e) {
+      torboxLastPing = { ok: false, message: String(e) };
+    } finally {
+      torboxPinging = false;
     }
   }
 
@@ -502,6 +530,83 @@
                 </span>
               {/snippet}
             </SettingsRow>
+          </SettingsCard>
+
+          <SettingsCard title="Sources & Downloads">
+            <!-- TorBox debrid -->
+            <SettingsRow
+              title="TorBox"
+              subtitle={config!.torbox_enabled
+                ? 'Cloud debrid service — Spool fetches files via your TorBox account when you click Download in Browse Games.'
+                : 'Off — Browse Games downloads fall back to direct links only.'}
+            >
+              {#snippet control()}
+                <Toggle
+                  bind:checked={config!.torbox_enabled}
+                  onchange={persist}
+                  aria-label="TorBox enabled"
+                />
+              {/snippet}
+            </SettingsRow>
+
+            {#if config.torbox_enabled}
+              <!-- API key -->
+              <SettingsRow
+                title="API key"
+                subtitle={torboxLastPing
+                  ? torboxLastPing.message
+                  : 'Generate one at https://torbox.app — Account → API. Spool authenticates per-request via Bearer header.'}
+              >
+                {#snippet control()}
+                  {#if torboxLastPing}
+                    <Pill kind={torboxLastPing.ok ? 'ok' : 'warn'}>
+                      {torboxLastPing.ok ? 'Linked' : 'Bad key'}
+                    </Pill>
+                  {/if}
+                {/snippet}
+                {#snippet extras()}
+                  <TextField
+                    bind:value={config!.torbox_api_key}
+                    placeholder="Paste TorBox key…"
+                    mono
+                    masked
+                    full
+                    oncommit={() => {
+                      torboxLastPing = null;
+                      persist();
+                    }}
+                  />
+                  <Btn
+                    variant="ghost"
+                    onclick={testTorBoxConnection}
+                    disabled={torboxPinging || !config!.torbox_api_key}
+                  >
+                    {#snippet icon()}<Check size={14} />{/snippet}
+                    {torboxPinging ? 'Testing…' : 'Test'}
+                  </Btn>
+                {/snippet}
+              </SettingsRow>
+
+              <!-- Download folder -->
+              <SettingsRow
+                title="Download folder"
+                subtitle="Where TorBox-fetched games land before they're installed. Default: %USERPROFILE%\Downloads."
+              >
+                {#snippet extras()}
+                  <TextField
+                    bind:value={config!.download_dir}
+                    placeholder="(default · ~/Downloads)"
+                    mono
+                    full
+                    oncommit={persist}
+                  />
+                  <Btn variant="ghost" onclick={browseDownloadDir}>
+                    {#snippet icon()}<Folder size={14} />{/snippet}
+                    Browse
+                  </Btn>
+                {/snippet}
+              </SettingsRow>
+            {/if}
           </SettingsCard>
 
           <p class="px-1 text-[11px] text-ink-3">

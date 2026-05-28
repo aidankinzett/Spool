@@ -40,6 +40,7 @@ mod runner;
 mod steam;
 mod steamgriddb;
 mod sync;
+mod torbox;
 
 use cli::CliMode;
 use config::{Config, SharedConfig};
@@ -174,6 +175,11 @@ pub fn run() {
             sync::current_sync_status,
             sync::refresh_sync_status,
             sync::sync_register_account,
+            // torbox
+            torbox::torbox_add_magnet,
+            torbox::torbox_torrent_info,
+            torbox::torbox_request_download_link,
+            torbox::torbox_ping,
             // lan discovery
             lan::list_lan_peers,
             lan::fetch_peer_games,

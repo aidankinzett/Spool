@@ -50,6 +50,15 @@ export const api = {
   getRunAsAdminInRegistry: (exePath: string): Promise<boolean> =>
     invoke('get_run_as_admin_in_registry', { exePath }),
 
+  // TorBox debrid
+  torboxPing: (): Promise<void> => invoke('torbox_ping'),
+  torboxAddMagnet: (magnetUri: string): Promise<number> =>
+    invoke('torbox_add_magnet', { magnetUri }),
+  torboxTorrentInfo: (torrentId: number): Promise<unknown> =>
+    invoke('torbox_torrent_info', { torrentId }),
+  torboxRequestDownloadLink: (torrentId: number, fileId: number): Promise<string> =>
+    invoke('torbox_request_download_link', { torrentId, fileId }),
+
   // Sync server
   currentSyncStatus: (): Promise<SyncStatus> => invoke('current_sync_status'),
   refreshSyncStatus: (): Promise<SyncStatus> => invoke('refresh_sync_status'),
