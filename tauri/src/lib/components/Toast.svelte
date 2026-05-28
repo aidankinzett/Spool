@@ -37,6 +37,12 @@
   <!-- left accent strip -->
   <div class="w-1 self-stretch" style:background={accent}></div>
 
+  <!-- Inner padding carves 36 px on the right so the absolute-
+       positioned dismiss X never overlaps the header time chip /
+       trailing sub text. The design mock has uniform padding and
+       accepts the X overlapping the time, but in real use the
+       collision obscures the last ~12 px of the time string —
+       worth the small layout divergence to keep the chip readable. -->
   <div class="min-w-0 flex-1 py-3 pl-3.5 pr-9">
     <div class="mb-1.5 flex items-center justify-between gap-2">
       <div class="flex min-w-0 items-center gap-2">
@@ -64,7 +70,11 @@
     >
       {toast.title}
     </div>
-    <div class="text-[11.5px] leading-snug text-ink-2" class:mb-2.5={!!toast.cta}>
+    <div
+      class="text-[11.5px] text-ink-2"
+      class:mb-2.5={!!toast.cta}
+      style:line-height="1.45"
+    >
       {toast.sub}
     </div>
 
