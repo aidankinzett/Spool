@@ -1312,19 +1312,18 @@ pub struct DownloadProgress {
 pub struct LanDownloadState {
     current: Mutex<Option<DownloadProgress>>,
     cancel_flag: AtomicBool,
+    /// Set by the heartbeat task when the source returned 410 Gone
+    /// from `/cancel-check`. Tells the chunk loop to surface
+    /// `AppError::HostCanceled` rather than the generic `Canceled`,
+    /// so we can log + display the right reason. Always implies
+    /// `cancel_flag` is also set.
+    host_cancel_flag: AtomicBool,
     /// Wall-clock anchor for computing `bytes_per_second`. Set in
     /// `try_start`, cleared (implicitly) when a new install replaces
     /// it. Stored separately from `current` because `Instant` isn't
     /// serializable and doesn't belong in the wire-format DTO.
     start_instant: Mutex<Option<Instant>>,
 }
-
-/// Sentinel error returned by `run_install` when the user cancelled.
-/// We use a string sentinel rather than a new `AppError` variant so the
-/// `?` operator throughout the install loop keeps working. The spawn
-/// handler matches on this string to emit `status: "canceled"` rather
-/// than `"error"`.
-const CANCELED_MSG: &str = "canceled by user";
 
 impl LanDownloadState {
     fn try_start(&self, p: DownloadProgress) -> AppResult<DownloadGuard<'_>> {
@@ -1334,10 +1333,11 @@ impl LanDownloadState {
                 "Another LAN install is already in progress".into(),
             ));
         }
-        // Reset the cancel flag for the fresh install — any lingering
+        // Reset the cancel flags for the fresh install — any lingering
         // `true` from a previous cancelled run would otherwise abort us
         // immediately.
         self.cancel_flag.store(false, Ordering::Relaxed);
+        self.host_cancel_flag.store(false, Ordering::Relaxed);
         // Anchor the throughput clock here, not at command-receive
         // time, so the first few hundred ms of manifest-fetch don't
         // skew the average down.
@@ -1368,6 +1368,25 @@ impl LanDownloadState {
 
     fn is_canceled(&self) -> bool {
         self.cancel_flag.load(Ordering::Relaxed)
+    }
+
+    /// Signals "cancelled by host" — sets both flags so the chunk
+    /// loop bails on its next poll and the eventual error variant
+    /// reflects who initiated the cancel.
+    fn request_host_cancel(&self) {
+        self.host_cancel_flag.store(true, Ordering::Relaxed);
+        self.cancel_flag.store(true, Ordering::Relaxed);
+    }
+
+    /// Returns the right `AppError` variant for the current cancel
+    /// state — `HostCanceled` if the heartbeat detected a remote
+    /// kick, otherwise `Canceled` for user-initiated.
+    fn cancel_error(&self) -> AppError {
+        if self.host_cancel_flag.load(Ordering::Relaxed) {
+            AppError::HostCanceled
+        } else {
+            AppError::Canceled
+        }
     }
 
     fn snapshot(&self) -> Option<DownloadProgress> {
@@ -1683,12 +1702,14 @@ pub async fn start_peer_install(
                 bytes_per_second: 0.0,
             },
             Err(e) => {
-                // Cancellation produces a sentinel error; distinguish it
-                // so the UI can show "Cancelled" rather than a scary red
-                // error toast.
-                let msg = e.to_string();
-                if msg == CANCELED_MSG {
-                    tracing::info!(game = %manifest.game_name, "LAN install cancelled");
+                // Cancellation is a typed variant on `AppError` so this
+                // branch is exact rather than string-matched.
+                if e.is_canceled() {
+                    tracing::info!(
+                        game = %manifest.game_name,
+                        by_host = matches!(e, AppError::HostCanceled),
+                        "LAN install cancelled",
+                    );
                     DownloadProgress {
                         install_token: install_token.clone(),
                         source_device_id: manifest.source_device_id.clone(),
@@ -1704,7 +1725,7 @@ pub async fn start_peer_install(
                         bytes_per_second: 0.0,
                     }
                 } else {
-                    tracing::warn!(game = %manifest.game_name, error = %msg, "LAN install failed");
+                    tracing::warn!(game = %manifest.game_name, error = %e, "LAN install failed");
                     DownloadProgress {
                         install_token: install_token.clone(),
                         source_device_id: manifest.source_device_id.clone(),
@@ -1715,7 +1736,7 @@ pub async fn start_peer_install(
                         bytes_total: manifest.total_bytes,
                         current_file: String::new(),
                         status: "error".into(),
-                        message: Some(msg),
+                        message: Some(e.to_string()),
                         new_game_id: None,
                         bytes_per_second: 0.0,
                     }
@@ -1757,8 +1778,11 @@ async fn download_one_file(
     bytes_done: Arc<AtomicU64>,
     last_emit: Arc<Mutex<Instant>>,
 ) -> AppResult<()> {
-    if app.state::<LanDownloadState>().is_canceled() {
-        return Err(AppError::Other(CANCELED_MSG.into()));
+    {
+        let state = app.state::<LanDownloadState>();
+        if state.is_canceled() {
+            return Err(state.cancel_error());
+        }
     }
 
     let target = partial_dir.join(file.path.replace('/', std::path::MAIN_SEPARATOR_STR));
@@ -1860,11 +1884,14 @@ async fn download_one_file(
 
     let mut stream = resp.bytes_stream();
     while let Some(chunk) = stream.next().await {
-        if app.state::<LanDownloadState>().is_canceled() {
-            // Drop the file before any directory cleanup — Windows
-            // refuses to remove a dir that still has open handles.
-            drop(out);
-            return Err(AppError::Other(CANCELED_MSG.into()));
+        {
+            let state = app.state::<LanDownloadState>();
+            if state.is_canceled() {
+                // Drop the file before any directory cleanup — Windows
+                // refuses to remove a dir that still has open handles.
+                drop(out);
+                return Err(state.cancel_error());
+            }
         }
         let chunk = chunk.map_err(|e| AppError::Other(format!("recv chunk: {e}")))?;
         if verify {
@@ -1888,10 +1915,11 @@ async fn download_one_file(
         let actual = hasher.finalize().to_hex().to_string();
         if actual != expected {
             let _ = tokio::fs::remove_file(&target).await;
-            return Err(AppError::Other(format!(
-                "checksum mismatch for {} — expected {}, got {}",
-                file.path, expected, actual
-            )));
+            return Err(AppError::ChecksumMismatch {
+                path: file.path.clone(),
+                expected,
+                actual,
+            });
         }
     }
 
@@ -2068,7 +2096,7 @@ async fn run_install(
                 if let Ok(resp) = hb_client.get(&url).send().await {
                     if resp.status() == reqwest::StatusCode::GONE {
                         tracing::info!("LAN install: host cancelled the upload");
-                        state.cancel_flag.store(true, Ordering::Relaxed);
+                        state.request_host_cancel();
                         return;
                     }
                 }
@@ -2083,9 +2111,12 @@ async fn run_install(
     // in-flight tasks; abort heartbeat) before propagating up.
     let mut maybe_err: Option<AppError> = None;
     while let Some(result) = stream.next().await {
-        if app.state::<LanDownloadState>().is_canceled() {
-            maybe_err = Some(AppError::Other(CANCELED_MSG.into()));
-            break;
+        {
+            let state = app.state::<LanDownloadState>();
+            if state.is_canceled() {
+                maybe_err = Some(state.cancel_error());
+                break;
+            }
         }
         if let Err(e) = result {
             maybe_err = Some(e);
@@ -2095,11 +2126,10 @@ async fn run_install(
     drop(stream);
     heartbeat.abort();
     if let Some(e) = maybe_err {
-        // A user-cancel or host-cancel both surface as CANCELED_MSG —
-        // wipe the partial dir so the next attempt isn't picking up
-        // half-written state. Other errors keep the partial dir so the
-        // user can retry with resume.
-        if e.to_string() == CANCELED_MSG {
+        // Any flavour of cancel wipes the partial dir so a fresh
+        // attempt doesn't pick up half-written state. Other errors
+        // keep the partial dir so the user can retry with resume.
+        if e.is_canceled() {
             let _ = tokio::fs::remove_dir_all(&partial_dir).await;
         }
         return Err(e);
