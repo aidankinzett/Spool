@@ -14,7 +14,7 @@
 
 Spool started life as a thin wrapper around [ludusavi](https://github.com/mtkennerly/ludusavi) — restore saves before a game launches, back them up on exit. It's since grown into a full personal game shelf: cover art from SteamGridDB, LAN game-sharing between devices, a sync server that locks saves across machines, TorBox downloads, and one-click launcher shortcuts for Armoury Crate and Steam.
 
-Written in C# / WPF for instant startup, high-DPI / handheld touch support, and system accent color integration.
+Built with [Tauri 2](https://v2.tauri.app/) (Rust backend) and [SvelteKit 5](https://kit.svelte.dev/) — small native binary, instant startup, and a webview-rendered UI with system accent color integration.
 
 ---
 
@@ -233,29 +233,48 @@ The Settings window is resizable, making it usable on small screens and handheld
 
 ## Building from Source
 
-Requires the [.NET 9.0 SDK](https://dotnet.microsoft.com/download/dotnet/9.0) (Windows Desktop payload).
+Spool is a Tauri 2 app: a Rust backend (`tauri/src-tauri/`) and a SvelteKit 5 frontend (`tauri/src/`). The repo also keeps a tiny C# launcher stub (`launcher_stub.cs`) that's embedded into the Rust binary at compile time — when generating per-game launcher shortcuts the Rust app writes a copy of this stub with a config payload appended.
+
+### Prerequisites
+
+* [Rust](https://rustup.rs/) (stable toolchain — the Tauri build pulls in everything else it needs)
+* [Bun](https://bun.sh/) for the SvelteKit frontend
+* Windows: the framework `csc.exe` that ships with .NET Framework 4.x (already present on every Windows machine — used only to compile the ~5 KB `launcher_stub.exe`)
+* The [Tauri 2 system prerequisites](https://v2.tauri.app/start/prerequisites/) for your OS (WebView2 is preinstalled on Windows 11)
+
+### Build steps
 
 1. Clone the repository:
-   ```cmd
+   ```bash
    git clone https://github.com/aidankinzett/Spool
    cd Spool
    ```
-2. Run the application from source:
-   ```cmd
-   dotnet run
-   ```
-3. Publish a standalone, self-contained single-file executable:
-   ```cmd
-   dotnet publish -c Release -r win-x64 --self-contained true /p:PublishSingleFile=true
-   ```
-   Output: `bin\Release\net9.0-windows\win-x64\publish\spool.exe`
 
-4. (Optional) Generate the Inno Setup installer:
-   Ensure you have [Inno Setup 6](https://jrsoftware.org/isdl.php) installed, then run:
-   ```cmd
-   iscc installer.iss
+2. Compile the embedded launcher stub (once, or whenever `launcher_stub.cs` changes):
+   ```powershell
+   & "C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe" `
+       /target:winexe /win32icon:launcher_stub.ico `
+       /out:launcher_stub.exe launcher_stub.cs
    ```
-   Output: `dist\spool-setup.exe`
+
+3. Install frontend dependencies:
+   ```bash
+   cd tauri
+   bun install
+   ```
+
+4. Run in development mode (hot-reload frontend + auto-rebuild backend):
+   ```bash
+   bun run tauri dev
+   ```
+
+5. Build a release binary + NSIS installer:
+   ```bash
+   bun run tauri build
+   ```
+   Output:
+   * `tauri/src-tauri/target/release/spool.exe` — standalone exe
+   * `tauri/src-tauri/target/release/bundle/nsis/Spool_<version>_x64-setup.exe` — installer
 
 ---
 
@@ -265,7 +284,7 @@ The Spool mark and prebuilt icon files live in [`brand/`](brand/):
 
 | File | Use |
 |---|---|
-| `brand/Spool.ico` | Windows multi-resolution icon (16 – 256 px). Drop into the project as the app's `.csproj` ApplicationIcon. |
+| `brand/Spool.ico` | Windows multi-resolution icon (16 – 256 px). Used by the Tauri bundle (see `tauri/src-tauri/icons/`). |
 | `brand/Spool.svg` | Single-colour vector mark (`currentColor`). Drop anywhere that needs the mark inline. |
 | `brand/Spool-tile.svg` | Tiled mark (dark background, white mark) — the version that appears in title bars and launcher tiles. |
 | `brand/Spool-{16,32,64,128,256,512}.png` | Rasterised tiles for non-Windows contexts (web, store listings, social cards). |
