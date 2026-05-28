@@ -30,6 +30,7 @@
     X,
   } from '@lucide/svelte';
   import { getCurrentWindow } from '@tauri-apps/api/window';
+  import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
   import { listen } from '@tauri-apps/api/event';
   import { api } from '$lib/api';
   import { toasts } from '$lib/toasts.svelte';
@@ -448,13 +449,27 @@
         {/each}
       </div>
       <div class="border-t border-line-1 px-3 py-2.5">
-        <a
-          href="/settings"
-          class="font-mono inline-flex items-center gap-1.5 text-[10.5px] uppercase tracking-[0.08em] text-ink-2 transition-colors hover:text-ink-0"
+        <button
+          onclick={async () => {
+            const existing = await WebviewWindow.getByLabel('settings');
+            if (existing) { await existing.setFocus(); return; }
+            new WebviewWindow('settings', {
+              url: '/settings',
+              title: 'Spool — Settings',
+              width: 1180,
+              height: 760,
+              minWidth: 900,
+              minHeight: 600,
+              decorations: false,
+              resizable: true,
+              center: true,
+            });
+          }}
+          class="font-mono inline-flex cursor-pointer items-center gap-1.5 border-none bg-transparent px-0 text-[10.5px] uppercase tracking-[0.08em] text-ink-2 transition-colors hover:text-ink-0"
         >
           <ChevronLeft size={12} />
           Manage feeds
-        </a>
+        </button>
       </div>
     </aside>
 

@@ -58,6 +58,7 @@ pub struct ConfigData {
     /// intro toast at least once. Defaults to false on legacy configs (and
     /// new installs) so the toast appears on the first close-to-tray.
     pub tray_intro_seen: bool,
+
 }
 
 impl Default for ConfigData {

@@ -267,6 +267,26 @@
     peerGamesError = null;
   }
 
+  /** Opens (or focuses) the Settings child window. */
+  async function openSettingsWindow() {
+    const existing = await WebviewWindow.getByLabel('settings');
+    if (existing) {
+      await existing.setFocus();
+      return;
+    }
+    new WebviewWindow('settings', {
+      url: '/settings',
+      title: 'Spool — Settings',
+      width: 1180,
+      height: 760,
+      minWidth: 900,
+      minHeight: 600,
+      decorations: false,
+      resizable: true,
+      center: true,
+    });
+  }
+
   /** Opens (or focuses) the Browse Games child window. */
   async function openBrowseWindow() {
     const existing = await WebviewWindow.getByLabel('browse-games');
@@ -596,12 +616,12 @@
           {/if}
         </button>
         <!-- Sync server status — cloud icon, tinted by reachability.
-             Clicking jumps straight to Settings → Sync Server. -->
-        <a
-          href="/settings"
+             Clicking opens Settings → Sync Server. -->
+        <button
+          onclick={openSettingsWindow}
           aria-label="Sync server status"
           title={syncTitle}
-          class="inline-flex h-7 w-7 items-center justify-center rounded-sm transition-colors hover:bg-white/10"
+          class="inline-flex h-7 w-7 cursor-pointer items-center justify-center rounded-sm border-none bg-transparent transition-colors hover:bg-white/10"
           style:color={syncOk
             ? 'var(--color-ok)'
             : syncOff
@@ -614,15 +634,15 @@
           {:else}
             <Cloud size={14} />
           {/if}
-        </a>
-        <a
-          href="/settings"
+        </button>
+        <button
+          onclick={openSettingsWindow}
           aria-label="Settings"
-          class="inline-flex h-7 w-7 items-center justify-center rounded-sm text-ink-2 transition-colors hover:bg-white/10 hover:text-ink-0"
+          class="inline-flex h-7 w-7 cursor-pointer items-center justify-center rounded-sm border-none bg-transparent text-ink-2 transition-colors hover:bg-white/10 hover:text-ink-0"
           data-tauri-drag-region="false"
         >
           <Settings size={14} />
-        </a>
+        </button>
     </div>
   </WindowChrome>
 

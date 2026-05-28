@@ -1,25 +1,23 @@
 <script lang="ts">
-  /**
-   * Bordered group of settings — eyebrow header on top, rows below
-   * separated by hairlines. Matches the cassette-shelf "drawer" feel:
-   * sharp corners, hairline borders, mono eyebrow.
-   */
-  import MonoLabel from './MonoLabel.svelte';
-
   let {
     title,
+    helper,
     children,
   }: {
     title: string;
+    helper?: string;
     children: import('svelte').Snippet;
   } = $props();
 </script>
 
-<section class="rounded-md border border-line-1 bg-bg-1">
-  <header class="border-b border-line-1 px-4 py-2.5">
-    <MonoLabel size={11}>{title}</MonoLabel>
-  </header>
-  <div class="divide-y divide-line-1">
+<div class="overflow-hidden rounded-[5px] border border-line-1 bg-bg-1">
+  <div class="border-b border-dashed border-line-1 bg-bg-2 px-[18px] py-[14px]">
+    <div class="text-[14px] font-semibold text-ink-0">{title}</div>
+    {#if helper}
+      <div class="mt-[3px] max-w-[540px] text-[11.5px] leading-[1.5] text-ink-2">{helper}</div>
+    {/if}
+  </div>
+  <div class="py-2">
     {@render children()}
   </div>
-</section>
+</div>
