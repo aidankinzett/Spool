@@ -15,6 +15,7 @@
    */
   import { ArrowDown, ArrowUp, X } from '@lucide/svelte';
   import type { DownloadProgress, UploadSnapshot } from '$lib/types';
+  import { assetUrl } from '$lib/api';
   import MonoLabel from './MonoLabel.svelte';
   import CassetteProgress from './CassetteProgress.svelte';
 
@@ -127,15 +128,24 @@
     </div>
 
     {#if download && (download.status === 'starting' || download.status === 'transferring')}
+      {@const dlCover = assetUrl(download.cover_image_path)}
       <div
         class="grid items-center gap-3 border-b border-dashed border-line-1 px-3.5 py-3"
         style:grid-template-columns="40px 1fr auto"
       >
-        <!-- Sleeve placeholder (no cover yet — download is in progress) -->
-        <div
-          class="h-[56px] w-[40px] shrink-0 overflow-hidden rounded-sm border border-line-1"
-          style:background="linear-gradient(160deg, #2a2622 0%, #0a0807 100%)"
-        ></div>
+        <!-- Peer-prefetched cover if it landed, else sleeve gradient. -->
+        {#if dlCover}
+          <img
+            src={dlCover}
+            alt={download.game_name}
+            class="h-[56px] w-[40px] shrink-0 rounded-sm border border-line-1 object-cover"
+          />
+        {:else}
+          <div
+            class="h-[56px] w-[40px] shrink-0 overflow-hidden rounded-sm border border-line-1"
+            style:background="linear-gradient(160deg, #2a2622 0%, #0a0807 100%)"
+          ></div>
+        {/if}
 
         <div class="min-w-0">
           <div class="mb-1 flex items-center gap-2">

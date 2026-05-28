@@ -1393,6 +1393,12 @@ pub struct DownloadProgress {
     /// caller's mutation runs. 0 during the first half-second so
     /// the UI doesn't flash a silly "9999 GB/s" off the first chunk.
     pub bytes_per_second: f64,
+    /// Local path to the peer-supplied cover image, prefetched in the
+    /// background once the manifest lands so the transfer-panel row
+    /// has a thumbnail to render before the install completes and a
+    /// library entry exists. `None` until the prefetch lands; stays
+    /// `None` if the peer 404s its `/cover` endpoint.
+    pub cover_image_path: Option<String>,
 }
 
 /// Single-slot in-flight install tracker. Same model as `RunState` —
@@ -1790,6 +1796,7 @@ pub async fn start_peer_install(
         message: None,
         new_game_id: None,
         bytes_per_second: 0.0,
+        cover_image_path: None,
     };
     let _check = state.try_start(placeholder.clone())?;
     drop(_check);
@@ -1845,9 +1852,55 @@ pub async fn start_peer_install(
         message: None,
         new_game_id: None,
         bytes_per_second: 0.0,
+        cover_image_path: None,
     };
     app.state::<LanDownloadState>().set(Some(progress.clone()));
     emit_progress(&app, &progress);
+
+    // Prefetch the cover image from the peer in the background so the
+    // transfer-panel row has a thumbnail to render while files stream.
+    // The post-install fetch_peer_artwork pass overwrites this with the
+    // same filename, so there's no dual-storage concern. Best-effort:
+    // a 404 (older peer, no local cover) just leaves cover_image_path
+    // None and the panel falls back to the sleeve gradient.
+    let cover_app = app.clone();
+    let cover_token = install_token.clone();
+    let cover_safe_name = manifest.safe_name.clone();
+    let cover_peer_addr = peer_addr.clone();
+    let cover_source_id = manifest.game_id.clone();
+    tauri::async_runtime::spawn(async move {
+        let client: reqwest::Client = (*cover_app.state::<reqwest::Client>()).clone();
+        let covers_dir = paths::covers_dir();
+        if tokio::fs::create_dir_all(&covers_dir).await.is_err() {
+            return;
+        }
+        let url = format!(
+            "http://{cover_peer_addr}:{peer_port}/games/{cover_source_id}/cover"
+        );
+        let Some(path) =
+            fetch_and_save_peer_image(&client, &url, &covers_dir, &cover_safe_name, "")
+                .await
+        else {
+            return;
+        };
+        let path_str = path.to_string_lossy().to_string();
+        // Only update if the in-flight install still matches our
+        // token — otherwise a slow prefetch could leak into a
+        // freshly-started next install.
+        let state = cover_app.state::<LanDownloadState>();
+        let matched = state
+            .snapshot()
+            .map(|p| p.install_token == cover_token)
+            .unwrap_or(false);
+        if !matched {
+            return;
+        }
+        if let Some(snap) = state.update(|p| {
+            p.cover_image_path = Some(path_str.clone());
+        }) {
+            emit_progress(&cover_app, &snap);
+        }
+    });
 
     let app_clone = app.clone();
     let state_handle: tauri::State<'_, LanDownloadState> = app.state::<LanDownloadState>();
@@ -1859,6 +1912,13 @@ pub async fn start_peer_install(
     tauri::async_runtime::spawn(async move {
         let result =
             run_install(app_clone.clone(), peer_addr.clone(), peer_port, manifest.clone()).await;
+        // Preserve the prefetched cover across the terminal event so
+        // the panel row keeps its thumbnail during the 2 s grace
+        // window before the slot clears.
+        let cover_carry = app_clone
+            .state::<LanDownloadState>()
+            .snapshot()
+            .and_then(|p| p.cover_image_path);
         // Final event. On error, surface the message; on success, point
         // at the freshly-created library entry.
         let final_progress = match result {
@@ -1875,6 +1935,7 @@ pub async fn start_peer_install(
                 message: None,
                 new_game_id: Some(new_id),
                 bytes_per_second: 0.0,
+                cover_image_path: cover_carry.clone(),
             },
             Err(e) => {
                 // Cancellation is a typed variant on `AppError` so this
@@ -1898,6 +1959,7 @@ pub async fn start_peer_install(
                         message: None,
                         new_game_id: None,
                         bytes_per_second: 0.0,
+                        cover_image_path: cover_carry.clone(),
                     }
                 } else {
                     tracing::warn!(game = %manifest.game_name, error = %e, "LAN install failed");
@@ -1914,6 +1976,7 @@ pub async fn start_peer_install(
                         message: Some(e.to_string()),
                         new_game_id: None,
                         bytes_per_second: 0.0,
+                        cover_image_path: cover_carry.clone(),
                     }
                 }
             }

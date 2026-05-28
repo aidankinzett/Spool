@@ -188,6 +188,11 @@ export type DownloadProgress = {
   /** Average throughput since the install started, in bytes per second.
    *  `0` for the first half-second so the UI doesn't flash silly values. */
   bytes_per_second: number;
+  /** Local filesystem path to the peer-supplied cover image, prefetched
+   *  in the background once the manifest lands. `null` until it lands
+   *  (or if the peer 404s its `/cover` endpoint). Use `assetUrl()` to
+   *  turn it into a webview-loadable URL. */
+  cover_image_path: string | null;
 };
 
 /**
