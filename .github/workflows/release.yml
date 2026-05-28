@@ -10,6 +10,15 @@ jobs:
     runs-on: windows-latest
     permissions:
       contents: write
+    env:
+      # sccache wraps rustc and stores compiled object files in the
+      # GitHub Actions cache. Survives Cargo.lock churn that breaks
+      # the Swatinem/rust-cache key — only the changed crates rebuild.
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: "sccache"
+      # rust-cache also serializes target/; disable that since sccache
+      # is the source of truth for object files. Keep registry caching.
+      CARGO_INCREMENTAL: "0"
     defaults:
       run:
         shell: pwsh
@@ -27,10 +36,15 @@ jobs:
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.6
+
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: tauri/src-tauri -> target
+          # sccache owns object caching; just cache the registry/index.
+          cache-targets: "false"
 
       - name: Resolve version
         id: ver
@@ -108,6 +122,10 @@ jobs:
     runs-on: ubuntu-22.04
     permissions:
       contents: write
+    env:
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: "sccache"
+      CARGO_INCREMENTAL: "0"
 
     steps:
       - uses: actions/checkout@v4
@@ -122,10 +140,14 @@ jobs:
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.6
+
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: tauri/src-tauri -> target
+          cache-targets: "false"
 
       - name: Install Linux system dependencies
         run: |
