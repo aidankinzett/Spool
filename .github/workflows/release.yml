@@ -6,10 +6,8 @@ on:
       - "v*"
 
 jobs:
-  build:
+  build-windows:
     runs-on: windows-latest
-    permissions:
-      contents: write
     env:
       # sccache wraps rustc and stores compiled object files in the
       # GitHub Actions cache. Survives Cargo.lock churn that breaks
@@ -25,8 +23,6 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
@@ -45,11 +41,16 @@ jobs:
           workspaces: tauri/src-tauri -> target
           # sccache owns object caching; just cache the registry/index.
           cache-targets: "false"
+          # Fixed key (not the job name) so ci.yml can populate the same
+          # registry cache that this tag build restores.
+          shared-key: spool-windows
 
       - name: Resolve version
         id: ver
+        env:
+          REF_NAME: ${{ github.ref_name }}
         run: |
-          $version = "${{ github.ref_name }}".TrimStart('v')
+          $version = "$env:REF_NAME".TrimStart('v')
           "value=$version" >> $env:GITHUB_OUTPUT
 
       - name: Stamp version into Tauri config + Cargo.toml
@@ -66,25 +67,6 @@ jobs:
             -replace '^version = ".*"$', "version = `"$version`"" `
             | Set-Content tauri/src-tauri/Cargo.toml -Encoding utf8
 
-      - name: Generate changelog
-        id: changelog
-        run: |
-          $prevTag = git describe --tags --abbrev=0 HEAD^
-          $commits = git log "$prevTag..HEAD" --pretty=format:"%s" | Where-Object { $_ -ne "" }
-
-          $features = @($commits | Where-Object { $_ -match '^feat' } | ForEach-Object { "- $_" })
-          $fixes    = @($commits | Where-Object { $_ -match '^fix'  } | ForEach-Object { "- $_" })
-          $other    = @($commits | Where-Object { $_ -notmatch '^feat|^fix' } | ForEach-Object { "- $_" })
-
-          $body = ""
-          if ($features.Count -gt 0) { $body += "### Features`n" + ($features -join "`n") + "`n`n" }
-          if ($fixes.Count    -gt 0) { $body += "### Bug Fixes`n" + ($fixes    -join "`n") + "`n`n" }
-          if ($other.Count    -gt 0) { $body += "### Other`n"     + ($other    -join "`n") + "`n`n" }
-
-          "CHANGELOG<<EOF" >> $env:GITHUB_OUTPUT
-          $body.TrimEnd() >> $env:GITHUB_OUTPUT
-          "EOF" >> $env:GITHUB_OUTPUT
-
       - name: Compile launcher stub
         # The launcher stub is a tiny standalone .NET console exe embedded
         # into the Rust binary via `include_bytes!`. Compiled with the
@@ -97,11 +79,6 @@ jobs:
         run: bun install --frozen-lockfile
 
       - name: Build Tauri bundle
-        # tauri-action's release-creation path ignores GITHUB_TOKEN
-        # overrides and uses the default workflow token, which 403s
-        # on this repo for reasons we couldn't pin down. We build
-        # only, then publish via `gh release create` below using the
-        # PAT — same approach as the Linux job further down.
         uses: tauri-apps/tauri-action@v0
         env:
           # Updater signing — required by the tauri-plugin-updater
@@ -116,24 +93,22 @@ jobs:
           # published.
           args: --bundles nsis
 
-      - name: Create GitHub release with NSIS installer
-        working-directory: tauri/src-tauri/target/release/bundle/nsis
-        env:
-          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
-          CHANGELOG: ${{ steps.changelog.outputs.CHANGELOG }}
-        run: |
-          $env:CHANGELOG | Set-Content notes.md -Encoding utf8
-          gh release create "${{ github.ref_name }}" `
-            --title "Spool ${{ github.ref_name }}" `
-            --notes-file notes.md `
-            (Get-ChildItem Spool_*_x64-setup.exe).Name `
-            (Get-ChildItem Spool_*_x64-setup.exe.sig).Name
+      - name: sccache stats
+        # Surface the compile-cache hit rate so a cold/evicted cache is
+        # visible in the job log instead of silently slow.
+        run: sccache --show-stats
+
+      - name: Upload Windows bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-bundle
+          path: |
+            tauri/src-tauri/target/release/bundle/nsis/Spool_*_x64-setup.exe
+            tauri/src-tauri/target/release/bundle/nsis/Spool_*_x64-setup.exe.sig
+          if-no-files-found: error
 
   build-linux:
-    needs: build
     runs-on: ubuntu-22.04
-    permissions:
-      contents: write
     env:
       SCCACHE_GHA_ENABLED: "true"
       RUSTC_WRAPPER: "sccache"
@@ -141,8 +116,6 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
@@ -160,6 +133,7 @@ jobs:
         with:
           workspaces: tauri/src-tauri -> target
           cache-targets: "false"
+          shared-key: spool-linux
 
       - name: Install Linux system dependencies
         run: |
@@ -167,9 +141,10 @@ jobs:
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
 
       - name: Stamp version into Tauri config + Cargo.toml
+        env:
+          REF_NAME: ${{ github.ref_name }}
         run: |
-          VERSION="${{ github.ref_name }}"
-          VERSION="${VERSION#v}"
+          VERSION="${REF_NAME#v}"
           jq --arg v "$VERSION" '.version = $v' tauri/src-tauri/tauri.conf.json > /tmp/tauri.conf.json && mv /tmp/tauri.conf.json tauri/src-tauri/tauri.conf.json
           sed -i "s/^version = \".*\"/version = \"$VERSION\"/" tauri/src-tauri/Cargo.toml
 
@@ -178,12 +153,11 @@ jobs:
         run: bun install --frozen-lockfile
 
       - name: Build Tauri AppImage
-        # No tagName here — we publish manually after the wayland-strip
-        # fix below, so the broken intermediate AppImage never reaches
-        # the release.
+        # No tagName here — we publish in the release job after the
+        # wayland-strip fix below, so the broken intermediate AppImage
+        # never reaches the release.
         uses: tauri-apps/tauri-action@v0
         env:
-          GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
@@ -230,45 +204,99 @@ jobs:
           APPIMAGE=$(ls Spool_*_amd64.AppImage)
           bunx @tauri-apps/cli signer sign "$APPIMAGE"
 
-      - name: Upload AppImage + signature to release
-        working-directory: tauri/src-tauri/target/release/bundle/appimage
-        env:
-          # Same 403-on-release reason as the tauri-action steps above —
-          # the default GITHUB_TOKEN can't upload assets, use the PAT.
-          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+      - name: sccache stats
+        run: sccache --show-stats
+
+      - name: Upload Linux bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-bundle
+          path: |
+            tauri/src-tauri/target/release/bundle/appimage/Spool_*_amd64.AppImage
+            tauri/src-tauri/target/release/bundle/appimage/Spool_*_amd64.AppImage.sig
+          if-no-files-found: error
+
+  release:
+    # Single publishing point. Waits for both platform builds, then
+    # assembles the release from their uploaded artifacts. Decoupling
+    # this from the build jobs lets Windows and Linux compile in
+    # parallel and removes the old cross-job .sig pull-back hack.
+    needs: [build-windows, build-linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history + tags so the changelog can diff against the
+          # previous release tag.
+          fetch-depth: 0
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Generate changelog
+        id: changelog
         run: |
-          gh release upload "${{ github.ref_name }}" \
-            Spool_*_amd64.AppImage \
-            Spool_*_amd64.AppImage.sig \
-            --clobber
+          set -euo pipefail
+          PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+          if [ -n "$PREV_TAG" ]; then
+            RANGE="$PREV_TAG..HEAD"
+          else
+            RANGE="HEAD"
+          fi
+          COMMITS=$(git log "$RANGE" --pretty=format:'%s' | grep -v '^$' || true)
+
+          FEATURES=$(printf '%s\n' "$COMMITS" | grep -E '^feat' | sed 's/^/- /' || true)
+          FIXES=$(printf '%s\n' "$COMMITS" | grep -E '^fix' | sed 's/^/- /' || true)
+          OTHER=$(printf '%s\n' "$COMMITS" | grep -vE '^feat|^fix' | sed 's/^/- /' || true)
+
+          : > notes.md
+          if [ -n "$FEATURES" ]; then printf '### Features\n%s\n\n' "$FEATURES" >> notes.md; fi
+          if [ -n "$FIXES" ];    then printf '### Bug Fixes\n%s\n\n' "$FIXES"    >> notes.md; fi
+          if [ -n "$OTHER" ];    then printf '### Other\n%s\n\n' "$OTHER"        >> notes.md; fi
+
+      - name: Create GitHub release
+        # tauri-action's release-creation path ignores GITHUB_TOKEN
+        # overrides and uses the default workflow token, which 403s on
+        # this repo. Publish via `gh release create` with the PAT.
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          WIN_EXE=$(ls artifacts/windows-bundle/Spool_*_x64-setup.exe)
+          WIN_SIG=$(ls artifacts/windows-bundle/Spool_*_x64-setup.exe.sig)
+          LIN_APP=$(ls artifacts/linux-bundle/Spool_*_amd64.AppImage)
+          LIN_SIG=$(ls artifacts/linux-bundle/Spool_*_amd64.AppImage.sig)
+          gh release create "$TAG_NAME" \
+            --title "Spool $TAG_NAME" \
+            --notes-file notes.md \
+            "$WIN_EXE" "$WIN_SIG" "$LIN_APP" "$LIN_SIG"
 
       - name: Build and upload latest.json updater manifest
         # tauri-action only emits latest.json on its own release-creation
         # path. We publish via `gh release create` with a PAT (the default
         # GITHUB_TOKEN 403s on this repo), so we synthesize the manifest
-        # ourselves here. Runs at the very end so both the windows .sig
-        # (uploaded by the build job) and the freshly re-signed linux
-        # .sig (above) are available.
-        working-directory: tauri/src-tauri/target/release/bundle
+        # ourselves here from the uploaded artifacts.
         env:
           GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          TAG_NAME: ${{ github.ref_name }}
+          REPO_NAME: ${{ github.repository }}
         run: |
           set -euo pipefail
-          TAG="${{ github.ref_name }}"
-          REPO="${{ github.repository }}"
+          TAG="$TAG_NAME"
+          REPO="$REPO_NAME"
           VERSION="${TAG#v}"
 
-          # The windows .sig lives only on the windows runner — pull it
-          # back from the release that the build job already created.
-          mkdir -p win-sig
-          gh release download "$TAG" -R "$REPO" \
-            --pattern 'Spool_*_x64-setup.exe.sig' \
-            --dir win-sig --clobber
-          WIN_SIG_FILE=$(ls win-sig/Spool_*_x64-setup.exe.sig)
+          WIN_SIG_FILE=$(ls artifacts/windows-bundle/Spool_*_x64-setup.exe.sig)
           WIN_EXE_NAME=$(basename "$WIN_SIG_FILE" .sig)
           WIN_SIG=$(cat "$WIN_SIG_FILE")
 
-          LIN_APP_FILE=$(ls appimage/Spool_*_amd64.AppImage)
+          LIN_APP_FILE=$(ls artifacts/linux-bundle/Spool_*_amd64.AppImage)
           LIN_SIG_FILE="${LIN_APP_FILE}.sig"
           LIN_APP_NAME=$(basename "$LIN_APP_FILE")
           LIN_SIG=$(cat "$LIN_SIG_FILE")
