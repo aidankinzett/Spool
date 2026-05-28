@@ -1768,32 +1768,70 @@ pub async fn start_peer_install(
         ));
     }
 
-    // Fetch the manifest synchronously so we can fail fast with a clean
-    // error message if the peer 404s or the entry isn't shareable.
-    // Uses MANIFEST_FETCH_TIMEOUT rather than PEER_FETCH_TIMEOUT — the
-    // host hashes every byte of the game folder on first request, and a
-    // 5 s budget reliably times out on anything bigger than a few GB.
-    let manifest_url = format!("http://{peer_addr}:{peer_port}/games/{game_id}/manifest");
-    let resp = app
-        .state::<reqwest::Client>()
-        .get(&manifest_url)
-        .timeout(MANIFEST_FETCH_TIMEOUT)
-        .send()
-        .await
-        .map_err(|e| AppError::Other(format!("GET manifest: {}", format_reqwest_error(&e))))?;
-    if !resp.status().is_success() {
-        return Err(AppError::Other(format!(
-            "peer responded {} to /manifest",
-            resp.status()
-        )));
-    }
-    let manifest: PeerGameManifest = resp
-        .json()
-        .await
-        .map_err(|e| AppError::Other(format!("parse manifest: {e}")))?;
-
+    // Reserve the transfer-panel slot up front with a placeholder
+    // showing "Fetching manifest…" so the UI has a row to render
+    // immediately. The host blake3-hashes the whole game folder on
+    // first manifest request (~1 s/GB) — without this, the user sees
+    // nothing in the transfer panel until the response lands, which
+    // for a multi-GB game means tens of seconds of dead air after the
+    // Install button is clicked.
     let install_token = uuid::Uuid::new_v4().to_string();
     let return_token = install_token.clone();
+    let placeholder = DownloadProgress {
+        install_token: install_token.clone(),
+        source_device_id: String::new(),
+        source_device_name: peer_addr.clone(),
+        source_game_id: game_id.clone(),
+        game_name: String::new(),
+        bytes_done: 0,
+        bytes_total: 0,
+        current_file: "Fetching manifest…".into(),
+        status: "starting".into(),
+        message: None,
+        new_game_id: None,
+        bytes_per_second: 0.0,
+    };
+    let _check = state.try_start(placeholder.clone())?;
+    drop(_check);
+    emit_progress(&app, &placeholder);
+
+    // Fetch the manifest. Uses MANIFEST_FETCH_TIMEOUT (not the snappy
+    // PEER_FETCH_TIMEOUT) because the host blake3-hashes the folder
+    // on first request. On any failure here we clear the slot so the
+    // placeholder row goes away before the error toast fires.
+    let manifest_url = format!("http://{peer_addr}:{peer_port}/games/{game_id}/manifest");
+    let manifest_result: AppResult<PeerGameManifest> = async {
+        let resp = app
+            .state::<reqwest::Client>()
+            .get(&manifest_url)
+            .timeout(MANIFEST_FETCH_TIMEOUT)
+            .send()
+            .await
+            .map_err(|e| {
+                AppError::Other(format!("GET manifest: {}", format_reqwest_error(&e)))
+            })?;
+        if !resp.status().is_success() {
+            return Err(AppError::Other(format!(
+                "peer responded {} to /manifest",
+                resp.status()
+            )));
+        }
+        resp.json::<PeerGameManifest>()
+            .await
+            .map_err(|e| AppError::Other(format!("parse manifest: {e}")))
+    }
+    .await;
+    let manifest = match manifest_result {
+        Ok(m) => m,
+        Err(e) => {
+            app.state::<LanDownloadState>().clear_if_token(&install_token);
+            return Err(e);
+        }
+    };
+
+    // Manifest in hand — update the panel row with the real game info
+    // and total size. Status stays "starting" until run_install flips
+    // it to "transferring".
     let progress = DownloadProgress {
         install_token: install_token.clone(),
         source_device_id: manifest.source_device_id.clone(),
@@ -1808,16 +1846,7 @@ pub async fn start_peer_install(
         new_game_id: None,
         bytes_per_second: 0.0,
     };
-
-    // Reserve the slot up front — if someone else is mid-install, fail
-    // here rather than spawning a doomed task.
-    let _check = state.try_start(progress.clone())?;
-    drop(_check); // we'll re-acquire inside the task so the guard owns the task lifetime
-    // ^ this opens a tiny race window where another caller could slip in;
-    // the spawned task re-acquires immediately below, and on the rare
-    // collision the second caller gets the same "already in progress"
-    // error one tick later. Worth the simpler ownership story.
-
+    app.state::<LanDownloadState>().set(Some(progress.clone()));
     emit_progress(&app, &progress);
 
     let app_clone = app.clone();

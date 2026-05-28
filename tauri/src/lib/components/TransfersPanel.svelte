@@ -75,13 +75,22 @@
   }
 
   function dlLabel(d: DownloadProgress): string {
-    if (d.status === 'starting') return 'Preparing transfer…';
+    if (d.status === 'starting') {
+      // Show the backend's current_file — that's where phase labels
+      // like "Fetching manifest…" live. Falls back to the generic
+      // string only if the backend hasn't published a phase yet.
+      return d.current_file || 'Preparing transfer…';
+    }
     const left =
       d.bytes_total > 0
         ? `${fmtBytes(d.bytes_done)} / ${fmtBytes(d.bytes_total)}`
         : fmtBytes(d.bytes_done);
+    const pct =
+      d.bytes_total > 0
+        ? ` · ${Math.min(100, Math.round((d.bytes_done / d.bytes_total) * 100))}%`
+        : '';
     const rate = d.bytes_per_second > 0 ? ` · ${fmtRate(d.bytes_per_second)}` : '';
-    return `${left}${rate}`;
+    return `${left}${pct}${rate}`;
   }
 </script>
 
