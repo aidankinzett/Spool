@@ -17,13 +17,13 @@
    * entry vanishes, falls back to the first remaining game.
    */
   import { onMount } from 'svelte';
-  import { Plus, Search, Settings } from '@lucide/svelte';
+  import { Plus, Search, Settings, Wifi } from '@lucide/svelte';
   import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
   import { listen } from '@tauri-apps/api/event';
   import { api, assetUrl } from '$lib/api';
   import { fmtCatalog, relDate } from '$lib/format';
   import { toasts } from '$lib/toasts.svelte';
-  import type { GameEntry, RunPhase, RunPhaseEvent } from '$lib/types';
+  import type { GameEntry, LanPeer, RunPhase, RunPhaseEvent } from '$lib/types';
   import WindowChrome from '$lib/components/WindowChrome.svelte';
   import MonoLabel from '$lib/components/MonoLabel.svelte';
   import GameDetail from '$lib/components/GameDetail.svelte';
@@ -44,6 +44,13 @@
 
   // Sidebar right-click context menu — open at {x, y} for {game} or null.
   let ctxMenu = $state<{ game: GameEntry; x: number; y: number } | null>(null);
+
+  // LAN peers — backend pushes via `lan:peers-changed`; we re-fetch and
+  // surface a count badge + popover on click.
+  let lanPeers = $state<LanPeer[]>([]);
+  let lanOpen = $state(false);
+  let lanWifiBtn: HTMLButtonElement | undefined = $state();
+  let lanPopoverEl: HTMLDivElement | undefined = $state();
 
   function openContextMenu(e: MouseEvent, g: GameEntry) {
     e.preventDefault();
@@ -97,6 +104,22 @@
   let unlistenLibraryChanged: (() => void) | undefined;
   let unlistenRunPhase: (() => void) | undefined;
   let unlistenTrayIntro: (() => void) | undefined;
+  let unlistenLanPeers: (() => void) | undefined;
+
+  async function refreshLanPeers() {
+    try {
+      lanPeers = await api.listLanPeers();
+    } catch (e) {
+      console.error('[lan] listLanPeers failed:', e);
+    }
+  }
+
+  function handleLanOutside(e: MouseEvent) {
+    if (!lanOpen) return;
+    if (lanPopoverEl?.contains(e.target as Node)) return;
+    if (lanWifiBtn?.contains(e.target as Node)) return;
+    lanOpen = false;
+  }
 
   onMount(() => {
     refresh();
@@ -157,10 +180,20 @@
       .then((fn) => (unlistenTrayIntro = fn))
       .catch((e) => console.error('[tray] intro listener failed:', e));
 
+    // LAN peer registry — initial fetch + event-driven refresh.
+    refreshLanPeers();
+    listen<null>('lan:peers-changed', () => refreshLanPeers())
+      .then((fn) => (unlistenLanPeers = fn))
+      .catch((e) => console.error('[lan] peers listener failed:', e));
+
+    document.addEventListener('mousedown', handleLanOutside, true);
+
     return () => {
       unlistenLibraryChanged?.();
       unlistenRunPhase?.();
       unlistenTrayIntro?.();
+      unlistenLanPeers?.();
+      document.removeEventListener('mousedown', handleLanOutside, true);
     };
   });
 
@@ -232,6 +265,25 @@
   <WindowChrome sub="LIBRARY">
     {#snippet children()}
       <div class="flex h-full items-center justify-end gap-1 pr-2">
+        <button
+          bind:this={lanWifiBtn}
+          type="button"
+          onclick={() => (lanOpen = !lanOpen)}
+          aria-label={`${lanPeers.length} LAN peer${lanPeers.length === 1 ? '' : 's'}`}
+          title={`${lanPeers.length} LAN peer${lanPeers.length === 1 ? '' : 's'}`}
+          class="relative inline-flex h-7 w-7 cursor-pointer items-center justify-center rounded-sm text-ink-2 transition-colors hover:bg-white/10 hover:text-ink-0"
+          data-tauri-drag-region="false"
+        >
+          <Wifi size={14} />
+          {#if lanPeers.length > 0}
+            <span
+              class="font-mono absolute -right-px -top-px inline-flex h-3 min-w-3 items-center justify-center rounded-full px-1 text-[8px] font-bold text-bg-0"
+              style:background="var(--color-spool)"
+            >
+              {lanPeers.length}
+            </span>
+          {/if}
+        </button>
         <a
           href="/settings"
           aria-label="Settings"
@@ -243,6 +295,50 @@
       </div>
     {/snippet}
   </WindowChrome>
+
+  {#if lanOpen}
+    <div
+      bind:this={lanPopoverEl}
+      role="dialog"
+      class="fixed right-3 top-[44px] z-40 w-[280px] overflow-hidden rounded-md border border-line-2 bg-bg-1"
+      style:box-shadow="0 18px 48px rgb(0 0 0 / 0.6)"
+    >
+      <header class="flex items-center justify-between border-b border-line-1 px-3.5 py-2">
+        <MonoLabel size={10}>LAN peers</MonoLabel>
+        <span class="font-mono text-[10px] text-ink-3">
+          {lanPeers.length}
+        </span>
+      </header>
+      {#if lanPeers.length === 0}
+        <div class="px-3.5 py-4 text-center text-[12px] text-ink-3">
+          Nobody else on the LAN.
+        </div>
+      {:else}
+        <ul class="max-h-[320px] overflow-y-auto py-1">
+          {#each lanPeers as peer (peer.device_id)}
+            <li class="flex items-start gap-2.5 px-3.5 py-2">
+              <Wifi size={12} class="mt-0.5 shrink-0 text-ink-2" />
+              <div class="min-w-0 flex-1">
+                <div class="truncate text-[12.5px] text-ink-0" title={peer.device_name}>
+                  {peer.device_name}
+                </div>
+                <div class="font-mono mt-0.5 flex gap-2 text-[10px] text-ink-3 tracking-[0.04em]">
+                  <span>{peer.addr}</span>
+                  <span>·</span>
+                  <span>{peer.game_count} game{peer.game_count === 1 ? '' : 's'}</span>
+                  <span>·</span>
+                  <span>{peer.last_seen_ago_secs}s ago</span>
+                </div>
+              </div>
+            </li>
+          {/each}
+        </ul>
+      {/if}
+      <div class="border-t border-dashed border-line-1 px-3.5 py-2 text-[10.5px] text-ink-3">
+        Game browsing + downloads coming in Phase&nbsp;B.
+      </div>
+    </div>
+  {/if}
 
   <div class="grid min-h-0 flex-1" style:grid-template-columns="320px 1fr">
     <!-- ── Sidebar ────────────────────────────────────────────────── -->

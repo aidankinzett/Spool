@@ -28,6 +28,7 @@
 mod cli;
 mod config;
 mod error;
+mod lan;
 mod library;
 mod ludusavi;
 mod paths;
@@ -38,6 +39,7 @@ mod steamgriddb;
 
 use cli::CliMode;
 use config::{Config, SharedConfig};
+use lan::LanState;
 use library::{Library, SharedLibrary};
 use ludusavi::LudusaviClient;
 use runner::RunState;
@@ -111,6 +113,7 @@ pub fn run() {
         .manage::<SteamGridDbClient>(SteamGridDbClient::new())
         .manage::<RunState>(RunState::default())
         .manage::<PendingRun>(PendingRun::default())
+        .manage::<LanState>(LanState::new())
         .invoke_handler(tauri::generate_handler![
             take_pending_run,
             // library
@@ -130,6 +133,8 @@ pub fn run() {
             steamgriddb::fetch_cover,
             // steam shortcut
             steam::add_to_steam,
+            // lan discovery
+            lan::list_lan_peers,
             // runner
             runner::launch_game,
         ])
@@ -153,6 +158,12 @@ pub fn run() {
                     }
                 });
             }
+
+            // Kick off LAN peer discovery in the background. Logs and
+            // skips if the socket can't bind (port in use, firewall, etc.)
+            // — peer count stays at 0 in that case but everything else
+            // keeps working.
+            lan::spawn_discovery(app.handle().clone());
 
             // Startup --run dispatch: queue the game id so the frontend
             // can pick it up once its listeners are ready.

@@ -8,6 +8,7 @@ import type {
   AddToSteamResult,
   ConfigData,
   GameEntry,
+  LanPeer,
   NewGame,
   SearchCandidate,
 } from './types';
@@ -35,6 +36,9 @@ export const api = {
 
   // Steam shortcut
   addToSteam: (gameId: string): Promise<AddToSteamResult> => invoke('add_to_steam', { gameId }),
+
+  // LAN
+  listLanPeers: (): Promise<LanPeer[]> => invoke('list_lan_peers'),
 
   // Run workflow
   launchGame: (gameId: string): Promise<void> => invoke('launch_game', { gameId }),

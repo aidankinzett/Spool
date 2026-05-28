@@ -103,6 +103,21 @@ export type SearchCandidate = {
   manifest_install_dir: string | null;
 };
 
+/**
+ * One LAN peer (another Spool instance on the local network). Mirrors
+ * `LanPeer` in lan.rs. `file_server_port == 0` means the peer is in
+ * Phase A — discovery only, no transfers yet.
+ */
+export type LanPeer = {
+  device_id: string;
+  device_name: string;
+  addr: string;
+  game_count: number;
+  version: number;
+  file_server_port: number;
+  last_seen_ago_secs: number;
+};
+
 /** Result returned by `add_to_steam`. Mirrors `AddToSteamResult` in steam.rs. */
 export type AddToSteamResult = {
   steam_user_id: string;
