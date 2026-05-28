@@ -1,0 +1,41 @@
+name: Debug RELEASE_TOKEN
+
+on:
+  workflow_dispatch:
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check token identity and scopes
+        env:
+          TOKEN: ${{ secrets.RELEASE_TOKEN }}
+        run: |
+          if [ -z "$TOKEN" ]; then
+            echo "::error::RELEASE_TOKEN secret is empty or unset"
+            exit 1
+          fi
+          echo "Token length: ${#TOKEN}"
+          echo "Token prefix: ${TOKEN:0:4}..."
+          echo "---"
+          echo "GET /user:"
+          curl -sS -D /tmp/h1 -o /tmp/b1 -H "Authorization: token $TOKEN" -H "User-Agent: ci-debug" https://api.github.com/user
+          echo "  Status: $(head -1 /tmp/h1)"
+          echo "  X-OAuth-Scopes: $(grep -i '^x-oauth-scopes:' /tmp/h1 || echo '(none)')"
+          echo "  Authed as: $(jq -r '.login // .message' /tmp/b1)"
+          echo "---"
+          echo "GET /repos/aidankinzett/Spool:"
+          curl -sS -D /tmp/h2 -o /tmp/b2 -H "Authorization: token $TOKEN" -H "User-Agent: ci-debug" https://api.github.com/repos/aidankinzett/Spool
+          echo "  Status: $(head -1 /tmp/h2)"
+          echo "  Permissions: $(jq -c '.permissions // .message' /tmp/b2)"
+          echo "---"
+          echo "POST /repos/aidankinzett/Spool/releases (dry-run a non-existent tag):"
+          curl -sS -D /tmp/h3 -o /tmp/b3 -X POST -H "Authorization: token $TOKEN" -H "User-Agent: ci-debug" -H "Content-Type: application/json" -d '{"tag_name":"ci-debug-DELETEME-xyz","draft":true}' https://api.github.com/repos/aidankinzett/Spool/releases
+          echo "  Status: $(head -1 /tmp/h3)"
+          echo "  Body: $(jq -c '.message // {id, tag_name, draft}' /tmp/b3)"
+          # If we accidentally created one, delete it.
+          REL_ID=$(jq -r '.id // empty' /tmp/b3)
+          if [ -n "$REL_ID" ]; then
+            curl -sS -X DELETE -H "Authorization: token $TOKEN" -H "User-Agent: ci-debug" "https://api.github.com/repos/aidankinzett/Spool/releases/$REL_ID"
+            echo "  Cleaned up debug release id=$REL_ID"
+          fi
