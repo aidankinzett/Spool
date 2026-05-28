@@ -22,7 +22,6 @@
     Folder,
     Pencil,
     Play,
-    Share2,
     Sparkles,
     Trash2,
   } from '@lucide/svelte';
@@ -144,6 +143,41 @@
         center: true,
       });
     });
+  }
+
+  let generatingArmoury = $state(false);
+  async function generateArmouryLauncher() {
+    generatingArmoury = true;
+    try {
+      const path = await api.generateArmouryLauncher(game.id);
+      const sep = path.includes('\\') ? '\\' : '/';
+      const idx = path.lastIndexOf(sep);
+      const dir = idx > 0 ? path.slice(0, idx) : path;
+      toasts.show({
+        kind: 'ok',
+        label: 'ARMOURY CRATE',
+        title: 'Launcher generated',
+        sub: `In Armoury Crate: Library → Manage Library → Add → browse to ${path}`,
+        catalog: fmtCatalog(game.catalog_number),
+        duration: 0,
+        cta: {
+          label: 'Open folder',
+          onClick: () => {
+            openPath(dir).catch((e) => console.error('[launcher] open folder failed:', e));
+          },
+        },
+      });
+    } catch (e) {
+      toasts.show({
+        kind: 'bad',
+        label: 'ARMOURY CRATE · FAILED',
+        title: "Couldn't generate launcher",
+        sub: String(e),
+        catalog: fmtCatalog(game.catalog_number),
+      });
+    } finally {
+      generatingArmoury = false;
+    }
   }
 
   let addingToSteam = $state(false);
@@ -326,9 +360,13 @@
       {#snippet icon()}<Folder size={14} />{/snippet}
       Open folder
     </Btn>
-    <Btn variant="ghost" disabled>
+    <Btn
+      variant="ghost"
+      onclick={generateArmouryLauncher}
+      disabled={!game.exe_path || generatingArmoury}
+    >
       {#snippet icon()}<Sparkles size={14} />{/snippet}
-      Armoury Crate
+      {generatingArmoury ? 'Generating…' : 'Armoury Crate'}
     </Btn>
     <Btn
       variant="ghost"
@@ -337,10 +375,6 @@
     >
       {#snippet icon()}<Play size={14} />{/snippet}
       {addingToSteam ? 'Adding…' : 'Add to Steam'}
-    </Btn>
-    <Btn variant="ghost" disabled>
-      {#snippet icon()}<Share2 size={14} />{/snippet}
-      Share on LAN
     </Btn>
     <div class="flex-1"></div>
     <Btn variant="ghost" onclick={openEditGame}>
