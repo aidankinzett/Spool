@@ -497,6 +497,7 @@
               decorations: false,
               resizable: true,
               center: true,
+              backgroundColor: '#0b0c0e',
             });
           }}
           class="font-mono inline-flex cursor-pointer items-center gap-1.5 border-none bg-transparent px-0 text-[10.5px] uppercase tracking-[0.08em] text-ink-2 transition-colors hover:text-ink-0"

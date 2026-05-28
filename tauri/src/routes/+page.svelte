@@ -284,6 +284,7 @@
       decorations: false,
       resizable: true,
       center: true,
+      backgroundColor: '#0b0c0e',
     });
   }
 
@@ -304,6 +305,7 @@
       decorations: false,
       resizable: true,
       center: true,
+      backgroundColor: '#0b0c0e',
     });
   }
 
@@ -556,6 +558,7 @@
         decorations: false,
         resizable: true,
         center: true,
+        backgroundColor: '#0b0c0e',
       });
     });
   }
