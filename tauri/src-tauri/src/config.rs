@@ -95,7 +95,28 @@ impl Config {
         let path = paths::config_file();
         let mut data = if path.exists() {
             let json = std::fs::read_to_string(&path)?;
-            serde_json::from_str::<ConfigData>(&json).unwrap_or_default()
+            match serde_json::from_str::<ConfigData>(&json) {
+                Ok(d) => d,
+                Err(e) => {
+                    tracing::warn!(error = %e, "config.json is malformed; attempting .bak recovery");
+                    let bak = path.with_extension("json.bak");
+                    let recovered = bak
+                        .exists()
+                        .then(|| std::fs::read_to_string(&bak).ok())
+                        .flatten()
+                        .and_then(|s| serde_json::from_str::<ConfigData>(&s).ok());
+                    match recovered {
+                        Some(d) => {
+                            tracing::info!("recovered config from .bak");
+                            d
+                        }
+                        None => {
+                            tracing::warn!("config.bak also unreadable; using defaults");
+                            ConfigData::default()
+                        }
+                    }
+                }
+            }
         } else {
             ConfigData::default()
         };
