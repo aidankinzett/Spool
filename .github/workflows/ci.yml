@@ -70,4 +70,4 @@ jobs:
         # Smoke-test that the full app builds end-to-end (frontend +
         # backend). Skip bundle generation to keep CI fast — `release.yml`
         # is responsible for producing artifacts.
-        run: bun run tauri build -- --no-bundle
+        run: bun run tauri build --no-bundle
