@@ -39,7 +39,7 @@ use socket2::{Domain, Protocol, Socket, Type};
 use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::{Component, Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -58,6 +58,15 @@ const REAPER_INTERVAL: Duration = Duration::from_secs(5);
 /// on the same LAN should respond in milliseconds; anything past this is
 /// almost certainly a dropped peer or a firewall hole.
 const PEER_FETCH_TIMEOUT: Duration = Duration::from_secs(5);
+/// How many files to stream from a peer at once. 4 is a sweet spot:
+/// enough to keep gigabit pipes full when games are full of tiny files,
+/// few enough that a peer's HTTP server (or a residential router) isn't
+/// drowning in concurrent sockets.
+const LAN_PARALLEL_FILES: usize = 4;
+/// Minimum gap between `lan:download` event emissions. The download
+/// loop fires every chunk; without throttling that's hundreds of
+/// events per second on a fast transfer.
+const PROGRESS_EMIT_INTERVAL: Duration = Duration::from_millis(200);
 
 /// Wire format for the UDP announce packet. Stays small — fits in a
 /// single MTU comfortably and is forwards-compatible (extra fields are
@@ -1265,6 +1274,147 @@ pub async fn start_peer_install(
     Ok(return_token)
 }
 
+/// Streams one file from the peer. Honours resume (probes the on-disk
+/// remnant and sends a Range header if needed), polls the cancel flag
+/// between chunks, and bumps the shared `bytes_done` counter as bytes
+/// land. Progress event emission is throttled by `last_emit` so
+/// thousands of tiny chunks don't drown the IPC channel.
+async fn download_one_file(
+    file: PeerFile,
+    partial_dir: PathBuf,
+    url: String,
+    client: reqwest::Client,
+    app: AppHandle,
+    bytes_done: Arc<AtomicU64>,
+    last_emit: Arc<Mutex<Instant>>,
+) -> AppResult<()> {
+    if app.state::<LanDownloadState>().is_canceled() {
+        return Err(AppError::Other(CANCELED_MSG.into()));
+    }
+
+    let target = partial_dir.join(file.path.replace('/', std::path::MAIN_SEPARATOR_STR));
+    if let Some(parent) = target.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|e| AppError::Other(format!("mkdir {parent:?}: {e}")))?;
+    }
+
+    // Resume support: if a leftover from a previous run sits at
+    // `target`, ask the server for just the tail. Three branches:
+    //   - already complete (size == expected): skip the GET entirely
+    //   - partial (0 < existing < expected): Range request, append
+    //   - oversized: corrupt remnant, truncate and re-fetch
+    let existing_size = match tokio::fs::metadata(&target).await {
+        Ok(m) if m.is_file() => m.len(),
+        _ => 0,
+    };
+    if existing_size == file.size && file.size > 0 {
+        bytes_done.fetch_add(file.size, Ordering::Relaxed);
+        maybe_emit_progress(&app, &bytes_done, &last_emit, &file.path);
+        return Ok(());
+    }
+    let resume_from = if existing_size < file.size {
+        existing_size
+    } else {
+        0
+    };
+
+    let mut request = client.get(&url);
+    if resume_from > 0 {
+        request = request.header(header::RANGE, format!("bytes={resume_from}-"));
+    }
+    let resp = request
+        .send()
+        .await
+        .map_err(|e| AppError::Other(format!("GET {url}: {e}")))?;
+    let status = resp.status();
+    if !status.is_success() {
+        return Err(AppError::Other(format!(
+            "peer returned {} for {}",
+            status, file.path
+        )));
+    }
+    let server_served_range = status == reqwest::StatusCode::PARTIAL_CONTENT;
+    let appending = resume_from > 0 && server_served_range;
+
+    let mut out = if appending {
+        tokio::fs::OpenOptions::new()
+            .append(true)
+            .open(&target)
+            .await
+            .map_err(|e| AppError::Other(format!("open append {target:?}: {e}")))?
+    } else {
+        tokio::fs::File::create(&target)
+            .await
+            .map_err(|e| AppError::Other(format!("create {target:?}: {e}")))?
+    };
+    if appending {
+        bytes_done.fetch_add(resume_from, Ordering::Relaxed);
+    }
+
+    // Surface "now starting this file" — racy with sibling tasks; that's
+    // fine, the UI just shows one representative file name.
+    if let Some(snap) = app.state::<LanDownloadState>().update(|p| {
+        p.status = "transferring".into();
+        p.current_file = file.path.clone();
+        p.bytes_done = bytes_done.load(Ordering::Relaxed);
+    }) {
+        emit_progress(&app, &snap);
+    }
+
+    let mut stream = resp.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        if app.state::<LanDownloadState>().is_canceled() {
+            // Drop the file before any directory cleanup — Windows
+            // refuses to remove a dir that still has open handles.
+            drop(out);
+            return Err(AppError::Other(CANCELED_MSG.into()));
+        }
+        let chunk = chunk.map_err(|e| AppError::Other(format!("recv chunk: {e}")))?;
+        out.write_all(&chunk)
+            .await
+            .map_err(|e| AppError::Other(format!("write {target:?}: {e}")))?;
+        bytes_done.fetch_add(chunk.len() as u64, Ordering::Relaxed);
+        maybe_emit_progress(&app, &bytes_done, &last_emit, &file.path);
+    }
+    out.flush()
+        .await
+        .map_err(|e| AppError::Other(format!("flush {target:?}: {e}")))?;
+    Ok(())
+}
+
+/// Throttled progress emit. Multiple parallel tasks race for the lock;
+/// whichever task wins the "last_emit too old?" check fires the event,
+/// the rest silently skip. The brief `std::sync::Mutex<Instant>` lock
+/// is dropped before any work — we never hold a sync mutex across an
+/// await.
+fn maybe_emit_progress(
+    app: &AppHandle,
+    bytes_done: &AtomicU64,
+    last_emit: &Mutex<Instant>,
+    current_file: &str,
+) {
+    let should_emit = {
+        match last_emit.lock() {
+            Ok(mut le) if le.elapsed() >= PROGRESS_EMIT_INTERVAL => {
+                *le = Instant::now();
+                true
+            }
+            _ => false,
+        }
+    };
+    if !should_emit {
+        return;
+    }
+    let bd = bytes_done.load(Ordering::Relaxed);
+    if let Some(snap) = app.state::<LanDownloadState>().update(|p| {
+        p.bytes_done = bd;
+        p.current_file = current_file.to_string();
+    }) {
+        emit_progress(app, &snap);
+    }
+}
+
 /// Heavy lifting for `start_peer_install` — runs in the spawned task.
 /// Returns the new library entry's id on success.
 async fn run_install(
@@ -1302,145 +1452,68 @@ async fn run_install(
         .build()
         .map_err(|e| AppError::Other(format!("build http client: {e}")))?;
 
-    let download_state = app.state::<LanDownloadState>();
-    let mut bytes_done: u64 = 0;
-    let mut last_emit = Instant::now() - Duration::from_secs(1);
+    // Shared counters for the parallel file downloads. `bytes_done`
+    // accumulates across all tasks; `last_emit` throttles the progress
+    // event firehose to ~5 Hz instead of the per-chunk rate (which on
+    // a gigabit transfer is thousands per second).
+    let bytes_done = Arc::new(AtomicU64::new(0));
+    let last_emit = Arc::new(Mutex::new(
+        Instant::now() - PROGRESS_EMIT_INTERVAL * 2,
+    ));
 
-    for file in &manifest.files {
-        // Bail before opening a new file if the user has cancelled. The
-        // partial dir gets cleaned up below.
-        if download_state.is_canceled() {
+    // Build the per-file futures. We stream them through
+    // `buffer_unordered(LAN_PARALLEL_FILES)` so the slot keeps full
+    // even when individual files vary wildly in size. A first-error
+    // short-circuit drops the rest cooperatively.
+    let manifest_game_id = manifest.game_id.clone();
+    let file_futures = manifest.files.clone().into_iter().map(|file| {
+        let partial_dir = partial_dir.clone();
+        let client = client.clone();
+        let app = app.clone();
+        let bytes_done = bytes_done.clone();
+        let last_emit = last_emit.clone();
+        let peer_addr = peer_addr.clone();
+        let game_id = manifest_game_id.clone();
+        async move {
+            // URL-encode each segment so spaces / special chars survive.
+            let encoded = file
+                .path
+                .split('/')
+                .map(|seg| urlencoding::encode(seg).into_owned())
+                .collect::<Vec<_>>()
+                .join("/");
+            let url =
+                format!("http://{peer_addr}:{peer_port}/games/{game_id}/files/{encoded}");
+            download_one_file(file, partial_dir, url, client, app, bytes_done, last_emit)
+                .await
+        }
+    });
+
+    let mut stream = futures_util::stream::iter(file_futures)
+        .buffer_unordered(LAN_PARALLEL_FILES);
+    while let Some(result) = stream.next().await {
+        // Check cancel between completed-task boundaries — individual
+        // tasks also poll cancel between chunks, so this is a
+        // backstop in case all of them finished before noticing.
+        if app.state::<LanDownloadState>().is_canceled() {
+            drop(stream);
             let _ = tokio::fs::remove_dir_all(&partial_dir).await;
             return Err(AppError::Other(CANCELED_MSG.into()));
         }
-
-        // Re-anchor on each file so progress shows the current name.
-        download_state.update(|p| {
-            p.status = "transferring".into();
-            p.current_file = file.path.clone();
-            p.bytes_done = bytes_done;
-        });
-        if let Some(snapshot) = download_state.snapshot() {
-            emit_progress(&app, &snapshot);
-        }
-
-        // URL-encode each segment so spaces / special chars survive.
-        let encoded = file
-            .path
-            .split('/')
-            .map(|seg| urlencoding::encode(seg).into_owned())
-            .collect::<Vec<_>>()
-            .join("/");
-        let url = format!(
-            "http://{peer_addr}:{peer_port}/games/{}/files/{encoded}",
-            manifest.game_id
-        );
-
-        let target = partial_dir.join(file.path.replace('/', std::path::MAIN_SEPARATOR_STR));
-        if let Some(parent) = target.parent() {
-            tokio::fs::create_dir_all(parent)
-                .await
-                .map_err(|e| AppError::Other(format!("mkdir {parent:?}: {e}")))?;
-        }
-
-        // Resume support: if a leftover from a previous run sits at
-        // `target`, ask the server for just the tail. Three branches:
-        //   - already complete (size == expected): skip the GET
-        //   - partial (0 < existing < expected): Range request
-        //   - oversized or unknown: truncate, start fresh
-        let existing_size = match tokio::fs::metadata(&target).await {
-            Ok(m) if m.is_file() => m.len(),
-            _ => 0,
-        };
-        if existing_size == file.size && file.size > 0 {
-            // Counts toward total so the progress bar doesn't lie when
-            // resuming a near-complete install. We trust prior bytes
-            // here without re-hashing — Phase E (checksums) will close
-            // that loop.
-            bytes_done += file.size;
-            if let Some(snapshot) =
-                download_state.update(|p| p.bytes_done = bytes_done)
-            {
-                emit_progress(&app, &snapshot);
-            }
-            continue;
-        }
-        let resume_from = if existing_size < file.size {
-            existing_size
-        } else {
-            // Oversized — corrupt remnant; start fresh.
-            0
-        };
-
-        let mut request = client.get(&url);
-        if resume_from > 0 {
-            request = request.header(header::RANGE, format!("bytes={resume_from}-"));
-        }
-        let resp = request
-            .send()
-            .await
-            .map_err(|e| AppError::Other(format!("GET {url}: {e}")))?;
-        let status = resp.status();
-        if !status.is_success() {
-            return Err(AppError::Other(format!(
-                "{} returned {} for {}",
-                peer_addr, status, file.path
-            )));
-        }
-        // 206 means the server honoured our Range; 200 means it served
-        // the whole file (older Spool peer or no Range support — should
-        // never happen against another Spool, but be defensive).
-        let server_served_range = status == reqwest::StatusCode::PARTIAL_CONTENT;
-        let appending = resume_from > 0 && server_served_range;
-
-        let mut out = if appending {
-            tokio::fs::OpenOptions::new()
-                .append(true)
-                .open(&target)
-                .await
-                .map_err(|e| AppError::Other(format!("open append {target:?}: {e}")))?
-        } else {
-            // Includes the case where we tried to resume but the server
-            // ignored Range — truncate the partial bytes so the new
-            // stream lands cleanly at offset 0.
-            tokio::fs::File::create(&target)
-                .await
-                .map_err(|e| AppError::Other(format!("create {target:?}: {e}")))?
-        };
-        if appending {
-            // Count the already-on-disk bytes toward the progress total.
-            bytes_done += resume_from;
-        }
-        let mut stream = resp.bytes_stream();
-        while let Some(chunk) = stream.next().await {
-            // Poll for cancellation between chunks so we abort mid-file
-            // rather than locking the user into "wait for the current
-            // multi-GB file to finish".
-            if download_state.is_canceled() {
-                // Drop the open file before removing the dir on Windows
-                // — locked handles will block the recursive delete.
-                drop(out);
-                let _ = tokio::fs::remove_dir_all(&partial_dir).await;
-                return Err(AppError::Other(CANCELED_MSG.into()));
-            }
-            let chunk = chunk.map_err(|e| AppError::Other(format!("recv chunk: {e}")))?;
-            out.write_all(&chunk)
-                .await
-                .map_err(|e| AppError::Other(format!("write {target:?}: {e}")))?;
-            bytes_done += chunk.len() as u64;
-            // Throttle progress emits — every ~150ms is plenty for the UI
-            // and keeps the event channel from being a bottleneck on a
-            // gigabit transfer.
-            if last_emit.elapsed() >= Duration::from_millis(150) {
-                if let Some(snapshot) = download_state.update(|p| p.bytes_done = bytes_done) {
-                    emit_progress(&app, &snapshot);
-                }
-                last_emit = Instant::now();
-            }
-        }
-        out.flush()
-            .await
-            .map_err(|e| AppError::Other(format!("flush {target:?}: {e}")))?;
+        // A task error short-circuits — dropping the stream cancels any
+        // still-in-flight peers at their next await point. The .partial
+        // dir stays so the user can resume on next attempt (unless it
+        // was a cancel, handled above).
+        result?;
+    }
+    // Final progress flush — make sure the UI shows 100% before we
+    // emit the terminal "done" event.
+    let final_bd = bytes_done.load(Ordering::Relaxed);
+    if let Some(snap) = app
+        .state::<LanDownloadState>()
+        .update(|p| p.bytes_done = final_bd)
+    {
+        emit_progress(&app, &snap);
     }
 
     // All files landed — flip the staging dir into its real location.
