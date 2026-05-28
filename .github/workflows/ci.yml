@@ -47,6 +47,9 @@ jobs:
           workspaces: tauri/src-tauri -> target
           # sccache owns object caching; rust-cache only does registry.
           cache-targets: "false"
+          # Fixed key (not the job name) so the tag-triggered release
+          # build restores the same registry cache this populates.
+          shared-key: spool-windows
 
       - name: Install frontend dependencies
         working-directory: tauri
@@ -116,6 +119,7 @@ jobs:
         with:
           workspaces: tauri/src-tauri -> target
           cache-targets: "false"
+          shared-key: spool-linux
 
       - name: Install Linux system dependencies
         run: |
