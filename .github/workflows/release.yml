@@ -97,9 +97,13 @@ jobs:
         run: bun install --frozen-lockfile
 
       - name: Build Tauri bundle
+        # tauri-action's release-creation path ignores GITHUB_TOKEN
+        # overrides and uses the default workflow token, which 403s
+        # on this repo for reasons we couldn't pin down. We build
+        # only, then publish via `gh release create` below using the
+        # PAT — same approach as the Linux job further down.
         uses: tauri-apps/tauri-action@v0
         env:
-          GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN }}
           # Updater signing — required by the tauri-plugin-updater
           # config in `tauri.conf.json`. See
           # https://v2.tauri.app/plugin/updater for key generation.
@@ -107,15 +111,23 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           projectPath: tauri
-          tagName: ${{ github.ref_name }}
-          releaseName: "Spool ${{ github.ref_name }}"
-          releaseBody: ${{ steps.changelog.outputs.CHANGELOG }}
-          releaseDraft: false
-          prerelease: false
-          # NSIS installer + updater artifacts (.sig + latest.json).
-          # `app` here is the unbundled exe, which we skip — only the
-          # NSIS installer is published.
+          # NSIS installer + updater artifacts (.sig). `app` here is
+          # the unbundled exe, which we skip — only the installer is
+          # published.
           args: --bundles nsis
+
+      - name: Create GitHub release with NSIS installer
+        working-directory: tauri/src-tauri/target/release/bundle/nsis
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          CHANGELOG: ${{ steps.changelog.outputs.CHANGELOG }}
+        run: |
+          $env:CHANGELOG | Set-Content notes.md -Encoding utf8
+          gh release create "${{ github.ref_name }}" `
+            --title "Spool ${{ github.ref_name }}" `
+            --notes-file notes.md `
+            (Get-ChildItem Spool_*_x64-setup.exe).Name `
+            (Get-ChildItem Spool_*_x64-setup.exe.sig).Name
 
   build-linux:
     needs: build
