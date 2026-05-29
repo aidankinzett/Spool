@@ -12,12 +12,14 @@
   "app": {
     "windows": [
       {
+        "label": "main",
         "title": "Spool",
         "width": 1280,
         "height": 800,
         "minWidth": 900,
         "minHeight": 600,
         "decorations": false,
+        "visible": false,
         "backgroundColor": "#0b0c0e"
       }
     ],
