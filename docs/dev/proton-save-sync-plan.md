@@ -65,11 +65,78 @@ Run Windows games on the Steam Deck via Proton, and sync saves between a Windows
 - `apps.rclone.path` set in owned config to the resolved rclone (`set_cloud` → `apps.rclone.path`)
 - Sidecars are fetched in CI/release via `tauri/scripts/download-sidecars.js` (wired as `bun run download-sidecars` in `ci.yml` + `release.yml`); `/binaries/` is gitignored so the blobs stay out of the repo
 
-### Phase 6 — Turnkey self-hosted save storage (optional, later)
+### Phase 6 — Turnkey self-hosted save storage 🔲 TODO (design locked)
 
-- Add `rclone/rclone serve webdav /data` container to `server/docker-compose.yml`
-- New Hono route `GET /storage` returns `{ webdav_url, username, password, base_path }`
-- Spool settings: "Use my Spool server for save storage" → fetches creds → writes rclone webdav remote → sets `cloud.remote` in owned config
+Goal: fold save storage into the **existing** self-hosted stack so one
+`docker compose up` gives you locks **and** save sync — no more hand-rolled
+SFTP/`rclone config` per device.
+
+**Why WebDAV (not SFTP/FTP/S3):** ludusavi has no networking of its own — every
+cloud remote is an rclone backend. Of the protocols a server can host, only
+`WebDav`, `Ftp`, and `Smb` are first-class in ludusavi's CLI (`ludusavi cloud
+set …`); SFTP and S3 require the manual `cloud set custom --id <remote>` path
+(a hand-configured `rclone.conf` remote on every machine — exactly today's
+SFTP setup we're replacing). WebDAV is HTTP, so it reuses the lock server's
+port/TLS/reverse-proxy story and is the friendliest through NAT. FTP is
+plaintext + passive-port hell; SMB is LAN-only.
+
+**Verified ludusavi 0.31 schema** (from `ludusavi cloud set webdav --url … --username … --password … --provider nextcloud`):
+
+```yaml
+# config.yaml
+cloud:
+  remote:
+    WebDav:
+      id: ludusavi-<epoch>      # rclone remote name ludusavi auto-creates
+      url: "https://host:port"
+      username: deck
+      provider: Nextcloud       # other | nextcloud | owncloud | sharepoint | sharepoint-ntlm
+  path: ludusavi-backup
+  synchronize: true
+```
+
+The password is **not** stored here — `cloud set` writes an obscured remote into
+the user's global `~/.config/rclone/rclone.conf`:
+
+```ini
+[ludusavi-<epoch>]
+type = webdav
+vendor = nextcloud
+url = https://host:port
+user = deck
+pass = <rclone-obscured>
+```
+
+#### Server (extend `server/docker-compose.yml` — one stack, two services)
+
+- Add an `rclone/rclone:latest` service running `rclone serve webdav /data/saves`
+  alongside the existing `spool-lock` Hono service. Expose e.g. `47634`. Shares
+  the same `./data` volume and `ADMIN_SECRET`/SQLite DB as the lock server.
+- **Auth via `--auth-proxy`** so it plugs into the existing account system: rclone
+  spawns the proxy with a JSON `{user, pass}` on stdin; the proxy validates
+  (username = account, password = the account's API key) against the shared
+  accounts DB and returns `{ "type": "local", "_root": "/data/saves/<account_id>" }`
+  — giving each account a jailed root for free.
+- New Hono route **`GET /storage`** (API-key-gated) → `{ webdav_url, username,
+  password, base_path }` for the caller's account.
+- New resource profile: the lock server was kilobytes of metadata; saves add real
+  disk/bandwidth. Decide per-account quota + retention (ludusavi already does
+  `backup.retention.full`, but the server volume needs a cap too).
+
+#### Client (Spool)
+
+- Settings → Cloud saves: **"Use my Spool server for save storage"** → calls
+  `/storage` with the account API key → shells out to
+  `ludusavi cloud set webdav --url <webdav_url> --username <user> --password <pass>
+  --provider other --config <Spool config dir>`, then sets `cloud.path` to
+  `base_path`. Let ludusavi own remote creation + password obscuring + rclone.conf.
+- **Fix the existing Phase 4 gap first:** `ludusavi_config::set_cloud`'s
+  `webdav`/`ftp`/`smb` arms currently write only the bare enum string
+  (`cloud.remote: WebDav`) with no url/username, so those providers are
+  non-functional today. Replace the hand-written YAML for these with a shell-out
+  to `ludusavi cloud set <provider> …` (the only mechanism that also creates the
+  backing rclone remote + obscures the password). OAuth providers
+  (Box/Dropbox/GoogleDrive/OneDrive) and `custom` keep their current behaviour.
 
 ---
 
