@@ -20,6 +20,8 @@ use crate::config::SharedConfig;
 use crate::error::{AppError, AppResult};
 use crate::library::SharedLibrary;
 use crate::ludusavi::LudusaviClient;
+use crate::ludusavi_config;
+use crate::redirects;
 use crate::sync::{self, AcquireOutcome};
 use crate::{process, paths, registry};
 use chrono::Utc;
@@ -175,12 +177,24 @@ pub async fn manual_backup(app: AppHandle, game_id: String) -> AppResult<ManualB
 /// path).
 #[tauri::command]
 pub async fn manual_restore(app: AppHandle, game_id: String) -> AppResult<ManualRestoreResult> {
-    let (game_name, ludusavi_exe, config_dir, _wine_prefix) = manual_prep(&app, &game_id)?;
+    let (game_name, ludusavi_exe, config_dir, wine_prefix) = manual_prep(&app, &game_id)?;
+    let game_folder = {
+        let library = app.state::<SharedLibrary>();
+        let lib = library.lock().map_err(|_| AppError::LockPoisoned)?;
+        lib.find(&game_id)
+            .and_then(|e| e.game_folder_path.as_ref().map(PathBuf::from))
+    };
     let ludusavi_client = app.state::<LudusaviClient>();
-    let out = ludusavi_client
-        .restore(&ludusavi_exe, &config_dir, &game_name)
-        .await
-        .map_err(|e| AppError::Other(format!("ludusavi restore: {e}")))?;
+    let out = restore_with_redirects(
+        &ludusavi_client,
+        &ludusavi_exe,
+        &config_dir,
+        &game_name,
+        wine_prefix.as_deref(),
+        game_folder.as_deref(),
+    )
+    .await
+    .map_err(|e| AppError::Other(format!("ludusavi restore: {e}")))?;
 
     if out
         .errors
@@ -437,6 +451,73 @@ fn build_launch_plan(
     })
 }
 
+/// Run a ludusavi restore with automatic cross-platform redirect generation.
+///
+/// Flow:
+///  1. Restore once — this pulls the latest cloud backup (via `--cloud-sync`)
+///     and lands files at the *recorded* absolute paths.
+///  2. Read the backup's `mapping.yaml` to discover the origin OS + paths.
+///  3. If the backup is foreign-origin (different OS / different prefix):
+///     a. Derive redirect rules (Windows paths → Proton prefix, or reverse).
+///     b. Write them into Spool's `config.yaml`.
+///     c. Restore *again* — now the redirects steer files to the right place.
+///  4. If same-origin: clear any stale redirects (idempotent).
+///
+/// The double-restore is safe: saves are small, restores are idempotent, and
+/// the single-launch lock ensures nothing else is touching the prefix.
+///
+/// Returns the `ApiOutput` from the effective (second) restore, or the first
+/// restore's output if no redirect was needed.
+#[allow(clippy::too_many_arguments)]
+async fn restore_with_redirects(
+    ludusavi_client: &LudusaviClient,
+    ludusavi_exe: &Path,
+    config_dir: &Path,
+    game_name: &str,
+    prefix_root: Option<&Path>,
+    game_folder: Option<&Path>,
+) -> AppResult<crate::ludusavi::ApiOutput> {
+    // ── Pass 1: restore (pulls cloud) ─────────────────────────────────────
+    let first = ludusavi_client.restore(ludusavi_exe, config_dir, game_name).await?;
+
+    // ── Read mapping.yaml to detect origin ────────────────────────────────
+    let backup_dir = ludusavi_config::backup_dir();
+    let Some(origin) = redirects::read_backup_origin(&backup_dir, game_name) else {
+        // No backup on disk yet (first-ever session). Nothing to redirect.
+        return Ok(first);
+    };
+
+    let local_win_user = redirects::local_windows_username();
+    let n = redirects::apply_redirects_for_restore(
+        &origin,
+        prefix_root,
+        game_folder,
+        local_win_user.as_deref(),
+    )?;
+
+    if n == 0 {
+        // Same-origin backup — clear any redirects left from a prior cross-
+        // device restore so they don't linger.
+        let _ = ludusavi_config::set_redirects(&[]);
+        return Ok(first);
+    }
+
+    tracing::info!(
+        game_name,
+        redirects = n,
+        "foreign-origin backup detected — running second restore with redirects"
+    );
+
+    // ── Pass 2: restore with redirects in place ───────────────────────────
+    let second = ludusavi_client.restore(ludusavi_exe, config_dir, game_name).await?;
+
+    // Clear redirects after the restore so they don't affect unrelated
+    // operations (e.g. a manual backup). We regenerate on every restore.
+    let _ = ludusavi_config::set_redirects(&[]);
+
+    Ok(second)
+}
+
 async fn run_workflow(
     app: &AppHandle,
     game_id: &str,
@@ -464,7 +545,21 @@ async fn run_workflow(
         &format!("{game_name} — restoring before launch"),
     );
     tracing::info!(game_name, "ludusavi restore");
-    let restore = ludusavi_client.restore(ludusavi_exe, &config_dir, game_name).await?;
+    let game_folder = {
+        // Snapshot the install folder path for install-dir save redirect (Phase 3).
+        let library = app.state::<SharedLibrary>();
+        let lib = library.lock().map_err(|_| AppError::LockPoisoned)?;
+        lib.find(game_id)
+            .and_then(|e| e.game_folder_path.as_ref().map(PathBuf::from))
+    };
+    let restore = restore_with_redirects(
+        ludusavi_client,
+        ludusavi_exe,
+        &config_dir,
+        game_name,
+        wine_prefix.as_deref(),
+        game_folder.as_deref(),
+    ).await?;
     if restore
         .errors
         .as_ref()

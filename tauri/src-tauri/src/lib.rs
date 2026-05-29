@@ -39,6 +39,7 @@ mod ludusavi_config;
 mod paths;
 mod process;
 mod proton;
+mod redirects;
 mod registry;
 mod runner;
 mod size_backfill;
