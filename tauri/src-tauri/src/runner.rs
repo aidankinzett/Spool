@@ -815,6 +815,11 @@ async fn run_workflow(
         }
     }
 
+    // Game Mode: flag the active-session record so the Decky plugin's
+    // forced-close fallback knows this session already backed up. No-op
+    // when there's no record (desktop / Windows launches).
+    crate::session::mark_backed_up();
+
     emit_phase(app, game_id, "done", None);
     // Final completion ping — the most useful native toast since the
     // user may have closed the game and walked away from the PC.
