@@ -39,11 +39,11 @@ pub struct ConfigData {
     pub lan_share_enabled: bool,
     pub lan_share_port: u16,
     pub lan_install_dir: String,
-    /// Max aggregate LAN download throughput in MB/s. `0` = unlimited.
-    /// Applied across all parallel file fetches by the throttle in
-    /// `download_one_file` — convergent rather than precise, so brief
-    /// bursts can exceed the cap before the next sleep brings the
-    /// average back.
+    /// Max aggregate LAN download throughput in Mbps (megabits/s,
+    /// decimal). `0` = unlimited. Applied across all parallel file
+    /// fetches by the throttle in `download_one_file` — convergent
+    /// rather than precise, so brief bursts can exceed the cap before
+    /// the next sleep brings the average back.
     pub lan_download_max_mbps: f64,
 
     pub torbox_enabled: bool,
