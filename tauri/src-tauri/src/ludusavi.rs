@@ -235,8 +235,22 @@ impl Default for LudusaviClient {
 
 // ── Subprocess helpers ──────────────────────────────────────────────────────
 
+/// Builds a `Command` that won't flash a console window on Windows.
+/// ludusavi.exe is a console subsystem binary, so without `CREATE_NO_WINDOW`
+/// every invocation pops up a cmd window for a fraction of a second (or
+/// longer, for restore/backup) on top of the Spool UI.
+fn hidden_command(exe: &Path) -> Command {
+    let mut cmd = Command::new(exe);
+    #[cfg(windows)]
+    {
+        // CREATE_NO_WINDOW — winbase.h. Avoids a winapi dep for one constant.
+        cmd.creation_flags(0x0800_0000);
+    }
+    cmd
+}
+
 async fn run_find(ludusavi_exe: &Path, query: &str) -> AppResult<FindOutput> {
-    let output = Command::new(ludusavi_exe)
+    let output = hidden_command(ludusavi_exe)
         .args(["find", "--api", "--fuzzy", "--multiple", query])
         .output()
         .await
@@ -256,7 +270,7 @@ async fn run_find(ludusavi_exe: &Path, query: &str) -> AppResult<FindOutput> {
 /// no-op (ludusavi sometimes exits non-zero with no output when the game
 /// isn't in its manifest, which we surface as "no saves to handle").
 async fn run_api(ludusavi_exe: &Path, args: &[&str]) -> AppResult<ApiOutput> {
-    let output = Command::new(ludusavi_exe)
+    let output = hidden_command(ludusavi_exe)
         .args(args)
         .output()
         .await
@@ -270,7 +284,7 @@ async fn run_api(ludusavi_exe: &Path, args: &[&str]) -> AppResult<ApiOutput> {
 }
 
 async fn load_manifest(ludusavi_exe: &Path) -> AppResult<HashMap<String, ManifestEntry>> {
-    let output = Command::new(ludusavi_exe)
+    let output = hidden_command(ludusavi_exe)
         .args(["manifest", "show", "--api"])
         .output()
         .await
