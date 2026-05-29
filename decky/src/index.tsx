@@ -14,28 +14,11 @@ import {
 import { useEffect, useState } from "react";
 import { FaFloppyDisk } from "react-icons/fa6";
 
-// Steam's game lifecycle notification payload. `unAppID` is the (CRC-based)
-// app id — for Spool's non-Steam shortcuts it equals the `steam_appid` Spool
-// writes into active-session.json. `bRunning` is false on a stop event.
-interface LifetimeNotification {
-  unAppID: number;
-  nInstanceID: number;
-  bRunning: boolean;
-}
-
-// Minimal typing for the SteamClient global we rely on.
-declare global {
-  interface Window {
-    SteamClient?: {
-      GameSessions: {
-        RegisterForAppLifetimeNotifications: (
-          cb: (n: LifetimeNotification) => void,
-        ) => { unregister: () => void };
-      };
-    };
-  }
-  const SteamClient: NonNullable<Window["SteamClient"]>;
-}
+// `SteamClient` (incl. GameSessions.RegisterForAppLifetimeNotifications and the
+// LifetimeNotification payload) is provided as an ambient global by @decky/ui.
+// The stop callback's `n` has `unAppID` (CRC app id — for Spool's non-Steam
+// shortcuts it equals the `steam_appid` in active-session.json) and `bRunning`
+// (false on a stop event).
 
 const onAppStop = callable<[appid: number], { acted: boolean; game?: string }>(
   "on_app_stop",
@@ -101,7 +84,7 @@ export default definePlugin(() => {
   // which unmounts when the QAM closes). On a stop, let the backend decide
   // whether a forced-close fallback backup is needed.
   const sub = SteamClient.GameSessions.RegisterForAppLifetimeNotifications(
-    (n: LifetimeNotification) => {
+    (n) => {
       if (!n.bRunning) {
         void onAppStop(n.unAppID);
       }
