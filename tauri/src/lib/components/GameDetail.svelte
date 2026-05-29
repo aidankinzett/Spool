@@ -26,7 +26,7 @@
     Trash2,
   } from '@lucide/svelte';
   import { openPath } from '@tauri-apps/plugin-opener';
-  import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
+  import { openView } from '$lib/nav';
   import { api } from '$lib/api';
   import { toasts } from '$lib/toasts.svelte';
   import type { GameEntry, RunPhase } from '$lib/types';
@@ -119,31 +119,6 @@
     if (!confirm(`Remove "${game.game_name}" from your library?`)) return;
     await api.removeGame(game.id);
     // library:changed event will cause the parent page to clear selection.
-  }
-
-  /** Opens the Edit Game dialog as a child WebviewWindow. */
-  function openEditGame() {
-    const url = `/edit?id=${encodeURIComponent(game.id)}`;
-    WebviewWindow.getByLabel('edit-game').then((win) => {
-      if (win) {
-        // Reload to point at the newly-selected game in case the user
-        // had it open for another entry.
-        win.setFocus();
-        return;
-      }
-      new WebviewWindow('edit-game', {
-        url,
-        title: `Edit · ${game.game_name}`,
-        width: 720,
-        height: 660,
-        minWidth: 600,
-        minHeight: 480,
-        decorations: false,
-        resizable: true,
-        center: true,
-        backgroundColor: '#0b0c0e',
-      });
-    });
   }
 
   let generatingArmoury = $state(false);
@@ -269,7 +244,10 @@
             data-testid="play-button"
             onclick={launch}
             disabled={isRunning || !game.exe_path}
-            class="font-sans inline-flex h-[42px] items-center gap-2.5 rounded-md border-none px-5 text-[14px] font-semibold transition-opacity"
+            class="font-sans inline-flex items-center gap-2.5 rounded-md border-none font-semibold transition-opacity"
+            style:height="var(--control-h)"
+            style:padding-inline="calc(var(--space-unit) * 4)"
+            style:font-size="var(--text-base)"
             class:cursor-pointer={!isRunning && !!game.exe_path}
             class:cursor-not-allowed={isRunning || !game.exe_path}
             class:opacity-70={isRunning || !game.exe_path}
@@ -380,7 +358,7 @@
       {addingToSteam ? 'Adding…' : 'Add to Steam'}
     </Btn>
     <div class="flex-1"></div>
-    <Btn variant="ghost" onclick={openEditGame}>
+    <Btn variant="ghost" onclick={() => openView('edit', { id: game.id })}>
       {#snippet icon()}<Pencil size={14} />{/snippet}
       Edit
     </Btn>

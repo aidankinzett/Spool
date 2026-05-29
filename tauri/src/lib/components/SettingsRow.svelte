@@ -27,9 +27,9 @@
   } = $props();
 </script>
 
-<div class="grid items-start gap-[18px] px-[18px] py-3" style="grid-template-columns: 180px 1fr">
+<div class="grid items-start gap-[18px] px-[18px]" style:grid-template-columns="180px 1fr" style:padding-block="calc(var(--space-unit) * 3)">
   <div class="pt-[6px]">
-    <div class="flex items-center gap-1.5 text-[12.5px] font-medium text-ink-0">
+    <div class="flex items-center gap-1.5 text-[length:var(--text-base)] font-medium text-ink-0">
       {label}
       {#if status}
         <span

@@ -81,9 +81,11 @@
   {onclick}
   onmouseenter={() => (hover = true)}
   onmouseleave={() => (hover = false)}
-  class="inline-flex h-8 cursor-pointer items-center gap-1.5 whitespace-nowrap rounded-sm px-3 text-[12.5px] font-medium transition-colors duration-100 disabled:cursor-not-allowed disabled:opacity-50 {full
+  class="inline-flex cursor-pointer items-center gap-1.5 whitespace-nowrap rounded-sm text-[length:var(--text-base)] font-medium transition-colors duration-100 disabled:cursor-not-allowed disabled:opacity-50 {full
     ? 'w-full'
     : ''} {className}"
+  style:height="var(--control-h)"
+  style:padding-inline="calc(var(--space-unit) * 3)"
   style:background={style.background}
   style:color={style.color}
   style:border={style.border}

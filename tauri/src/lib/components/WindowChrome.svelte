@@ -6,7 +6,8 @@
    *   │ [Spool mark] SPOOL / SUB   …center children…       [_]  [□]  [×] │
    *   └─────────────────────────────────────────────────────────────────┘
    *
-   * Renders as a 36px drag-region strip. Window controls call Tauri APIs.
+   * Renders as a drag-region strip sized by var(--chrome-h). Window
+   * controls call Tauri APIs.
    * Children render in the middle (catalog id, peer pill, search, etc.).
    *
    * Requires the Tauri window to be created with `decorations: false`.
@@ -44,7 +45,8 @@
 
 <div
   data-tauri-drag-region="deep"
-  class="flex h-10 shrink-0 items-center gap-3 border-b border-line-1 bg-black/30 pl-3.5"
+  class="flex shrink-0 items-center gap-3 border-b border-line-1 bg-black/30 pl-3.5"
+  style:height="var(--chrome-h)"
 >
   <SpoolMark size={18} color="var(--color-ink-1)" tape={accent ?? 'var(--color-spool)'} />
   <MonoLabel size={10.5}>SPOOL</MonoLabel>

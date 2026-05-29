@@ -25,7 +25,7 @@
   import { fmtCatalog, absDateTime } from '$lib/format';
   import { toasts } from '$lib/toasts.svelte';
   import type { GameEntry, ProtonVersion } from '$lib/types';
-  import WindowChrome from '$lib/components/WindowChrome.svelte';
+  import AppChrome from '$lib/components/AppChrome.svelte';
   import MonoLabel from '$lib/components/MonoLabel.svelte';
   import CatalogId from '$lib/components/CatalogId.svelte';
   import Btn from '$lib/components/Btn.svelte';
@@ -268,7 +268,7 @@
 </script>
 
 <div class="flex h-screen flex-col bg-bg-0 text-ink-0">
-  <WindowChrome sub="EDIT · ENTRY" {accent} />
+  <AppChrome sub="EDIT · ENTRY" {accent} onback={() => history.back()} />
 
   {#if error && !form}
     <main class="flex flex-1 flex-col items-center justify-center gap-3 px-6 text-center">

@@ -33,7 +33,8 @@
 </script>
 
 <span
-  class="font-mono inline-flex h-[18px] items-center gap-1.5 whitespace-nowrap rounded-sm px-1.5 text-[9.5px] uppercase leading-none tracking-[0.1em]"
+  class="font-mono inline-flex h-[18px] items-center gap-1.5 whitespace-nowrap rounded-sm text-[9.5px] uppercase leading-none tracking-[0.1em]"
+  style:padding-inline="calc(var(--space-unit) * 1.5)"
   style:background={soft ? 'transparent' : palette.bg}
   style:border={soft ? `1px solid ${palette.dot}44` : 'none'}
   style:color={palette.fg}

@@ -16,7 +16,7 @@
   import { onMount, onDestroy } from 'svelte';
   import { ArrowDownToLine, ArrowUpFromLine, Folder, Package, Pencil, Play, Trash2 } from '@lucide/svelte';
   import { openPath } from '@tauri-apps/plugin-opener';
-  import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
+  import { openView } from '$lib/nav';
   import { api, assetUrl } from '$lib/api';
   import { fmtCatalog } from '$lib/format';
   import { toasts } from '$lib/toasts.svelte';
@@ -251,24 +251,7 @@
 
   function openEdit() {
     onclose();
-    WebviewWindow.getByLabel('edit-game').then((win) => {
-      if (win) {
-        win.setFocus();
-        return;
-      }
-      new WebviewWindow('edit-game', {
-        url: `/edit?id=${encodeURIComponent(game.id)}`,
-        title: `Edit · ${game.game_name}`,
-        width: 720,
-        height: 660,
-        minWidth: 600,
-        minHeight: 480,
-        decorations: false,
-        resizable: true,
-        center: true,
-        backgroundColor: '#0b0c0e',
-      });
-    });
+    openView('edit', { id: game.id });
   }
 
   async function remove() {
