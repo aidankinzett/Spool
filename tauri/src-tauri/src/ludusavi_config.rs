@@ -39,7 +39,7 @@ pub struct Redirect {
 ///   * `backup.path` set to Spool's ludusavi-backup dir under app data
 ///   * `restore.path` == `backup.path`  — they must match for cloud sync
 ///   * `backup.format.chosen: simple`   — plain dirs so Phase 3 can parse
-///                                         mapping.yaml files
+///     mapping.yaml files
 ///   * `cloud:` block present            — Phase 4 fills in the remote
 pub fn ensure_config() -> AppResult<()> {
     let dir = paths::ludusavi_config_dir();
@@ -286,7 +286,7 @@ mod tests {
         let yaml = serde_yaml::to_string(&v).unwrap();
         std::fs::write(&file, yaml).unwrap();
 
-        let redirects = vec![Redirect {
+        let redirects = [Redirect {
             kind: "restore".into(),
             source: "C:/Users/alice".into(),
             target: "/home/deck/.local/share/Spool/prefixes/abc/drive_c/users/steamuser".into(),

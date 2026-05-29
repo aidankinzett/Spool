@@ -257,8 +257,8 @@ fn derive_windows_to_linux(
                     rules.insert((win_root, local_root));
                 }
                 PathClass::InstallDir { win_root, local_root } => {
-                    if local_root.is_some() {
-                        rules.insert((win_root, local_root.unwrap()));
+                    if let Some(local_root) = local_root {
+                        rules.insert((win_root, local_root));
                     } else {
                         tracing::warn!(
                             win_root,

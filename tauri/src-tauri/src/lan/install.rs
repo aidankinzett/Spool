@@ -1253,7 +1253,6 @@ async fn fetch_peer_artwork(
         }
         let _ = lib.save();
     }
-    drop(library);
     let _ = app.emit("library:changed", &new_game_id.to_string());
     cover_path.is_some()
 }
