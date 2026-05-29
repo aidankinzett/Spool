@@ -283,7 +283,7 @@ jobs:
           STAGE="$(mktemp -d)"
           install -Dm755 target/release/spool "$STAGE/spool"
           install -Dm644 icons/128x128.png "$STAGE/spool.png"
-          tar -czf "spool-${VERSION}-x86_64.tar.gz" -C "$STAGE" spool spool.png
+          tar -czf "target/release/bundle/appimage/spool-${VERSION}-x86_64.tar.gz" -C "$STAGE" spool spool.png
           rm -rf "$STAGE"
 
       - name: sccache stats
@@ -296,7 +296,7 @@ jobs:
           path: |
             tauri/src-tauri/target/release/bundle/appimage/Spool_*_amd64.AppImage
             tauri/src-tauri/target/release/bundle/appimage/Spool_*_amd64.AppImage.sig
-            tauri/src-tauri/spool-*-x86_64.tar.gz
+            tauri/src-tauri/target/release/bundle/appimage/spool-*-x86_64.tar.gz
           if-no-files-found: error
 
   release:
