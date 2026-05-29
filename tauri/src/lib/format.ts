@@ -63,16 +63,18 @@ export function fmtSize(mb: number | null | undefined): string {
 }
 
 /**
- * Bytes-per-second → "12.4 MB/s" / "342 KB/s" / "…" when 0. We jump
- * straight to MB/s once we cross 1 MiB because LAN transfers rarely
- * sit in the KB range for long.
+ * Bytes-per-second → network-style bitrate: "98.5 Mbps" / "342 Kbps" /
+ * "…" when 0. We report in bits-per-second (×8) using decimal scaling
+ * (1000, not 1024) to match how ISPs, routers, and Steam display speed —
+ * that's the number most people recognise for a network transfer.
  */
 export function fmtRate(bps: number | null | undefined): string {
   if (!bps || bps <= 0) return '…';
-  if (bps < 1024) return `${bps.toFixed(0)} B/s`;
-  if (bps < 1024 * 1024) return `${(bps / 1024).toFixed(1)} KB/s`;
-  if (bps < 1024 * 1024 * 1024) return `${(bps / (1024 * 1024)).toFixed(1)} MB/s`;
-  return `${(bps / (1024 * 1024 * 1024)).toFixed(2)} GB/s`;
+  const bits = bps * 8;
+  if (bits < 1000) return `${bits.toFixed(0)} bps`;
+  if (bits < 1000 * 1000) return `${(bits / 1000).toFixed(1)} Kbps`;
+  if (bits < 1000 * 1000 * 1000) return `${(bits / (1000 * 1000)).toFixed(1)} Mbps`;
+  return `${(bits / (1000 * 1000 * 1000)).toFixed(2)} Gbps`;
 }
 
 /** Sequential catalog number → "SPL-0042". */

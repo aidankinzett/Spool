@@ -73,11 +73,11 @@ describe("fmtRate", () => {
     expect(fmtRate(null)).toBe("…");
   });
 
-  it("scales across B/s, KB/s, MB/s, GB/s", () => {
-    expect(fmtRate(500)).toBe("500 B/s");
-    expect(fmtRate(2048)).toBe("2.0 KB/s");
-    expect(fmtRate(5 * 1024 * 1024)).toBe("5.0 MB/s");
-    expect(fmtRate(3 * 1024 * 1024 * 1024)).toBe("3.00 GB/s");
+  it("reports bitrate (×8) scaling across bps, Kbps, Mbps, Gbps", () => {
+    expect(fmtRate(100)).toBe("800 bps");
+    expect(fmtRate(1000)).toBe("8.0 Kbps");
+    expect(fmtRate(1_000_000)).toBe("8.0 Mbps");
+    expect(fmtRate(1_000_000_000)).toBe("8.00 Gbps");
   });
 });
 
