@@ -44,7 +44,8 @@
 
 <div
   data-tauri-drag-region="deep"
-  class="flex h-10 shrink-0 items-center gap-3 border-b border-line-1 bg-black/30 pl-3.5"
+  class="flex shrink-0 items-center gap-3 border-b border-line-1 bg-black/30 pl-3.5"
+  style:height="var(--chrome-h)"
 >
   <SpoolMark size={18} color="var(--color-ink-1)" tape={accent ?? 'var(--color-spool)'} />
   <MonoLabel size={10.5}>SPOOL</MonoLabel>
