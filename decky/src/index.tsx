@@ -9,6 +9,8 @@ import {
   ButtonItem,
   PanelSection,
   PanelSectionRow,
+  TextField,
+  ToggleField,
   staticClasses,
 } from "@decky/ui";
 import { useEffect, useState } from "react";
@@ -32,61 +34,110 @@ const getStatus = callable<
   { hasSession: boolean; game?: string; backedUp?: boolean; startedAt?: string }
 >("get_status");
 
+interface Settings {
+  spool_command: string;
+  session_file: string;
+  notify: boolean;
+}
+const getSettings = callable<[], Settings>("get_settings");
+const setSettings = callable<
+  [spool_command: string, session_file: string, notify: boolean],
+  Settings
+>("set_settings");
+
 function Content() {
   const [status, setStatus] = useState<Awaited<ReturnType<typeof getStatus>> | null>(
     null,
   );
+  const [settings, setLocalSettings] = useState<Settings | null>(null);
   const [busy, setBusy] = useState(false);
 
   const refresh = async () => setStatus(await getStatus());
   useEffect(() => {
     void refresh();
+    void getSettings().then(setLocalSettings);
   }, []);
 
+  // Persist a single changed field, optimistically updating local state.
+  const save = async (patch: Partial<Settings>) => {
+    const next = { ...(settings ?? { spool_command: "", session_file: "", notify: true }), ...patch };
+    setLocalSettings(next);
+    setLocalSettings(await setSettings(next.spool_command, next.session_file, next.notify));
+  };
+
   return (
-    <PanelSection title="Spool Backup">
-      <PanelSectionRow>
-        {status?.hasSession ? (
-          <div style={{ fontSize: "0.8rem", opacity: 0.85 }}>
-            Last session: <strong>{status.game}</strong>
-            <br />
-            {status.backedUp ? "Backed up ✓" : "Not yet backed up"}
-          </div>
-        ) : (
-          <div style={{ fontSize: "0.8rem", opacity: 0.7 }}>
-            No active Spool session recorded.
-          </div>
-        )}
-      </PanelSectionRow>
-      <PanelSectionRow>
-        <ButtonItem
-          layout="below"
-          disabled={busy || !status?.hasSession}
-          onClick={async () => {
-            setBusy(true);
-            if (status?.game) {
+    <>
+      <PanelSection title="Spool Backup">
+        <PanelSectionRow>
+          {status?.hasSession ? (
+            <div style={{ fontSize: "0.8rem", opacity: 0.85 }}>
+              Last session: <strong>{status.game}</strong>
+              <br />
+              {status.backedUp ? "Backed up ✓" : "Not yet backed up"}
+            </div>
+          ) : (
+            <div style={{ fontSize: "0.8rem", opacity: 0.7 }}>
+              No active Spool session recorded.
+            </div>
+          )}
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <ButtonItem
+            layout="below"
+            disabled={busy || !status?.hasSession}
+            onClick={async () => {
+              setBusy(true);
+              if (status?.game) {
+                toaster.toast({
+                  title: "Spool Backup",
+                  body: `Backing up ${status.game}…`,
+                });
+              }
+              const r = await backupNow();
               toaster.toast({
                 title: "Spool Backup",
-                body: `Backing up ${status.game}…`,
+                body: !r.acted
+                  ? "Nothing to back up"
+                  : r.ok
+                    ? `Backed up ${r.game} ✓`
+                    : `Backup failed: ${r.reason ?? "unknown error"}`,
               });
-            }
-            const r = await backupNow();
-            toaster.toast({
-              title: "Spool Backup",
-              body: !r.acted
-                ? "Nothing to back up"
-                : r.ok
-                  ? `Backed up ${r.game} ✓`
-                  : `Backup failed: ${r.reason ?? "unknown error"}`,
-            });
-            setBusy(false);
-            void refresh();
-          }}
-        >
-          Back up now
-        </ButtonItem>
-      </PanelSectionRow>
-    </PanelSection>
+              setBusy(false);
+              void refresh();
+            }}
+          >
+            Back up now
+          </ButtonItem>
+        </PanelSectionRow>
+      </PanelSection>
+
+      <PanelSection title="Settings">
+        <PanelSectionRow>
+          <ToggleField
+            label="Notify on backup"
+            description="Show a toast when a backup starts and finishes."
+            checked={settings?.notify ?? true}
+            onChange={(value) => void save({ notify: value })}
+          />
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <TextField
+            label="Spool command"
+            description="Override the auto-detected spool / spool-launcher.sh path."
+            value={settings?.spool_command ?? ""}
+            onChange={(e) => void save({ spool_command: e.target.value })}
+          />
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <TextField
+            label="Session file"
+            description="Override the auto-detected active-session.json path."
+            value={settings?.session_file ?? ""}
+            onChange={(e) => void save({ session_file: e.target.value })}
+          />
+        </PanelSectionRow>
+      </PanelSection>
+    </>
   );
 }
 
