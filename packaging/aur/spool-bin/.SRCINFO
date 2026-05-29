@@ -1,0 +1,19 @@
+pkgbase = spool-bin
+	pkgdesc = Game library + save-management wrapper (Tauri). Launches Windows games via Proton on Linux.
+	pkgver = 0.1.0
+	pkgrel = 1
+	url = https://github.com/aidankinzett/Spool
+	arch = x86_64
+	license = MIT
+	depends = webkit2gtk-4.1
+	depends = gtk3
+	depends = libayatana-appindicator
+	depends = umu-launcher
+	depends = ludusavi
+	depends = rclone
+	provides = spool
+	conflicts = spool
+	source = spool-0.1.0-x86_64.tar.gz::https://github.com/aidankinzett/Spool/releases/download/v0.1.0/spool-0.1.0-x86_64.tar.gz
+	sha256sums = SKIP
+
+pkgname = spool-bin

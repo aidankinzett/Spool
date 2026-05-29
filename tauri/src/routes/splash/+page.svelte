@@ -1,0 +1,78 @@
+<script lang="ts">
+  import { onMount } from 'svelte';
+  import { listen } from '@tauri-apps/api/event';
+  import type { RunPhaseEvent } from '$lib/types';
+
+  let phase = $state<string>('restoring');
+  let message = $state<string>('Preparing…');
+
+  const LABELS: Record<string, string> = {
+    restoring: 'Restoring saves…',
+    launching: 'Launching game…',
+    playing: 'Starting…',
+    'backing-up': 'Backing up saves…',
+    done: 'Done',
+    error: 'Launch failed',
+  };
+
+  onMount(() => {
+    const unlisten = listen<RunPhaseEvent>('run:phase', (event) => {
+      phase = event.payload.phase;
+      message = event.payload.message ?? LABELS[phase] ?? phase;
+    });
+    return () => {
+      unlisten.then((fn) => fn());
+    };
+  });
+</script>
+
+<div class="splash">
+  <div class="logo">SPOOL</div>
+  <div class="spinner" class:error={phase === 'error'}></div>
+  <div class="label">{LABELS[phase] ?? message}</div>
+</div>
+
+<style>
+  :global(body) {
+    margin: 0;
+    background: #0b0c0e;
+    color: #e8eaed;
+    overflow: hidden;
+  }
+  .splash {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 1.25rem;
+    height: 100vh;
+    font-family: system-ui, sans-serif;
+  }
+  .logo {
+    font-weight: 700;
+    letter-spacing: 0.35em;
+    font-size: 1.1rem;
+    opacity: 0.8;
+  }
+  .spinner {
+    width: 36px;
+    height: 36px;
+    border: 3px solid #2a2d31;
+    border-top-color: #7aa2f7;
+    border-radius: 50%;
+    animation: spin 0.9s linear infinite;
+  }
+  .spinner.error {
+    border-top-color: #f7768e;
+    animation: none;
+  }
+  .label {
+    font-size: 0.95rem;
+    opacity: 0.85;
+  }
+  @keyframes spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+</style>

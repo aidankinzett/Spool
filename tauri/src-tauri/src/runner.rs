@@ -20,6 +20,8 @@ use crate::config::SharedConfig;
 use crate::error::{AppError, AppResult};
 use crate::library::SharedLibrary;
 use crate::ludusavi::LudusaviClient;
+use crate::ludusavi_config;
+use crate::redirects;
 use crate::sync::{self, AcquireOutcome};
 use crate::{process, paths, registry};
 use chrono::Utc;
@@ -119,6 +121,67 @@ fn os_toast_if_hidden(app: &AppHandle, title: &str, body: &str) {
     }
 }
 
+/// AppHandle-free backup core. Resolves the game's name + wine prefix from the
+/// library, runs `ludusavi backup`, and persists the entry's backup stats.
+/// Returns the bundle count + total bytes. Callers handle event emission and
+/// sync-server recording (best-effort) themselves.
+pub async fn backup_game_core(
+    ludusavi_client: &LudusaviClient,
+    ludusavi_exe: &Path,
+    config_dir: &Path,
+    library: &SharedLibrary,
+    game_id: &str,
+) -> AppResult<ManualBackupResult> {
+    let (game_name, use_proton, prefix_override) = {
+        let lib = library.lock().map_err(|_| AppError::LockPoisoned)?;
+        let entry = lib
+            .find(game_id)
+            .ok_or_else(|| AppError::Other(format!("game not found: {game_id}")))?;
+        (
+            entry.game_name.clone(),
+            entry.use_proton,
+            entry.wine_prefix_path.clone(),
+        )
+    };
+    let wine_prefix: Option<PathBuf> = if cfg!(not(windows)) && use_proton {
+        Some(
+            prefix_override
+                .filter(|p| !p.trim().is_empty())
+                .map(PathBuf::from)
+                .unwrap_or_else(|| crate::proton::game_prefix_path(game_id)),
+        )
+    } else {
+        None
+    };
+
+    let out = ludusavi_client
+        .backup(ludusavi_exe, config_dir, &game_name, wine_prefix.as_deref())
+        .await
+        .map_err(|e| AppError::Other(format!("ludusavi backup: {e}")))?;
+
+    let (game_count, bytes_total) = out
+        .overall
+        .as_ref()
+        .map(|o| (o.total_games as i32, o.total_bytes))
+        .unwrap_or((0, 0));
+
+    if game_count > 0 {
+        let mut lib = library.lock().map_err(|_| AppError::LockPoisoned)?;
+        if let Some(entry) = lib.entries.iter_mut().find(|e| e.id == game_id) {
+            entry.save_backup_count += 1;
+            entry.save_last_backed_up_at = Some(Utc::now());
+            entry.save_backup_size_mb = (bytes_total as f64) / (1024.0 * 1024.0);
+            entry.sync_badge = Some("synced".to_string());
+        }
+        lib.save()?;
+    }
+
+    Ok(ManualBackupResult {
+        game_count,
+        bytes_total: bytes_total as u64,
+    })
+}
+
 /// Manual backup — runs `ludusavi backup` for a single game outside
 /// the full play workflow. Used by the right-click "Back up saves
 /// now" action so users can snapshot saves before risky operations
@@ -131,42 +194,34 @@ fn os_toast_if_hidden(app: &AppHandle, title: &str, body: &str) {
 /// sync event so peers can see the new save.
 #[tauri::command]
 pub async fn manual_backup(app: AppHandle, game_id: String) -> AppResult<ManualBackupResult> {
-    // Snapshot config + library entry first; drop the locks before
-    // the long-running subprocess await.
-    let (game_name, ludusavi_exe) = manual_prep(&app, &game_id)?;
+    let ludusavi_exe = {
+        let config = app.state::<SharedConfig>();
+        let cfg = config.lock().map_err(|_| AppError::LockPoisoned)?;
+        crate::paths::resolve_ludusavi_path(&cfg.data.ludusavi_path).ok_or_else(|| {
+            AppError::Other(
+                "Ludusavi is not configured. Place ludusavi in your PATH or configure it in Settings.".into(),
+            )
+        })?
+    };
+    let config_dir = crate::paths::ludusavi_config_dir();
     let ludusavi_client = app.state::<LudusaviClient>();
-    let out = ludusavi_client
-        .backup(&ludusavi_exe, &game_name)
-        .await
-        .map_err(|e| AppError::Other(format!("ludusavi backup: {e}")))?;
+    let library = app.state::<SharedLibrary>();
 
-    let (game_count, bytes_total) = out
-        .overall
-        .as_ref()
-        .map(|o| (o.total_games as i32, o.total_bytes))
-        .unwrap_or((0, 0));
+    let result =
+        backup_game_core(&ludusavi_client, &ludusavi_exe, &config_dir, &library, &game_id).await?;
 
-    if game_count > 0 {
-        {
-            let library = app.state::<SharedLibrary>();
-            let mut lib = library.lock().map_err(|_| AppError::LockPoisoned)?;
-            if let Some(entry) = lib.entries.iter_mut().find(|e| e.id == game_id) {
-                entry.save_backup_count += 1;
-                entry.save_last_backed_up_at = Some(Utc::now());
-                entry.save_backup_size_mb = (bytes_total as f64) / (1024.0 * 1024.0);
-                entry.sync_badge = Some("synced".to_string());
-            }
-            lib.save()?;
-        }
+    if result.game_count > 0 {
         let _ = app.emit("library:changed", &game_id);
-        // Record on the sync server so peers see the new event.
-        sync::record_backup_event(&app, &game_name).await;
+        let game_name = {
+            let lib = library.lock().map_err(|_| AppError::LockPoisoned)?;
+            lib.find(&game_id).map(|e| e.game_name.clone())
+        };
+        if let Some(name) = game_name {
+            // Record on the sync server so peers see the new event.
+            sync::record_backup_event(&app, &name).await;
+        }
     }
-
-    Ok(ManualBackupResult {
-        game_count,
-        bytes_total: bytes_total as u64,
-    })
+    Ok(result)
 }
 
 /// Manual restore — runs `ludusavi restore` for a single game.
@@ -175,12 +230,24 @@ pub async fn manual_backup(app: AppHandle, game_id: String) -> AppResult<ManualB
 /// path).
 #[tauri::command]
 pub async fn manual_restore(app: AppHandle, game_id: String) -> AppResult<ManualRestoreResult> {
-    let (game_name, ludusavi_exe) = manual_prep(&app, &game_id)?;
+    let (game_name, ludusavi_exe, config_dir, wine_prefix) = manual_prep(&app, &game_id)?;
+    let game_folder = {
+        let library = app.state::<SharedLibrary>();
+        let lib = library.lock().map_err(|_| AppError::LockPoisoned)?;
+        lib.find(&game_id)
+            .and_then(|e| e.game_folder_path.as_ref().map(PathBuf::from))
+    };
     let ludusavi_client = app.state::<LudusaviClient>();
-    let out = ludusavi_client
-        .restore(&ludusavi_exe, &game_name)
-        .await
-        .map_err(|e| AppError::Other(format!("ludusavi restore: {e}")))?;
+    let out = restore_with_redirects(
+        &ludusavi_client,
+        &ludusavi_exe,
+        &config_dir,
+        &game_name,
+        wine_prefix.as_deref(),
+        game_folder.as_deref(),
+    )
+    .await
+    .map_err(|e| AppError::Other(format!("ludusavi restore: {e}")))?;
 
     if out
         .errors
@@ -219,30 +286,47 @@ pub struct ManualRestoreResult {
     pub game_count: i32,
 }
 
-/// Shared snapshot for the manual backup/restore commands. Pulls the
-/// game name + validated ludusavi path so the caller has everything
-/// it needs to await on the subprocess.
-fn manual_prep(app: &AppHandle, game_id: &str) -> AppResult<(String, PathBuf)> {
-    let game_name = {
+/// Snapshot for the manual backup/restore commands. Returns:
+///   (game_name, ludusavi_exe, config_dir, wine_prefix)
+///
+/// `wine_prefix` is `Some` only on non-Windows when the game has `use_proton`
+/// set; it is the prefix ROOT (not drive_c) passed as `--wine-prefix` to
+/// backup. Restore never takes a prefix — cross-device remapping is handled
+/// by redirects (Phase 3).
+fn manual_prep(app: &AppHandle, game_id: &str) -> AppResult<(String, PathBuf, PathBuf, Option<PathBuf>)> {
+    let (game_name, use_proton, prefix_override) = {
         let library = app.state::<SharedLibrary>();
         let lib = library.lock().map_err(|_| AppError::LockPoisoned)?;
         let entry = lib
             .find(game_id)
             .ok_or_else(|| AppError::Other(format!("game not found: {game_id}")))?;
-        entry.game_name.clone()
+        (
+            entry.game_name.clone(),
+            entry.use_proton,
+            entry.wine_prefix_path.clone(),
+        )
     };
     let ludusavi_exe = {
         let config = app.state::<SharedConfig>();
         let cfg = config.lock().map_err(|_| AppError::LockPoisoned)?;
-        let p = cfg.data.ludusavi_path.clone();
-        if p.is_empty() || !PathBuf::from(&p).is_file() {
-            return Err(AppError::Other(
-                "Ludusavi is not configured. Set its path in Settings.".into(),
-            ));
-        }
-        PathBuf::from(p)
+        crate::paths::resolve_ludusavi_path(&cfg.data.ludusavi_path).ok_or_else(|| {
+            AppError::Other(
+                "Ludusavi is not configured. Place ludusavi in your PATH or configure it in Settings.".into(),
+            )
+        })?
     };
-    Ok((game_name, ludusavi_exe))
+    let config_dir = crate::paths::ludusavi_config_dir();
+    let wine_prefix = if cfg!(not(windows)) && use_proton {
+        Some(
+            prefix_override
+                .filter(|p| !p.trim().is_empty())
+                .map(PathBuf::from)
+                .unwrap_or_else(|| crate::proton::game_prefix_path(game_id)),
+        )
+    } else {
+        None
+    };
+    Ok((game_name, ludusavi_exe, config_dir, wine_prefix))
 }
 
 #[tauri::command]
@@ -263,7 +347,7 @@ pub async fn launch_game_inner(app: &AppHandle, game_id: &str) -> AppResult<()> 
     // the registry-level Run-As-Admin compat flag into the effective
     // `needs_admin` here so the launch path doesn't have to know
     // about the registry concept.
-    let (game_name, exe_path, needs_admin) = {
+    let (game_name, exe_path, needs_admin, use_proton, proton_version_path, wine_prefix_path, launch_args) = {
         let library = app.state::<SharedLibrary>();
         let lib = library.lock().map_err(|_| AppError::LockPoisoned)?;
         let entry = lib
@@ -274,20 +358,49 @@ pub async fn launch_game_inner(app: &AppHandle, game_id: &str) -> AppResult<()> 
         }
         let needs_admin =
             entry.run_as_admin || registry::run_as_admin_in_registry(&entry.exe_path);
-        (entry.game_name.clone(), entry.exe_path.clone(), needs_admin)
+        (
+            entry.game_name.clone(),
+            entry.exe_path.clone(),
+            needs_admin,
+            entry.use_proton,
+            entry.proton_version_path.clone(),
+            entry.wine_prefix_path.clone(),
+            entry.launch_args.clone(),
+        )
     };
 
     let ludusavi_exe = {
         let config = app.state::<SharedConfig>();
         let cfg = config.lock().map_err(|_| AppError::LockPoisoned)?;
-        let p = cfg.data.ludusavi_path.clone();
-        if p.is_empty() || !PathBuf::from(&p).is_file() {
-            return Err(AppError::Other(
-                "Ludusavi is not configured. Set its path in Settings.".into(),
-            ));
-        }
-        PathBuf::from(p)
+        crate::paths::resolve_ludusavi_path(&cfg.data.ludusavi_path).ok_or_else(|| {
+            AppError::Other(
+                "Ludusavi is not configured. Place ludusavi in your PATH or configure it in Settings.".into(),
+            )
+        })?
     };
+
+    let (umu_run_path, default_proton_path) = {
+        let config = app.state::<SharedConfig>();
+        let cfg = config.lock().map_err(|_| AppError::LockPoisoned)?;
+        (
+            cfg.data.umu_run_path.clone(),
+            cfg.data.default_proton_path.clone(),
+        )
+    };
+
+    // Resolve the launch plan (umu-run + Proton paths) *before* the long
+    // awaits below so a misconfiguration surfaces as a clean launch error.
+    let launch_plan = build_launch_plan(
+        game_id,
+        use_proton,
+        proton_version_path,
+        wine_prefix_path,
+        launch_args,
+        needs_admin,
+        &umu_run_path,
+        &default_proton_path,
+        &exe_path,
+    )?;
 
     let ludusavi_client = app.state::<LudusaviClient>();
     let result = run_workflow(
@@ -295,7 +408,7 @@ pub async fn launch_game_inner(app: &AppHandle, game_id: &str) -> AppResult<()> 
         game_id,
         &game_name,
         &exe_path,
-        needs_admin,
+        &launch_plan,
         &ludusavi_exe,
         &ludusavi_client,
     )
@@ -315,16 +428,172 @@ pub async fn launch_game_inner(app: &AppHandle, game_id: &str) -> AppResult<()> 
     result
 }
 
+/// Fully-resolved instructions for spawning a game, built once (before the
+/// async workflow) so any Proton/umu misconfiguration fails fast.
+struct LaunchPlan {
+    use_proton: bool,
+    umu_run: Option<PathBuf>,
+    proton_path: Option<PathBuf>,
+    prefix_root: PathBuf,
+    extra_args: Vec<String>,
+    run_as_admin: bool,
+}
+
+/// Resolves a [`LaunchPlan`] from the game's settings + app config. On
+/// non-Windows, a `.exe` without Proton enabled is a hard error (we won't
+/// try to exec a Windows binary natively). On Windows, Proton is ignored.
+#[allow(clippy::too_many_arguments)]
+fn build_launch_plan(
+    game_id: &str,
+    use_proton: bool,
+    proton_version_path: Option<String>,
+    wine_prefix_path: Option<String>,
+    launch_args: Option<String>,
+    needs_admin: bool,
+    umu_run_path: &str,
+    default_proton_path: &str,
+    exe_path: &str,
+) -> AppResult<LaunchPlan> {
+    let prefix_root = wine_prefix_path
+        .filter(|p| !p.trim().is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| crate::proton::game_prefix_path(game_id));
+    let extra_args: Vec<String> = launch_args
+        .as_deref()
+        .unwrap_or("")
+        .split_whitespace()
+        .map(String::from)
+        .collect();
+
+    let effective_proton = use_proton && cfg!(not(windows));
+
+    if effective_proton {
+        let umu_run = crate::proton::resolve_umu_run(Some(umu_run_path))?;
+        let proton_path = crate::proton::resolve_proton_path(
+            proton_version_path.as_deref(),
+            Some(default_proton_path),
+        )?;
+        return Ok(LaunchPlan {
+            use_proton: true,
+            umu_run: Some(umu_run),
+            proton_path: Some(proton_path),
+            prefix_root,
+            extra_args,
+            run_as_admin: false,
+        });
+    }
+
+    // Native path. Guard against trying to run a Windows exe natively on Linux.
+    if cfg!(not(windows)) && exe_path.to_ascii_lowercase().ends_with(".exe") {
+        return Err(AppError::Other(
+            "This is a Windows game — enable 'Run with Proton' in the game's Launch settings.".into(),
+        ));
+    }
+
+    Ok(LaunchPlan {
+        use_proton: false,
+        umu_run: None,
+        proton_path: None,
+        prefix_root,
+        extra_args,
+        run_as_admin: needs_admin,
+    })
+}
+
+/// Run a ludusavi restore with automatic cross-platform redirect generation.
+///
+/// Flow:
+///  1. Restore once — this pulls the latest cloud backup (via `--cloud-sync`)
+///     and lands files at the *recorded* absolute paths.
+///  2. Read the backup's `mapping.yaml` to discover the origin OS + paths.
+///  3. If the backup is foreign-origin (different OS / different prefix):
+///     a. Derive redirect rules (Windows paths → Proton prefix, or reverse).
+///     b. Write them into Spool's `config.yaml`.
+///     c. Restore *again* — now the redirects steer files to the right place.
+///  4. If same-origin: clear any stale redirects (idempotent).
+///
+/// The double-restore is safe: saves are small, restores are idempotent, and
+/// the single-launch lock ensures nothing else is touching the prefix.
+///
+/// Returns the `ApiOutput` from the effective (second) restore, or the first
+/// restore's output if no redirect was needed.
+#[allow(clippy::too_many_arguments)]
+async fn restore_with_redirects(
+    ludusavi_client: &LudusaviClient,
+    ludusavi_exe: &Path,
+    config_dir: &Path,
+    game_name: &str,
+    prefix_root: Option<&Path>,
+    game_folder: Option<&Path>,
+) -> AppResult<crate::ludusavi::ApiOutput> {
+    // ── Pass 1: restore (pulls cloud) ─────────────────────────────────────
+    let first = ludusavi_client.restore(ludusavi_exe, config_dir, game_name).await?;
+
+    // ── Read mapping.yaml to detect origin ────────────────────────────────
+    let backup_dir = ludusavi_config::backup_dir();
+    let Some(origin) = redirects::read_backup_origin(&backup_dir, game_name) else {
+        // No backup on disk yet (first-ever session). Nothing to redirect.
+        tracing::info!(game_name, "no mapping.yaml found — skipping redirect generation");
+        return Ok(first);
+    };
+
+    tracing::info!(
+        game_name,
+        origin_os = ?origin.os,
+        path_count = origin.paths.len(),
+        "mapping.yaml read"
+    );
+
+    let local_win_user = redirects::local_windows_username();
+    let n = redirects::apply_redirects_for_restore(
+        &origin,
+        prefix_root,
+        game_folder,
+        local_win_user.as_deref(),
+    )?;
+
+    if n == 0 {
+        // Same-origin backup — clear any redirects left from a prior cross-
+        // device restore so they don't linger.
+        let _ = ludusavi_config::set_redirects(&[]);
+        tracing::info!(game_name, "same-origin backup — no redirects needed");
+        return Ok(first);
+    }
+
+    tracing::info!(
+        game_name,
+        redirects = n,
+        "foreign-origin backup — running second restore with redirects"
+    );
+
+    // ── Pass 2: restore with redirects in place ───────────────────────────
+    let second = ludusavi_client.restore(ludusavi_exe, config_dir, game_name).await?;
+
+    // Clear redirects after the restore so they don't affect unrelated
+    // operations (e.g. a manual backup). We regenerate on every restore.
+    let _ = ludusavi_config::set_redirects(&[]);
+
+    Ok(second)
+}
+
 async fn run_workflow(
     app: &AppHandle,
     game_id: &str,
     game_name: &str,
     exe_path: &str,
-    run_as_admin: bool,
+    launch: &LaunchPlan,
     ludusavi_exe: &Path,
     ludusavi_client: &LudusaviClient,
 ) -> AppResult<()> {
     tracing::info!(game_id, game_name, "starting run workflow");
+
+    let config_dir = crate::paths::ludusavi_config_dir();
+    // Wine prefix for backup (Proton games on Linux only).
+    let wine_prefix: Option<PathBuf> = if launch.use_proton {
+        Some(launch.prefix_root.clone())
+    } else {
+        None
+    };
 
     // ── Phase 1: restore ──────────────────────────────────────────────
     emit_phase(app, game_id, "restoring", Some("Restoring saves…"));
@@ -334,7 +603,21 @@ async fn run_workflow(
         &format!("{game_name} — restoring before launch"),
     );
     tracing::info!(game_name, "ludusavi restore");
-    let restore = ludusavi_client.restore(ludusavi_exe, game_name).await?;
+    let game_folder = {
+        // Snapshot the install folder path for install-dir save redirect (Phase 3).
+        let library = app.state::<SharedLibrary>();
+        let lib = library.lock().map_err(|_| AppError::LockPoisoned)?;
+        lib.find(game_id)
+            .and_then(|e| e.game_folder_path.as_ref().map(PathBuf::from))
+    };
+    let restore = restore_with_redirects(
+        ludusavi_client,
+        ludusavi_exe,
+        &config_dir,
+        game_name,
+        wine_prefix.as_deref(),
+        game_folder.as_deref(),
+    ).await?;
     if restore
         .errors
         .as_ref()
@@ -386,8 +669,38 @@ async fn run_workflow(
     }
 
     emit_phase(app, game_id, "playing", None);
-    tracing::info!(exe_path, run_as_admin, "launching game process");
+    tracing::info!(exe_path, use_proton = launch.use_proton, "launching game process");
     let session_start = Utc::now();
+
+    // For Proton launches, make sure the prefix root exists; umu/Proton
+    // populates it (drive_c, registry) on first run.
+    if launch.use_proton {
+        if let Err(e) = std::fs::create_dir_all(&launch.prefix_root) {
+            return Err(AppError::Other(format!(
+                "failed to create Proton prefix dir {:?}: {e}",
+                launch.prefix_root
+            )));
+        }
+    }
+    let spec = if launch.use_proton {
+        process::LaunchSpec::Proton {
+            umu_run: launch
+                .umu_run
+                .as_deref()
+                .expect("umu_run resolved for proton launch"),
+            prefix_root: &launch.prefix_root,
+            proton_path: launch
+                .proton_path
+                .as_deref()
+                .expect("proton_path resolved for proton launch"),
+            game_id,
+            extra_args: &launch.extra_args,
+        }
+    } else {
+        process::LaunchSpec::Native {
+            run_as_admin: launch.run_as_admin,
+        }
+    };
 
     // Spawn the lock-heartbeat task. Pings /heartbeat every 30s so
     // the sync server doesn't mark our lock stale during long
@@ -395,7 +708,7 @@ async fn run_workflow(
     // outlive the game.
     let heartbeat = sync::start_heartbeat(app.clone(), game_name.to_string());
 
-    let spawn_result = process::run_game(&exe_pathbuf, run_as_admin).await;
+    let spawn_result = process::run_game(&exe_pathbuf, spec).await;
     let session_end = Utc::now();
 
     // Always abort the heartbeat + release the lock — even if launch
@@ -437,6 +750,10 @@ async fn run_workflow(
     sync::push_playtime_delta(app, game_name, session_minutes).await;
 
     // ── Phase 3: backup (skip if ludusavi didn't recognise the game) ──
+    // Tracks whether the local backup succeeded but the cloud upload
+    // (`--cloud-sync`) failed — we still finish the workflow (the save is
+    // safe on disk) but warn the user rather than claiming a clean sync.
+    let mut cloud_upload_failed = false;
     if !no_saves {
         emit_phase(app, game_id, "backing-up", Some("Backing up saves…"));
         os_toast_if_hidden(
@@ -445,8 +762,25 @@ async fn run_workflow(
             &format!("{game_name} — session ended"),
         );
         tracing::info!(game_name, "ludusavi backup");
-        match ludusavi_client.backup(ludusavi_exe, game_name).await {
+        match ludusavi_client.backup(ludusavi_exe, &config_dir, game_name, wine_prefix.as_deref()).await {
             Ok(out) => {
+                // ludusavi reports a cloud-sync failure as a non-fatal field on
+                // an otherwise-successful backup (the local snapshot still
+                // landed). Surface it — silently swallowing this is what made a
+                // dead rclone path / bad WebDAV creds look like "backup
+                // succeeded" while nothing reached the remote.
+                if out
+                    .errors
+                    .as_ref()
+                    .and_then(|e| e.cloud_sync_failed.as_ref())
+                    .is_some()
+                {
+                    cloud_upload_failed = true;
+                    tracing::warn!(
+                        game_name,
+                        "post-session cloud sync failed — saves backed up locally but not uploaded"
+                    );
+                }
                 if let Some(overall) = &out.overall {
                     if overall.total_games > 0 {
                         let library = app.state::<SharedLibrary>();
@@ -502,14 +836,31 @@ async fn run_workflow(
         }
     }
 
-    emit_phase(app, game_id, "done", None);
+    // Game Mode: flag the active-session record so the Decky plugin's
+    // forced-close fallback knows this session already backed up. No-op
+    // when there's no record (desktop / Windows launches).
+    crate::session::mark_backed_up();
+
     // Final completion ping — the most useful native toast since the
-    // user may have closed the game and walked away from the PC.
-    os_toast_if_hidden(
-        app,
-        "Saves backed up",
-        &format!("{game_name} — session complete"),
-    );
+    // user may have closed the game and walked away from the PC. When the
+    // cloud upload failed we carry a message on the `done` phase so the
+    // frontend shows a sticky warning toast instead of a clean "synced".
+    if cloud_upload_failed {
+        let warning = "Saves backed up locally, but cloud upload failed. Check your cloud save settings.";
+        emit_phase(app, game_id, "done", Some(warning));
+        os_toast_if_hidden(
+            app,
+            "Cloud upload failed",
+            &format!("{game_name} — saves are safe locally but didn't reach the cloud"),
+        );
+    } else {
+        emit_phase(app, game_id, "done", None);
+        os_toast_if_hidden(
+            app,
+            "Saves backed up",
+            &format!("{game_name} — session complete"),
+        );
+    }
     tracing::info!(game_name, "run workflow complete");
     Ok(())
 }

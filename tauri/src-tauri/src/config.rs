@@ -52,17 +52,25 @@ pub struct ConfigData {
     pub lan_share_enabled: bool,
     pub lan_share_port: u16,
     pub lan_install_dir: String,
-    /// Max aggregate LAN download throughput in MB/s. `0` = unlimited.
-    /// Applied across all parallel file fetches by the throttle in
-    /// `download_one_file` — convergent rather than precise, so brief
-    /// bursts can exceed the cap before the next sleep brings the
-    /// average back.
+    /// Max aggregate LAN download throughput in Mbps (megabits/s,
+    /// decimal). `0` = unlimited. Applied across all parallel file
+    /// fetches by the throttle in `download_one_file` — convergent
+    /// rather than precise, so brief bursts can exceed the cap before
+    /// the next sleep brings the average back.
     pub lan_download_max_mbps: f64,
 
     pub torbox_enabled: bool,
     pub torbox_api_key: String,
     pub download_dir: String,
     pub download_sources: Vec<String>,
+
+    // ── Proton / Linux launch ────────────────────────────────────────────
+    /// Path to the `umu-run` launcher. `""` = autodetect (`/usr/bin/umu-run`
+    /// then PATH). Linux-only; ignored on Windows.
+    pub umu_run_path: String,
+    /// Default Proton build directory used when a game doesn't override it.
+    /// `""` = auto-pick the newest discovered Proton.
+    pub default_proton_path: String,
 
     /// Touch-optimised UI mode (handheld). Resolved to a concrete
     /// desktop/touch density at boot by `lib/uiMode.svelte.ts`.
@@ -73,6 +81,19 @@ pub struct ConfigData {
     /// new installs) so the toast appears on the first close-to-tray.
     pub tray_intro_seen: bool,
 
+    // ── Cloud / rclone settings ──────────────────────────────────────────
+    pub cloud_provider: String,
+    pub cloud_remote: String,
+    pub cloud_path: String,
+    pub rclone_path: String,
+    pub rclone_args: String,
+    /// WebDAV connection details for the `webdav` provider. Written when the
+    /// user connects a WebDAV remote (manually or via the self-hosted Spool
+    /// server). The password is never stored here — ludusavi obscures it into
+    /// rclone.conf; these two fields only let the settings form re-display the
+    /// active connection.
+    pub cloud_webdav_url: String,
+    pub cloud_webdav_username: String,
 }
 
 impl Default for ConfigData {
@@ -96,8 +117,17 @@ impl Default for ConfigData {
             torbox_api_key: String::new(),
             download_dir: String::new(),
             download_sources: Vec::new(),
+            umu_run_path: String::new(),
+            default_proton_path: String::new(),
             ui_mode: UiMode::default(),
             tray_intro_seen: false,
+            cloud_provider: String::new(),
+            cloud_remote: String::new(),
+            cloud_path: "Spool/ludusavi-backup".to_string(),
+            rclone_path: String::new(),
+            rclone_args: "--fast-list --ignore-checksum".to_string(),
+            cloud_webdav_url: String::new(),
+            cloud_webdav_username: String::new(),
         }
     }
 }
@@ -146,6 +176,7 @@ impl Config {
         let mut changed = false;
         changed |= ensure_device_identity(&mut data);
         changed |= auto_detect_ludusavi(&mut data);
+        changed |= auto_detect_umu_run(&mut data);
         changed |= stamp_current_exe(&mut data);
 
         let cfg = Self { data };
@@ -234,10 +265,28 @@ fn auto_detect_ludusavi(data: &mut ConfigData) -> bool {
     false
 }
 
-/// Stamps `spool_exe` with the current process path so generated launcher
-/// stubs (the Armoury Crate stub, etc.) know where to call back to.
+/// Locates `umu-run` (`/usr/bin/umu-run` then PATH) on non-Windows. Returns
+/// true if a path was set. No-op on Windows where Proton launch isn't used.
+fn auto_detect_umu_run(data: &mut ConfigData) -> bool {
+    if cfg!(windows) {
+        return false;
+    }
+    if !data.umu_run_path.is_empty() && PathBuf::from(&data.umu_run_path).is_file() {
+        return false;
+    }
+    if let Ok(p) = crate::proton::resolve_umu_run(None) {
+        data.umu_run_path = p.to_string_lossy().to_string();
+        return true;
+    }
+    false
+}
+
+/// Stamps `spool_exe` with the process path so generated launcher stubs (the
+/// Armoury Crate stub, etc.) know where to call back to. Uses the AppImage-
+/// aware resolver so this is the stable `.AppImage` path, not the ephemeral
+/// /tmp mount, when running as an AppImage.
 fn stamp_current_exe(data: &mut ConfigData) -> bool {
-    if let Ok(exe) = env::current_exe() {
+    if let Some(exe) = paths::spool_executable() {
         let s = exe.to_string_lossy().to_string();
         if data.spool_exe != s {
             data.spool_exe = s;
@@ -275,6 +324,20 @@ pub fn update_config(
     let mut cfg = state.lock().map_err(|_| AppError::LockPoisoned)?;
     cfg.data = data;
     cfg.save()?;
+
+    let rclone_val = crate::paths::resolve_rclone_path(&cfg.data.rclone_path)
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_default();
+
+    // Sync cloud/rclone settings to Spool-owned ludusavi config.yaml
+    let _ = crate::ludusavi_config::set_cloud(
+        Some(&cfg.data.cloud_provider),
+        Some(&cfg.data.cloud_remote),
+        Some(&cfg.data.cloud_path),
+        Some(&rclone_val),
+        Some(&cfg.data.rclone_args),
+    );
+
     Ok(cfg.data.clone())
 }
 
@@ -287,4 +350,22 @@ pub fn detect_ludusavi(state: State<'_, SharedConfig>) -> AppResult<String> {
         cfg.save()?;
     }
     Ok(cfg.data.ludusavi_path.clone())
+}
+
+/// The host OS, so the frontend can gate Linux-only UI (Proton settings).
+/// Returns `"windows"`, `"linux"`, or `"macos"` (Rust's `std::env::consts::OS`).
+#[tauri::command]
+pub fn app_platform() -> String {
+    std::env::consts::OS.to_string()
+}
+
+/// Runs umu-run auto-detection on demand (Settings → Compatibility). Returns
+/// the resulting path (empty string if nothing was found). Persists if found.
+#[tauri::command]
+pub fn detect_umu_run(state: State<'_, SharedConfig>) -> AppResult<String> {
+    let mut cfg = state.lock().map_err(|_| AppError::LockPoisoned)?;
+    if auto_detect_umu_run(&mut cfg.data) {
+        cfg.save()?;
+    }
+    Ok(cfg.data.umu_run_path.clone())
 }

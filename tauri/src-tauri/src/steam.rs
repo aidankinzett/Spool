@@ -227,10 +227,14 @@ pub async fn add_to_steam(
     };
     drop(save_path_str); // not used yet — placeholder for future per-game start dir
 
-    // 2. Spool binary path. The current process exe is the right target —
-    //    `cli` mode parses --run from forwarded launches.
-    let spool_exe = std::env::current_exe()
-        .map_err(|e| AppError::Other(format!("can't resolve own exe path: {e}")))?;
+    // 2. Spool binary path. `cli` mode parses --run from forwarded launches.
+    //    Use the AppImage-aware resolver: when running as an AppImage,
+    //    current_exe() is an ephemeral /tmp mount that only exists while Spool
+    //    is running (so the shortcut would only work with Spool already open,
+    //    and shows a garbage path in Steam properties). spool_executable()
+    //    returns the stable .AppImage path via $APPIMAGE.
+    let spool_exe = crate::paths::spool_executable()
+        .ok_or_else(|| AppError::Other("can't resolve own exe path".to_string()))?;
     let spool_exe_str = spool_exe.to_string_lossy().to_string();
     let spool_start_dir = spool_exe
         .parent()

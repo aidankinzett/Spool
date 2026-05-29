@@ -159,10 +159,11 @@ impl LudusaviClient {
     pub async fn search(
         &self,
         ludusavi_exe: &Path,
+        config_dir: &Path,
         query: &str,
     ) -> AppResult<Vec<SearchCandidate>> {
-        let hits = run_find(ludusavi_exe, query).await?;
-        let manifest = self.manifest_or_load(ludusavi_exe).await?;
+        let hits = run_find(ludusavi_exe, config_dir, query).await?;
+        let manifest = self.manifest_or_load(ludusavi_exe, config_dir).await?;
 
         let mut candidates: Vec<SearchCandidate> = hits
             .games
@@ -191,24 +192,36 @@ impl LudusaviClient {
     pub async fn restore(
         &self,
         ludusavi_exe: &Path,
+        config_dir: &Path,
         game_name: &str,
     ) -> AppResult<ApiOutput> {
-        run_api(ludusavi_exe, &["restore", "--api", "--cloud-sync", "--force", game_name]).await
+        run_api(ludusavi_exe, config_dir, &["restore", "--api", "--cloud-sync", "--force", game_name]).await
     }
 
-    /// Runs `ludusavi backup --api --cloud-sync --force <name>` and parses
-    /// the JSON output. Same forgiving behaviour as `restore`.
+    /// Runs `ludusavi backup --api --cloud-sync --force <name>` and optionally
+    /// passes `--wine-prefix <prefix>` for Proton games so ludusavi finds saves
+    /// inside the prefix's drive_c tree.
     pub async fn backup(
         &self,
         ludusavi_exe: &Path,
+        config_dir: &Path,
         game_name: &str,
+        wine_prefix: Option<&Path>,
     ) -> AppResult<ApiOutput> {
-        run_api(ludusavi_exe, &["backup", "--api", "--cloud-sync", "--force", game_name]).await
+        let mut args = vec!["backup", "--api", "--cloud-sync", "--force", game_name];
+        let prefix_str;
+        if let Some(pfx) = wine_prefix {
+            prefix_str = pfx.to_string_lossy().into_owned();
+            args.push("--wine-prefix");
+            args.push(&prefix_str);
+        }
+        run_api(ludusavi_exe, config_dir, &args).await
     }
 
     async fn manifest_or_load(
         &self,
         ludusavi_exe: &Path,
+        config_dir: &Path,
     ) -> AppResult<Arc<HashMap<String, ManifestEntry>>> {
         // Read-side fast path.
         {
@@ -219,7 +232,7 @@ impl LudusaviClient {
         }
         // Slow path: load the manifest from ludusavi. Cheap to hold the
         // write lock since this only happens once per session.
-        let manifest = load_manifest(ludusavi_exe).await?;
+        let manifest = load_manifest(ludusavi_exe, config_dir).await?;
         let arc = Arc::new(manifest);
         let mut guard = self.manifest.write().await;
         *guard = Some(Arc::clone(&arc));
@@ -235,12 +248,14 @@ impl Default for LudusaviClient {
 
 // ── Subprocess helpers ──────────────────────────────────────────────────────
 
-/// Builds a `Command` that won't flash a console window on Windows.
-/// ludusavi.exe is a console subsystem binary, so without `CREATE_NO_WINDOW`
-/// every invocation pops up a cmd window for a fraction of a second (or
-/// longer, for restore/backup) on top of the Spool UI.
-fn hidden_command(exe: &Path) -> Command {
+/// Builds a `Command` pre-loaded with `--config <config_dir>` so every
+/// ludusavi invocation uses Spool's owned config (backup path, cloud remote,
+/// redirects) rather than the user's personal ludusavi config.
+///
+/// On Windows also sets `CREATE_NO_WINDOW` to avoid a console flash.
+fn hidden_command(exe: &Path, config_dir: &Path) -> Command {
     let mut cmd = Command::new(exe);
+    cmd.args(["--config", &config_dir.to_string_lossy()]);
     #[cfg(windows)]
     {
         // CREATE_NO_WINDOW — winbase.h. Avoids a winapi dep for one constant.
@@ -249,14 +264,21 @@ fn hidden_command(exe: &Path) -> Command {
     cmd
 }
 
-async fn run_find(ludusavi_exe: &Path, query: &str) -> AppResult<FindOutput> {
-    let output = hidden_command(ludusavi_exe)
+async fn run_find(ludusavi_exe: &Path, config_dir: &Path, query: &str) -> AppResult<FindOutput> {
+    let output = hidden_command(ludusavi_exe, config_dir)
         .args(["find", "--api", "--fuzzy", "--multiple", query])
         .output()
         .await
         .map_err(|e| AppError::Other(format!("failed to spawn ludusavi: {e}")))?;
 
     let stdout = String::from_utf8_lossy(&output.stdout);
+    if !output.status.success() && stdout.trim().is_empty() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(AppError::Other(format!(
+            "ludusavi find failed: {}",
+            stderr.trim()
+        )));
+    }
     if stdout.trim().is_empty() {
         // ludusavi exits non-zero on no matches; surface an empty set.
         return Ok(FindOutput { games: HashMap::new() });
@@ -269,13 +291,20 @@ async fn run_find(ludusavi_exe: &Path, query: &str) -> AppResult<FindOutput> {
 /// shared by `restore` and `backup`. Treats empty stdout as a successful
 /// no-op (ludusavi sometimes exits non-zero with no output when the game
 /// isn't in its manifest, which we surface as "no saves to handle").
-async fn run_api(ludusavi_exe: &Path, args: &[&str]) -> AppResult<ApiOutput> {
-    let output = hidden_command(ludusavi_exe)
+async fn run_api(ludusavi_exe: &Path, config_dir: &Path, args: &[&str]) -> AppResult<ApiOutput> {
+    let output = hidden_command(ludusavi_exe, config_dir)
         .args(args)
         .output()
         .await
         .map_err(|e| AppError::Other(format!("failed to spawn ludusavi: {e}")))?;
     let stdout = String::from_utf8_lossy(&output.stdout);
+    if !output.status.success() && stdout.trim().is_empty() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(AppError::Other(format!(
+            "ludusavi execution failed: {}",
+            stderr.trim()
+        )));
+    }
     if stdout.trim().is_empty() {
         return Ok(ApiOutput::default());
     }
@@ -283,8 +312,8 @@ async fn run_api(ludusavi_exe: &Path, args: &[&str]) -> AppResult<ApiOutput> {
         .map_err(|e| AppError::Other(format!("failed to parse ludusavi output: {e}")))
 }
 
-async fn load_manifest(ludusavi_exe: &Path) -> AppResult<HashMap<String, ManifestEntry>> {
-    let output = hidden_command(ludusavi_exe)
+async fn load_manifest(ludusavi_exe: &Path, config_dir: &Path) -> AppResult<HashMap<String, ManifestEntry>> {
+    let output = hidden_command(ludusavi_exe, config_dir)
         .args(["manifest", "show", "--api"])
         .output()
         .await
@@ -404,19 +433,133 @@ pub async fn search_games(
     query: String,
 ) -> AppResult<Vec<SearchCandidate>> {
     let ludusavi_exe = ludusavi_path_or_err(&config)?;
-    ludusavi.search(&ludusavi_exe, query.trim()).await
+    let config_dir = crate::paths::ludusavi_config_dir();
+    ludusavi.search(&ludusavi_exe, &config_dir, query.trim()).await
 }
 
-/// Opens the configured ludusavi executable in GUI mode (`ludusavi gui`).
-/// Used by toast CTAs that ask the user to resolve a state in ludusavi
-/// (cloud-sync conflict, missing manifest entry, etc.).
+/// Opens ludusavi in GUI mode against Spool's owned config dir so the user
+/// can configure the cloud remote, rclone, or inspect the backup state —
+/// all within the Spool-managed config rather than their personal one.
 #[tauri::command]
 pub async fn open_ludusavi_gui(config: State<'_, SharedConfig>) -> AppResult<()> {
     let ludusavi_exe = ludusavi_path_or_err(&config)?;
+    let config_dir = crate::paths::ludusavi_config_dir();
     Command::new(&ludusavi_exe)
-        .arg("gui")
+        .args(["--config", &config_dir.to_string_lossy(), "gui"])
         .spawn()
         .map_err(|e| AppError::Other(format!("failed to spawn ludusavi gui: {e}")))?;
+    Ok(())
+}
+
+/// Configure ludusavi's owned config to use a WebDAV cloud remote by delegating
+/// to `ludusavi cloud set webdav`.
+///
+/// This is the only correct mechanism: ludusavi creates the backing rclone
+/// remote (obscuring the password into rclone.conf) and references it by id in
+/// its `config.yaml`. Writing the YAML by hand leaves the password unset and the
+/// remote unusable — which is the bug this replaces.
+///
+/// `provider` is one of ludusavi's WebDAV vendors: `other`, `nextcloud`,
+/// `owncloud`, `sharepoint`, `sharepoint-ntlm` (empty → `other`).
+///
+/// `obscure_password` is for Spool's own self-hosted store, which runs
+/// `rclone serve webdav --auth-proxy`. That server `Reveal()`s the incoming
+/// basic-auth password before validating it, so the on-wire password must
+/// itself be rclone-obscured. We obscure once here; ludusavi obscures a second
+/// time for storage; the client reveals one layer on the wire; the server
+/// reveals the last — netting the real credential. A normal WebDAV server
+/// (Nextcloud, etc.) wants the plaintext password, so leave this `false` there.
+pub async fn apply_webdav_remote(
+    config: &SharedConfig,
+    url: &str,
+    username: &str,
+    password: &str,
+    provider: &str,
+    obscure_password: bool,
+) -> AppResult<()> {
+    // Snapshot the configured ludusavi + rclone paths under one lock, then drop
+    // it before any await (lock discipline).
+    let (ludusavi_cfg, rclone_cfg) = {
+        let cfg = config.lock().map_err(|_| AppError::LockPoisoned)?;
+        (cfg.data.ludusavi_path.clone(), cfg.data.rclone_path.clone())
+    };
+
+    let ludusavi_exe = crate::paths::resolve_ludusavi_path(&ludusavi_cfg).ok_or_else(|| {
+        AppError::Other("Ludusavi is not configured. Place ludusavi in your PATH or configure it in Settings.".to_string())
+    })?;
+
+    // ludusavi shells out to rclone to obscure the password, so the owned config
+    // must point at a usable rclone before we invoke `cloud set`.
+    let rclone_exe = crate::paths::resolve_rclone_path(&rclone_cfg).ok_or_else(|| {
+        AppError::Other("rclone not found. Install rclone or set its path in Settings.".to_string())
+    })?;
+    crate::ludusavi_config::set_cloud(None, None, None, Some(&rclone_exe.to_string_lossy()), None)?;
+
+    let password = if obscure_password {
+        let out = Command::new(&rclone_exe)
+            .arg("obscure")
+            .arg(password)
+            .output()
+            .await
+            .map_err(|e| AppError::Other(format!("failed to run rclone obscure: {e}")))?;
+        if !out.status.success() {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            return Err(AppError::Other(format!("rclone obscure failed: {}", stderr.trim())));
+        }
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    } else {
+        password.to_string()
+    };
+
+    let config_dir = crate::paths::ludusavi_config_dir();
+    let provider = if provider.trim().is_empty() { "other" } else { provider.trim() };
+    let output = Command::new(&ludusavi_exe)
+        .args([
+            "--config",
+            &config_dir.to_string_lossy(),
+            "cloud",
+            "set",
+            "webdav",
+            "--url",
+            url,
+            "--username",
+            username,
+            "--password",
+            &password,
+            "--provider",
+            provider,
+        ])
+        .output()
+        .await
+        .map_err(|e| AppError::Other(format!("failed to run ludusavi cloud set webdav: {e}")))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(AppError::Other(format!(
+            "ludusavi cloud set webdav failed: {}",
+            stderr.trim()
+        )));
+    }
+    Ok(())
+}
+
+/// Manually configure a WebDAV cloud remote from the settings form. Persists the
+/// active provider + connection (sans password) so the UI reflects it.
+#[tauri::command]
+pub async fn set_cloud_webdav(
+    config: State<'_, SharedConfig>,
+    url: String,
+    username: String,
+    password: String,
+    provider: String,
+) -> AppResult<()> {
+    // Manual WebDAV (Nextcloud, ownCloud, …) expects the plaintext password.
+    apply_webdav_remote(config.inner(), &url, &username, &password, &provider, false).await?;
+    let mut cfg = config.lock().map_err(|_| AppError::LockPoisoned)?;
+    cfg.data.cloud_provider = "webdav".to_string();
+    cfg.data.cloud_webdav_url = url;
+    cfg.data.cloud_webdav_username = username;
+    cfg.save()?;
     Ok(())
 }
 
@@ -430,30 +573,21 @@ pub async fn search_by_exe(
     exe_path: String,
 ) -> AppResult<Vec<SearchCandidate>> {
     let ludusavi_exe = ludusavi_path_or_err(&config)?;
+    let config_dir = crate::paths::ludusavi_config_dir();
     let query = infer_name_from_exe(Path::new(&exe_path));
     if query.is_empty() {
         return Ok(Vec::new());
     }
-    ludusavi.search(&ludusavi_exe, &query).await
+    ludusavi.search(&ludusavi_exe, &config_dir, &query).await
 }
 
 fn ludusavi_path_or_err(config: &State<'_, SharedConfig>) -> AppResult<PathBuf> {
     let cfg = config.lock().map_err(|_| AppError::LockPoisoned)?;
     let path = cfg.data.ludusavi_path.clone();
     drop(cfg);
-    if path.is_empty() {
-        return Err(AppError::Other(
-            "Ludusavi is not configured. Set its path in Settings.".to_string(),
-        ));
-    }
-    let pb = PathBuf::from(&path);
-    if !pb.is_file() {
-        return Err(AppError::Other(format!(
-            "Ludusavi not found at {}",
-            path
-        )));
-    }
-    Ok(pb)
+    crate::paths::resolve_ludusavi_path(&path).ok_or_else(|| {
+        AppError::Other("Ludusavi is not configured. Place ludusavi in your PATH or configure it in Settings.".to_string())
+    })
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────────

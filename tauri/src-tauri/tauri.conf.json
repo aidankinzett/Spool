@@ -12,12 +12,14 @@
   "app": {
     "windows": [
       {
+        "label": "main",
         "title": "Spool",
         "width": 1280,
         "height": 800,
         "minWidth": 900,
         "minHeight": 600,
         "decorations": false,
+        "visible": false,
         "backgroundColor": "#0b0c0e"
       }
     ],
@@ -31,7 +33,12 @@
   },
   "bundle": {
     "active": true,
+    "category": "Game",
     "targets": ["nsis", "app", "dmg", "deb", "rpm", "appimage"],
+    "externalBin": [
+      "binaries/ludusavi",
+      "binaries/rclone"
+    ],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

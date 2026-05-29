@@ -18,13 +18,13 @@
    *   - Cancel → close without saving (form state is discarded)
    */
   import { onMount } from 'svelte';
-  import { Folder, RefreshCw, Trash2 } from '@lucide/svelte';
+  import { Download, Folder, RefreshCw, Trash2 } from '@lucide/svelte';
   import { open as openDialog } from '@tauri-apps/plugin-dialog';
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import { api, assetUrl } from '$lib/api';
   import { fmtCatalog, absDateTime } from '$lib/format';
   import { toasts } from '$lib/toasts.svelte';
-  import type { GameEntry } from '$lib/types';
+  import type { GameEntry, ProtonVersion } from '$lib/types';
   import AppChrome from '$lib/components/AppChrome.svelte';
   import MonoLabel from '$lib/components/MonoLabel.svelte';
   import CatalogId from '$lib/components/CatalogId.svelte';
@@ -40,6 +40,12 @@
   let saving = $state(false);
   let error = $state<string | null>(null);
 
+  // Proton launch (Linux only). Populated on mount.
+  let isLinux = $state(false);
+  let protonVersions = $state<ProtonVersion[]>([]);
+  let depsVerbs = $state('vcrun2022');
+  let depsInstalling = $state(false);
+
   const BRAND_SPOOL = '#d7c9a0';
   const accent = $derived(form?.accent_color ?? BRAND_SPOOL);
   const cover = $derived(assetUrl(form?.cover_image_path));
@@ -51,7 +57,11 @@
       form.exe_path !== original.exe_path ||
       (form.game_folder_path ?? '') !== (original.game_folder_path ?? '') ||
       form.run_as_admin !== original.run_as_admin ||
-      form.lan_shared !== original.lan_shared
+      form.lan_shared !== original.lan_shared ||
+      form.use_proton !== original.use_proton ||
+      (form.proton_version_path ?? '') !== (original.proton_version_path ?? '') ||
+      (form.wine_prefix_path ?? '') !== (original.wine_prefix_path ?? '') ||
+      (form.launch_args ?? '') !== (original.launch_args ?? '')
     );
   });
 
@@ -96,6 +106,20 @@
       }
       original = found;
       form = { ...found };
+      // Coerce nullable launch fields to '' so inputs/selects bind cleanly;
+      // converted back to null on save. dirty-compare uses `?? ''` so this
+      // doesn't register as a change.
+      form.proton_version_path ??= '';
+      form.wine_prefix_path ??= '';
+      form.launch_args ??= '';
+
+      // Linux-only Proton settings.
+      try {
+        isLinux = (await api.appPlatform()) === 'linux';
+        if (isLinux) protonVersions = await api.listProtonVersions();
+      } catch (e) {
+        console.error('[edit] proton init failed:', e);
+      }
     } catch (e) {
       error = String(e);
     }
@@ -128,6 +152,44 @@
     }
   }
 
+  async function installDeps() {
+    if (!form || depsInstalling) return;
+    const verbs = depsVerbs.trim();
+    if (!verbs) return;
+    depsInstalling = true;
+    try {
+      await api.installProtonDeps(form.id, verbs);
+      toasts.show({
+        kind: 'ok',
+        label: 'PROTON',
+        title: 'Dependencies installed',
+        sub: verbs,
+        catalog: fmtCatalog(form.catalog_number),
+      });
+    } catch (e) {
+      toasts.show({
+        kind: 'bad',
+        label: 'PROTON · DEPS',
+        title: "Couldn't install dependencies",
+        sub: String(e),
+      });
+    } finally {
+      depsInstalling = false;
+    }
+  }
+
+  async function browsePrefix() {
+    if (!form) return;
+    const picked = await openDialog({
+      title: 'Pick the Wine prefix folder',
+      directory: true,
+      multiple: false,
+    });
+    if (typeof picked === 'string') {
+      form.wine_prefix_path = picked;
+    }
+  }
+
   async function refetchCover() {
     if (!form) return;
     try {
@@ -157,7 +219,12 @@
     if (!form) return;
     saving = true;
     try {
-      await api.updateGame($state.snapshot(form));
+      const payload = $state.snapshot(form);
+      // Empty optional launch fields persist as null, not "".
+      payload.proton_version_path = payload.proton_version_path || null;
+      payload.wine_prefix_path = payload.wine_prefix_path || null;
+      payload.launch_args = payload.launch_args || null;
+      await api.updateGame(payload);
       await getCurrentWindow().close();
     } catch (e) {
       error = String(e);
@@ -343,10 +410,34 @@
               : 'Required by some games (mostly older / DRM-laden). Off by default. Triggers a UAC prompt at launch.',
             launchRunAs,
           )}
+          {#if isLinux}
+            {@render field(
+              'Run with Proton',
+              'Launch this Windows game through Proton (umu-run) on Linux. Required to run .exe games here.',
+              protonToggle,
+            )}
+            {#if form!.use_proton}
+              {@render field(
+                'Proton version',
+                'Which Proton build to launch with. Auto picks the newest installed.',
+                protonSelect,
+              )}
+              {@render field(
+                'Wine prefix',
+                'Override the per-game prefix folder. Leave blank for the Spool default.',
+                prefixField,
+              )}
+              {@render field(
+                'Install dependencies',
+                'Install Windows runtimes into this prefix via winetricks (space-separated, e.g. vcrun2022 dotnet48). Needs UMU/GE Proton.',
+                depsRow,
+              )}
+            {/if}
+          {/if}
           {@render field(
-            'Coming soon',
-            'Launch arguments, Proton runner choice, environment variables, and window mode will land with their schema.',
-            launchSoon,
+            'Launch arguments',
+            'Extra command-line arguments passed after the executable.',
+            argsField,
           )}
 
           {#snippet launchRunAs()}
@@ -364,8 +455,57 @@
               {/if}
             </div>
           {/snippet}
-          {#snippet launchSoon()}
-            <span class="text-[11.5px] text-ink-3">—</span>
+          {#snippet protonToggle()}
+            <Toggle bind:checked={form!.use_proton} aria-label="Run with Proton" />
+          {/snippet}
+          {#snippet protonSelect()}
+            <select
+              bind:value={form!.proton_version_path}
+              style="color-scheme: dark"
+              class="font-mono rounded-[4px] border border-line-1 bg-bg-2 px-2 py-1 text-[11.5px] text-ink-0"
+            >
+              <option style="background: var(--color-bg-2); color: var(--color-ink-0)" value="">Auto (newest installed)</option>
+              {#each protonVersions as p (p.path)}
+                <option style="background: var(--color-bg-2); color: var(--color-ink-0)" value={p.path}>{p.name}</option>
+              {/each}
+            </select>
+          {/snippet}
+          {#snippet prefixField()}
+            <div class="flex gap-1.5">
+              <TextField
+                bind:value={
+                  () => form!.wine_prefix_path ?? '',
+                  (v) => (form!.wine_prefix_path = v)
+                }
+                mono
+                full
+                placeholder="Spool default"
+              />
+              <Btn variant="ghost" onclick={browsePrefix}>
+                {#snippet icon()}<Folder size={14} />{/snippet}
+                Browse
+              </Btn>
+            </div>
+          {/snippet}
+          {#snippet argsField()}
+            <TextField
+              bind:value={
+                () => form!.launch_args ?? '',
+                (v) => (form!.launch_args = v)
+              }
+              mono
+              full
+              placeholder="--windowed -nolauncher"
+            />
+          {/snippet}
+          {#snippet depsRow()}
+            <div class="flex gap-1.5">
+              <TextField bind:value={depsVerbs} mono full placeholder="vcrun2022" />
+              <Btn variant="ghost" onclick={installDeps} disabled={depsInstalling}>
+                {#snippet icon()}<Download size={14} />{/snippet}
+                {depsInstalling ? 'Installing…' : 'Install'}
+              </Btn>
+            </div>
           {/snippet}
         {:else if tab === 'sharing'}
           {@render field(

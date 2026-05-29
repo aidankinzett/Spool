@@ -18,7 +18,7 @@
   import { open as openDialog } from '@tauri-apps/plugin-dialog';
   import { api } from '$lib/api';
   import { toasts } from '$lib/toasts.svelte';
-  import type { ConfigData, LanPeer, SyncStatus } from '$lib/types';
+  import type { ConfigData, DepStatus, LanPeer, ProtonVersion, SyncStatus } from '$lib/types';
   import AppChrome from '$lib/components/AppChrome.svelte';
   import MonoLabel from '$lib/components/MonoLabel.svelte';
   import Btn from '$lib/components/Btn.svelte';
@@ -46,16 +46,33 @@
   let registerUsername = $state('');
   let registerSubmitting = $state(false);
 
+  // Cloud saves — WebDAV. The password is never persisted to config (ludusavi
+  // obscures it into rclone.conf); it only lives here long enough to connect.
+  let webdavPassword = $state('');
+  let webdavConnecting = $state(false);
+  let serverStorageConnecting = $state(false);
+
   let torboxPinging = $state(false);
   let torboxLastPing = $state<{ ok: boolean; message: string } | null>(null);
   let newSourceUrl = $state('');
   let addingSource = $state(false);
+
+  // Proton / Compatibility (Linux only).
+  let isLinux = $state(false);
+  let protonVersions = $state<ProtonVersion[]>([]);
+  let deps = $state<DepStatus[]>([]);
+  let depsLoading = $state(false);
 
   onMount(async () => {
     try {
       config = await api.getConfig();
       syncStatus = await api.currentSyncStatus();
       peers = await api.listLanPeers();
+      isLinux = (await api.appPlatform()) === 'linux';
+      if (isLinux) {
+        protonVersions = await api.listProtonVersions();
+        deps = await api.checkDependencies();
+      }
     } catch (e) {
       error = String(e);
     }
@@ -137,6 +154,84 @@
     }
   }
 
+  async function refreshDeps() {
+    depsLoading = true;
+    try { deps = await api.checkDependencies(); } finally { depsLoading = false; }
+  }
+
+  async function autoDetectUmu() {
+    if (!config) return;
+    const found = await api.detectUmuRun();
+    if (found) config.umu_run_path = found;
+    config = await api.getConfig();
+    await refreshDeps();
+  }
+
+  async function browseUmu() {
+    const picked = await openDialog({ title: 'Locate umu-run', multiple: false });
+    if (typeof picked === 'string' && config) {
+      config.umu_run_path = picked;
+      await persist();
+    }
+  }
+
+  async function browseRclone() {
+    const picked = await openDialog({ title: 'Locate rclone', multiple: false });
+    if (typeof picked === 'string' && config) {
+      config.rclone_path = picked;
+      await persist();
+    }
+  }
+
+  async function connectWebdav() {
+    if (!config) return;
+    webdavConnecting = true;
+    try {
+      await api.setCloudWebdav(
+        config.cloud_webdav_url.trim(),
+        config.cloud_webdav_username.trim(),
+        webdavPassword,
+        'other',
+      );
+      webdavPassword = '';
+      config = await api.getConfig();
+      toasts.show({ kind: 'ok', label: 'CLOUD', title: 'WebDAV connected', sub: 'Saves will sync to this remote.' });
+    } catch (e) {
+      toasts.show({ kind: 'bad', label: 'CLOUD · WEBDAV', title: "Couldn't connect", sub: String(e) });
+    } finally {
+      webdavConnecting = false;
+    }
+  }
+
+  async function useServerStorage() {
+    serverStorageConnecting = true;
+    try {
+      await api.useServerSaveStorage();
+      config = await api.getConfig();
+      toasts.show({ kind: 'ok', label: 'CLOUD', title: 'Save storage connected', sub: 'Saves will sync to your Spool server.' });
+    } catch (e) {
+      toasts.show({ kind: 'bad', label: 'CLOUD · SERVER', title: "Couldn't connect storage", sub: String(e) });
+    } finally {
+      serverStorageConnecting = false;
+    }
+  }
+
+  async function disconnectServerStorage() {
+    if (!config) return;
+    serverStorageConnecting = true;
+    try {
+      config.cloud_provider = '';
+      config.cloud_webdav_url = '';
+      config.cloud_webdav_username = '';
+      await persist();
+      toasts.show({ kind: 'ok', label: 'CLOUD', title: 'Disconnected', sub: 'Save storage turned off.' });
+    } catch (e) {
+      toasts.show({ kind: 'bad', label: 'CLOUD · SERVER', title: "Couldn't disconnect", sub: String(e) });
+    } finally {
+      serverStorageConnecting = false;
+    }
+  }
+
   async function browseLanInstallDir() {
     const picked = await openDialog({ title: 'Pick the LAN install folder', directory: true, multiple: false });
     if (typeof picked === 'string' && config) {
@@ -203,7 +298,7 @@
     document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
 
-  const NAV_GROUPS = [
+  const NAV_GROUPS = $derived([
     {
       id: 'display',
       title: 'Display',
@@ -216,6 +311,10 @@
       title: 'Library',
       items: [
         { id: 'ludusavi', title: 'Ludusavi', sub: 'Save backup engine' },
+        ...(isLinux
+          ? [{ id: 'compat', title: 'Compatibility', sub: 'Proton / umu-run' }]
+          : []),
+        { id: 'cloud-saves', title: 'Cloud saves', sub: 'rclone remote' },
         { id: 'artwork', title: 'Cover artwork', sub: 'SteamGridDB' },
       ],
     },
@@ -236,7 +335,7 @@
         { id: 'torbox', title: 'TorBox', sub: 'Debrid download provider' },
       ],
     },
-  ] as const;
+  ]);
 </script>
 
 <div class="flex h-screen flex-col bg-bg-0 text-ink-0">
@@ -377,6 +476,239 @@
                 </SettingsCard>
               </div>
 
+              <!-- Compatibility (Proton) — Linux only -->
+              {#if isLinux}
+                <div id="compat">
+                  <SettingsCard title="Compatibility (Proton)" helper="Run Windows games on Linux via Proton. umu-run manages the runtime; each game gets its own prefix.">
+
+                    <!-- Dependency doctor -->
+                    {#if deps.length > 0}
+                      <div class="border-b border-dashed border-line-1 px-[18px] py-[14px]">
+                        <div class="mb-2 flex items-center justify-between">
+                          <span class="text-[12px] font-medium text-ink-1">Dependencies</span>
+                          <button
+                            onclick={refreshDeps}
+                            disabled={depsLoading}
+                            class="flex items-center gap-1 font-mono text-[10px] uppercase tracking-[0.1em] text-ink-3 hover:text-ink-1 disabled:opacity-40"
+                          >
+                            <RefreshCcw size={10} class={depsLoading ? 'animate-spin' : ''} />
+                            Refresh
+                          </button>
+                        </div>
+                        <div class="flex flex-col gap-2">
+                          {#each deps as dep (dep.name)}
+                            <div class="flex flex-col gap-0.5">
+                              <div class="flex items-center gap-2">
+                                <span
+                                  class="size-[6px] flex-shrink-0 rounded-full"
+                                  style:background={dep.found ? 'var(--color-ok)' : 'var(--color-warn)'}
+                                ></span>
+                                <span class="font-mono text-[12px] text-ink-0">{dep.name}</span>
+                                {#if dep.found}
+                                  <span
+                                    class="rounded-[3px] px-1.5 py-px font-mono text-[9.5px] uppercase tracking-[0.08em]"
+                                    style:background={
+                                      dep.source === 'bundled' ? 'rgba(126,198,255,0.12)' :
+                                      dep.source === 'config'  ? 'rgba(215,201,160,0.12)' :
+                                                                  'rgba(120,220,160,0.12)'
+                                    }
+                                    style:color={
+                                      dep.source === 'bundled' ? 'var(--color-info)' :
+                                      dep.source === 'config'  ? 'var(--color-spool)' :
+                                                                  'var(--color-ok)'
+                                    }
+                                  >{dep.source}</span>
+                                {/if}
+                              </div>
+                              {#if dep.found}
+                                <p class="ml-4 font-mono text-[10.5px] text-ink-3 break-all">{dep.path}</p>
+                              {:else}
+                                <div class="ml-4 flex flex-col gap-0.5">
+                                  <p class="text-[11px] text-warn">Not found</p>
+                                  {#if dep.install_hint}
+                                    <code class="rounded-[3px] bg-black/30 px-2 py-1 font-mono text-[10.5px] text-ink-2 select-all">{dep.install_hint}</code>
+                                  {/if}
+                                </div>
+                              {/if}
+                            </div>
+                          {/each}
+                        </div>
+                      </div>
+                    {/if}
+
+                    <SettingsRow
+                      label="umu-run"
+                      helper={config.umu_run_path ? 'Detected — launcher reachable' : 'Install umu-launcher or browse to umu-run'}
+                      status={config.umu_run_path ? 'ok' : 'warn'}
+                    >
+                      {#snippet extras()}
+                        <TextField bind:value={config!.umu_run_path} placeholder="/usr/bin/umu-run" mono full oncommit={persist} />
+                        <Btn variant="ghost" onclick={autoDetectUmu}>
+                          {#snippet icon()}<Sparkles size={14} />{/snippet}
+                          Auto-detect
+                        </Btn>
+                        <Btn variant="ghost" onclick={browseUmu}>
+                          {#snippet icon()}<Folder size={14} />{/snippet}
+                          Browse
+                        </Btn>
+                      {/snippet}
+                    </SettingsRow>
+                    <SettingsRow label="Default Proton" helper="Used when a game doesn't pick its own version. Auto chooses the newest installed.">
+                      {#snippet extras()}
+                        <select
+                          bind:value={config!.default_proton_path}
+                          onchange={persist}
+                          style="color-scheme: dark"
+                          class="font-mono rounded-[4px] border border-line-1 bg-bg-2 px-2 py-1 text-[11.5px] text-ink-0"
+                        >
+                          <option style="background: var(--color-bg-2); color: var(--color-ink-0)" value="">Auto (newest installed)</option>
+                          {#each protonVersions as p (p.path)}
+                            <option style="background: var(--color-bg-2); color: var(--color-ink-0)" value={p.path}>{p.name}</option>
+                          {/each}
+                        </select>
+                      {/snippet}
+                    </SettingsRow>
+                  </SettingsCard>
+                </div>
+              {/if}
+
+              <!-- Cloud saves (rclone) -->
+              <div id="cloud-saves">
+                <SettingsCard title="Cloud saves (rclone)" helper="Configure a cloud remote here, then use 'Open Ludusavi settings' to run rclone config / authenticate.">
+                  
+                  {#if config.cloud_provider === 'spool-server'}
+                    <!-- Connected to the self-hosted Spool server (turnkey path). -->
+                    <SettingsRow
+                      label="Save storage"
+                      status="ok"
+                      helper="Saves sync to your Spool server's built-in storage."
+                    >
+                      {#snippet extras()}
+                        <Btn variant="ghost" onclick={disconnectServerStorage} disabled={serverStorageConnecting}>
+                          {#snippet icon()}<Trash2 size={14} />{/snippet}
+                          {serverStorageConnecting ? 'Working…' : 'Disconnect'}
+                        </Btn>
+                      {/snippet}
+                    </SettingsRow>
+                    <SettingsRow label="Server" helper="WebDAV endpoint provided by your Spool server">
+                      {#snippet control()}
+                        <TextField value={config!.cloud_webdav_url} mono full readonly />
+                      {/snippet}
+                    </SettingsRow>
+                    <SettingsRow label="Account">
+                      {#snippet control()}
+                        <TextField value={config!.cloud_webdav_username} mono readonly />
+                      {/snippet}
+                    </SettingsRow>
+                  {:else}
+                    {#if !config.cloud_provider || (config.cloud_provider === 'custom' && !config.cloud_remote)}
+                      <div class="mx-[18px] mb-3.5 rounded-sm border border-dashed border-warn/40 bg-warn/5 p-3 text-[11.5px] text-ink-2">
+                        Cloud sync is not configured — saves are backed up locally only.
+                      </div>
+                    {/if}
+
+                    {#if config.sync_server_enabled && config.sync_server_url && config.sync_server_api_key}
+                      <SettingsRow
+                        label="Self-hosted storage"
+                        helper="Sync saves to your Spool server's built-in WebDAV store — no extra setup."
+                      >
+                        {#snippet extras()}
+                          <Btn variant="primary" onclick={useServerStorage} disabled={serverStorageConnecting}>
+                            {#snippet icon()}<Sparkles size={14} />{/snippet}
+                            {serverStorageConnecting ? 'Connecting…' : 'Use my Spool server for save storage'}
+                          </Btn>
+                        {/snippet}
+                      </SettingsRow>
+                    {/if}
+
+                    <SettingsRow label="Provider" helper="Choose a cloud storage provider or Custom for a custom rclone remote name">
+                      {#snippet extras()}
+                        <select
+                          bind:value={config!.cloud_provider}
+                          onchange={persist}
+                          style="color-scheme: dark"
+                          class="rounded-[4px] border border-line-1 bg-bg-2 px-2 py-1 text-[11.5px] text-ink-0"
+                        >
+                          <option style="background: var(--color-bg-2); color: var(--color-ink-0)" value="">Disabled</option>
+                          <option style="background: var(--color-bg-2); color: var(--color-ink-0)" value="custom">Custom (rclone remote)</option>
+                          <option style="background: var(--color-bg-2); color: var(--color-ink-0)" value="google-drive">Google Drive</option>
+                          <option style="background: var(--color-bg-2); color: var(--color-ink-0)" value="onedrive">OneDrive</option>
+                          <option style="background: var(--color-bg-2); color: var(--color-ink-0)" value="dropbox">Dropbox</option>
+                          <option style="background: var(--color-bg-2); color: var(--color-ink-0)" value="box">Box</option>
+                          <option style="background: var(--color-bg-2); color: var(--color-ink-0)" value="ftp">FTP</option>
+                          <option style="background: var(--color-bg-2); color: var(--color-ink-0)" value="smb">SMB</option>
+                          <option style="background: var(--color-bg-2); color: var(--color-ink-0)" value="webdav">WebDAV</option>
+                        </select>
+                      {/snippet}
+                    </SettingsRow>
+
+                    {#if config.cloud_provider === 'custom'}
+                      <SettingsRow label="Remote" helper="rclone remote name (e.g. bazzite, gdrive, b2)">
+                        {#snippet control()}
+                          <TextField bind:value={config!.cloud_remote} placeholder="bazzite" mono oncommit={persist} />
+                        {/snippet}
+                      </SettingsRow>
+                    {/if}
+
+                    {#if config.cloud_provider === 'webdav'}
+                      <SettingsRow label="WebDAV URL" helper="e.g. https://nextcloud.example.com/remote.php/dav/files/me">
+                        {#snippet control()}
+                          <TextField bind:value={config!.cloud_webdav_url} placeholder="https://host/webdav" mono full />
+                        {/snippet}
+                      </SettingsRow>
+                      <SettingsRow label="Username">
+                        {#snippet control()}
+                          <TextField bind:value={config!.cloud_webdav_username} placeholder="username" mono />
+                        {/snippet}
+                      </SettingsRow>
+                      <SettingsRow label="Password" helper="Stored obscured by rclone, never saved in Spool's config">
+                        {#snippet extras()}
+                          <TextField bind:value={webdavPassword} masked placeholder="password" mono full />
+                          <Btn
+                            variant="primary"
+                            onclick={connectWebdav}
+                            disabled={webdavConnecting || !config!.cloud_webdav_url || !config!.cloud_webdav_username}
+                          >
+                            {#snippet icon()}<Check size={14} />{/snippet}
+                            {webdavConnecting ? 'Connecting…' : 'Connect'}
+                          </Btn>
+                        {/snippet}
+                      </SettingsRow>
+                    {/if}
+
+                    <SettingsRow label="Remote path" helper="Subpath on the remote where saves will be synced">
+                      {#snippet control()}
+                        <TextField bind:value={config!.cloud_path} placeholder="Spool/ludusavi-backup" mono oncommit={persist} />
+                      {/snippet}
+                    </SettingsRow>
+
+                    <SettingsRow label="rclone binary" helper="Path to rclone executable (leave blank to let ludusavi find it)">
+                      {#snippet extras()}
+                        <TextField bind:value={config!.rclone_path} placeholder="rclone" mono full oncommit={persist} />
+                        <Btn variant="ghost" onclick={browseRclone}>
+                          {#snippet icon()}<Folder size={14} />{/snippet}
+                          Browse
+                        </Btn>
+                      {/snippet}
+                    </SettingsRow>
+
+                    <SettingsRow label="rclone arguments" helper="Additional arguments passed to rclone calls">
+                      {#snippet control()}
+                        <TextField bind:value={config!.rclone_args} placeholder="--fast-list --ignore-checksum" mono oncommit={persist} />
+                      {/snippet}
+                    </SettingsRow>
+                  {/if}
+
+                  <div class="flex justify-end px-[18px] py-[10px] bg-bg-0">
+                    <Btn variant="ghost" onclick={() => api.openLudusaviGui().catch(err => toasts.show({ kind: 'bad', label: 'LUDUSAVI', title: 'Could not open settings', sub: String(err) }))}>
+                      {#snippet icon()}<Layers size={14} />{/snippet}
+                      Open Ludusavi settings
+                    </Btn>
+                  </div>
+
+                </SettingsCard>
+              </div>
+
               <!-- Cover artwork section -->
               <div id="artwork">
                 <SettingsCard title="Cover artwork" helper="Cover, hero, and logo art is fetched from SteamGridDB when you add a game.">
@@ -489,14 +821,14 @@
 
                         <SettingsRow label="Download speed limit"
                           helper={config.lan_download_max_mbps > 0
-                            ? `Capped at ${config.lan_download_max_mbps} MB/s across all parallel files.`
+                            ? `Capped at ${config.lan_download_max_mbps} Mbps across all parallel files.`
                             : 'Unlimited — transfers use whatever bandwidth they can get.'}>
                           {#snippet control()}
                             <div class="flex items-center gap-1.5">
                               <input
                                 type="number"
                                 min="0"
-                                step="0.5"
+                                step="1"
                                 bind:value={config!.lan_download_max_mbps}
                                 onblur={() => {
                                   if (!config) return;
@@ -507,7 +839,7 @@
                                 }}
                                 class="font-mono h-7 w-20 rounded-sm border border-line-1 bg-bg-2 px-2 text-right text-[12px] text-ink-0 outline-none focus:border-line-3"
                               />
-                              <span class="font-mono text-[10px] uppercase tracking-[0.1em] text-ink-3">MB/s</span>
+                              <span class="font-mono text-[10px] uppercase tracking-[0.1em] text-ink-3">Mbps</span>
                             </div>
                           {/snippet}
                         </SettingsRow>
@@ -607,7 +939,7 @@
                           {/snippet}
                         </SettingsRow>
 
-                        <SettingsRow label="API key" helper="Generated when you register an account on the server.">
+                        <SettingsRow label="API key" helper="Generated once when you register. On your other devices, paste this same key — don't register again.">
                           {#snippet extras()}
                             <TextField
                               bind:value={config!.sync_server_api_key}
@@ -627,9 +959,12 @@
                         {#if registerOpen}
                           <div class="border-l-2 border-spool/40 bg-bg-2/40 mx-[18px] mb-3 px-4 py-3">
                             <div class="font-mono mb-2 text-[10px] uppercase tracking-[0.1em] text-spool">Register new account</div>
+                            <div class="mb-3 rounded-sm border border-dashed border-spool/40 bg-spool/5 p-2.5 text-[11px] leading-[1.45] text-ink-2">
+                              <span class="font-medium text-ink-1">Do this once.</span> Your account is shared across all your devices. On your other PCs, paste this same API key instead of registering again — that's what makes saves sync and play-locking work together.
+                            </div>
                             <p class="mb-3 text-[11.5px] leading-[1.45] text-ink-2">
-                              Enter the admin secret you set in the server's compose file, plus a username for this device.
-                              The server returns an API key that gets pasted in automatically.
+                              Enter the admin secret you set in the server's compose file, and a name for your account.
+                              The server returns an API key that gets pasted in automatically — reuse that same key on your other devices.
                             </p>
                             <div class="flex flex-col gap-2">
                               <div class="flex items-center gap-2">
@@ -637,8 +972,8 @@
                                 <TextField bind:value={registerAdminSecret} placeholder="ADMIN_SECRET from docker-compose.yml" mono masked full />
                               </div>
                               <div class="flex items-center gap-2">
-                                <span class="font-mono w-[120px] shrink-0 text-[10.5px] uppercase tracking-[0.08em] text-ink-2">Username</span>
-                                <TextField bind:value={registerUsername} placeholder="my-pc" mono full />
+                                <span class="font-mono w-[120px] shrink-0 text-[10.5px] uppercase tracking-[0.08em] text-ink-2">Account name</span>
+                                <TextField bind:value={registerUsername} placeholder="me" mono full />
                               </div>
                               <div class="mt-1 flex justify-end">
                                 <Btn onclick={submitRegister} disabled={registerSubmitting}>

@@ -28,11 +28,23 @@ export type ConfigData = {
   download_dir: string;
   download_sources: string[];
 
+  /** Path to `umu-run`. `""` = autodetect. Linux-only. */
+  umu_run_path: string;
+  /** Default Proton build dir; `""` = auto-pick newest. */
+  default_proton_path: string;
+
   ui_mode: UiMode;
 
   /** True after the close-to-tray intro toast has been shown once. */
   tray_intro_seen: boolean;
 
+  cloud_provider: string;
+  cloud_remote: string;
+  cloud_path: string;
+  rclone_path: string;
+  rclone_args: string;
+  cloud_webdav_url: string;
+  cloud_webdav_username: string;
 };
 
 // Mirror of the Rust `GameEntry` struct in src-tauri/src/library.rs.
@@ -57,6 +69,15 @@ export type GameEntry = {
   game_folder_path: string | null;
 
   run_as_admin: boolean;
+
+  /** Launch this Windows exe through Proton (umu-run) on Linux. */
+  use_proton: boolean;
+  /** Override Proton build dir; null = global default / auto. */
+  proton_version_path: string | null;
+  /** Override Wine prefix root; null = default prefixes dir / <id>. */
+  wine_prefix_path: string | null;
+  /** Extra launch args appended after the exe. */
+  launch_args: string | null;
 
   description: string;
   developer: string;
@@ -326,6 +347,28 @@ export type RunPhaseEvent = {
  * the backend. Empty / falsy manifest fields are the signal for the "add
  * without save tracking" path.
  */
+/**
+ * Resolution source for a dependency, from `check_dependencies`.
+ *   config   — path set explicitly by the user in Settings
+ *   bundled  — sidecar shipped alongside the Spool executable
+ *   system   — found on the system PATH
+ *   missing  — not found anywhere
+ */
+export type DepSource = 'config' | 'bundled' | 'system' | 'missing';
+
+/**
+ * Status of a single runtime dependency (umu-run, ludusavi, rclone).
+ * Mirrors `DepStatus` in src-tauri/src/diagnostics.rs.
+ */
+export type DepStatus = {
+  name: string;
+  found: boolean;
+  path: string;
+  source: DepSource;
+  /** Copy-paste install command for the detected distro, or "" if found. */
+  install_hint: string;
+};
+
 export type NewGame = {
   game_name: string;
   exe_path: string;
@@ -335,4 +378,16 @@ export type NewGame = {
   has_cloud_save?: boolean;
   manifest_install_dir?: string | null;
   save_paths?: string[];
+};
+
+/**
+ * A discovered Proton build, from `list_proton_versions`. Mirrors the Rust
+ * `ProtonVersion` struct in src-tauri/src/proton.rs.
+ *
+ *   source  "steam" (steamapps/common) | "compat" (compatibilitytools.d)
+ */
+export type ProtonVersion = {
+  name: string;
+  path: string;
+  source: string;
 };

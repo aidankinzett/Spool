@@ -9,10 +9,9 @@ jobs:
   build-windows:
     runs-on: windows-latest
     env:
-      # sccache wraps rustc and stores compiled object files in the
-      # GitHub Actions cache. Survives Cargo.lock churn that breaks
-      # the Swatinem/rust-cache key — only the changed crates rebuild.
-      SCCACHE_GHA_ENABLED: "true"
+      # sccache wraps rustc and stores compiled object files in a local
+      # directory cached by actions/cache. Survives Cargo.lock churn.
+      SCCACHE_DIR: "${{ github.workspace }}/.sccache"
       RUSTC_WRAPPER: "sccache"
       # rust-cache also serializes target/; disable that since sccache
       # is the source of truth for object files. Keep registry caching.
@@ -34,6 +33,15 @@ jobs:
 
       - name: Setup sccache
         uses: mozilla-actions/sccache-action@v0.0.6
+
+      - name: Sccache cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.sccache
+          key: sccache-${{ runner.os }}-${{ github.ref_name }}-${{ github.sha }}
+          restore-keys: |
+            sccache-${{ runner.os }}-${{ github.ref_name }}-
+            sccache-${{ runner.os }}-
 
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
@@ -78,6 +86,18 @@ jobs:
         working-directory: tauri
         run: bun install --frozen-lockfile
 
+      - name: Cache sidecars
+        id: cache-sidecars
+        uses: actions/cache@v4
+        with:
+          path: tauri/src-tauri/binaries
+          key: sidecars-${{ runner.os }}-${{ hashFiles('tauri/scripts/download-sidecars.js') }}
+
+      - name: Download sidecars
+        if: steps.cache-sidecars.outputs.cache-hit != 'true'
+        working-directory: tauri
+        run: bun run download-sidecars
+
       - name: Build Tauri bundle
         uses: tauri-apps/tauri-action@v0
         env:
@@ -110,7 +130,7 @@ jobs:
   build-linux:
     runs-on: ubuntu-22.04
     env:
-      SCCACHE_GHA_ENABLED: "true"
+      SCCACHE_DIR: "${{ github.workspace }}/.sccache"
       RUSTC_WRAPPER: "sccache"
       CARGO_INCREMENTAL: "0"
 
@@ -127,6 +147,15 @@ jobs:
 
       - name: Setup sccache
         uses: mozilla-actions/sccache-action@v0.0.6
+
+      - name: Sccache cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.sccache
+          key: sccache-${{ runner.os }}-${{ github.ref_name }}-${{ github.sha }}
+          restore-keys: |
+            sccache-${{ runner.os }}-${{ github.ref_name }}-
+            sccache-${{ runner.os }}-
 
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
@@ -151,6 +180,18 @@ jobs:
       - name: Install frontend dependencies
         working-directory: tauri
         run: bun install --frozen-lockfile
+
+      - name: Cache sidecars
+        id: cache-sidecars
+        uses: actions/cache@v4
+        with:
+          path: tauri/src-tauri/binaries
+          key: sidecars-${{ runner.os }}-${{ hashFiles('tauri/scripts/download-sidecars.js') }}
+
+      - name: Download sidecars
+        if: steps.cache-sidecars.outputs.cache-hit != 'true'
+        working-directory: tauri
+        run: bun run download-sidecars
 
       - name: Build Tauri AppImage
         # No tagName here — we publish in the release job after the
@@ -204,6 +245,22 @@ jobs:
           APPIMAGE=$(ls Spool_*_amd64.AppImage)
           bunx @tauri-apps/cli signer sign "$APPIMAGE"
 
+      - name: Package raw binary tarball (for AUR spool-bin)
+        # The AppImage bundles its own libs (and we strip libwayland from it);
+        # the AUR package instead wants the raw binary linking against system
+        # libs. Ship binary + icon; the PKGBUILD generates the .desktop.
+        working-directory: tauri/src-tauri
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          VERSION="${REF_NAME#v}"
+          STAGE="$(mktemp -d)"
+          install -Dm755 target/release/spool "$STAGE/spool"
+          install -Dm644 icons/128x128.png "$STAGE/spool.png"
+          tar -czf "target/release/bundle/appimage/spool-${VERSION}-x86_64.tar.gz" -C "$STAGE" spool spool.png
+          rm -rf "$STAGE"
+
       - name: sccache stats
         run: sccache --show-stats
 
@@ -214,6 +271,7 @@ jobs:
           path: |
             tauri/src-tauri/target/release/bundle/appimage/Spool_*_amd64.AppImage
             tauri/src-tauri/target/release/bundle/appimage/Spool_*_amd64.AppImage.sig
+            tauri/src-tauri/target/release/bundle/appimage/spool-*-x86_64.tar.gz
           if-no-files-found: error
 
   release:
@@ -272,10 +330,11 @@ jobs:
           WIN_SIG=$(ls artifacts/windows-bundle/Spool_*_x64-setup.exe.sig)
           LIN_APP=$(ls artifacts/linux-bundle/Spool_*_amd64.AppImage)
           LIN_SIG=$(ls artifacts/linux-bundle/Spool_*_amd64.AppImage.sig)
+          LIN_TAR=$(ls artifacts/linux-bundle/spool-*-x86_64.tar.gz)
           gh release create "$TAG_NAME" \
             --title "Spool $TAG_NAME" \
             --notes-file notes.md \
-            "$WIN_EXE" "$WIN_SIG" "$LIN_APP" "$LIN_SIG"
+            "$WIN_EXE" "$WIN_SIG" "$LIN_APP" "$LIN_SIG" "$LIN_TAR"
 
       - name: Build and upload latest.json updater manifest
         # tauri-action only emits latest.json on its own release-creation

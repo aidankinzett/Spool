@@ -28,17 +28,23 @@
 mod accent_backfill;
 mod browse_download;
 mod cli;
+mod diagnostics;
 mod config;
 mod error;
+mod gamemode;
 mod hydra;
 mod lan;
 mod launcher;
 mod library;
 mod ludusavi;
+mod ludusavi_config;
 mod paths;
 mod process;
+mod proton;
+mod redirects;
 mod registry;
 mod runner;
+mod session;
 mod size_backfill;
 mod steam;
 mod steamgriddb;
@@ -87,16 +93,49 @@ fn take_pending_run(state: State<'_, PendingRun>) -> Option<String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // ── Linux WebKitGTK rendering workaround ──────────────────────────────
+    // WebKitGTK's GPU-accelerated compositing + DMA-BUF renderer fail to
+    // initialise on many Linux GPU/compositor combos (AMD/radeonsi + Mesa on
+    // Wayland here; also common on NVIDIA), leaving a black window with no
+    // error. The ecosystem-standard fix is to disable both paths *before*
+    // the webview initialises. Set in-process (not via the launch env) so it
+    // works from the desktop entry, a terminal, and the AppImage alike.
+    //
+    // Only set when the user hasn't already chosen a value, so power users can
+    // still opt back into the GPU path. These are WebKit-specific and harmless
+    // to the umu-run/Proton children (which also strip GDK_* in process.rs).
+    #[cfg(target_os = "linux")]
+    {
+        if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
+            std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+        }
+        if std::env::var_os("WEBKIT_DISABLE_COMPOSITING_MODE").is_none() {
+            std::env::set_var("WEBKIT_DISABLE_COMPOSITING_MODE", "1");
+        }
+    }
+
     // Initialize tracing first — everything below logs through it. The
     // worker guard is bound to the function frame so background log
     // writes flush before the process exits.
     let _log_guard = init_tracing();
     tracing::info!("spool starting up");
 
+    // Headless one-shot backup (Decky plugin forced-close fallback). No GUI.
+    let initial_args: Vec<String> = std::env::args().collect();
+    if let CliMode::Backup { ref game_name } = cli::parse_args(&initial_args) {
+        std::process::exit(run_backup_headless(game_name));
+    }
+
     // One-shot migration: pull `%LOCALAPPDATA%\ludusavi-wrap\` data
     // into the new Spool dir on first run. No-op if already migrated,
     // if there's no legacy dir, or if Spool already has a library.
     paths::migrate_from_ludusavi_wrap();
+
+    // When running as an AppImage, refresh the stable launcher wrapper so
+    // Steam shortcuts / Armoury stubs (which point at the wrapper, not the
+    // version-stamped .AppImage) exec the current AppImage. Self-heals after
+    // an update relocates the file. No-op on native installs.
+    let _ = paths::refresh_appimage_launcher();
 
     // Load persistent state synchronously — both files are small.
     let library = Library::load().unwrap_or_else(|err| {
@@ -108,11 +147,17 @@ pub fn run() {
         Config::default()
     });
 
-    // Pre-resolve the startup CLI mode so the single-instance plugin
-    // can install before we touch state.
-    let initial_args: Vec<String> = std::env::args().collect();
+    // Decide whether this is an attached Game-Mode launch: `spool --run`
+    // inside a SteamOS gamescope session. If so, we skip the tray,
+    // single-instance plugin, and background pollers, run the game, then
+    // exit — so Steam sees the game stop when Spool does.
+    let cli_mode = cli::parse_args(&initial_args);
+    let attached = matches!(cli_mode, CliMode::Run { .. }) && gamemode::is_steam_game_mode();
+    if attached {
+        tracing::info!("attached launch mode (SteamOS Game Mode) — no tray, exit on game close");
+    }
 
-    let app = tauri::Builder::default()
+    let mut builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         // Native OS toast notifications. Used by the run workflow to
@@ -122,13 +167,16 @@ pub fn run() {
         // Auto-update via Tauri's updater. Polls a signed JSON
         // manifest (URL configured in tauri.conf.json), verifies the
         // ed25519 signature, then runs the NSIS installer silently.
-        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_updater::Builder::new().build());
+    if !attached {
         // Single-instance: secondary `spool` invocations land here. We
         // dispatch on argv to either focus the library or kick off a
         // game launch. Must come early — adds the IPC channel.
-        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
             handle_forwarded_launch(app, &argv);
-        }))
+        }));
+    }
+    let app = builder
         .manage::<SharedLibrary>(Mutex::new(library))
         .manage::<SharedConfig>(Mutex::new(config))
         .manage::<LudusaviClient>(LudusaviClient::new())
@@ -165,10 +213,17 @@ pub fn run() {
             config::get_config,
             config::update_config,
             config::detect_ludusavi,
+            config::detect_umu_run,
+            config::app_platform,
+            diagnostics::check_dependencies,
+            // proton / linux launch
+            proton::list_proton_versions,
+            proton::install_proton_deps,
             // ludusavi
             ludusavi::search_games,
             ludusavi::search_by_exe,
             ludusavi::open_ludusavi_gui,
+            ludusavi::set_cloud_webdav,
             // steamgriddb
             steamgriddb::fetch_cover,
             // steam shortcut
@@ -181,6 +236,7 @@ pub fn run() {
             sync::current_sync_status,
             sync::refresh_sync_status,
             sync::sync_register_account,
+            sync::use_server_save_storage,
             // torbox
             torbox::torbox_add_magnet,
             torbox::torbox_torrent_info,
@@ -208,6 +264,66 @@ pub fn run() {
             runner::manual_restore,
         ])
         .setup(move |app| {
+            if attached {
+                // ── Attached Game-Mode launch ────────────────────────────
+                // No tray, no pollers, no library window. Show a splash,
+                // launch the game from Rust, exit when the workflow ends.
+                let CliMode::Run { game_name, .. } = cli::parse_args(&initial_args) else {
+                    app.handle().exit(1);
+                    return Ok(());
+                };
+                let Some(id) = find_game_id_by_name(&app.state::<SharedLibrary>(), &game_name)
+                else {
+                    tracing::error!(name = %game_name, "attached --run: no library entry matches");
+                    app.handle().exit(1);
+                    return Ok(());
+                };
+
+                // Write the session record (appid matches the Steam shortcut).
+                if let Some(exe) = paths::spool_executable() {
+                    let appid =
+                        session::compute_steam_appid(&exe.to_string_lossy(), &game_name);
+                    if let Err(e) = session::write_start(&game_name, appid) {
+                        tracing::warn!(error = %e, "failed to write active-session record");
+                    }
+                }
+
+                // Make sure ludusavi config exists before the workflow runs.
+                if let Err(e) = ludusavi_config::ensure_config() {
+                    tracing::warn!(error = %e, "failed to initialise ludusavi config dir");
+                }
+
+                // Splash window (the `main` window stays hidden / unused).
+                if let Err(e) = tauri::WebviewWindowBuilder::new(
+                    app,
+                    "splash",
+                    tauri::WebviewUrl::App("splash".into()),
+                )
+                .title("Spool")
+                .decorations(false)
+                .inner_size(520.0, 260.0)
+                .center()
+                .resizable(false)
+                .build()
+                {
+                    tracing::warn!(error = %e, "failed to create splash window");
+                }
+
+                // Launch + exit when done. app.exit(0) lets Steam see the
+                // game stop (RunEvent::ExitRequested only blocks code.is_none()).
+                let app_handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Err(e) = runner::launch_game_inner(&app_handle, &id).await {
+                        tracing::error!(error = %e, "attached --run workflow failed");
+                    }
+                    app_handle.exit(0);
+                });
+
+                return Ok(());
+            }
+
+            // ── Normal tray-resident startup (unchanged behavior) ────────
+
             // Mount tray icon + menu.
             mount_tray(app.handle())?;
 
@@ -219,6 +335,9 @@ pub fn run() {
             if let Some(main) = app.get_webview_window("main") {
                 let win = main.clone();
                 let app_handle = app.handle().clone();
+                // `main` is now created hidden — show it explicitly (also
+                // removes the startup white-flash).
+                let _ = main.show();
                 main.on_window_event(move |event| {
                     if let WindowEvent::CloseRequested { api, .. } = event {
                         api.prevent_close();
@@ -226,6 +345,67 @@ pub fn run() {
                         emit_tray_intro_once(&app_handle);
                     }
                 });
+            }
+
+            // Ensure Spool's owned ludusavi config dir + config.yaml exist and
+            // meet the required invariants (backup path, manifest enabled,
+            // simple format). Idempotent — fast no-op on subsequent launches.
+            if let Err(e) = ludusavi_config::ensure_config() {
+                tracing::warn!(error = %e, "failed to initialise ludusavi config dir");
+            }
+
+            // Re-stamp the rclone binary path on every startup. Spool ships
+            // rclone as an AppImage sidecar, and on Linux that resolves to a
+            // path inside the AppImage's FUSE mount (`/tmp/.mount_Spool_XXXX`)
+            // whose name is randomised per launch. A path persisted on a prior
+            // run is dead today, which makes `ludusavi backup --cloud-sync`
+            // fail silently (`cloudSyncFailed`). Resolving + rewriting it here
+            // keeps `apps.rclone.path` pointing at a binary that exists this
+            // session, regardless of which mount we landed on.
+            {
+                let configured_rclone = app
+                    .state::<SharedConfig>()
+                    .lock()
+                    .ok()
+                    .map(|g| g.data.rclone_path.clone())
+                    .unwrap_or_default();
+                if let Some(rclone) = paths::resolve_rclone_path(&configured_rclone) {
+                    if let Err(e) = ludusavi_config::set_cloud(
+                        None,
+                        None,
+                        None,
+                        Some(&rclone.to_string_lossy()),
+                        None,
+                    ) {
+                        tracing::warn!(error = %e, "failed to re-stamp rclone path at startup");
+                    }
+                }
+            }
+
+            // If the user opted into the turnkey self-hosted save store, refresh
+            // its WebDAV credentials on boot. The sync server's API key doubles
+            // as the WebDAV password; if it rotates (or the stored remote drifts
+            // out of sync), every cloud sync 401s. Re-fetching `/storage` and
+            // re-applying the remote keeps it authenticated — and as a bonus
+            // re-stamps the rclone path via the same path as Settings. Spawned
+            // off the setup thread since it makes a network call.
+            {
+                let provider = app
+                    .state::<SharedConfig>()
+                    .lock()
+                    .ok()
+                    .map(|g| g.data.cloud_provider.clone())
+                    .unwrap_or_default();
+                if provider == "spool-server" {
+                    let handle = app.handle().clone();
+                    tauri::async_runtime::spawn(async move {
+                        if let Err(e) = sync::use_server_save_storage(handle).await {
+                            tracing::warn!(error = %e, "startup: failed to refresh self-hosted save storage credentials");
+                        } else {
+                            tracing::info!("startup: refreshed self-hosted save storage credentials");
+                        }
+                    });
+                }
             }
 
             // Kick off LAN peer discovery in the background. Logs and
@@ -285,6 +465,72 @@ pub fn run() {
             }
         }
     });
+}
+
+/// Headless one-shot backup: load config + library, run ludusavi backup for
+/// the named game, mark the session record, then return a process exit code.
+/// No GUI / tray / single-instance. Used by `spool --backup "Name"` (the
+/// Decky plugin's forced-close fallback).
+fn run_backup_headless(game_name: &str) -> i32 {
+    let config = match Config::load() {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::error!(error = %e, "--backup: failed to load config");
+            return 1;
+        }
+    };
+    let library = match Library::load() {
+        Ok(l) => l,
+        Err(e) => {
+            tracing::error!(error = %e, "--backup: failed to load library");
+            return 1;
+        }
+    };
+    let Some(game_id) = library
+        .entries
+        .iter()
+        .find(|e| e.game_name == game_name)
+        .map(|e| e.id.clone())
+    else {
+        tracing::error!(name = %game_name, "--backup: no library entry matches");
+        return 1;
+    };
+    let Some(ludusavi_exe) = paths::resolve_ludusavi_path(&config.data.ludusavi_path) else {
+        tracing::error!("--backup: ludusavi not configured");
+        return 1;
+    };
+
+    // Make sure Spool's ludusavi config (backup path, cloud remote) exists.
+    if let Err(e) = ludusavi_config::ensure_config() {
+        tracing::warn!(error = %e, "--backup: ensure_config failed");
+    }
+
+    let config_dir = paths::ludusavi_config_dir();
+    let lib_state: SharedLibrary = Mutex::new(library);
+    let client = LudusaviClient::new();
+
+    let rt = match tokio::runtime::Runtime::new() {
+        Ok(rt) => rt,
+        Err(e) => {
+            tracing::error!(error = %e, "--backup: failed to start tokio runtime");
+            return 1;
+        }
+    };
+    let result = rt.block_on(async {
+        runner::backup_game_core(&client, &ludusavi_exe, &config_dir, &lib_state, &game_id).await
+    });
+
+    match result {
+        Ok(r) => {
+            tracing::info!(game_name, games = r.game_count, "--backup complete");
+            session::mark_backed_up();
+            0
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "--backup failed");
+            1
+        }
+    }
 }
 
 /// Builds the tray icon + context menu and registers click handlers.
@@ -461,6 +707,9 @@ fn handle_forwarded_launch(app: &AppHandle, argv: &[String]) {
             });
         }
         CliMode::Normal => show_library(app),
+        CliMode::Backup { game_name } => {
+            tracing::warn!(name = %game_name, "forwarded --backup: headless backup not yet implemented in forwarded-launch path");
+        }
     }
 }
 

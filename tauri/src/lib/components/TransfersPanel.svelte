@@ -16,6 +16,7 @@
   import { ArrowDown, ArrowUp, X } from '@lucide/svelte';
   import type { DownloadProgress, UploadSnapshot } from '$lib/types';
   import { assetUrl } from '$lib/api';
+  import { fmtRate } from '$lib/format';
   import MonoLabel from './MonoLabel.svelte';
   import CassetteProgress from './CassetteProgress.svelte';
 
@@ -60,14 +61,6 @@
   const ulCount = $derived(uploads.length);
 
   const totalSpeed = $derived(download?.bytes_per_second ?? 0);
-
-  function fmtRate(bps: number): string {
-    if (!bps || bps <= 0) return '—';
-    if (bps < 1024) return `${bps.toFixed(0)} B/s`;
-    if (bps < 1024 * 1024) return `${(bps / 1024).toFixed(1)} KB/s`;
-    if (bps < 1024 * 1024 * 1024) return `${(bps / (1024 * 1024)).toFixed(1)} MB/s`;
-    return `${(bps / (1024 * 1024 * 1024)).toFixed(2)} GB/s`;
-  }
 
   function fmtBytes(bytes: number): string {
     if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;

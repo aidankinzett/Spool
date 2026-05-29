@@ -12,9 +12,11 @@ import type {
   DownloadProgress,
   GameEntry,
   HydraEntry,
+  DepStatus,
   LanPeer,
   NewGame,
   PeerGame,
+  ProtonVersion,
   SyncStatus,
   UploadSnapshot,
   SearchCandidate,
@@ -31,12 +33,26 @@ export const api = {
   getConfig: (): Promise<ConfigData> => invoke('get_config'),
   updateConfig: (data: ConfigData): Promise<ConfigData> => invoke('update_config', { data }),
   detectLudusavi: (): Promise<string> => invoke('detect_ludusavi'),
+  detectUmuRun: (): Promise<string> => invoke('detect_umu_run'),
+  appPlatform: (): Promise<string> => invoke('app_platform'),
+  checkDependencies: (): Promise<DepStatus[]> => invoke('check_dependencies'),
+
+  // Proton / Linux launch
+  listProtonVersions: (): Promise<ProtonVersion[]> => invoke('list_proton_versions'),
+  installProtonDeps: (gameId: string, verbs: string): Promise<string> =>
+    invoke('install_proton_deps', { gameId, verbs }),
 
   // Ludusavi — Add Game flow
   searchGames: (query: string): Promise<SearchCandidate[]> => invoke('search_games', { query }),
   searchByExe: (exePath: string): Promise<SearchCandidate[]> =>
     invoke('search_by_exe', { exePath }),
   openLudusaviGui: (): Promise<void> => invoke('open_ludusavi_gui'),
+  setCloudWebdav: (
+    url: string,
+    username: string,
+    password: string,
+    provider: string
+  ): Promise<void> => invoke('set_cloud_webdav', { url, username, password, provider }),
 
   // SteamGridDB
   fetchCover: (gameId: string): Promise<string | null> => invoke('fetch_cover', { gameId }),
@@ -86,6 +102,7 @@ export const api = {
     username: string,
   ): Promise<string> =>
     invoke('sync_register_account', { serverUrl, adminSecret, username }),
+  useServerSaveStorage: (): Promise<void> => invoke('use_server_save_storage'),
 
   // LAN
   listLanPeers: (): Promise<LanPeer[]> => invoke('list_lan_peers'),

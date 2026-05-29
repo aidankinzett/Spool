@@ -8,6 +8,15 @@ services:
       - ADMIN_SECRET=changeme   # REQUIRED: set a strong secret before use
       - PORT=47633
       - DATABASE_PATH=/data/spool.db
+      # ── Save storage (optional) — see the spool-storage service below ──
+      # Public URL clients should reach the WebDAV store at. Leave unset to
+      # disable save storage (GET /storage then returns 404). Use https:// in
+      # production (terminate TLS at a reverse proxy in front of :47634).
+      - WEBDAV_PUBLIC_URL=
+      # Shared secret the rclone container uses to call back for auth.
+      # MUST match spool-storage's WEBDAV_AUTH_SECRET. Make it strong.
+      - WEBDAV_AUTH_SECRET=changeme
+      - SAVES_DIR=/data/saves
     volumes:
       - ./data:/data
     restart: unless-stopped
@@ -17,3 +26,24 @@ services:
       timeout: 10s
       retries: 3
       start_period: 5s
+
+  # Optional: turnkey self-hosted save storage. Serves WebDAV over the shared
+  # ./data volume; ludusavi (via rclone) syncs each account's saves here. Drop
+  # this service if you'd rather point Spool at your own cloud remote.
+  spool-storage:
+    build:
+      context: .
+      dockerfile: Dockerfile.rclone
+    hostname: spool-storage
+    ports:
+      - "47634:47634"
+    environment:
+      - WEBDAV_PORT=47634
+      - SAVES_DIR=/data/saves
+      - SPOOL_AUTH_URL=http://spool-lock:47633/internal/webdav-auth
+      - WEBDAV_AUTH_SECRET=changeme   # MUST match spool-lock above
+    volumes:
+      - ./data:/data
+    depends_on:
+      - spool-lock
+    restart: unless-stopped
