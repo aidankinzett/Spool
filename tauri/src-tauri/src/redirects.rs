@@ -167,6 +167,45 @@ pub fn apply_redirects_for_restore(
     Ok(count)
 }
 
+/// Derive and apply `kind: "backup"` redirect rules so a cross-platform game's
+/// saves are *stored* with the same canonical paths as the foreign-origin
+/// backup they were restored from — instead of the local Linux/Proton prefix
+/// paths ludusavi would otherwise record.
+///
+/// Without this, the restore phase steers a Windows-origin save into the Proton
+/// prefix (Direction A), but the post-session backup records the *local* prefix
+/// path (`.../compatdata/<id>/pfx/drive_c/...`). The backup then silently flips
+/// from Windows paths to Linux paths, breaking the next restore on Windows.
+///
+/// These rules are the exact inverse of the restore redirects: each
+/// `{source, target}` is flipped (a ludusavi `backup` redirect maps the
+/// *scanned* path → the *stored* path, the opposite of a `restore` redirect)
+/// and re-tagged `kind: "backup"`. Same arguments as
+/// [`apply_redirects_for_restore`]. Returns the number of redirects written
+/// (0 = same-origin / nothing to canonicalise).
+pub fn apply_redirects_for_backup(
+    origin: &BackupOrigin,
+    prefix_root: Option<&Path>,
+    game_folder: Option<&Path>,
+    local_win_user: Option<&str>,
+) -> AppResult<usize> {
+    let restore_rules =
+        derive_redirects(origin, prefix_root, game_folder, local_win_user, cfg!(windows));
+    let backup_rules: Vec<Redirect> = restore_rules
+        .into_iter()
+        .map(|r| Redirect {
+            kind: "backup".to_string(),
+            // Flip: the scanned local path becomes the source, the foreign
+            // canonical path becomes the stored target.
+            source: r.target,
+            target: r.source,
+        })
+        .collect();
+    let count = backup_rules.len();
+    ludusavi_config::set_redirects(&backup_rules)?;
+    Ok(count)
+}
+
 fn derive_redirects(
     origin: &BackupOrigin,
     prefix_root: Option<&Path>,
@@ -429,6 +468,38 @@ mod tests {
         assert_eq!(redirects[0].source, "C:/Users/akinz");
         assert!(redirects[0].target.contains("drive_c/users/steamuser"));
         assert_eq!(redirects[0].kind, "restore");
+    }
+
+    #[test]
+    fn backup_redirects_invert_restore_redirects() {
+        // A Windows-origin save restored onto a Proton prefix must back up with
+        // the original Windows paths, not the local prefix paths. The backup
+        // rule is the restore rule flipped + re-tagged "backup".
+        let paths = vec!["C:/Users/akinz/AppData/Local/Deltarune/dr.ini".to_string()];
+        let origin = BackupOrigin { os: BackupOs::Windows, paths };
+        let restore = derive_redirects(&origin, Some(&pfx()), None, None, false);
+        assert_eq!(restore.len(), 1);
+
+        let backup: Vec<Redirect> = restore
+            .iter()
+            .cloned()
+            .map(|r| Redirect { kind: "backup".into(), source: r.target, target: r.source })
+            .collect();
+        assert_eq!(backup.len(), 1);
+        assert_eq!(backup[0].kind, "backup");
+        // source = local prefix path (what ludusavi scans), target = Windows path (what it stores).
+        assert!(backup[0].source.contains("drive_c/users/steamuser"));
+        assert_eq!(backup[0].target, "C:/Users/akinz");
+    }
+
+    #[test]
+    fn same_origin_produces_no_backup_redirects() {
+        // Linux-origin backup on Linux → derive_redirects empty → no backup
+        // redirects, so a native Linux save keeps its real paths.
+        let paths = vec!["/home/deck/.local/share/SomeGame/save.dat".to_string()];
+        let origin = BackupOrigin { os: BackupOs::Linux, paths };
+        let restore = derive_redirects(&origin, Some(&pfx()), None, None, false);
+        assert!(restore.is_empty());
     }
 
     #[test]

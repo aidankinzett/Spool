@@ -761,8 +761,51 @@ async fn run_workflow(
             "Backing up saves",
             &format!("{game_name} — session ended"),
         );
+        // Phase 3 prelude — canonicalise save paths for Proton games. The
+        // restore phase steered a foreign-origin (e.g. Windows) save into the
+        // local Proton prefix; without matching backup redirects ludusavi would
+        // now record the *local prefix* paths, flipping the backup from Windows
+        // paths to Linux paths and breaking the next restore on Windows. Mirror
+        // the restore redirects (inverted) so the backup stays portable. Cleared
+        // after the backup so they never affect an unrelated operation.
+        let mut backup_redirects_set = false;
+        if let Some(prefix) = wine_prefix.as_deref() {
+            let backup_dir = ludusavi_config::backup_dir();
+            if let Some(origin) = redirects::read_backup_origin(&backup_dir, game_name) {
+                let local_win_user = redirects::local_windows_username();
+                match redirects::apply_redirects_for_backup(
+                    &origin,
+                    Some(prefix),
+                    game_folder.as_deref(),
+                    local_win_user.as_deref(),
+                ) {
+                    Ok(n) if n > 0 => {
+                        backup_redirects_set = true;
+                        tracing::info!(
+                            game_name,
+                            redirects = n,
+                            "applied backup redirects — storing canonical save paths"
+                        );
+                    }
+                    Ok(_) => {}
+                    Err(e) => {
+                        tracing::warn!(game_name, error = %e, "failed to apply backup redirects");
+                    }
+                }
+            }
+        }
+
         tracing::info!(game_name, "ludusavi backup");
-        match ludusavi_client.backup(ludusavi_exe, &config_dir, game_name, wine_prefix.as_deref()).await {
+        let backup_outcome =
+            ludusavi_client.backup(ludusavi_exe, &config_dir, game_name, wine_prefix.as_deref()).await;
+
+        // Clear backup redirects regenerated fresh next session — matches the
+        // restore phase's clean-up so stale entries can never linger.
+        if backup_redirects_set {
+            let _ = ludusavi_config::set_redirects(&[]);
+        }
+
+        match backup_outcome {
             Ok(out) => {
                 // ludusavi reports a cloud-sync failure as a non-fatal field on
                 // an otherwise-successful backup (the local snapshot still
