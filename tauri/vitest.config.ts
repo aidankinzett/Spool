@@ -9,7 +9,11 @@ import path from "node:path";
 export default defineConfig({
   plugins: [svelte({ preprocess: vitePreprocess() })],
   resolve: {
-    alias: { $lib: path.resolve(__dirname, "./src/lib") },
+    alias: {
+      $lib: path.resolve(__dirname, "./src/lib"),
+      // $app/* are SvelteKit virtual modules — stub them for the standalone Vitest env.
+      "$app/navigation": path.resolve(__dirname, "./src/__mocks__/app-navigation.ts"),
+    },
     // Resolve the browser build of Svelte so component rendering works.
     conditions: ["browser"],
   },
