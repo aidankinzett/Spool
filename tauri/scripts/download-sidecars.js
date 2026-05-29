@@ -43,23 +43,34 @@ const targets = {
 
 const downloadFile = (url, dest) => {
   return new Promise((resolve, reject) => {
-    const file = fs.createWriteStream(dest);
     https.get(url, (response) => {
       if (response.statusCode === 302 || response.statusCode === 301) {
         downloadFile(response.headers.location, dest).then(resolve).catch(reject);
         return;
       }
       if (response.statusCode !== 200) {
-        reject(new Error(`Failed to download: Status Code ${response.statusCode}`));
+        reject(new Error(`Failed to download ${url}: Status Code ${response.statusCode}`));
         return;
       }
+      
+      const file = fs.createWriteStream(dest);
       response.pipe(file);
+      
       file.on('finish', () => {
-        file.close();
-        resolve();
+        file.close((err) => {
+          if (err) {
+            reject(err);
+          } else {
+            resolve();
+          }
+        });
+      });
+      
+      file.on('error', (err) => {
+        fs.unlink(dest, () => {});
+        reject(err);
       });
     }).on('error', (err) => {
-      fs.unlink(dest, () => {});
       reject(err);
     });
   });
