@@ -68,9 +68,9 @@ export function fmtSize(mb: number | null | undefined): string {
  * (1000, not 1024) to match how ISPs, routers, and Steam display speed —
  * that's the number most people recognise for a network transfer.
  */
-export function fmtRate(bps: number | null | undefined): string {
-  if (!bps || bps <= 0) return '…';
-  const bits = bps * 8;
+export function fmtRate(bytesPerSec: number | null | undefined): string {
+  if (!bytesPerSec || bytesPerSec <= 0) return '…';
+  const bits = bytesPerSec * 8;
   if (bits < 1000) return `${bits.toFixed(0)} bps`;
   if (bits < 1000 * 1000) return `${(bits / 1000).toFixed(1)} Kbps`;
   if (bits < 1000 * 1000 * 1000) return `${(bits / (1000 * 1000)).toFixed(1)} Mbps`;
