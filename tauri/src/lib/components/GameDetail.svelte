@@ -244,7 +244,10 @@
             data-testid="play-button"
             onclick={launch}
             disabled={isRunning || !game.exe_path}
-            class="font-sans inline-flex h-[42px] items-center gap-2.5 rounded-md border-none px-5 text-[14px] font-semibold transition-opacity"
+            class="font-sans inline-flex items-center gap-2.5 rounded-md border-none font-semibold transition-opacity"
+            style:height="var(--control-h)"
+            style:padding-inline="calc(var(--space-unit) * 4)"
+            style:font-size="var(--text-base)"
             class:cursor-pointer={!isRunning && !!game.exe_path}
             class:cursor-not-allowed={isRunning || !game.exe_path}
             class:opacity-70={isRunning || !game.exe_path}
