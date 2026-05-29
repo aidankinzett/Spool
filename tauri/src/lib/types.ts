@@ -1,3 +1,6 @@
+/** Mirror of the Rust `UiMode` enum (serde rename_all = "lowercase"). */
+export type UiMode = 'auto' | 'desktop' | 'touch';
+
 // Mirror of the Rust `ConfigData` struct in src-tauri/src/config.rs.
 // Keep field names in lockstep — serde uses these exact snake_case names.
 export type ConfigData = {
@@ -25,7 +28,7 @@ export type ConfigData = {
   download_dir: string;
   download_sources: string[];
 
-  touch_mode: string;
+  ui_mode: UiMode;
 
   /** True after the close-to-tray intro toast has been shown once. */
   tray_intro_seen: boolean;
