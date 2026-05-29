@@ -6,7 +6,8 @@
    *   │ [Spool mark] SPOOL / SUB   …center children…       [_]  [□]  [×] │
    *   └─────────────────────────────────────────────────────────────────┘
    *
-   * Renders as a 36px drag-region strip. Window controls call Tauri APIs.
+   * Renders as a drag-region strip sized by var(--chrome-h). Window
+   * controls call Tauri APIs.
    * Children render in the middle (catalog id, peer pill, search, etc.).
    *
    * Requires the Tauri window to be created with `decorations: false`.
