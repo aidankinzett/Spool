@@ -193,6 +193,18 @@ pub fn place_grid_art(
     Ok(Some(dest))
 }
 
+/// Steam's "legacy" 64-bit grid id — the filename Big Picture / Steam Deck
+/// Gaming Mode uses for the horizontal capsule (`<id>.<ext>`). The modern
+/// desktop client reads `<appid>.<ext>` keyed by the 32-bit shortcut appid,
+/// but Gaming Mode — the default on SteamOS / Steam Deck and the gaming-handheld
+/// distros Spool targets — still resolves the landscape grid through this id.
+/// Layout: high 32 bits = the 32-bit shortcut appid, low 32 bits = 0x02000000.
+/// (The suffixed art kinds — `p` / `_hero` / `_logo` — use the 32-bit appid in
+/// both UIs, so only the bare landscape grid needs this extra filename.)
+pub fn legacy_grid_id(app_id: u32) -> u64 {
+    ((app_id as u64) << 32) | 0x0200_0000
+}
+
 /// Build the `--run "<name>" "<exe>"` launch-options string. Steam stores
 /// the value verbatim and splits args by shell rules at launch time, so
 /// each token gets its own quoted block. Interior `"` are escaped as `\"`
@@ -261,13 +273,19 @@ pub async fn add_to_steam(
     );
     write_shortcuts(&user.shortcuts_path, &shortcuts)?;
 
-    // 5. Place art. v1: just the existing portrait cover (if downloaded).
-    //    Hero / wide grid / logo come with the SteamGridDB extension in
-    //    a follow-up commit on this slice.
-    let placed_portrait = if let Some(cover) = cover_image_path.as_deref() {
-        place_grid_art(&user.grid_dir, app_id, "p", Some(Path::new(cover)))?
-    } else {
-        None
+    // 5. Place the portrait capsule (`<appid>p`) — the main library tile in
+    //    both desktop and Gaming Mode. Prefer the cover already on disk; if the
+    //    entry never got one (no cover downloaded at add-time), fetch one now so
+    //    the Steam tile isn't blank. Both best-effort — missing art never fails
+    //    the flow.
+    let placed_portrait = match cover_image_path.as_deref() {
+        Some(cover) => place_grid_art(&user.grid_dir, app_id, "p", Some(Path::new(cover)))?,
+        None => match crate::steamgriddb::fetch_and_save_cover(&app, &game_id).await {
+            Ok(Some(fetched)) => {
+                place_grid_art(&user.grid_dir, app_id, "p", Some(Path::new(&fetched)))?
+            }
+            _ => None,
+        },
     };
 
     // 6. Try fetching hero + wide + logo from SteamGridDB if configured.
@@ -349,6 +367,16 @@ mod tests {
         );
         assert_eq!(shortcuts.len(), 1, "should update in-place, not duplicate");
         assert!(shortcuts[0].launch_options.contains("new"));
+    }
+
+    #[test]
+    fn legacy_grid_id_packs_appid_and_marker() {
+        // High 32 bits = the 32-bit shortcut appid, low 32 bits = 0x02000000.
+        let app_id: u32 = 0x8000_0001;
+        let legacy = legacy_grid_id(app_id);
+        assert_eq!(legacy >> 32, app_id as u64);
+        assert_eq!(legacy & 0xFFFF_FFFF, 0x0200_0000);
+        assert_eq!(legacy, 0x8000_0001_0200_0000);
     }
 
     #[test]

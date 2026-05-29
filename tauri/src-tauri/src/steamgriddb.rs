@@ -261,7 +261,9 @@ fn rgb_to_hsl(r: u8, g: u8, b: u8) -> (f32, f32, f32) {
 /// straight into Steam's grid dir with the filenames Steam expects:
 ///
 ///   `<app_id>_hero.<ext>`   — hero banner
-///   `<app_id>.<ext>`        — wide grid (920×430)
+///   `<app_id>.<ext>`        — wide grid (920×430), modern desktop client
+///   `<legacy_id>.<ext>`     — same wide grid under the legacy 64-bit id, so
+///                             Big Picture / Steam Deck Gaming Mode shows it
 ///   `<app_id>_logo.<ext>`   — logo (transparent PNG)
 ///
 /// Portrait cover is handled separately by `fetch_and_save_cover` (called
@@ -307,6 +309,13 @@ pub async fn fetch_steam_grid_bundle(
             if let Ok(bytes) = download_bytes(&client.http, &asset.url).await {
                 if std::fs::write(&dest, &bytes).is_ok() {
                     placed.push(kind.to_string());
+                    // The landscape grid (bare `<appid>.<ext>`) also needs the
+                    // legacy 64-bit-id filename so Big Picture / Steam Deck
+                    // Gaming Mode picks it up. Reuse the bytes we already have.
+                    if suffix.is_empty() {
+                        let legacy = crate::steam::legacy_grid_id(app_id);
+                        let _ = std::fs::write(grid_dir.join(format!("{legacy}.{ext}")), &bytes);
+                    }
                 }
             }
         }
