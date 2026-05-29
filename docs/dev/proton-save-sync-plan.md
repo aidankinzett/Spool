@@ -49,25 +49,118 @@ Run Windows games on the Steam Deck via Proton, and sync saves between a Windows
 - `windows_safe_name()`: handles `"Lego Batman: Legacy of the Dark Knight"` → folder `"Lego Batman_ Legacy of the Dark Knight"` on Windows
 - 15 unit tests, 3 against real backup files on disk
 
-### Phase 4 — Cloud/rclone settings UI + ludusavi-gui button 🔲 TODO
+### Phase 4 — Cloud/rclone settings UI + ludusavi-gui button ✅ DONE
 
-- `ConfigData` fields: `cloud_remote`, `cloud_path`, `rclone_path`, `rclone_args`
-- `update_config` pushes to owned `config.yaml` via `ludusavi_config::set_cloud()`
-- New Tauri command `open_ludusavi_gui_with_config` (already done as `open_ludusavi_gui`)
-- `settings/+page.svelte`: "Cloud saves (rclone)" card — remote, path, rclone binary path, rclone args
+- `ConfigData` fields: `cloud_provider`, `cloud_remote`, `cloud_path`, `rclone_path`, `rclone_args` (`config.rs`)
+- `update_config` pushes to owned `config.yaml` via `ludusavi_config::set_cloud()` (`config.rs`); the rclone path it writes is itself resolved config → bundled → system
+- `open_ludusavi_gui` opens the GUI against Spool's config (`ludusavi.rs`)
+- `settings/+page.svelte`: "Cloud saves (rclone)" card — provider dropdown, remote, path, rclone binary path, rclone args
 - "Open Ludusavi settings" button → opens GUI against Spool's config
+- **Beyond the original plan:** a `cloud_provider` dropdown maps presets (Box, Dropbox, GoogleDrive, OneDrive, Ftp, Smb, WebDav) plus a Custom rclone remote onto ludusavi's `cloud.remote` schema in `set_cloud`. Unit-tested via the pure `apply_cloud` helper in `ludusavi_config.rs`.
 
-### Phase 5 — Bundle pinned binaries (optional, later)
+### Phase 5 — Bundle pinned binaries ✅ DONE
 
-- Ship `ludusavi` (≥0.31) and `rclone` as Tauri `externalBin`/sidecar
-- Resolution order: config override → bundled → system
-- Set `apps.rclone.path` in owned config to bundled rclone
+- `ludusavi` and `rclone` shipped as Tauri `externalBin`/sidecar (`tauri.conf.json` → `binaries/ludusavi`, `binaries/rclone`)
+- Resolution order config override → bundled → system in `paths::resolve_ludusavi_path` and the rclone branch of `update_config`; `paths::resolve_sidecar_path` handles both dev (target-triple suffix) and packaged (bare name) layouts
+- `apps.rclone.path` set in owned config to the resolved rclone (`set_cloud` → `apps.rclone.path`)
+- Sidecars are fetched in CI/release via `tauri/scripts/download-sidecars.js` (wired as `bun run download-sidecars` in `ci.yml` + `release.yml`); `/binaries/` is gitignored so the blobs stay out of the repo
 
-### Phase 6 — Turnkey self-hosted save storage (optional, later)
+### Phase 6 — Turnkey self-hosted save storage ✅ DONE
 
-- Add `rclone/rclone serve webdav /data` container to `server/docker-compose.yml`
-- New Hono route `GET /storage` returns `{ webdav_url, username, password, base_path }`
-- Spool settings: "Use my Spool server for save storage" → fetches creds → writes rclone webdav remote → sets `cloud.remote` in owned config
+Goal: fold save storage into the **existing** self-hosted stack so one
+`docker compose up` gives you locks **and** save sync — no more hand-rolled
+SFTP/`rclone config` per device.
+
+**Why WebDAV (not SFTP/FTP/S3):** ludusavi has no networking of its own — every
+cloud remote is an rclone backend. Of the protocols a server can host, only
+`WebDav`, `Ftp`, and `Smb` are first-class in ludusavi's CLI (`ludusavi cloud
+set …`); SFTP and S3 require the manual `cloud set custom --id <remote>` path
+(a hand-configured `rclone.conf` remote on every machine — exactly today's
+SFTP setup we're replacing). WebDAV is HTTP, so it reuses the lock server's
+port/TLS/reverse-proxy story and is the friendliest through NAT. FTP is
+plaintext + passive-port hell; SMB is LAN-only.
+
+**Verified ludusavi 0.31 schema** (from `ludusavi cloud set webdav --url … --username … --password … --provider nextcloud`):
+
+```yaml
+# config.yaml
+cloud:
+  remote:
+    WebDav:
+      id: ludusavi-<epoch>      # rclone remote name ludusavi auto-creates
+      url: "https://host:port"
+      username: deck
+      provider: Nextcloud       # other | nextcloud | owncloud | sharepoint | sharepoint-ntlm
+  path: ludusavi-backup
+  synchronize: true
+```
+
+The password is **not** stored here — `cloud set` writes an obscured remote into
+the user's global `~/.config/rclone/rclone.conf`:
+
+```ini
+[ludusavi-<epoch>]
+type = webdav
+vendor = nextcloud
+url = https://host:port
+user = deck
+pass = <rclone-obscured>
+```
+
+#### Server (`server/` — one stack, two services) ✅
+
+- New **`spool-storage`** service in `docker-compose.yml` (built from
+  `Dockerfile.rclone` = upstream `rclone/rclone` + `curl` + the auth-proxy
+  script) running `rclone serve webdav --auth-proxy …` on `47634`, sharing the
+  `./data` volume and `WEBDAV_AUTH_SECRET` with `spool-lock`.
+- **Auth via `--auth-proxy`** (`server/rclone-auth-proxy.sh`): rclone pipes the
+  proxy `{user, pass}`; the proxy `curl`s it to the lock server's
+  **`POST /internal/webdav-auth`** (`server/src/routes/internal.ts`), gated by
+  `X-Internal-Secret: WEBDAV_AUTH_SECRET`. That route validates (username =
+  account, password = api key) and returns
+  `{ "type": "local", "_root": "<SAVES_DIR>/<account_id>" }` — a jailed root per
+  account.
+- **`GET /storage`** (`server/src/routes/storage.ts`, API-key-gated) →
+  `{ webdav_url, username, password, base_path, provider }`; pre-creates the
+  account's dir on the shared volume. Returns 404 when `WEBDAV_PUBLIC_URL` is
+  unset (storage opt-in per server).
+- Tests in `server/src/routes/storage.test.ts` (auth, 404-when-disabled,
+  jailed-root, secret/cred rejection).
+- Still open: per-account **quota / retention** on the volume (ludusavi handles
+  `backup.retention.full`; the server disk itself is uncapped).
+
+#### Client (Spool) ✅
+
+- **`apply_webdav_remote`** (`ludusavi.rs`) shells out to
+  `ludusavi cloud set webdav --config <Spool dir> …` (after pointing
+  `apps.rclone.path` at the resolved rclone, since `cloud set` shells out to
+  rclone to obscure). This is the shared core; it fixes the Phase 4 gap where
+  the `webdav` arm wrote only a bare enum string.
+- **`set_cloud_webdav`** command → manual WebDAV (Nextcloud/ownCloud) from the
+  settings form; **`use_server_save_storage`** command (`sync.rs`) → turnkey:
+  `GET /storage` → `apply_webdav_remote`. New `ConfigData` fields
+  `cloud_webdav_url` / `cloud_webdav_username` (password never stored).
+- Settings → Cloud saves: **"Use my Spool server for save storage"** button (when
+  a sync server is configured) + manual WebDAV url/user/pass fields.
+- The turnkey path stores `cloud_provider = "spool-server"` (distinct from manual
+  `webdav`) so the UI renders a read-only **"Connected to your Spool server"**
+  state with a Disconnect button instead of the editable url/user/pass fields —
+  avoids a footgun where re-running the manual "Connect" would reconfigure the
+  remote as plaintext and break the auth-proxy login.
+
+#### Gotchas found wiring it up (verified against rclone v1.74)
+
+- **`rclone serve webdav --auth-proxy` takes NO positional remote** — passing a
+  path is a CLI error (`needs 0 arguments maximum`). The proxy supplies the
+  backend; the `Dockerfile.rclone` CMD omits the path.
+- **The auth-proxy `Reveal()`s the incoming basic-auth password** before handing
+  it to the proxy. So the on-wire password must already be rclone-*obscured*.
+  `use_server_save_storage` therefore passes `obscure_password: true` to
+  `apply_webdav_remote`, which runs `rclone obscure` on the api key first;
+  ludusavi obscures it a second time for storage; the client reveals one layer on
+  the wire and the server reveals the last, netting the real api key at
+  `/internal/webdav-auth`. Manual WebDAV remotes pass `false` (a normal server
+  wants the plaintext password).
 
 ---
 
@@ -91,4 +184,4 @@ Run Windows games on the Steam Deck via Proton, and sync saves between a Windows
 ## Deferred packaging work
 
 - **(b) Dependency-doctor UI** in Settings → Compatibility: detect umu-run/ludusavi/rclone, show status, print per-distro install command for missing ones
-- **(c) Bundle ludusavi + rclone** in the AppImage/.deb channel via Tauri `externalBin`. umu-run stays a system prerequisite (it's a Python app with lib32/vulkan deps — not bundleable)
+- **(c) Bundle ludusavi + rclone** ✅ DONE in Phase 5 — shipped via Tauri `externalBin` and fetched at build time by `download-sidecars.js`. umu-run stays a system prerequisite (it's a Python app with lib32/vulkan deps — not bundleable)

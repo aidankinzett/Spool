@@ -234,6 +234,104 @@ pub struct RegisterResponse {
     pub api_key: String,
 }
 
+/// Server JSON: `GET /storage` response — connection details for the
+/// self-hosted WebDAV save store.
+#[derive(Debug, Deserialize)]
+struct StorageResponse {
+    webdav_url: String,
+    username: String,
+    password: String,
+    #[serde(default)]
+    base_path: String,
+    #[serde(default)]
+    provider: String,
+}
+
+/// Turnkey self-hosted save storage: fetch WebDAV credentials from the
+/// configured sync server's `/storage` endpoint, then configure ludusavi to use
+/// that remote (via `ludusavi cloud set webdav`). One click replaces the manual
+/// per-device rclone/SFTP setup.
+#[tauri::command]
+pub async fn use_server_save_storage(app: AppHandle) -> AppResult<()> {
+    // Read sync-server URL + API key from config.
+    let (server_url, api_key) = {
+        let cfg = app.state::<SharedConfig>();
+        let g = cfg.lock().map_err(|_| AppError::LockPoisoned)?;
+        if !g.data.sync_server_enabled {
+            return Err(AppError::Other("Sync server is not enabled in Settings.".to_string()));
+        }
+        let url = g.data.sync_server_url.trim().to_string();
+        let key = g.data.sync_server_api_key.trim().to_string();
+        if url.is_empty() || key.is_empty() {
+            return Err(AppError::Other(
+                "Set your sync server URL and API key first.".to_string(),
+            ));
+        }
+        (url, key)
+    };
+
+    let endpoint = join_url(&server_url, "storage");
+    let client = (*app.state::<reqwest::Client>()).clone();
+    let resp = client
+        .get(&endpoint)
+        .timeout(ENDPOINT_TIMEOUT)
+        .bearer_auth(&api_key)
+        .send()
+        .await
+        .map_err(|e| AppError::Other(format!("GET {endpoint}: {e}")))?;
+
+    let status = resp.status();
+    if status.as_u16() == 404 {
+        return Err(AppError::Other(
+            "This server doesn't have save storage enabled (set WEBDAV_PUBLIC_URL on the server)."
+                .to_string(),
+        ));
+    }
+    if !status.is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        return Err(AppError::Other(format!("storage request failed: {status} {body}")));
+    }
+    let info: StorageResponse = resp
+        .json()
+        .await
+        .map_err(|e| AppError::Other(format!("parse storage response: {e}")))?;
+
+    // Configure ludusavi's owned config to use the WebDAV remote.
+    let cfg_state = app.state::<SharedConfig>();
+    // Spool's self-hosted store runs `rclone serve --auth-proxy`, which reveals
+    // the on-wire password, so it must be obscured (see apply_webdav_remote).
+    crate::ludusavi::apply_webdav_remote(
+        cfg_state.inner(),
+        &info.webdav_url,
+        &info.username,
+        &info.password,
+        &info.provider,
+        true,
+    )
+    .await?;
+
+    // Point ludusavi's cloud path at the server-provided base path.
+    if !info.base_path.is_empty() {
+        crate::ludusavi_config::set_cloud(None, None, Some(&info.base_path), None, None)?;
+    }
+
+    // Persist for the settings UI (password is never stored — ludusavi obscures
+    // it into rclone.conf). The dedicated `spool-server` provider keeps this
+    // distinct from a manually-configured WebDAV remote so the UI shows a clean
+    // connected state instead of the editable url/user/pass fields.
+    {
+        let mut g = cfg_state.lock().map_err(|_| AppError::LockPoisoned)?;
+        g.data.cloud_provider = "spool-server".to_string();
+        g.data.cloud_webdav_url = info.webdav_url;
+        g.data.cloud_webdav_username = info.username;
+        if !info.base_path.is_empty() {
+            g.data.cloud_path = info.base_path;
+        }
+        g.save()?;
+    }
+    Ok(())
+}
+
 /// POST /auth/register with the admin secret. Returns the new API
 /// key on success.
 #[tauri::command]

@@ -73,6 +73,13 @@ pub struct ConfigData {
     pub cloud_path: String,
     pub rclone_path: String,
     pub rclone_args: String,
+    /// WebDAV connection details for the `webdav` provider. Written when the
+    /// user connects a WebDAV remote (manually or via the self-hosted Spool
+    /// server). The password is never stored here — ludusavi obscures it into
+    /// rclone.conf; these two fields only let the settings form re-display the
+    /// active connection.
+    pub cloud_webdav_url: String,
+    pub cloud_webdav_username: String,
 }
 
 impl Default for ConfigData {
@@ -105,6 +112,8 @@ impl Default for ConfigData {
             cloud_path: "Spool/ludusavi-backup".to_string(),
             rclone_path: String::new(),
             rclone_args: "--fast-list --ignore-checksum".to_string(),
+            cloud_webdav_url: String::new(),
+            cloud_webdav_username: String::new(),
         }
     }
 }
@@ -300,15 +309,9 @@ pub fn update_config(
     cfg.data = data;
     cfg.save()?;
 
-    let rclone_val = if !cfg.data.rclone_path.is_empty() {
-        cfg.data.rclone_path.clone()
-    } else if let Some(bundled) = crate::paths::resolve_sidecar_path("rclone") {
-        bundled.to_string_lossy().to_string()
-    } else if let Some(system) = crate::paths::find_system_binary("rclone") {
-        system.to_string_lossy().to_string()
-    } else {
-        "".to_string()
-    };
+    let rclone_val = crate::paths::resolve_rclone_path(&cfg.data.rclone_path)
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_default();
 
     // Sync cloud/rclone settings to Spool-owned ludusavi config.yaml
     let _ = crate::ludusavi_config::set_cloud(

@@ -1,6 +1,6 @@
 # Spool Lock Server
 
-Lightweight sync server that prevents two devices from playing the same game simultaneously. Self-host it on a Raspberry Pi, home server, or any Linux box.
+Lightweight sync server that prevents two devices from playing the same game simultaneously, and (optionally) stores your saves so they sync between devices. Self-host it on a Raspberry Pi, home server, or any Linux box.
 
 ## Quick start
 
@@ -48,11 +48,48 @@ Copy the `api_key` into the API Key field in Settings.
 4. Or enter the URL manually: `http://raspberrypi.local:47633` (or the Pi's IP address)
 5. Paste your API key and save
 
+## Save storage (turnkey cloud saves)
+
+The bundled `docker-compose.yml` includes an optional **`spool-storage`** service:
+an [rclone](https://rclone.org/) WebDAV server over the same `./data` volume.
+With it enabled, Spool syncs each account's saves to your server — no third-party
+cloud, no per-device `rclone config`. Under the hood Spool runs
+`ludusavi cloud set webdav` for you, pointing ludusavi at this server.
+
+How it fits together:
+
+- `spool-storage` runs `rclone serve webdav` on port **47634**.
+- Authentication is delegated back to `spool-lock`: rclone's `--auth-proxy` calls
+  the lock server's internal `/internal/webdav-auth` endpoint, which validates the
+  account's API key and confines each login to its own directory
+  (`/data/saves/<account-id>`). Your WebDAV username/password are simply your
+  Spool account username and API key — no separate credentials.
+
+To enable it:
+
+1. In `docker-compose.yml`, set **`WEBDAV_PUBLIC_URL`** on `spool-lock` to the URL
+   clients should reach the store at (e.g. `https://myserver.example.com` behind a
+   TLS reverse proxy, or `http://raspberrypi.local:47634` on a trusted LAN).
+2. Set a strong **`WEBDAV_AUTH_SECRET`** and make it **identical** on both
+   `spool-lock` and `spool-storage`.
+3. `docker compose up -d --build` (the storage image is built from
+   `Dockerfile.rclone`).
+4. In Spool: **Settings → Cloud saves → Use my Spool server for save storage**.
+
+Leaving `WEBDAV_PUBLIC_URL` blank disables save storage — the lock server still
+runs and `GET /storage` returns 404.
+
+> **Security:** `/internal/webdav-auth` is served on the lock server's public port
+> and protected only by `WEBDAV_AUTH_SECRET`. Use a long random value. For WAN
+> access, terminate TLS at a reverse proxy and don't expose 47634 unencrypted.
+
+Saves live under `./data/saves/<account-id>/` on the host — include it in backups.
+
 ## Updating
 
 ```bash
 docker compose pull
-docker compose up -d
+docker compose up -d --build
 ```
 
 ## Networking notes
@@ -68,4 +105,16 @@ docker compose up -d
 |---|---|---|
 | `ADMIN_SECRET` | *(required)* | Secret used to create new user accounts |
 | `PORT` | `47633` | HTTP listen port |
-| `DATABASE_PATH` | `/data/ludusavi.db` | Path to the SQLite database file |
+| `DATABASE_PATH` | `/data/spool.db` | Path to the SQLite database file |
+| `WEBDAV_PUBLIC_URL` | *(empty)* | Public URL of the WebDAV save store. Empty = save storage disabled |
+| `WEBDAV_AUTH_SECRET` | `ADMIN_SECRET` | Shared secret for the rclone auth callback. Must match on both services |
+| `SAVES_DIR` | `/data/saves` | Root directory for stored saves (per-account subdirs) |
+
+### `spool-storage` service
+
+| Variable | Default | Description |
+|---|---|---|
+| `WEBDAV_PORT` | `47634` | WebDAV listen port |
+| `SAVES_DIR` | `/data/saves` | Root directory served (per-account subdirs) |
+| `SPOOL_AUTH_URL` | `http://spool-lock:47633/internal/webdav-auth` | Lock server auth callback |
+| `WEBDAV_AUTH_SECRET` | *(required)* | Shared secret; must match `spool-lock` |

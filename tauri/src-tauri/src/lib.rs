@@ -179,6 +179,7 @@ pub fn run() {
             ludusavi::search_games,
             ludusavi::search_by_exe,
             ludusavi::open_ludusavi_gui,
+            ludusavi::set_cloud_webdav,
             // steamgriddb
             steamgriddb::fetch_cover,
             // steam shortcut
@@ -191,6 +192,7 @@ pub fn run() {
             sync::current_sync_status,
             sync::refresh_sync_status,
             sync::sync_register_account,
+            sync::use_server_save_storage,
             // torbox
             torbox::torbox_add_magnet,
             torbox::torbox_torrent_info,
