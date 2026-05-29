@@ -49,7 +49,7 @@
     UploadSnapshot,
   } from '$lib/types';
   import { checkForUpdateOnStartup } from '$lib/updater';
-  import WindowChrome from '$lib/components/WindowChrome.svelte';
+  import AppChrome from '$lib/components/AppChrome.svelte';
   import MonoLabel from '$lib/components/MonoLabel.svelte';
   import GameDetail from '$lib/components/GameDetail.svelte';
   import LibraryContextMenu from '$lib/components/LibraryContextMenu.svelte';
@@ -533,7 +533,12 @@
 </script>
 
 <div class="flex h-screen flex-col bg-bg-0 text-ink-0">
-  <WindowChrome sub="LIBRARY">
+  <AppChrome
+    sub="LIBRARY"
+    peers={lanPeers.length}
+    transfers={activeDownload?.status === 'starting' || activeDownload?.status === 'transferring' ? 1 : 0}
+    conflict={syncOff}
+  >
     <div class="flex h-full items-center justify-end gap-1.5 pr-2">
       <!-- Browse Games: opens the Hydra source aggregator as a child
            window. Hidden when no feeds are configured so users
@@ -617,7 +622,7 @@
           <Settings size={14} />
         </button>
     </div>
-  </WindowChrome>
+  </AppChrome>
 
   {#if transfersOpen}
     <div

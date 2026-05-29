@@ -19,7 +19,7 @@
   import { FileWarning, Folder, Search, ExternalLink } from '@lucide/svelte';
   import { api } from '$lib/api';
   import type { SearchCandidate } from '$lib/types';
-  import WindowChrome from '$lib/components/WindowChrome.svelte';
+  import AppChrome from '$lib/components/AppChrome.svelte';
   import MonoLabel from '$lib/components/MonoLabel.svelte';
   import Btn from '$lib/components/Btn.svelte';
   import CandidateRow from '$lib/components/CandidateRow.svelte';
@@ -169,7 +169,7 @@
 </script>
 
 <div class="flex h-screen flex-col bg-bg-0 text-ink-0">
-  <WindowChrome sub="ADD ENTRY" />
+  <AppChrome sub="ADD ENTRY" onback={() => history.back()} />
 
   <main class="flex flex-1 flex-col overflow-hidden">
     <!-- Header -->

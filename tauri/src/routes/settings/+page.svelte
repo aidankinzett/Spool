@@ -19,7 +19,7 @@
   import { api } from '$lib/api';
   import { toasts } from '$lib/toasts.svelte';
   import type { ConfigData, LanPeer, SyncStatus } from '$lib/types';
-  import WindowChrome from '$lib/components/WindowChrome.svelte';
+  import AppChrome from '$lib/components/AppChrome.svelte';
   import MonoLabel from '$lib/components/MonoLabel.svelte';
   import Btn from '$lib/components/Btn.svelte';
   import Pill from '$lib/components/Pill.svelte';
@@ -240,7 +240,7 @@
 </script>
 
 <div class="flex h-screen flex-col bg-bg-0 text-ink-0">
-  <WindowChrome sub="SETTINGS" />
+  <AppChrome sub="SETTINGS" onback={() => history.back()} />
 
   {#if error}
     <div class="flex-1 flex items-center justify-center p-8">

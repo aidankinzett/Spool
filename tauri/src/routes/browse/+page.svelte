@@ -40,7 +40,7 @@
     HydraEntry,
     LanPeer,
   } from '$lib/types';
-  import WindowChrome from '$lib/components/WindowChrome.svelte';
+  import AppChrome from '$lib/components/AppChrome.svelte';
   import MonoLabel from '$lib/components/MonoLabel.svelte';
   import Btn from '$lib/components/Btn.svelte';
   import Pill from '$lib/components/Pill.svelte';
@@ -378,7 +378,7 @@
 </script>
 
 <div class="flex h-screen flex-col bg-bg-0 text-ink-0">
-  <WindowChrome sub="BROWSE · SOURCES">
+  <AppChrome sub="BROWSE · SOURCES" onback={() => history.back()}>
     <div class="flex h-full items-center gap-2 px-2">
       <span
         class="font-mono text-[10.5px] tracking-[0.06em] text-ink-2"
@@ -401,7 +401,7 @@
         {/if}
       </button>
     </div>
-  </WindowChrome>
+  </AppChrome>
 
   {#if activeDownload && downloadInFlight}
     {@const pct =
