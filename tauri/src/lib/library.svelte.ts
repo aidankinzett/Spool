@@ -291,7 +291,16 @@ export function createLibrary() {
         showRunErrorToast(game_id, message ?? 'Game launch failed');
       } else if (phase === 'done') {
         const game = games.find((g) => g.id === game_id);
-        if (game) {
+        if (message) {
+          // A message on `done` means local backup succeeded but cloud upload failed.
+          toasts.show({
+            kind: 'warn',
+            label: 'LUDUSAVI',
+            title: 'Cloud upload failed',
+            sub: game ? `${game.game_name} · ${message}` : message,
+            catalog: game ? fmtCatalog(game.catalog_number) : undefined,
+          });
+        } else if (game) {
           toasts.show({
             kind: 'ok',
             label: 'LUDUSAVI',
