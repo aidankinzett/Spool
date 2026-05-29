@@ -18,16 +18,6 @@ Built with [Tauri 2](https://v2.tauri.app/) (Rust backend) and [SvelteKit 5](htt
 
 ---
 
-## Screenshots
-
-| Main library | Add game | Settings |
-|---|---|---|
-| ![Main library](screenshots/main-window.png) | ![Add game](screenshots/add-game.png) | ![Settings](screenshots/settings.png) |
-
-![Game detail](screenshots/game-detail.png)
-
----
-
 ## Table of Contents
 
 - [Download](#download)
