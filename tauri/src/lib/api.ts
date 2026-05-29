@@ -15,6 +15,7 @@ import type {
   LanPeer,
   NewGame,
   PeerGame,
+  ProtonVersion,
   SyncStatus,
   UploadSnapshot,
   SearchCandidate,
@@ -31,6 +32,13 @@ export const api = {
   getConfig: (): Promise<ConfigData> => invoke('get_config'),
   updateConfig: (data: ConfigData): Promise<ConfigData> => invoke('update_config', { data }),
   detectLudusavi: (): Promise<string> => invoke('detect_ludusavi'),
+  detectUmuRun: (): Promise<string> => invoke('detect_umu_run'),
+  appPlatform: (): Promise<string> => invoke('app_platform'),
+
+  // Proton / Linux launch
+  listProtonVersions: (): Promise<ProtonVersion[]> => invoke('list_proton_versions'),
+  installProtonDeps: (gameId: string, verbs: string): Promise<string> =>
+    invoke('install_proton_deps', { gameId, verbs }),
 
   // Ludusavi — Add Game flow
   searchGames: (query: string): Promise<SearchCandidate[]> => invoke('search_games', { query }),

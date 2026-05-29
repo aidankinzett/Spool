@@ -34,6 +34,27 @@ pub fn launchers_dir() -> PathBuf {
     app_data_dir().join("launchers")
 }
 
+/// Root for per-game Proton/Wine prefixes (Linux). Each game gets a
+/// `<id>` subdir used as `WINEPREFIX` and as ludusavi's `--wine-prefix`.
+#[allow(dead_code)]
+pub fn proton_prefixes_dir() -> PathBuf {
+    app_data_dir().join("prefixes")
+}
+
+/// Spool-owned ludusavi configuration directory. Passed to every ludusavi
+/// invocation via `--config` so Spool controls backup path, cloud remote,
+/// and (cross-device) restore redirects without touching the user's own
+/// ludusavi config.
+#[allow(dead_code)]
+pub fn ludusavi_config_dir() -> PathBuf {
+    app_data_dir().join("ludusavi")
+}
+
+#[allow(dead_code)]
+pub fn ludusavi_config_file() -> PathBuf {
+    ludusavi_config_dir().join("config.yaml")
+}
+
 /// Persistent log file for `tracing` output. Matches the C# app's path so
 /// users (and we) know where to look when something goes wrong. The path
 /// is constructed inline in `init_tracing` for the appender's

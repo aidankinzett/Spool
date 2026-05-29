@@ -51,6 +51,14 @@ pub struct ConfigData {
     pub download_dir: String,
     pub download_sources: Vec<String>,
 
+    // ── Proton / Linux launch ────────────────────────────────────────────
+    /// Path to the `umu-run` launcher. `""` = autodetect (`/usr/bin/umu-run`
+    /// then PATH). Linux-only; ignored on Windows.
+    pub umu_run_path: String,
+    /// Default Proton build directory used when a game doesn't override it.
+    /// `""` = auto-pick the newest discovered Proton.
+    pub default_proton_path: String,
+
     /// `"auto"`, `"on"`, or `"off"`. Touch-optimised UI mode (handheld).
     pub touch_mode: String,
 
@@ -82,6 +90,8 @@ impl Default for ConfigData {
             torbox_api_key: String::new(),
             download_dir: String::new(),
             download_sources: Vec::new(),
+            umu_run_path: String::new(),
+            default_proton_path: String::new(),
             touch_mode: "auto".to_string(),
             tray_intro_seen: false,
         }
@@ -132,6 +142,7 @@ impl Config {
         let mut changed = false;
         changed |= ensure_device_identity(&mut data);
         changed |= auto_detect_ludusavi(&mut data);
+        changed |= auto_detect_umu_run(&mut data);
         changed |= stamp_current_exe(&mut data);
 
         let cfg = Self { data };
@@ -220,6 +231,22 @@ fn auto_detect_ludusavi(data: &mut ConfigData) -> bool {
     false
 }
 
+/// Locates `umu-run` (`/usr/bin/umu-run` then PATH) on non-Windows. Returns
+/// true if a path was set. No-op on Windows where Proton launch isn't used.
+fn auto_detect_umu_run(data: &mut ConfigData) -> bool {
+    if cfg!(windows) {
+        return false;
+    }
+    if !data.umu_run_path.is_empty() && PathBuf::from(&data.umu_run_path).is_file() {
+        return false;
+    }
+    if let Ok(p) = crate::proton::resolve_umu_run(None) {
+        data.umu_run_path = p.to_string_lossy().to_string();
+        return true;
+    }
+    false
+}
+
 /// Stamps `spool_exe` with the current process path so generated launcher
 /// stubs (the Armoury Crate stub, etc.) know where to call back to.
 fn stamp_current_exe(data: &mut ConfigData) -> bool {
@@ -273,4 +300,22 @@ pub fn detect_ludusavi(state: State<'_, SharedConfig>) -> AppResult<String> {
         cfg.save()?;
     }
     Ok(cfg.data.ludusavi_path.clone())
+}
+
+/// The host OS, so the frontend can gate Linux-only UI (Proton settings).
+/// Returns `"windows"`, `"linux"`, or `"macos"` (Rust's `std::env::consts::OS`).
+#[tauri::command]
+pub fn app_platform() -> String {
+    std::env::consts::OS.to_string()
+}
+
+/// Runs umu-run auto-detection on demand (Settings → Compatibility). Returns
+/// the resulting path (empty string if nothing was found). Persists if found.
+#[tauri::command]
+pub fn detect_umu_run(state: State<'_, SharedConfig>) -> AppResult<String> {
+    let mut cfg = state.lock().map_err(|_| AppError::LockPoisoned)?;
+    if auto_detect_umu_run(&mut cfg.data) {
+        cfg.save()?;
+    }
+    Ok(cfg.data.umu_run_path.clone())
 }

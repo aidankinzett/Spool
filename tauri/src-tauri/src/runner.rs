@@ -263,7 +263,7 @@ pub async fn launch_game_inner(app: &AppHandle, game_id: &str) -> AppResult<()> 
     // the registry-level Run-As-Admin compat flag into the effective
     // `needs_admin` here so the launch path doesn't have to know
     // about the registry concept.
-    let (game_name, exe_path, needs_admin) = {
+    let (game_name, exe_path, needs_admin, use_proton, proton_version_path, wine_prefix_path, launch_args) = {
         let library = app.state::<SharedLibrary>();
         let lib = library.lock().map_err(|_| AppError::LockPoisoned)?;
         let entry = lib
@@ -274,7 +274,15 @@ pub async fn launch_game_inner(app: &AppHandle, game_id: &str) -> AppResult<()> 
         }
         let needs_admin =
             entry.run_as_admin || registry::run_as_admin_in_registry(&entry.exe_path);
-        (entry.game_name.clone(), entry.exe_path.clone(), needs_admin)
+        (
+            entry.game_name.clone(),
+            entry.exe_path.clone(),
+            needs_admin,
+            entry.use_proton,
+            entry.proton_version_path.clone(),
+            entry.wine_prefix_path.clone(),
+            entry.launch_args.clone(),
+        )
     };
 
     let ludusavi_exe = {
@@ -289,13 +297,36 @@ pub async fn launch_game_inner(app: &AppHandle, game_id: &str) -> AppResult<()> 
         PathBuf::from(p)
     };
 
+    let (umu_run_path, default_proton_path) = {
+        let config = app.state::<SharedConfig>();
+        let cfg = config.lock().map_err(|_| AppError::LockPoisoned)?;
+        (
+            cfg.data.umu_run_path.clone(),
+            cfg.data.default_proton_path.clone(),
+        )
+    };
+
+    // Resolve the launch plan (umu-run + Proton paths) *before* the long
+    // awaits below so a misconfiguration surfaces as a clean launch error.
+    let launch_plan = build_launch_plan(
+        game_id,
+        use_proton,
+        proton_version_path,
+        wine_prefix_path,
+        launch_args,
+        needs_admin,
+        &umu_run_path,
+        &default_proton_path,
+        &exe_path,
+    )?;
+
     let ludusavi_client = app.state::<LudusaviClient>();
     let result = run_workflow(
         app,
         game_id,
         &game_name,
         &exe_path,
-        needs_admin,
+        &launch_plan,
         &ludusavi_exe,
         &ludusavi_client,
     )
@@ -315,12 +346,84 @@ pub async fn launch_game_inner(app: &AppHandle, game_id: &str) -> AppResult<()> 
     result
 }
 
+/// Fully-resolved instructions for spawning a game, built once (before the
+/// async workflow) so any Proton/umu misconfiguration fails fast.
+struct LaunchPlan {
+    use_proton: bool,
+    umu_run: Option<PathBuf>,
+    proton_path: Option<PathBuf>,
+    prefix_root: PathBuf,
+    extra_args: Vec<String>,
+    run_as_admin: bool,
+}
+
+/// Resolves a [`LaunchPlan`] from the game's settings + app config. On
+/// non-Windows, a `.exe` without Proton enabled is a hard error (we won't
+/// try to exec a Windows binary natively). On Windows, Proton is ignored.
+#[allow(clippy::too_many_arguments)]
+fn build_launch_plan(
+    game_id: &str,
+    use_proton: bool,
+    proton_version_path: Option<String>,
+    wine_prefix_path: Option<String>,
+    launch_args: Option<String>,
+    needs_admin: bool,
+    umu_run_path: &str,
+    default_proton_path: &str,
+    exe_path: &str,
+) -> AppResult<LaunchPlan> {
+    let prefix_root = wine_prefix_path
+        .filter(|p| !p.trim().is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| crate::proton::game_prefix_path(game_id));
+    let extra_args: Vec<String> = launch_args
+        .as_deref()
+        .unwrap_or("")
+        .split_whitespace()
+        .map(String::from)
+        .collect();
+
+    let effective_proton = use_proton && cfg!(not(windows));
+
+    if effective_proton {
+        let umu_run = crate::proton::resolve_umu_run(Some(umu_run_path))?;
+        let proton_path = crate::proton::resolve_proton_path(
+            proton_version_path.as_deref(),
+            Some(default_proton_path),
+        )?;
+        return Ok(LaunchPlan {
+            use_proton: true,
+            umu_run: Some(umu_run),
+            proton_path: Some(proton_path),
+            prefix_root,
+            extra_args,
+            run_as_admin: false,
+        });
+    }
+
+    // Native path. Guard against trying to run a Windows exe natively on Linux.
+    if cfg!(not(windows)) && exe_path.to_ascii_lowercase().ends_with(".exe") {
+        return Err(AppError::Other(
+            "This is a Windows game — enable 'Run with Proton' in the game's Launch settings.".into(),
+        ));
+    }
+
+    Ok(LaunchPlan {
+        use_proton: false,
+        umu_run: None,
+        proton_path: None,
+        prefix_root,
+        extra_args,
+        run_as_admin: needs_admin,
+    })
+}
+
 async fn run_workflow(
     app: &AppHandle,
     game_id: &str,
     game_name: &str,
     exe_path: &str,
-    run_as_admin: bool,
+    launch: &LaunchPlan,
     ludusavi_exe: &Path,
     ludusavi_client: &LudusaviClient,
 ) -> AppResult<()> {
@@ -386,8 +489,38 @@ async fn run_workflow(
     }
 
     emit_phase(app, game_id, "playing", None);
-    tracing::info!(exe_path, run_as_admin, "launching game process");
+    tracing::info!(exe_path, use_proton = launch.use_proton, "launching game process");
     let session_start = Utc::now();
+
+    // For Proton launches, make sure the prefix root exists; umu/Proton
+    // populates it (drive_c, registry) on first run.
+    if launch.use_proton {
+        if let Err(e) = std::fs::create_dir_all(&launch.prefix_root) {
+            return Err(AppError::Other(format!(
+                "failed to create Proton prefix dir {:?}: {e}",
+                launch.prefix_root
+            )));
+        }
+    }
+    let spec = if launch.use_proton {
+        process::LaunchSpec::Proton {
+            umu_run: launch
+                .umu_run
+                .as_deref()
+                .expect("umu_run resolved for proton launch"),
+            prefix_root: &launch.prefix_root,
+            proton_path: launch
+                .proton_path
+                .as_deref()
+                .expect("proton_path resolved for proton launch"),
+            game_id,
+            extra_args: &launch.extra_args,
+        }
+    } else {
+        process::LaunchSpec::Native {
+            run_as_admin: launch.run_as_admin,
+        }
+    };
 
     // Spawn the lock-heartbeat task. Pings /heartbeat every 30s so
     // the sync server doesn't mark our lock stale during long
@@ -395,7 +528,7 @@ async fn run_workflow(
     // outlive the game.
     let heartbeat = sync::start_heartbeat(app.clone(), game_name.to_string());
 
-    let spawn_result = process::run_game(&exe_pathbuf, run_as_admin).await;
+    let spawn_result = process::run_game(&exe_pathbuf, spec).await;
     let session_end = Utc::now();
 
     // Always abort the heartbeat + release the lock — even if launch

@@ -262,6 +262,22 @@ jobs:
           APPIMAGE=$(ls Spool_*_amd64.AppImage)
           bunx @tauri-apps/cli signer sign "$APPIMAGE"
 
+      - name: Package raw binary tarball (for AUR spool-bin)
+        # The AppImage bundles its own libs (and we strip libwayland from it);
+        # the AUR package instead wants the raw binary linking against system
+        # libs. Ship binary + icon; the PKGBUILD generates the .desktop.
+        working-directory: tauri/src-tauri
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          VERSION="${REF_NAME#v}"
+          STAGE="$(mktemp -d)"
+          install -Dm755 target/release/spool "$STAGE/spool"
+          install -Dm644 icons/128x128.png "$STAGE/spool.png"
+          tar -czf "spool-${VERSION}-x86_64.tar.gz" -C "$STAGE" spool spool.png
+          rm -rf "$STAGE"
+
       - name: sccache stats
         run: sccache --show-stats
 
@@ -272,6 +288,7 @@ jobs:
           path: |
             tauri/src-tauri/target/release/bundle/appimage/Spool_*_amd64.AppImage
             tauri/src-tauri/target/release/bundle/appimage/Spool_*_amd64.AppImage.sig
+            tauri/src-tauri/spool-*-x86_64.tar.gz
           if-no-files-found: error
 
   release:
@@ -330,10 +347,11 @@ jobs:
           WIN_SIG=$(ls artifacts/windows-bundle/Spool_*_x64-setup.exe.sig)
           LIN_APP=$(ls artifacts/linux-bundle/Spool_*_amd64.AppImage)
           LIN_SIG=$(ls artifacts/linux-bundle/Spool_*_amd64.AppImage.sig)
+          LIN_TAR=$(ls artifacts/linux-bundle/spool-*-x86_64.tar.gz)
           gh release create "$TAG_NAME" \
             --title "Spool $TAG_NAME" \
             --notes-file notes.md \
-            "$WIN_EXE" "$WIN_SIG" "$LIN_APP" "$LIN_SIG"
+            "$WIN_EXE" "$WIN_SIG" "$LIN_APP" "$LIN_SIG" "$LIN_TAR"
 
       - name: Build and upload latest.json updater manifest
         # tauri-action only emits latest.json on its own release-creation

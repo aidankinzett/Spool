@@ -39,6 +39,17 @@ pub struct GameEntry {
 
     pub run_as_admin: bool,
 
+    // ── Proton / Linux launch (inert on Windows) ────────────────────────────
+    /// Launch this game's Windows exe through Proton (umu-run) on Linux.
+    pub use_proton: bool,
+    /// Override the Proton build directory. `None` = use the global default
+    /// (`ConfigData.default_proton_path`) or auto-pick the newest.
+    pub proton_version_path: Option<String>,
+    /// Override the Wine prefix ROOT. `None` = `paths::proton_prefixes_dir()/<id>`.
+    pub wine_prefix_path: Option<String>,
+    /// Extra command-line args appended after the exe (space-split at use).
+    pub launch_args: Option<String>,
+
     // Metadata
     pub description: String,
     pub developer: String,
@@ -115,6 +126,10 @@ impl Default for GameEntry {
             launcher_exe_path: None,
             game_folder_path: None,
             run_as_admin: false,
+            use_proton: false,
+            proton_version_path: None,
+            wine_prefix_path: None,
+            launch_args: None,
             description: String::new(),
             developer: String::new(),
             publisher: String::new(),

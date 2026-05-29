@@ -17,7 +17,7 @@
   import { open as openDialog } from '@tauri-apps/plugin-dialog';
   import { api } from '$lib/api';
   import { toasts } from '$lib/toasts.svelte';
-  import type { ConfigData, LanPeer, SyncStatus } from '$lib/types';
+  import type { ConfigData, LanPeer, ProtonVersion, SyncStatus } from '$lib/types';
   import WindowChrome from '$lib/components/WindowChrome.svelte';
   import MonoLabel from '$lib/components/MonoLabel.svelte';
   import Btn from '$lib/components/Btn.svelte';
@@ -48,11 +48,17 @@
   let newSourceUrl = $state('');
   let addingSource = $state(false);
 
+  // Proton / Compatibility (Linux only).
+  let isLinux = $state(false);
+  let protonVersions = $state<ProtonVersion[]>([]);
+
   onMount(async () => {
     try {
       config = await api.getConfig();
       syncStatus = await api.currentSyncStatus();
       peers = await api.listLanPeers();
+      isLinux = (await api.appPlatform()) === 'linux';
+      if (isLinux) protonVersions = await api.listProtonVersions();
     } catch (e) {
       error = String(e);
     }
@@ -127,6 +133,21 @@
     }
   }
 
+  async function autoDetectUmu() {
+    if (!config) return;
+    const found = await api.detectUmuRun();
+    if (found) config.umu_run_path = found;
+    config = await api.getConfig();
+  }
+
+  async function browseUmu() {
+    const picked = await openDialog({ title: 'Locate umu-run', multiple: false });
+    if (typeof picked === 'string' && config) {
+      config.umu_run_path = picked;
+      await persist();
+    }
+  }
+
   async function browseLanInstallDir() {
     const picked = await openDialog({ title: 'Pick the LAN install folder', directory: true, multiple: false });
     if (typeof picked === 'string' && config) {
@@ -193,12 +214,15 @@
     document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
 
-  const NAV_GROUPS = [
+  const NAV_GROUPS = $derived([
     {
       id: 'library',
       title: 'Library',
       items: [
         { id: 'ludusavi', title: 'Ludusavi', sub: 'Save backup engine' },
+        ...(isLinux
+          ? [{ id: 'compat', title: 'Compatibility', sub: 'Proton / umu-run' }]
+          : []),
         { id: 'artwork', title: 'Cover artwork', sub: 'SteamGridDB' },
       ],
     },
@@ -219,7 +243,7 @@
         { id: 'torbox', title: 'TorBox', sub: 'Debrid download provider' },
       ],
     },
-  ] as const;
+  ]);
 </script>
 
 <div class="flex h-screen flex-col bg-bg-0 text-ink-0">
@@ -327,6 +351,46 @@
 
                 </SettingsCard>
               </div>
+
+              <!-- Compatibility (Proton) — Linux only -->
+              {#if isLinux}
+                <div id="compat">
+                  <SettingsCard title="Compatibility (Proton)" helper="Run Windows games on Linux via Proton. umu-run manages the runtime; each game gets its own prefix.">
+                    <SettingsRow
+                      label="umu-run"
+                      helper={config.umu_run_path ? 'Detected — launcher reachable' : 'Install umu-launcher or browse to umu-run'}
+                      status={config.umu_run_path ? 'ok' : 'warn'}
+                    >
+                      {#snippet extras()}
+                        <TextField bind:value={config!.umu_run_path} placeholder="/usr/bin/umu-run" mono full oncommit={persist} />
+                        <Btn variant="ghost" onclick={autoDetectUmu}>
+                          {#snippet icon()}<Sparkles size={14} />{/snippet}
+                          Auto-detect
+                        </Btn>
+                        <Btn variant="ghost" onclick={browseUmu}>
+                          {#snippet icon()}<Folder size={14} />{/snippet}
+                          Browse
+                        </Btn>
+                      {/snippet}
+                    </SettingsRow>
+                    <SettingsRow label="Default Proton" helper="Used when a game doesn't pick its own version. Auto chooses the newest installed.">
+                      {#snippet extras()}
+                        <select
+                          bind:value={config!.default_proton_path}
+                          onchange={persist}
+                          style="color-scheme: dark"
+                          class="font-mono rounded-[4px] border border-line-1 bg-bg-2 px-2 py-1 text-[11.5px] text-ink-0"
+                        >
+                          <option style="background: var(--color-bg-2); color: var(--color-ink-0)" value="">Auto (newest installed)</option>
+                          {#each protonVersions as p (p.path)}
+                            <option style="background: var(--color-bg-2); color: var(--color-ink-0)" value={p.path}>{p.name}</option>
+                          {/each}
+                        </select>
+                      {/snippet}
+                    </SettingsRow>
+                  </SettingsCard>
+                </div>
+              {/if}
 
               <!-- Cover artwork section -->
               <div id="artwork">

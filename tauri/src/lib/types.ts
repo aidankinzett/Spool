@@ -25,6 +25,11 @@ export type ConfigData = {
   download_dir: string;
   download_sources: string[];
 
+  /** Path to `umu-run`. `""` = autodetect. Linux-only. */
+  umu_run_path: string;
+  /** Default Proton build dir; `""` = auto-pick newest. */
+  default_proton_path: string;
+
   touch_mode: string;
 
   /** True after the close-to-tray intro toast has been shown once. */
@@ -54,6 +59,15 @@ export type GameEntry = {
   game_folder_path: string | null;
 
   run_as_admin: boolean;
+
+  /** Launch this Windows exe through Proton (umu-run) on Linux. */
+  use_proton: boolean;
+  /** Override Proton build dir; null = global default / auto. */
+  proton_version_path: string | null;
+  /** Override Wine prefix root; null = default prefixes dir / <id>. */
+  wine_prefix_path: string | null;
+  /** Extra launch args appended after the exe. */
+  launch_args: string | null;
 
   description: string;
   developer: string;
@@ -332,4 +346,16 @@ export type NewGame = {
   has_cloud_save?: boolean;
   manifest_install_dir?: string | null;
   save_paths?: string[];
+};
+
+/**
+ * A discovered Proton build, from `list_proton_versions`. Mirrors the Rust
+ * `ProtonVersion` struct in src-tauri/src/proton.rs.
+ *
+ *   source  "steam" (steamapps/common) | "compat" (compatibilitytools.d)
+ */
+export type ProtonVersion = {
+  name: string;
+  path: string;
+  source: string;
 };

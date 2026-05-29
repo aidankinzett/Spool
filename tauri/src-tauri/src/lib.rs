@@ -37,6 +37,7 @@ mod library;
 mod ludusavi;
 mod paths;
 mod process;
+mod proton;
 mod registry;
 mod runner;
 mod size_backfill;
@@ -165,6 +166,11 @@ pub fn run() {
             config::get_config,
             config::update_config,
             config::detect_ludusavi,
+            config::detect_umu_run,
+            config::app_platform,
+            // proton / linux launch
+            proton::list_proton_versions,
+            proton::install_proton_deps,
             // ludusavi
             ludusavi::search_games,
             ludusavi::search_by_exe,
