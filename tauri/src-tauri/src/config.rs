@@ -14,6 +14,19 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use tauri::State;
 
+/// UI density / layout mode. `Auto` resolves at runtime (frontend) to
+/// `desktop` or `touch` from pointer + panel size; `Desktop`/`Touch` force
+/// it. Serialized lowercase (`"auto"`/`"desktop"`/`"touch"`) to match the
+/// `UiMode` union in types.ts.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum UiMode {
+    #[default]
+    Auto,
+    Desktop,
+    Touch,
+}
+
 /// On-disk shape. Every field has a default so older config.json files
 /// without newer fields parse cleanly via `#[serde(default)]`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -51,8 +64,9 @@ pub struct ConfigData {
     pub download_dir: String,
     pub download_sources: Vec<String>,
 
-    /// `"auto"`, `"on"`, or `"off"`. Touch-optimised UI mode (handheld).
-    pub touch_mode: String,
+    /// Touch-optimised UI mode (handheld). Resolved to a concrete
+    /// desktop/touch density at boot by `lib/uiMode.svelte.ts`.
+    pub ui_mode: UiMode,
 
     /// Set to true after the user has been shown the "Spool is in the tray"
     /// intro toast at least once. Defaults to false on legacy configs (and
@@ -82,7 +96,7 @@ impl Default for ConfigData {
             torbox_api_key: String::new(),
             download_dir: String::new(),
             download_sources: Vec::new(),
-            touch_mode: "auto".to_string(),
+            ui_mode: UiMode::default(),
             tray_intro_seen: false,
         }
     }
