@@ -46,13 +46,12 @@
     const timer = setInterval(() => { clock = formatClock(new Date()); }, 10_000);
 
     // Battery API — Chromium/WebView2 only; degrades silently elsewhere.
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let batteryObj: any = null;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const onLevelChange = () => { batteryPct = Math.round(batteryObj.level * 100); };
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (navigator as any).getBattery?.()
-      .then((b: any) => {
+    interface BatteryManager extends EventTarget { level: number; }
+    let batteryObj: BatteryManager | null = null;
+    const onLevelChange = () => { if (batteryObj) batteryPct = Math.round(batteryObj.level * 100); };
+    const getBattery = (navigator as Navigator & { getBattery?: () => Promise<BatteryManager> }).getBattery;
+    getBattery?.call(navigator)
+      .then((b: BatteryManager) => {
         batteryObj = b;
         batteryPct = Math.round(batteryObj.level * 100);
         batteryObj.addEventListener('levelchange', onLevelChange);
