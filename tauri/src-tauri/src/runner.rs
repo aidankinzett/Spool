@@ -121,6 +121,67 @@ fn os_toast_if_hidden(app: &AppHandle, title: &str, body: &str) {
     }
 }
 
+/// AppHandle-free backup core. Resolves the game's name + wine prefix from the
+/// library, runs `ludusavi backup`, and persists the entry's backup stats.
+/// Returns the bundle count + total bytes. Callers handle event emission and
+/// sync-server recording (best-effort) themselves.
+pub async fn backup_game_core(
+    ludusavi_client: &LudusaviClient,
+    ludusavi_exe: &Path,
+    config_dir: &Path,
+    library: &SharedLibrary,
+    game_id: &str,
+) -> AppResult<ManualBackupResult> {
+    let (game_name, use_proton, prefix_override) = {
+        let lib = library.lock().map_err(|_| AppError::LockPoisoned)?;
+        let entry = lib
+            .find(game_id)
+            .ok_or_else(|| AppError::Other(format!("game not found: {game_id}")))?;
+        (
+            entry.game_name.clone(),
+            entry.use_proton,
+            entry.wine_prefix_path.clone(),
+        )
+    };
+    let wine_prefix: Option<PathBuf> = if cfg!(not(windows)) && use_proton {
+        Some(
+            prefix_override
+                .filter(|p| !p.trim().is_empty())
+                .map(PathBuf::from)
+                .unwrap_or_else(|| crate::proton::game_prefix_path(game_id)),
+        )
+    } else {
+        None
+    };
+
+    let out = ludusavi_client
+        .backup(ludusavi_exe, config_dir, &game_name, wine_prefix.as_deref())
+        .await
+        .map_err(|e| AppError::Other(format!("ludusavi backup: {e}")))?;
+
+    let (game_count, bytes_total) = out
+        .overall
+        .as_ref()
+        .map(|o| (o.total_games as i32, o.total_bytes))
+        .unwrap_or((0, 0));
+
+    if game_count > 0 {
+        let mut lib = library.lock().map_err(|_| AppError::LockPoisoned)?;
+        if let Some(entry) = lib.entries.iter_mut().find(|e| e.id == game_id) {
+            entry.save_backup_count += 1;
+            entry.save_last_backed_up_at = Some(Utc::now());
+            entry.save_backup_size_mb = (bytes_total as f64) / (1024.0 * 1024.0);
+            entry.sync_badge = Some("synced".to_string());
+        }
+        lib.save()?;
+    }
+
+    Ok(ManualBackupResult {
+        game_count,
+        bytes_total: bytes_total as u64,
+    })
+}
+
 /// Manual backup — runs `ludusavi backup` for a single game outside
 /// the full play workflow. Used by the right-click "Back up saves
 /// now" action so users can snapshot saves before risky operations
@@ -133,42 +194,34 @@ fn os_toast_if_hidden(app: &AppHandle, title: &str, body: &str) {
 /// sync event so peers can see the new save.
 #[tauri::command]
 pub async fn manual_backup(app: AppHandle, game_id: String) -> AppResult<ManualBackupResult> {
-    // Snapshot config + library entry first; drop the locks before
-    // the long-running subprocess await.
-    let (game_name, ludusavi_exe, config_dir, wine_prefix) = manual_prep(&app, &game_id)?;
+    let ludusavi_exe = {
+        let config = app.state::<SharedConfig>();
+        let cfg = config.lock().map_err(|_| AppError::LockPoisoned)?;
+        crate::paths::resolve_ludusavi_path(&cfg.data.ludusavi_path).ok_or_else(|| {
+            AppError::Other(
+                "Ludusavi is not configured. Place ludusavi in your PATH or configure it in Settings.".into(),
+            )
+        })?
+    };
+    let config_dir = crate::paths::ludusavi_config_dir();
     let ludusavi_client = app.state::<LudusaviClient>();
-    let out = ludusavi_client
-        .backup(&ludusavi_exe, &config_dir, &game_name, wine_prefix.as_deref())
-        .await
-        .map_err(|e| AppError::Other(format!("ludusavi backup: {e}")))?;
+    let library = app.state::<SharedLibrary>();
 
-    let (game_count, bytes_total) = out
-        .overall
-        .as_ref()
-        .map(|o| (o.total_games as i32, o.total_bytes))
-        .unwrap_or((0, 0));
+    let result =
+        backup_game_core(&ludusavi_client, &ludusavi_exe, &config_dir, &library, &game_id).await?;
 
-    if game_count > 0 {
-        {
-            let library = app.state::<SharedLibrary>();
-            let mut lib = library.lock().map_err(|_| AppError::LockPoisoned)?;
-            if let Some(entry) = lib.entries.iter_mut().find(|e| e.id == game_id) {
-                entry.save_backup_count += 1;
-                entry.save_last_backed_up_at = Some(Utc::now());
-                entry.save_backup_size_mb = (bytes_total as f64) / (1024.0 * 1024.0);
-                entry.sync_badge = Some("synced".to_string());
-            }
-            lib.save()?;
-        }
+    if result.game_count > 0 {
         let _ = app.emit("library:changed", &game_id);
-        // Record on the sync server so peers see the new event.
-        sync::record_backup_event(&app, &game_name).await;
+        let game_name = {
+            let lib = library.lock().map_err(|_| AppError::LockPoisoned)?;
+            lib.find(&game_id).map(|e| e.game_name.clone())
+        };
+        if let Some(name) = game_name {
+            // Record on the sync server so peers see the new event.
+            sync::record_backup_event(&app, &name).await;
+        }
     }
-
-    Ok(ManualBackupResult {
-        game_count,
-        bytes_total: bytes_total as u64,
-    })
+    Ok(result)
 }
 
 /// Manual restore — runs `ludusavi restore` for a single game.
