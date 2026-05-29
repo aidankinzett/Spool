@@ -316,10 +316,12 @@ pub async fn use_server_save_storage(app: AppHandle) -> AppResult<()> {
     }
 
     // Persist for the settings UI (password is never stored — ludusavi obscures
-    // it into rclone.conf).
+    // it into rclone.conf). The dedicated `spool-server` provider keeps this
+    // distinct from a manually-configured WebDAV remote so the UI shows a clean
+    // connected state instead of the editable url/user/pass fields.
     {
         let mut g = cfg_state.lock().map_err(|_| AppError::LockPoisoned)?;
-        g.data.cloud_provider = "webdav".to_string();
+        g.data.cloud_provider = "spool-server".to_string();
         g.data.cloud_webdav_url = info.webdav_url;
         g.data.cloud_webdav_username = info.username;
         if !info.base_path.is_empty() {

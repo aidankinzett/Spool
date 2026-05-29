@@ -142,6 +142,11 @@ pass = <rclone-obscured>
   `cloud_webdav_url` / `cloud_webdav_username` (password never stored).
 - Settings → Cloud saves: **"Use my Spool server for save storage"** button (when
   a sync server is configured) + manual WebDAV url/user/pass fields.
+- The turnkey path stores `cloud_provider = "spool-server"` (distinct from manual
+  `webdav`) so the UI renders a read-only **"Connected to your Spool server"**
+  state with a Disconnect button instead of the editable url/user/pass fields —
+  avoids a footgun where re-running the manual "Connect" would reconfigure the
+  remote as plaintext and break the auth-proxy login.
 
 #### Gotchas found wiring it up (verified against rclone v1.74)
 
