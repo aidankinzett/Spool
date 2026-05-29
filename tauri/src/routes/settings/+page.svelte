@@ -15,7 +15,7 @@
   import { openPath } from '@tauri-apps/plugin-opener';
   import { appLocalDataDir } from '@tauri-apps/api/path';
   import { open as openDialog } from '@tauri-apps/plugin-dialog';
-  import { api } from '$lib/api';
+  import { api, type DeckyPluginInfo } from '$lib/api';
   import { toasts } from '$lib/toasts.svelte';
   import type { ConfigData, DepStatus, LanPeer, ProtonVersion, SyncStatus } from '$lib/types';
   import WindowChrome from '$lib/components/WindowChrome.svelte';
@@ -60,6 +60,10 @@
   let deps = $state<DepStatus[]>([]);
   let depsLoading = $state(false);
 
+  // Decky plugin (SteamOS forced-close backup safety net) — Linux only.
+  let deckyPlugin = $state<DeckyPluginInfo | null>(null);
+  let deckyInstalling = $state(false);
+
   onMount(async () => {
     try {
       config = await api.getConfig();
@@ -69,6 +73,11 @@
       if (isLinux) {
         protonVersions = await api.listProtonVersions();
         deps = await api.checkDependencies();
+        try {
+          deckyPlugin = await api.deckyPluginStatus();
+        } catch (e) {
+          console.error('[settings] deckyPluginStatus failed:', e);
+        }
       }
     } catch (e) {
       error = String(e);
@@ -147,6 +156,24 @@
   async function refreshDeps() {
     depsLoading = true;
     try { deps = await api.checkDependencies(); } finally { depsLoading = false; }
+  }
+
+  async function installDeckyPlugin() {
+    deckyInstalling = true;
+    try {
+      await api.installDeckyPlugin();
+      deckyPlugin = await api.deckyPluginStatus();
+      toasts.show({
+        kind: 'ok',
+        label: 'DECKY',
+        title: 'Backup plugin installed',
+        sub: 'Decky was restarted — the Spool Backup plugin is now active.',
+      });
+    } catch (e) {
+      toasts.show({ kind: 'bad', label: 'DECKY', title: "Couldn't install plugin", sub: String(e) });
+    } finally {
+      deckyInstalling = false;
+    }
   }
 
   async function autoDetectUmu() {
@@ -295,7 +322,10 @@
       items: [
         { id: 'ludusavi', title: 'Ludusavi', sub: 'Save backup engine' },
         ...(isLinux
-          ? [{ id: 'compat', title: 'Compatibility', sub: 'Proton / umu-run' }]
+          ? [
+              { id: 'compat', title: 'Compatibility', sub: 'Proton / umu-run' },
+              { id: 'decky', title: 'Steam Deck', sub: 'Backup safety net plugin' },
+            ]
           : []),
         { id: 'cloud-saves', title: 'Cloud saves', sub: 'rclone remote' },
         { id: 'artwork', title: 'Cover artwork', sub: 'SteamGridDB' },
@@ -517,6 +547,52 @@
                             <option style="background: var(--color-bg-2); color: var(--color-ink-0)" value={p.path}>{p.name}</option>
                           {/each}
                         </select>
+                      {/snippet}
+                    </SettingsRow>
+                  </SettingsCard>
+                </div>
+              {/if}
+
+              <!-- Steam Deck — forced-close backup plugin (Decky) -->
+              {#if isLinux}
+                {@const dp = deckyPlugin}
+                {@const needsUpdate = !!dp?.installed && dp.installedVersion !== dp.bundledVersion}
+                <div id="decky">
+                  <SettingsCard
+                    title="Steam Deck backup plugin"
+                    helper="In Game Mode, closing a game with Quick Access → Exit Game can kill Spool before it backs up. This optional Decky Loader plugin runs the backup as a safety net from outside the game's process tree."
+                  >
+                    <SettingsRow
+                      label="Spool Backup plugin"
+                      status={dp?.installed ? (needsUpdate ? 'warn' : 'ok') : 'warn'}
+                      helper={!dp
+                        ? 'Checking…'
+                        : !dp.deckyPresent
+                          ? "Decky Loader isn't detected (~/homebrew). Install Decky first, then come back."
+                          : dp.installed
+                            ? needsUpdate
+                              ? `Installed v${dp.installedVersion ?? '?'} · bundled v${dp.bundledVersion}. An update is available.`
+                              : `Installed v${dp.installedVersion ?? dp.bundledVersion} — up to date.`
+                            : `Not installed. Bundled v${dp.bundledVersion}. Installing asks for your password and restarts Decky — do this from Desktop Mode.`}
+                    >
+                      {#snippet extras()}
+                        <Pill kind={dp?.installed ? (needsUpdate ? 'warn' : 'ok') : 'off'}>
+                          {dp?.installed ? (needsUpdate ? 'Update' : 'Installed') : 'Not installed'}
+                        </Pill>
+                        <Btn
+                          variant="primary"
+                          onclick={installDeckyPlugin}
+                          disabled={deckyInstalling || !dp}
+                        >
+                          {#snippet icon()}<Sparkles size={14} />{/snippet}
+                          {deckyInstalling
+                            ? 'Installing…'
+                            : dp?.installed
+                              ? needsUpdate
+                                ? 'Update plugin'
+                                : 'Reinstall'
+                              : 'Install plugin'}
+                        </Btn>
                       {/snippet}
                     </SettingsRow>
                   </SettingsCard>

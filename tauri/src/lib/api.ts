@@ -22,6 +22,22 @@ import type {
   SearchCandidate,
 } from './types';
 
+/** Status of the companion Spool Backup Decky plugin (mirrors the Rust
+ *  `DeckyPluginInfo` in `decky_install.rs`). Defined here rather than in
+ *  types.ts because it's only consumed through the two api methods below. */
+export interface DeckyPluginInfo {
+  /** This platform can install the plugin at all (Linux/SteamOS only). */
+  supported: boolean;
+  /** A copy already exists in ~/homebrew/plugins/spool-backup. */
+  installed: boolean;
+  /** Version from the installed plugin's package.json, if any. */
+  installedVersion: string | null;
+  /** Version of the plugin embedded in this Spool build. */
+  bundledVersion: string;
+  /** Decky Loader itself appears installed (~/homebrew exists). */
+  deckyPresent: boolean;
+}
+
 export const api = {
   // Library
   listGames: (): Promise<GameEntry[]> => invoke('list_games'),
@@ -36,6 +52,10 @@ export const api = {
   detectUmuRun: (): Promise<string> => invoke('detect_umu_run'),
   appPlatform: (): Promise<string> => invoke('app_platform'),
   checkDependencies: (): Promise<DepStatus[]> => invoke('check_dependencies'),
+
+  // Decky plugin installer (SteamOS / Linux)
+  deckyPluginStatus: (): Promise<DeckyPluginInfo> => invoke('decky_plugin_status'),
+  installDeckyPlugin: (): Promise<void> => invoke('install_decky_plugin'),
 
   // Proton / Linux launch
   listProtonVersions: (): Promise<ProtonVersion[]> => invoke('list_proton_versions'),
