@@ -772,14 +772,14 @@
 
                         <SettingsRow label="Download speed limit"
                           helper={config.lan_download_max_mbps > 0
-                            ? `Capped at ${config.lan_download_max_mbps} MB/s across all parallel files.`
+                            ? `Capped at ${config.lan_download_max_mbps} Mbps across all parallel files.`
                             : 'Unlimited — transfers use whatever bandwidth they can get.'}>
                           {#snippet control()}
                             <div class="flex items-center gap-1.5">
                               <input
                                 type="number"
                                 min="0"
-                                step="0.5"
+                                step="1"
                                 bind:value={config!.lan_download_max_mbps}
                                 onblur={() => {
                                   if (!config) return;
@@ -790,7 +790,7 @@
                                 }}
                                 class="font-mono h-7 w-20 rounded-sm border border-line-1 bg-bg-2 px-2 text-right text-[12px] text-ink-0 outline-none focus:border-line-3"
                               />
-                              <span class="font-mono text-[10px] uppercase tracking-[0.1em] text-ink-3">MB/s</span>
+                              <span class="font-mono text-[10px] uppercase tracking-[0.1em] text-ink-3">Mbps</span>
                             </div>
                           {/snippet}
                         </SettingsRow>

@@ -962,14 +962,16 @@ async fn run_install(
     // Snapshot the bandwidth cap once at install start. Mid-install
     // setting changes won't take effect until the next install —
     // simpler than threading config through every chunk loop. Convert
-    // MB/s → bytes/s here so the chunk loop doesn't repeat the math.
+    // Mbps (megabits/s, decimal — matching the speed shown in the
+    // transfers UI) → bytes/s here so the chunk loop doesn't repeat the
+    // math: 1 Mbit = 1_000_000 bits = 125_000 bytes.
     let max_bps = {
         let cfg = app.state::<SharedConfig>();
         let mbps = cfg
             .lock()
             .map(|c| c.data.lan_download_max_mbps)
             .unwrap_or(0.0);
-        mbps * 1024.0 * 1024.0
+        mbps * 1_000_000.0 / 8.0
     };
 
     let file_futures = manifest.files.clone().into_iter().map(|file| {
