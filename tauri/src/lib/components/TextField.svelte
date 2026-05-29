@@ -52,9 +52,11 @@
 </script>
 
 <div
-  class="group inline-flex h-8 items-center gap-1 rounded-sm border bg-bg-2 px-2 text-[12.5px] transition-colors {full
+  class="group inline-flex items-center gap-1 rounded-sm border bg-bg-2 text-[length:var(--text-base)] transition-colors {full
     ? 'w-full'
     : ''}"
+  style:height="var(--control-h)"
+  style:padding-inline="calc(var(--space-unit) * 2)"
   style:border-color={focused ? 'var(--color-spool)' : 'var(--color-line-2)'}
 >
   <input
