@@ -147,7 +147,17 @@ pub fn run() {
         Config::default()
     });
 
-    let app = tauri::Builder::default()
+    // Decide whether this is an attached Game-Mode launch: `spool --run`
+    // inside a SteamOS gamescope session. If so, we skip the tray,
+    // single-instance plugin, and background pollers, run the game, then
+    // exit — so Steam sees the game stop when Spool does.
+    let cli_mode = cli::parse_args(&initial_args);
+    let attached = matches!(cli_mode, CliMode::Run { .. }) && gamemode::is_steam_game_mode();
+    if attached {
+        tracing::info!("attached launch mode (SteamOS Game Mode) — no tray, exit on game close");
+    }
+
+    let mut builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         // Native OS toast notifications. Used by the run workflow to
@@ -157,13 +167,16 @@ pub fn run() {
         // Auto-update via Tauri's updater. Polls a signed JSON
         // manifest (URL configured in tauri.conf.json), verifies the
         // ed25519 signature, then runs the NSIS installer silently.
-        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_updater::Builder::new().build());
+    if !attached {
         // Single-instance: secondary `spool` invocations land here. We
         // dispatch on argv to either focus the library or kick off a
         // game launch. Must come early — adds the IPC channel.
-        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
             handle_forwarded_launch(app, &argv);
-        }))
+        }));
+    }
+    let app = builder
         .manage::<SharedLibrary>(Mutex::new(library))
         .manage::<SharedConfig>(Mutex::new(config))
         .manage::<LudusaviClient>(LudusaviClient::new())
@@ -251,6 +264,66 @@ pub fn run() {
             runner::manual_restore,
         ])
         .setup(move |app| {
+            if attached {
+                // ── Attached Game-Mode launch ────────────────────────────
+                // No tray, no pollers, no library window. Show a splash,
+                // launch the game from Rust, exit when the workflow ends.
+                let CliMode::Run { game_name, .. } = cli::parse_args(&initial_args) else {
+                    app.handle().exit(1);
+                    return Ok(());
+                };
+                let Some(id) = find_game_id_by_name(&app.state::<SharedLibrary>(), &game_name)
+                else {
+                    tracing::error!(name = %game_name, "attached --run: no library entry matches");
+                    app.handle().exit(1);
+                    return Ok(());
+                };
+
+                // Write the session record (appid matches the Steam shortcut).
+                if let Some(exe) = paths::spool_executable() {
+                    let appid =
+                        session::compute_steam_appid(&exe.to_string_lossy(), &game_name);
+                    if let Err(e) = session::write_start(&game_name, appid) {
+                        tracing::warn!(error = %e, "failed to write active-session record");
+                    }
+                }
+
+                // Make sure ludusavi config exists before the workflow runs.
+                if let Err(e) = ludusavi_config::ensure_config() {
+                    tracing::warn!(error = %e, "failed to initialise ludusavi config dir");
+                }
+
+                // Splash window (the `main` window stays hidden / unused).
+                if let Err(e) = tauri::WebviewWindowBuilder::new(
+                    app,
+                    "splash",
+                    tauri::WebviewUrl::App("splash".into()),
+                )
+                .title("Spool")
+                .decorations(false)
+                .inner_size(520.0, 260.0)
+                .center()
+                .resizable(false)
+                .build()
+                {
+                    tracing::warn!(error = %e, "failed to create splash window");
+                }
+
+                // Launch + exit when done. app.exit(0) lets Steam see the
+                // game stop (RunEvent::ExitRequested only blocks code.is_none()).
+                let app_handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Err(e) = runner::launch_game_inner(&app_handle, &id).await {
+                        tracing::error!(error = %e, "attached --run workflow failed");
+                    }
+                    app_handle.exit(0);
+                });
+
+                return Ok(());
+            }
+
+            // ── Normal tray-resident startup (unchanged behavior) ────────
+
             // Mount tray icon + menu.
             mount_tray(app.handle())?;
 
@@ -262,6 +335,9 @@ pub fn run() {
             if let Some(main) = app.get_webview_window("main") {
                 let win = main.clone();
                 let app_handle = app.handle().clone();
+                // `main` is now created hidden — show it explicitly (also
+                // removes the startup white-flash).
+                let _ = main.show();
                 main.on_window_event(move |event| {
                     if let WindowEvent::CloseRequested { api, .. } = event {
                         api.prevent_close();
