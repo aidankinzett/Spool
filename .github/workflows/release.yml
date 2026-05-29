@@ -107,6 +107,10 @@ jobs:
         working-directory: tauri
         run: bun install --frozen-lockfile
 
+      - name: Download sidecars
+        working-directory: tauri
+        run: bun run download-sidecars
+
       - name: Build Tauri bundle
         uses: tauri-apps/tauri-action@v0
         env:
@@ -209,6 +213,10 @@ jobs:
       - name: Install frontend dependencies
         working-directory: tauri
         run: bun install --frozen-lockfile
+
+      - name: Download sidecars
+        working-directory: tauri
+        run: bun run download-sidecars
 
       - name: Build Tauri AppImage
         # No tagName here — we publish in the release job after the

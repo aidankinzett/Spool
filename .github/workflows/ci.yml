@@ -84,6 +84,10 @@ jobs:
         working-directory: tauri
         run: bun install --frozen-lockfile
 
+      - name: Download sidecars
+        working-directory: tauri
+        run: bun run download-sidecars
+
       - name: Compile launcher stub
         # The launcher stub is a tiny standalone .NET console exe embedded
         # into the Rust binary via `include_bytes!`. Compiled with the
@@ -218,6 +222,10 @@ jobs:
         working-directory: tauri
         run: bun install --frozen-lockfile
 
+      - name: Download sidecars
+        working-directory: tauri
+        run: bun run download-sidecars
+
       - name: Tauri build (no bundle)
         working-directory: tauri
         # Same as the Windows job — release-profile compile populates the
@@ -305,6 +313,10 @@ jobs:
       - name: Install frontend dependencies
         working-directory: tauri
         run: bun install --frozen-lockfile
+
+      - name: Download sidecars
+        working-directory: tauri
+        run: bun run download-sidecars
 
       - name: Build app (no bundle)
         working-directory: tauri
