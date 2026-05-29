@@ -6,6 +6,7 @@
     KeyRound,
     Layers,
     Library,
+    MonitorSmartphone,
     Plus,
     RefreshCcw,
     Sparkles,
@@ -26,6 +27,8 @@
   import Toggle from '$lib/components/Toggle.svelte';
   import SettingsCard from '$lib/components/SettingsCard.svelte';
   import SettingsRow from '$lib/components/SettingsRow.svelte';
+  import Segmented from '$lib/components/Segmented.svelte';
+  import { uiMode } from '$lib/uiMode.svelte';
 
   let config = $state<ConfigData | null>(null);
   let error = $state<string | null>(null);
@@ -106,6 +109,13 @@
     } catch (e) {
       error = String(e);
     }
+  }
+
+  async function setUiMode(mode: ConfigData['ui_mode']) {
+    if (!config) return;
+    config.ui_mode = mode;
+    await persist();
+    await uiMode.init(mode); // applies <html data-mode> live in this window
   }
 
   async function autoDetect() {
@@ -195,6 +205,13 @@
 
   const NAV_GROUPS = [
     {
+      id: 'display',
+      title: 'Display',
+      items: [
+        { id: 'display', title: 'Display & touch', sub: 'Density & handheld mode' },
+      ],
+    },
+    {
       id: 'library',
       title: 'Library',
       items: [
@@ -246,7 +263,9 @@
           <div class="mb-[22px]">
             <!-- Group header -->
             <div class="flex items-center gap-2 px-2 pb-1.5">
-              {#if group.id === 'library'}
+              {#if group.id === 'display'}
+                <MonitorSmartphone size={13} class="text-ink-2" />
+              {:else if group.id === 'library'}
                 <Library size={13} class="text-ink-2" />
               {:else if group.id === 'sharing'}
                 <Wifi size={13} class="text-ink-2" />
@@ -295,6 +314,36 @@
               Changes save as you go.
             </p>
           </div>
+
+          <!-- ════════════════ DISPLAY GROUP ════════════════ -->
+          <section class="mb-9">
+            <div class="mb-3.5 border-b border-line-1 pb-2.5">
+              <h2 class="font-display text-[20px] font-semibold tracking-[-0.01em] text-ink-0">Display</h2>
+              <div class="mt-[3px] text-[12px] text-ink-2">How big the controls are and whether Spool runs in handheld mode.</div>
+            </div>
+            <div class="flex flex-col gap-4">
+              <div id="display">
+                <SettingsCard title="Display & touch" helper="Auto detects a touchscreen and grows targets for handhelds. Override it for a Deck/Ally docked to a monitor.">
+                  <SettingsRow
+                    label="Touch mode"
+                    helper={`Larger buttons, taller rows, tap-friendly spacing. Currently rendering: ${uiMode.resolved}.`}
+                  >
+                    {#snippet extras()}
+                      <Segmented
+                        value={config!.ui_mode}
+                        onchange={(v) => setUiMode(v as ConfigData['ui_mode'])}
+                        options={[
+                          { value: 'auto', label: 'Auto' },
+                          { value: 'desktop', label: 'Desktop' },
+                          { value: 'touch', label: 'Touch' },
+                        ]}
+                      />
+                    {/snippet}
+                  </SettingsRow>
+                </SettingsCard>
+              </div>
+            </div>
+          </section>
 
           <!-- ════════════════ LIBRARY GROUP ════════════════ -->
           <section class="mb-9">
