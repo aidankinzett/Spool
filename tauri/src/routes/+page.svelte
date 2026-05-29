@@ -334,7 +334,10 @@
 
   /** Kicks off a LAN install for the given peer + game. */
   async function installFromPeer(peer: LanPeer, game: PeerGame) {
-    if (activeDownload && activeDownload.status !== 'done' && activeDownload.status !== 'error') {
+    if (
+      activeDownload &&
+      (activeDownload.status === 'starting' || activeDownload.status === 'transferring')
+    ) {
       // Backend would reject too, but a friendly toast saves the round-trip.
       toasts.show({
         kind: 'warn',
