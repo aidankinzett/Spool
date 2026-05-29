@@ -156,7 +156,8 @@ impl LanUploadsState {
 /// to a peer and would leak local layout. The fields we keep are the ones a
 /// browsing UI on the other side needs to display the game and decide whether
 /// they want it.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
 pub struct PeerGame {
     pub id: String,
     pub catalog_number: u32,
@@ -234,7 +235,8 @@ pub struct PeerFile {
 /// before starting the file stream so it knows the total byte count
 /// (for progress) and how to register the entry in its local library
 /// once the bytes land.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
 pub struct PeerGameManifest {
     pub game_id: String,
     pub game_name: String,
