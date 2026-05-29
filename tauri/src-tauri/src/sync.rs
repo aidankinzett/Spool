@@ -298,15 +298,19 @@ pub async fn use_server_save_storage(app: AppHandle) -> AppResult<()> {
 
     // Configure ludusavi's owned config to use the WebDAV remote.
     let cfg_state = app.state::<SharedConfig>();
-    // Spool's self-hosted store runs `rclone serve --auth-proxy`, which reveals
-    // the on-wire password, so it must be obscured (see apply_webdav_remote).
+    // The server's auth-proxy (`/internal/webdav-auth`) validates the incoming
+    // basic-auth password *verbatim* against the account's API key — it does
+    // NOT deobscure it. rclone already obscures the password at rest in
+    // rclone.conf and reveals it back to plaintext on the wire, so we must hand
+    // ludusavi the plaintext key (obscure_password = false). Pre-obscuring here
+    // would put a double-wrapped value on the wire and every sync would 401.
     crate::ludusavi::apply_webdav_remote(
         cfg_state.inner(),
         &info.webdav_url,
         &info.username,
         &info.password,
         &info.provider,
-        true,
+        false,
     )
     .await?;
 

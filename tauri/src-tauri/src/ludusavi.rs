@@ -462,13 +462,14 @@ pub async fn open_ludusavi_gui(config: State<'_, SharedConfig>) -> AppResult<()>
 /// `provider` is one of ludusavi's WebDAV vendors: `other`, `nextcloud`,
 /// `owncloud`, `sharepoint`, `sharepoint-ntlm` (empty → `other`).
 ///
-/// `obscure_password` is for Spool's own self-hosted store, which runs
-/// `rclone serve webdav --auth-proxy`. That server `Reveal()`s the incoming
-/// basic-auth password before validating it, so the on-wire password must
-/// itself be rclone-obscured. We obscure once here; ludusavi obscures a second
-/// time for storage; the client reveals one layer on the wire; the server
-/// reveals the last — netting the real credential. A normal WebDAV server
-/// (Nextcloud, etc.) wants the plaintext password, so leave this `false` there.
+/// `obscure_password` pre-obscures the password before handing it to ludusavi.
+/// This should almost always be `false`: ludusavi/rclone already obscure the
+/// password at rest in rclone.conf and reveal it back to plaintext on the wire,
+/// so the server receives exactly what the caller passed here. Spool's own
+/// self-hosted store validates the basic-auth password verbatim against the
+/// account API key (`/internal/webdav-auth` does a plain equality check, no
+/// deobfuscation), so it too wants `false`. Only set `true` for a server that
+/// itself rclone-reveals the incoming password before validating it.
 pub async fn apply_webdav_remote(
     config: &SharedConfig,
     url: &str,
