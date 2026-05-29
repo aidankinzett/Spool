@@ -35,6 +35,7 @@ mod lan;
 mod launcher;
 mod library;
 mod ludusavi;
+mod ludusavi_config;
 mod paths;
 mod process;
 mod proton;
@@ -232,6 +233,13 @@ pub fn run() {
                         emit_tray_intro_once(&app_handle);
                     }
                 });
+            }
+
+            // Ensure Spool's owned ludusavi config dir + config.yaml exist and
+            // meet the required invariants (backup path, manifest enabled,
+            // simple format). Idempotent — fast no-op on subsequent launches.
+            if let Err(e) = ludusavi_config::ensure_config() {
+                tracing::warn!(error = %e, "failed to initialise ludusavi config dir");
             }
 
             // Kick off LAN peer discovery in the background. Logs and

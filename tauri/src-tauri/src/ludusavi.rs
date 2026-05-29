@@ -159,10 +159,11 @@ impl LudusaviClient {
     pub async fn search(
         &self,
         ludusavi_exe: &Path,
+        config_dir: &Path,
         query: &str,
     ) -> AppResult<Vec<SearchCandidate>> {
-        let hits = run_find(ludusavi_exe, query).await?;
-        let manifest = self.manifest_or_load(ludusavi_exe).await?;
+        let hits = run_find(ludusavi_exe, config_dir, query).await?;
+        let manifest = self.manifest_or_load(ludusavi_exe, config_dir).await?;
 
         let mut candidates: Vec<SearchCandidate> = hits
             .games
@@ -191,24 +192,36 @@ impl LudusaviClient {
     pub async fn restore(
         &self,
         ludusavi_exe: &Path,
+        config_dir: &Path,
         game_name: &str,
     ) -> AppResult<ApiOutput> {
-        run_api(ludusavi_exe, &["restore", "--api", "--cloud-sync", "--force", game_name]).await
+        run_api(ludusavi_exe, config_dir, &["restore", "--api", "--cloud-sync", "--force", game_name]).await
     }
 
-    /// Runs `ludusavi backup --api --cloud-sync --force <name>` and parses
-    /// the JSON output. Same forgiving behaviour as `restore`.
+    /// Runs `ludusavi backup --api --cloud-sync --force <name>` and optionally
+    /// passes `--wine-prefix <prefix>` for Proton games so ludusavi finds saves
+    /// inside the prefix's drive_c tree.
     pub async fn backup(
         &self,
         ludusavi_exe: &Path,
+        config_dir: &Path,
         game_name: &str,
+        wine_prefix: Option<&Path>,
     ) -> AppResult<ApiOutput> {
-        run_api(ludusavi_exe, &["backup", "--api", "--cloud-sync", "--force", game_name]).await
+        let mut args = vec!["backup", "--api", "--cloud-sync", "--force", game_name];
+        let prefix_str;
+        if let Some(pfx) = wine_prefix {
+            prefix_str = pfx.to_string_lossy().into_owned();
+            args.push("--wine-prefix");
+            args.push(&prefix_str);
+        }
+        run_api(ludusavi_exe, config_dir, &args).await
     }
 
     async fn manifest_or_load(
         &self,
         ludusavi_exe: &Path,
+        config_dir: &Path,
     ) -> AppResult<Arc<HashMap<String, ManifestEntry>>> {
         // Read-side fast path.
         {
@@ -219,7 +232,7 @@ impl LudusaviClient {
         }
         // Slow path: load the manifest from ludusavi. Cheap to hold the
         // write lock since this only happens once per session.
-        let manifest = load_manifest(ludusavi_exe).await?;
+        let manifest = load_manifest(ludusavi_exe, config_dir).await?;
         let arc = Arc::new(manifest);
         let mut guard = self.manifest.write().await;
         *guard = Some(Arc::clone(&arc));
@@ -235,12 +248,14 @@ impl Default for LudusaviClient {
 
 // ── Subprocess helpers ──────────────────────────────────────────────────────
 
-/// Builds a `Command` that won't flash a console window on Windows.
-/// ludusavi.exe is a console subsystem binary, so without `CREATE_NO_WINDOW`
-/// every invocation pops up a cmd window for a fraction of a second (or
-/// longer, for restore/backup) on top of the Spool UI.
-fn hidden_command(exe: &Path) -> Command {
+/// Builds a `Command` pre-loaded with `--config <config_dir>` so every
+/// ludusavi invocation uses Spool's owned config (backup path, cloud remote,
+/// redirects) rather than the user's personal ludusavi config.
+///
+/// On Windows also sets `CREATE_NO_WINDOW` to avoid a console flash.
+fn hidden_command(exe: &Path, config_dir: &Path) -> Command {
     let mut cmd = Command::new(exe);
+    cmd.args(["--config", &config_dir.to_string_lossy()]);
     #[cfg(windows)]
     {
         // CREATE_NO_WINDOW — winbase.h. Avoids a winapi dep for one constant.
@@ -249,8 +264,8 @@ fn hidden_command(exe: &Path) -> Command {
     cmd
 }
 
-async fn run_find(ludusavi_exe: &Path, query: &str) -> AppResult<FindOutput> {
-    let output = hidden_command(ludusavi_exe)
+async fn run_find(ludusavi_exe: &Path, config_dir: &Path, query: &str) -> AppResult<FindOutput> {
+    let output = hidden_command(ludusavi_exe, config_dir)
         .args(["find", "--api", "--fuzzy", "--multiple", query])
         .output()
         .await
@@ -269,8 +284,8 @@ async fn run_find(ludusavi_exe: &Path, query: &str) -> AppResult<FindOutput> {
 /// shared by `restore` and `backup`. Treats empty stdout as a successful
 /// no-op (ludusavi sometimes exits non-zero with no output when the game
 /// isn't in its manifest, which we surface as "no saves to handle").
-async fn run_api(ludusavi_exe: &Path, args: &[&str]) -> AppResult<ApiOutput> {
-    let output = hidden_command(ludusavi_exe)
+async fn run_api(ludusavi_exe: &Path, config_dir: &Path, args: &[&str]) -> AppResult<ApiOutput> {
+    let output = hidden_command(ludusavi_exe, config_dir)
         .args(args)
         .output()
         .await
@@ -283,8 +298,8 @@ async fn run_api(ludusavi_exe: &Path, args: &[&str]) -> AppResult<ApiOutput> {
         .map_err(|e| AppError::Other(format!("failed to parse ludusavi output: {e}")))
 }
 
-async fn load_manifest(ludusavi_exe: &Path) -> AppResult<HashMap<String, ManifestEntry>> {
-    let output = hidden_command(ludusavi_exe)
+async fn load_manifest(ludusavi_exe: &Path, config_dir: &Path) -> AppResult<HashMap<String, ManifestEntry>> {
+    let output = hidden_command(ludusavi_exe, config_dir)
         .args(["manifest", "show", "--api"])
         .output()
         .await
@@ -404,17 +419,19 @@ pub async fn search_games(
     query: String,
 ) -> AppResult<Vec<SearchCandidate>> {
     let ludusavi_exe = ludusavi_path_or_err(&config)?;
-    ludusavi.search(&ludusavi_exe, query.trim()).await
+    let config_dir = crate::paths::ludusavi_config_dir();
+    ludusavi.search(&ludusavi_exe, &config_dir, query.trim()).await
 }
 
-/// Opens the configured ludusavi executable in GUI mode (`ludusavi gui`).
-/// Used by toast CTAs that ask the user to resolve a state in ludusavi
-/// (cloud-sync conflict, missing manifest entry, etc.).
+/// Opens ludusavi in GUI mode against Spool's owned config dir so the user
+/// can configure the cloud remote, rclone, or inspect the backup state —
+/// all within the Spool-managed config rather than their personal one.
 #[tauri::command]
 pub async fn open_ludusavi_gui(config: State<'_, SharedConfig>) -> AppResult<()> {
     let ludusavi_exe = ludusavi_path_or_err(&config)?;
+    let config_dir = crate::paths::ludusavi_config_dir();
     Command::new(&ludusavi_exe)
-        .arg("gui")
+        .args(["--config", &config_dir.to_string_lossy(), "gui"])
         .spawn()
         .map_err(|e| AppError::Other(format!("failed to spawn ludusavi gui: {e}")))?;
     Ok(())
@@ -430,11 +447,12 @@ pub async fn search_by_exe(
     exe_path: String,
 ) -> AppResult<Vec<SearchCandidate>> {
     let ludusavi_exe = ludusavi_path_or_err(&config)?;
+    let config_dir = crate::paths::ludusavi_config_dir();
     let query = infer_name_from_exe(Path::new(&exe_path));
     if query.is_empty() {
         return Ok(Vec::new());
     }
-    ludusavi.search(&ludusavi_exe, &query).await
+    ludusavi.search(&ludusavi_exe, &config_dir, &query).await
 }
 
 fn ludusavi_path_or_err(config: &State<'_, SharedConfig>) -> AppResult<PathBuf> {

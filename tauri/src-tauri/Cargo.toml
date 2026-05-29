@@ -46,6 +46,7 @@ futures-util = { version = "0.3", default-features = false, features = ["std"] }
 urlencoding = "2"
 blake3 = "1"
 filetime = "0.2"
+serde_yaml = "0.9"
 
 # Windows-only: registry probe for the per-exe Run-As-Admin
 # compatibility flag, and ShellExecuteExW-based elevated launch.

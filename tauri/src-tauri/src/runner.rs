@@ -133,10 +133,10 @@ fn os_toast_if_hidden(app: &AppHandle, title: &str, body: &str) {
 pub async fn manual_backup(app: AppHandle, game_id: String) -> AppResult<ManualBackupResult> {
     // Snapshot config + library entry first; drop the locks before
     // the long-running subprocess await.
-    let (game_name, ludusavi_exe) = manual_prep(&app, &game_id)?;
+    let (game_name, ludusavi_exe, config_dir, wine_prefix) = manual_prep(&app, &game_id)?;
     let ludusavi_client = app.state::<LudusaviClient>();
     let out = ludusavi_client
-        .backup(&ludusavi_exe, &game_name)
+        .backup(&ludusavi_exe, &config_dir, &game_name, wine_prefix.as_deref())
         .await
         .map_err(|e| AppError::Other(format!("ludusavi backup: {e}")))?;
 
@@ -175,10 +175,10 @@ pub async fn manual_backup(app: AppHandle, game_id: String) -> AppResult<ManualB
 /// path).
 #[tauri::command]
 pub async fn manual_restore(app: AppHandle, game_id: String) -> AppResult<ManualRestoreResult> {
-    let (game_name, ludusavi_exe) = manual_prep(&app, &game_id)?;
+    let (game_name, ludusavi_exe, config_dir, _wine_prefix) = manual_prep(&app, &game_id)?;
     let ludusavi_client = app.state::<LudusaviClient>();
     let out = ludusavi_client
-        .restore(&ludusavi_exe, &game_name)
+        .restore(&ludusavi_exe, &config_dir, &game_name)
         .await
         .map_err(|e| AppError::Other(format!("ludusavi restore: {e}")))?;
 
@@ -219,17 +219,25 @@ pub struct ManualRestoreResult {
     pub game_count: i32,
 }
 
-/// Shared snapshot for the manual backup/restore commands. Pulls the
-/// game name + validated ludusavi path so the caller has everything
-/// it needs to await on the subprocess.
-fn manual_prep(app: &AppHandle, game_id: &str) -> AppResult<(String, PathBuf)> {
-    let game_name = {
+/// Snapshot for the manual backup/restore commands. Returns:
+///   (game_name, ludusavi_exe, config_dir, wine_prefix)
+///
+/// `wine_prefix` is `Some` only on non-Windows when the game has `use_proton`
+/// set; it is the prefix ROOT (not drive_c) passed as `--wine-prefix` to
+/// backup. Restore never takes a prefix — cross-device remapping is handled
+/// by redirects (Phase 3).
+fn manual_prep(app: &AppHandle, game_id: &str) -> AppResult<(String, PathBuf, PathBuf, Option<PathBuf>)> {
+    let (game_name, use_proton, prefix_override) = {
         let library = app.state::<SharedLibrary>();
         let lib = library.lock().map_err(|_| AppError::LockPoisoned)?;
         let entry = lib
             .find(game_id)
             .ok_or_else(|| AppError::Other(format!("game not found: {game_id}")))?;
-        entry.game_name.clone()
+        (
+            entry.game_name.clone(),
+            entry.use_proton,
+            entry.wine_prefix_path.clone(),
+        )
     };
     let ludusavi_exe = {
         let config = app.state::<SharedConfig>();
@@ -242,7 +250,18 @@ fn manual_prep(app: &AppHandle, game_id: &str) -> AppResult<(String, PathBuf)> {
         }
         PathBuf::from(p)
     };
-    Ok((game_name, ludusavi_exe))
+    let config_dir = crate::paths::ludusavi_config_dir();
+    let wine_prefix = if cfg!(not(windows)) && use_proton {
+        Some(
+            prefix_override
+                .filter(|p| !p.trim().is_empty())
+                .map(PathBuf::from)
+                .unwrap_or_else(|| crate::proton::game_prefix_path(game_id)),
+        )
+    } else {
+        None
+    };
+    Ok((game_name, ludusavi_exe, config_dir, wine_prefix))
 }
 
 #[tauri::command]
@@ -429,6 +448,14 @@ async fn run_workflow(
 ) -> AppResult<()> {
     tracing::info!(game_id, game_name, "starting run workflow");
 
+    let config_dir = crate::paths::ludusavi_config_dir();
+    // Wine prefix for backup (Proton games on Linux only).
+    let wine_prefix: Option<PathBuf> = if launch.use_proton {
+        Some(launch.prefix_root.clone())
+    } else {
+        None
+    };
+
     // ── Phase 1: restore ──────────────────────────────────────────────
     emit_phase(app, game_id, "restoring", Some("Restoring saves…"));
     os_toast_if_hidden(
@@ -437,7 +464,7 @@ async fn run_workflow(
         &format!("{game_name} — restoring before launch"),
     );
     tracing::info!(game_name, "ludusavi restore");
-    let restore = ludusavi_client.restore(ludusavi_exe, game_name).await?;
+    let restore = ludusavi_client.restore(ludusavi_exe, &config_dir, game_name).await?;
     if restore
         .errors
         .as_ref()
@@ -578,7 +605,7 @@ async fn run_workflow(
             &format!("{game_name} — session ended"),
         );
         tracing::info!(game_name, "ludusavi backup");
-        match ludusavi_client.backup(ludusavi_exe, game_name).await {
+        match ludusavi_client.backup(ludusavi_exe, &config_dir, game_name, wine_prefix.as_deref()).await {
             Ok(out) => {
                 if let Some(overall) = &out.overall {
                     if overall.total_games > 0 {
