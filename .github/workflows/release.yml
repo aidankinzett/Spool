@@ -177,6 +177,21 @@ jobs:
           jq --arg v "$VERSION" '.version = $v' tauri/src-tauri/tauri.conf.json > /tmp/tauri.conf.json && mv /tmp/tauri.conf.json tauri/src-tauri/tauri.conf.json
           sed -i "s/^version = \".*\"/version = \"$VERSION\"/" tauri/src-tauri/Cargo.toml
 
+      # The Linux Spool binary embeds the Decky plugin bundle (include_str!);
+      # build it so the released AppImage ships the real plugin, not the
+      # build.rs placeholder. Node 22: pnpm 11 (pinned via decky/package.json
+      # packageManager) needs Node >= 22.13 or corepack crashes on node:sqlite.
+      - name: Setup Node for Decky plugin
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Build Decky plugin
+        working-directory: decky
+        run: |
+          corepack enable
+          corepack pnpm install --frozen-lockfile
+          corepack pnpm build
+
       - name: Install frontend dependencies
         working-directory: tauri
         run: bun install --frozen-lockfile

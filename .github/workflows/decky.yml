@@ -1,0 +1,62 @@
+name: decky-plugin
+
+# Build + test the Spool Backup Decky plugin and package an installable zip.
+# Scoped to decky/** so it doesn't run on unrelated app/server changes.
+on:
+  push:
+    branches: [master]
+    paths: ["decky/**", ".github/workflows/decky.yml"]
+  pull_request:
+    paths: ["decky/**", ".github/workflows/decky.yml"]
+
+defaults:
+  run:
+    working-directory: decky
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Backend is pure-Python logic — unit-testable without a Decky runtime.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Backend unit tests
+        run: python -m unittest discover -s tests -v
+
+      # Frontend: pnpm. action-setup runs from the repo root (the
+      # working-directory default only applies to run: steps), so it can't read
+      # decky/package.json's packageManager pin — give it the version directly.
+      # pnpm 11 requires Node >= 22.13 (it imports the node:sqlite builtin), so
+      # Node must be 22 or setup-node's pnpm store probe crashes with
+      # ERR_UNKNOWN_BUILTIN_MODULE.
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.5.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: decky/pnpm-lock.yaml
+      - name: Install
+        run: pnpm install --frozen-lockfile
+      - name: Build
+        run: pnpm build
+      - name: Verify bundle exists
+        run: test -f dist/index.js
+
+      # Lay the plugin out the way Decky Loader expects, then zip it.
+      - name: Package
+        run: |
+          rm -rf package
+          mkdir -p package/spool-backup/dist
+          cp dist/index.js package/spool-backup/dist/
+          cp main.py backup_logic.py plugin.json package.json package/spool-backup/
+          cd package && zip -r ../spool-backup.zip spool-backup
+      - uses: actions/upload-artifact@v4
+        with:
+          name: spool-backup-plugin
+          path: decky/spool-backup.zip
+          if-no-files-found: error

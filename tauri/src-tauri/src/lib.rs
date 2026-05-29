@@ -28,6 +28,7 @@
 mod accent_backfill;
 mod browse_download;
 mod cli;
+mod decky_install;
 mod diagnostics;
 mod config;
 mod error;
@@ -289,6 +290,9 @@ pub fn run() {
             runner::launch_game,
             runner::manual_backup,
             runner::manual_restore,
+            // decky plugin installer (Linux / SteamOS)
+            decky_install::decky_plugin_status,
+            decky_install::install_decky_plugin,
         ])
         .setup(move |app| {
             if attached {
