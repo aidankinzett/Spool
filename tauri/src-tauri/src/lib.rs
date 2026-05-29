@@ -123,6 +123,12 @@ pub fn run() {
     // if there's no legacy dir, or if Spool already has a library.
     paths::migrate_from_ludusavi_wrap();
 
+    // When running as an AppImage, refresh the stable launcher wrapper so
+    // Steam shortcuts / Armoury stubs (which point at the wrapper, not the
+    // version-stamped .AppImage) exec the current AppImage. Self-heals after
+    // an update relocates the file. No-op on native installs.
+    let _ = paths::refresh_appimage_launcher();
+
     // Load persistent state synchronously — both files are small.
     let library = Library::load().unwrap_or_else(|err| {
         tracing::warn!(error = %err, "failed to load library, starting empty");

@@ -267,10 +267,12 @@ fn auto_detect_umu_run(data: &mut ConfigData) -> bool {
     false
 }
 
-/// Stamps `spool_exe` with the current process path so generated launcher
-/// stubs (the Armoury Crate stub, etc.) know where to call back to.
+/// Stamps `spool_exe` with the process path so generated launcher stubs (the
+/// Armoury Crate stub, etc.) know where to call back to. Uses the AppImage-
+/// aware resolver so this is the stable `.AppImage` path, not the ephemeral
+/// /tmp mount, when running as an AppImage.
 fn stamp_current_exe(data: &mut ConfigData) -> bool {
-    if let Ok(exe) = env::current_exe() {
+    if let Some(exe) = paths::spool_executable() {
         let s = exe.to_string_lossy().to_string();
         if data.spool_exe != s {
             data.spool_exe = s;
