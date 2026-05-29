@@ -43,6 +43,12 @@
   let registerUsername = $state('');
   let registerSubmitting = $state(false);
 
+  // Cloud saves — WebDAV. The password is never persisted to config (ludusavi
+  // obscures it into rclone.conf); it only lives here long enough to connect.
+  let webdavPassword = $state('');
+  let webdavConnecting = $state(false);
+  let serverStorageConnecting = $state(false);
+
   let torboxPinging = $state(false);
   let torboxLastPing = $state<{ ok: boolean; message: string } | null>(null);
   let newSourceUrl = $state('');
@@ -153,6 +159,39 @@
     if (typeof picked === 'string' && config) {
       config.rclone_path = picked;
       await persist();
+    }
+  }
+
+  async function connectWebdav() {
+    if (!config) return;
+    webdavConnecting = true;
+    try {
+      await api.setCloudWebdav(
+        config.cloud_webdav_url.trim(),
+        config.cloud_webdav_username.trim(),
+        webdavPassword,
+        'other',
+      );
+      webdavPassword = '';
+      config = await api.getConfig();
+      toasts.show({ kind: 'ok', label: 'CLOUD', title: 'WebDAV connected', sub: 'Saves will sync to this remote.' });
+    } catch (e) {
+      toasts.show({ kind: 'bad', label: 'CLOUD · WEBDAV', title: "Couldn't connect", sub: String(e) });
+    } finally {
+      webdavConnecting = false;
+    }
+  }
+
+  async function useServerStorage() {
+    serverStorageConnecting = true;
+    try {
+      await api.useServerSaveStorage();
+      config = await api.getConfig();
+      toasts.show({ kind: 'ok', label: 'CLOUD', title: 'Save storage connected', sub: 'Saves will sync to your Spool server.' });
+    } catch (e) {
+      toasts.show({ kind: 'bad', label: 'CLOUD · SERVER', title: "Couldn't connect storage", sub: String(e) });
+    } finally {
+      serverStorageConnecting = false;
     }
   }
 
@@ -411,6 +450,20 @@
                     </div>
                   {/if}
 
+                  {#if config.sync_server_enabled && config.sync_server_url && config.sync_server_api_key}
+                    <SettingsRow
+                      label="Self-hosted storage"
+                      helper="Sync saves to your Spool server's built-in WebDAV store — no extra setup."
+                    >
+                      {#snippet extras()}
+                        <Btn variant="primary" onclick={useServerStorage} disabled={serverStorageConnecting}>
+                          {#snippet icon()}<Sparkles size={14} />{/snippet}
+                          {serverStorageConnecting ? 'Connecting…' : 'Use my Spool server for save storage'}
+                        </Btn>
+                      {/snippet}
+                    </SettingsRow>
+                  {/if}
+
                   <SettingsRow label="Provider" helper="Choose a cloud storage provider or Custom for a custom rclone remote name">
                     {#snippet extras()}
                       <select
@@ -436,6 +489,32 @@
                     <SettingsRow label="Remote" helper="rclone remote name (e.g. bazzite, gdrive, b2)">
                       {#snippet control()}
                         <TextField bind:value={config!.cloud_remote} placeholder="bazzite" mono oncommit={persist} />
+                      {/snippet}
+                    </SettingsRow>
+                  {/if}
+
+                  {#if config.cloud_provider === 'webdav'}
+                    <SettingsRow label="WebDAV URL" helper="e.g. https://nextcloud.example.com/remote.php/dav/files/me">
+                      {#snippet control()}
+                        <TextField bind:value={config!.cloud_webdav_url} placeholder="https://host/webdav" mono full />
+                      {/snippet}
+                    </SettingsRow>
+                    <SettingsRow label="Username">
+                      {#snippet control()}
+                        <TextField bind:value={config!.cloud_webdav_username} placeholder="username" mono />
+                      {/snippet}
+                    </SettingsRow>
+                    <SettingsRow label="Password" helper="Stored obscured by rclone, never saved in Spool's config">
+                      {#snippet extras()}
+                        <TextField bind:value={webdavPassword} masked placeholder="password" mono full />
+                        <Btn
+                          variant="primary"
+                          onclick={connectWebdav}
+                          disabled={webdavConnecting || !config!.cloud_webdav_url || !config!.cloud_webdav_username}
+                        >
+                          {#snippet icon()}<Check size={14} />{/snippet}
+                          {webdavConnecting ? 'Connecting…' : 'Connect'}
+                        </Btn>
                       {/snippet}
                     </SettingsRow>
                   {/if}

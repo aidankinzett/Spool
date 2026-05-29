@@ -191,6 +191,16 @@ pub fn resolve_ludusavi_path(configured_path: &str) -> Option<std::path::PathBuf
     }
 }
 
+pub fn resolve_rclone_path(configured_path: &str) -> Option<std::path::PathBuf> {
+    if !configured_path.is_empty() && std::path::PathBuf::from(configured_path).is_file() {
+        Some(std::path::PathBuf::from(configured_path))
+    } else if let Some(bundled) = resolve_sidecar_path("rclone") {
+        Some(bundled)
+    } else {
+        find_system_binary("rclone")
+    }
+}
+
 pub fn find_system_binary(name: &str) -> Option<std::path::PathBuf> {
     let exe_name = if cfg!(windows) { format!("{}.exe", name) } else { name.to_string() };
 
@@ -257,6 +267,23 @@ mod tests {
             resolved.as_deref(),
             Some(std::path::Path::new(bogus)),
             "a non-file override must not be returned verbatim",
+        );
+    }
+
+    #[test]
+    fn resolve_rclone_prefers_a_valid_configured_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("rclone-custom");
+        std::fs::write(&bin, b"#!/bin/sh\n").unwrap();
+        assert_eq!(resolve_rclone_path(&bin.to_string_lossy()), Some(bin));
+    }
+
+    #[test]
+    fn resolve_rclone_ignores_a_configured_path_that_is_not_a_file() {
+        let bogus = "/nonexistent/path/to/rclone";
+        assert_ne!(
+            resolve_rclone_path(bogus).as_deref(),
+            Some(std::path::Path::new(bogus)),
         );
     }
 

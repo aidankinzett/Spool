@@ -451,6 +451,118 @@ pub async fn open_ludusavi_gui(config: State<'_, SharedConfig>) -> AppResult<()>
     Ok(())
 }
 
+/// Configure ludusavi's owned config to use a WebDAV cloud remote by delegating
+/// to `ludusavi cloud set webdav`.
+///
+/// This is the only correct mechanism: ludusavi creates the backing rclone
+/// remote (obscuring the password into rclone.conf) and references it by id in
+/// its `config.yaml`. Writing the YAML by hand leaves the password unset and the
+/// remote unusable — which is the bug this replaces.
+///
+/// `provider` is one of ludusavi's WebDAV vendors: `other`, `nextcloud`,
+/// `owncloud`, `sharepoint`, `sharepoint-ntlm` (empty → `other`).
+///
+/// `obscure_password` is for Spool's own self-hosted store, which runs
+/// `rclone serve webdav --auth-proxy`. That server `Reveal()`s the incoming
+/// basic-auth password before validating it, so the on-wire password must
+/// itself be rclone-obscured. We obscure once here; ludusavi obscures a second
+/// time for storage; the client reveals one layer on the wire; the server
+/// reveals the last — netting the real credential. A normal WebDAV server
+/// (Nextcloud, etc.) wants the plaintext password, so leave this `false` there.
+pub async fn apply_webdav_remote(
+    config: &SharedConfig,
+    url: &str,
+    username: &str,
+    password: &str,
+    provider: &str,
+    obscure_password: bool,
+) -> AppResult<()> {
+    // Snapshot the configured ludusavi + rclone paths under one lock, then drop
+    // it before any await (lock discipline).
+    let (ludusavi_cfg, rclone_cfg) = {
+        let cfg = config.lock().map_err(|_| AppError::LockPoisoned)?;
+        (cfg.data.ludusavi_path.clone(), cfg.data.rclone_path.clone())
+    };
+
+    let ludusavi_exe = crate::paths::resolve_ludusavi_path(&ludusavi_cfg).ok_or_else(|| {
+        AppError::Other("Ludusavi is not configured. Place ludusavi in your PATH or configure it in Settings.".to_string())
+    })?;
+
+    // ludusavi shells out to rclone to obscure the password, so the owned config
+    // must point at a usable rclone before we invoke `cloud set`.
+    let rclone_exe = crate::paths::resolve_rclone_path(&rclone_cfg).ok_or_else(|| {
+        AppError::Other("rclone not found. Install rclone or set its path in Settings.".to_string())
+    })?;
+    crate::ludusavi_config::set_cloud(None, None, None, Some(&rclone_exe.to_string_lossy()), None)?;
+
+    let password = if obscure_password {
+        let out = Command::new(&rclone_exe)
+            .arg("obscure")
+            .arg(password)
+            .output()
+            .await
+            .map_err(|e| AppError::Other(format!("failed to run rclone obscure: {e}")))?;
+        if !out.status.success() {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            return Err(AppError::Other(format!("rclone obscure failed: {}", stderr.trim())));
+        }
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    } else {
+        password.to_string()
+    };
+
+    let config_dir = crate::paths::ludusavi_config_dir();
+    let provider = if provider.trim().is_empty() { "other" } else { provider.trim() };
+    let output = Command::new(&ludusavi_exe)
+        .args([
+            "--config",
+            &config_dir.to_string_lossy(),
+            "cloud",
+            "set",
+            "webdav",
+            "--url",
+            url,
+            "--username",
+            username,
+            "--password",
+            &password,
+            "--provider",
+            provider,
+        ])
+        .output()
+        .await
+        .map_err(|e| AppError::Other(format!("failed to run ludusavi cloud set webdav: {e}")))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(AppError::Other(format!(
+            "ludusavi cloud set webdav failed: {}",
+            stderr.trim()
+        )));
+    }
+    Ok(())
+}
+
+/// Manually configure a WebDAV cloud remote from the settings form. Persists the
+/// active provider + connection (sans password) so the UI reflects it.
+#[tauri::command]
+pub async fn set_cloud_webdav(
+    config: State<'_, SharedConfig>,
+    url: String,
+    username: String,
+    password: String,
+    provider: String,
+) -> AppResult<()> {
+    // Manual WebDAV (Nextcloud, ownCloud, …) expects the plaintext password.
+    apply_webdav_remote(config.inner(), &url, &username, &password, &provider, false).await?;
+    let mut cfg = config.lock().map_err(|_| AppError::LockPoisoned)?;
+    cfg.data.cloud_provider = "webdav".to_string();
+    cfg.data.cloud_webdav_url = url;
+    cfg.data.cloud_webdav_username = username;
+    cfg.save()?;
+    Ok(())
+}
+
 /// Identifies a game from its exe path by inferring a search query from
 /// the filename and running [`search_games`] under the hood. Used by the
 /// Add Game flow's "identifying…" state.

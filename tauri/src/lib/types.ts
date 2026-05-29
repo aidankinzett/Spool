@@ -40,6 +40,8 @@ export type ConfigData = {
   cloud_path: string;
   rclone_path: string;
   rclone_args: string;
+  cloud_webdav_url: string;
+  cloud_webdav_username: string;
 };
 
 // Mirror of the Rust `GameEntry` struct in src-tauri/src/library.rs.
