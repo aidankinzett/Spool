@@ -31,6 +31,7 @@ mod cli;
 mod diagnostics;
 mod config;
 mod error;
+mod gamemode;
 mod hydra;
 mod lan;
 mod launcher;
