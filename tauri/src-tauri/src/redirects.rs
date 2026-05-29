@@ -161,7 +161,7 @@ pub fn apply_redirects_for_restore(
     game_folder: Option<&Path>,
     local_win_user: Option<&str>,
 ) -> AppResult<usize> {
-    let redirects = derive_redirects(origin, prefix_root, game_folder, local_win_user);
+    let redirects = derive_redirects(origin, prefix_root, game_folder, local_win_user, cfg!(windows));
     let count = redirects.len();
     ludusavi_config::set_redirects(&redirects)?;
     Ok(count)
@@ -172,9 +172,8 @@ fn derive_redirects(
     prefix_root: Option<&Path>,
     game_folder: Option<&Path>,
     local_win_user: Option<&str>,
+    local_is_windows: bool,
 ) -> Vec<Redirect> {
-    let local_is_windows = cfg!(windows);
-
     match (&origin.os, local_is_windows) {
         // ── Direction A: Linux Deck restoring a Windows backup ─────────────
         (BackupOs::Windows, false) => {
@@ -424,7 +423,7 @@ mod tests {
     fn appdata_redirect_generated() {
         let paths = vec!["C:/Users/akinz/AppData/Local/Deltarune/dr.ini".to_string()];
         let origin = BackupOrigin { os: BackupOs::Windows, paths };
-        let redirects = derive_redirects(&origin, Some(&pfx()), None, None);
+        let redirects = derive_redirects(&origin, Some(&pfx()), None, None, false);
         assert_eq!(redirects.len(), 1);
         assert_eq!(redirects[0].source, "C:/Users/akinz");
         assert!(redirects[0].target.contains("drive_c/users/steamuser"));
@@ -438,7 +437,7 @@ mod tests {
             "C:/Users/Public/Documents/Bar.sav".to_string(),
         ];
         let origin = BackupOrigin { os: BackupOs::Windows, paths };
-        let redirects = derive_redirects(&origin, Some(&pfx()), None, None);
+        let redirects = derive_redirects(&origin, Some(&pfx()), None, None, false);
         assert_eq!(redirects.len(), 2);
         let sources: Vec<&str> = redirects.iter().map(|r| r.source.as_str()).collect();
         assert!(sources.contains(&"C:/Users/akinz"));
@@ -450,7 +449,7 @@ mod tests {
         let paths = vec!["G:/Games/ULTRAKILL/Saves/Slot1/save.bepis".to_string()];
         let origin = BackupOrigin { os: BackupOs::Windows, paths };
         let game_folder = PathBuf::from("/home/deck/Games/ULTRAKILL");
-        let redirects = derive_redirects(&origin, Some(&pfx()), Some(&game_folder), None);
+        let redirects = derive_redirects(&origin, Some(&pfx()), Some(&game_folder), None, false);
         assert_eq!(redirects.len(), 1);
         assert_eq!(redirects[0].source, "G:/Games/ULTRAKILL");
         assert_eq!(redirects[0].target, "/home/deck/Games/ULTRAKILL");
@@ -461,7 +460,7 @@ mod tests {
         let paths = vec!["G:/Games/ULTRAKILL/Saves/save.bepis".to_string()];
         let origin = BackupOrigin { os: BackupOs::Windows, paths };
         // No game_folder → install-dir save can't be redirected.
-        let redirects = derive_redirects(&origin, Some(&pfx()), None, None);
+        let redirects = derive_redirects(&origin, Some(&pfx()), None, None, false);
         assert!(redirects.is_empty());
     }
 
@@ -469,7 +468,7 @@ mod tests {
     fn xbox_uwp_paths_skipped() {
         let paths = vec!["C:/Users/akinz/AppData/Local/Packages/Microsoft.OpusPG_xxx/SystemAppData/wgs/abc/save".to_string()];
         let origin = BackupOrigin { os: BackupOs::Windows, paths };
-        let redirects = derive_redirects(&origin, Some(&pfx()), None, None);
+        let redirects = derive_redirects(&origin, Some(&pfx()), None, None, false);
         assert!(redirects.is_empty());
     }
 
@@ -479,7 +478,7 @@ mod tests {
         let paths = vec!["/home/deck/.local/share/SomeGame/save.dat".to_string()];
         let origin = BackupOrigin { os: BackupOs::Linux, paths };
         // local_is_windows = false and origin is Linux → no rules.
-        let redirects = derive_redirects(&origin, Some(&pfx()), None, None);
+        let redirects = derive_redirects(&origin, Some(&pfx()), None, None, false);
         assert!(redirects.is_empty());
     }
 
