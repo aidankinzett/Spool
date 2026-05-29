@@ -10,9 +10,10 @@
 //! Format:
 //!   spool                            → normal library launch
 //!   spool --run "Game Name" "ExePath"→ launch this game's workflow
+//!   spool --backup "Game Name"       → headless one-shot backup, then exit
 //!
-//! Anything else is currently treated as `Normal`. We can extend with
-//! more subcommands (--quit, --backup-all, etc.) as use cases arrive.
+//! Anything else is treated as `Normal`. We can extend with more
+//! subcommands (--quit, --backup-all, etc.) as use cases arrive.
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CliMode {
