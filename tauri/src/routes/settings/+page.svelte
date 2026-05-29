@@ -890,7 +890,7 @@
                           {/snippet}
                         </SettingsRow>
 
-                        <SettingsRow label="API key" helper="Generated when you register an account on the server.">
+                        <SettingsRow label="API key" helper="Generated once when you register. On your other devices, paste this same key — don't register again.">
                           {#snippet extras()}
                             <TextField
                               bind:value={config!.sync_server_api_key}
@@ -910,9 +910,12 @@
                         {#if registerOpen}
                           <div class="border-l-2 border-spool/40 bg-bg-2/40 mx-[18px] mb-3 px-4 py-3">
                             <div class="font-mono mb-2 text-[10px] uppercase tracking-[0.1em] text-spool">Register new account</div>
+                            <div class="mb-3 rounded-sm border border-dashed border-spool/40 bg-spool/5 p-2.5 text-[11px] leading-[1.45] text-ink-2">
+                              <span class="font-medium text-ink-1">Do this once.</span> Your account is shared across all your devices. On your other PCs, paste this same API key instead of registering again — that's what makes saves sync and play-locking work together.
+                            </div>
                             <p class="mb-3 text-[11.5px] leading-[1.45] text-ink-2">
-                              Enter the admin secret you set in the server's compose file, plus a username for this device.
-                              The server returns an API key that gets pasted in automatically.
+                              Enter the admin secret you set in the server's compose file, and a name for your account.
+                              The server returns an API key that gets pasted in automatically — reuse that same key on your other devices.
                             </p>
                             <div class="flex flex-col gap-2">
                               <div class="flex items-center gap-2">
@@ -920,8 +923,8 @@
                                 <TextField bind:value={registerAdminSecret} placeholder="ADMIN_SECRET from docker-compose.yml" mono masked full />
                               </div>
                               <div class="flex items-center gap-2">
-                                <span class="font-mono w-[120px] shrink-0 text-[10.5px] uppercase tracking-[0.08em] text-ink-2">Username</span>
-                                <TextField bind:value={registerUsername} placeholder="my-pc" mono full />
+                                <span class="font-mono w-[120px] shrink-0 text-[10.5px] uppercase tracking-[0.08em] text-ink-2">Account name</span>
+                                <TextField bind:value={registerUsername} placeholder="me" mono full />
                               </div>
                               <div class="mt-1 flex justify-end">
                                 <Btn onclick={submitRegister} disabled={registerSubmitting}>

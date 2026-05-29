@@ -35,7 +35,9 @@ The database is persisted in `./data/ludusavi.db` on your host machine.
 
 ## Register an account
 
-Open Spool on any of your PCs, go to **Settings → Sync Server**, enable the toggle, enter the server URL (e.g. `http://raspberrypi.local:47633`), and click **Register...**. Enter your admin secret and a username, then click **Register** — the API key is filled in automatically.
+You register **one account** and reuse it on every device — see [Using multiple devices](#using-multiple-devices) below. The account is the identity that ties your devices together: saves sync and play-locks coordinate because both are keyed to it server-side.
+
+Open Spool on one of your PCs, go to **Settings → Sync Server**, enable the toggle, enter the server URL (e.g. `http://raspberrypi.local:47633`), and click **Register...**. Enter your admin secret and an account name, then click **Register** — the API key is filled in automatically.
 
 Alternatively, via curl:
 
@@ -43,11 +45,21 @@ Alternatively, via curl:
 curl -X POST http://your-server:47633/auth/register \
   -H "X-Admin-Secret: your-admin-secret" \
   -H "Content-Type: application/json" \
-  -d '{"username": "mypc"}'
+  -d '{"username": "me"}'
 # → {"api_key":"xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"}
 ```
 
 Copy the `api_key` into the API Key field in Settings.
+
+## Using multiple devices
+
+Your account is **shared across all your devices** — don't register a separate one per PC. After registering once (above), set up every other device by pasting the **same API key**:
+
+1. On the other device, open **Settings → Sync Server** and toggle it on.
+2. Enter the same server URL (or **Scan LAN**).
+3. Paste the **same API key** from your first device — **do not** click Register again.
+
+Why it matters: the lock server keys play-locks by account, and the save store gives each account its own directory (`/data/saves/<account-id>`). So devices sharing one account get coordinated locks (you can't play the same game on two of them at once) and a single shared save pool. Register separate accounts per device and you get neither — independent locks and isolated saves that never sync.
 
 ## Connect from Spool
 
@@ -55,7 +67,7 @@ Copy the `api_key` into the API Key field in Settings.
 2. Toggle it on
 3. Click **Scan LAN** — if the server is on your local network, the URL is filled automatically
 4. Or enter the URL manually: `http://raspberrypi.local:47633` (or the Pi's IP address)
-5. Paste your API key and save
+5. Paste your API key and save (the **same** key on every device — see [Using multiple devices](#using-multiple-devices))
 
 ## Save storage (turnkey cloud saves)
 
