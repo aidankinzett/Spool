@@ -16,11 +16,20 @@ Runs as the `deck` user (no `_root` flag in plugin.json) so $HOME and file
 ownership match Spool's interactive paths.
 """
 
+import asyncio
 import json
 import os
-import subprocess
+import sys
 
 import decky
+
+# Decky's sandboxed plugin loader does not put the plugin's own directory on
+# sys.path, so a bare `import backup_logic` fails with ModuleNotFoundError.
+# Add the plugin dir explicitly before importing our sibling module.
+_PLUGIN_DIR = getattr(decky, "DECKY_PLUGIN_DIR", None) or os.path.dirname(
+    os.path.abspath(__file__)
+)
+sys.path.insert(0, _PLUGIN_DIR)
 
 import backup_logic as logic
 
@@ -48,24 +57,71 @@ def _home() -> str:
     return os.environ.get("HOME") or getattr(decky, "HOME", "") or os.path.expanduser("~")
 
 
-def _spawn_backup(game: str, settings: dict) -> bool:
-    """Spawn a detached `spool --backup "<game>"`. Returns True if spawned."""
+def _spawn_env() -> dict:
+    """Build a clean environment for the spawned backup process.
+
+    Decky Loader ships as a PyInstaller one-file bundle, whose bootloader
+    prepends its own extracted lib dir (``/tmp/_MEI*``) to ``LD_LIBRARY_PATH``
+    and bundles libraries (e.g. an older ``libreadline.so.8``). A subprocess we
+    spawn — notably ``/bin/sh`` running ``spool-launcher.sh`` — would inherit
+    that path and load Decky's bundled libs instead of the system's, crashing
+    with ``undefined symbol`` errors. PyInstaller stashes the pre-launch values
+    in ``*_ORIG``; restore those (or drop the var entirely) so the child gets
+    the system library path, and strip any stray ``/tmp/_MEI*`` entries.
+    """
+    env = os.environ.copy()
+    for var in ("LD_LIBRARY_PATH", "LD_PRELOAD"):
+        orig = env.pop(var + "_ORIG", None)
+        if orig is not None:
+            env[var] = orig
+        elif var in env:
+            cleaned = [
+                p for p in env[var].split(os.pathsep)
+                if p and not p.startswith("/tmp/_MEI")
+            ]
+            if cleaned:
+                env[var] = os.pathsep.join(cleaned)
+            else:
+                env.pop(var, None)
+    return env
+
+
+async def _run_backup_blocking(game: str, settings: dict) -> dict:
+    """Run `spool --backup "<game>"` and wait for it. Returns {ok, [reason]}.
+
+    Spawned with ``start_new_session=True`` so the backup runs in its own
+    session, detached from both the game's process tree (which Steam SIGKILLs
+    on Exit Game) and ours — if Decky itself is torn down mid-backup the child
+    keeps running, it just won't report completion. We still await its exit so
+    we can surface success/failure (toast + status), since the Decky service
+    survives the game force-close.
+    """
     cmd = logic.resolve_spool_command(settings, _home())
     if not cmd:
         decky.logger.error("Spool Backup: could not locate the spool executable")
-        return False
+        return {"ok": False, "reason": "could not locate the spool executable"}
     argv = logic.build_backup_argv(cmd, game)
     os.makedirs(decky.DECKY_PLUGIN_LOG_DIR, exist_ok=True)
-    decky.logger.info("Spool Backup: spawning %s", argv)
-    with open(BACKUP_LOG, "ab") as log:
-        subprocess.Popen(
-            argv,
-            start_new_session=True,  # detach: survives the game force-close
-            stdout=log,
-            stderr=subprocess.STDOUT,
-            stdin=subprocess.DEVNULL,
-        )
-    return True
+    decky.logger.info("Spool Backup: running %s", argv)
+    try:
+        with open(BACKUP_LOG, "ab") as log:
+            proc = await asyncio.create_subprocess_exec(
+                *argv,
+                start_new_session=True,  # detach: survives a force-close
+                stdout=log,
+                stderr=asyncio.subprocess.STDOUT,
+                stdin=asyncio.subprocess.DEVNULL,
+                env=_spawn_env(),
+            )
+            code = await proc.wait()
+    except OSError as exc:
+        decky.logger.error("Spool Backup: failed to launch backup: %s", exc)
+        return {"ok": False, "reason": str(exc)}
+    if code == 0:
+        decky.logger.info("Spool Backup: backup of '%s' completed", game)
+        return {"ok": True}
+    decky.logger.error("Spool Backup: backup of '%s' exited %s", game, code)
+    return {"ok": False, "reason": f"backup exited with code {code}"}
 
 
 class Plugin:
@@ -90,20 +146,25 @@ class Plugin:
         decky.logger.info(
             "Spool Backup: forced-close fallback for '%s' (appid %s)", game, appid
         )
-        spawned = _spawn_backup(game, settings)
-        if spawned and settings.get("notify", True):
-            decky.emit("spool_backup_started", game)
-        return {"acted": spawned, "game": game}
+        notify = settings.get("notify", True)
+        # decky.emit is async — must be awaited or the event is never sent.
+        if notify:
+            await decky.emit("spool_backup_started", game)
+        result = await _run_backup_blocking(game, settings)
+        if notify:
+            await decky.emit("spool_backup_finished", game, result.get("ok", False),
+                             result.get("reason", ""))
+        return {"acted": True, "game": game, **result}
 
     # ── QAM panel: manual backup + status + settings ─────────────────────
     async def backup_now(self) -> dict:
         settings = _load_settings()
         rec = logic.read_session(logic.session_path(settings, _home()))
         if not rec or not rec.get("game"):
-            return {"acted": False, "reason": "no active session record"}
+            return {"acted": False, "ok": False, "reason": "no active session record"}
         game = rec["game"]
-        spawned = _spawn_backup(game, settings)
-        return {"acted": spawned, "game": game}
+        result = await _run_backup_blocking(game, settings)
+        return {"acted": True, "game": game, **result}
 
     async def get_status(self) -> dict:
         settings = _load_settings()

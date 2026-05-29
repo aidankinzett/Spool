@@ -23,9 +23,10 @@ import { FaFloppyDisk } from "react-icons/fa6";
 const onAppStop = callable<[appid: number], { acted: boolean; game?: string }>(
   "on_app_stop",
 );
-const backupNow = callable<[], { acted: boolean; game?: string; reason?: string }>(
-  "backup_now",
-);
+const backupNow = callable<
+  [],
+  { acted: boolean; ok: boolean; game?: string; reason?: string }
+>("backup_now");
 const getStatus = callable<
   [],
   { hasSession: boolean; game?: string; backedUp?: boolean; startedAt?: string }
@@ -63,10 +64,20 @@ function Content() {
           disabled={busy || !status?.hasSession}
           onClick={async () => {
             setBusy(true);
+            if (status?.game) {
+              toaster.toast({
+                title: "Spool Backup",
+                body: `Backing up ${status.game}…`,
+              });
+            }
             const r = await backupNow();
             toaster.toast({
               title: "Spool Backup",
-              body: r.acted ? `Backing up ${r.game}…` : "Nothing to back up",
+              body: !r.acted
+                ? "Nothing to back up"
+                : r.ok
+                  ? `Backed up ${r.game} ✓`
+                  : `Backup failed: ${r.reason ?? "unknown error"}`,
             });
             setBusy(false);
             void refresh();
@@ -94,7 +105,14 @@ export default definePlugin(() => {
   const onBackupStarted = (game: string) => {
     toaster.toast({ title: "Spool Backup", body: `Backing up ${game}…` });
   };
+  const onBackupFinished = (game: string, ok: boolean, reason: string) => {
+    toaster.toast({
+      title: "Spool Backup",
+      body: ok ? `Backed up ${game} ✓` : `Backup failed: ${reason || "unknown error"}`,
+    });
+  };
   addEventListener("spool_backup_started", onBackupStarted);
+  addEventListener("spool_backup_finished", onBackupFinished);
 
   return {
     name: "Spool Backup",
@@ -104,6 +122,7 @@ export default definePlugin(() => {
     onDismount() {
       sub.unregister();
       removeEventListener("spool_backup_started", onBackupStarted);
+      removeEventListener("spool_backup_finished", onBackupFinished);
     },
   };
 });
