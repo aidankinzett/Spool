@@ -32,7 +32,7 @@
     Wifi,
     X,
   } from '@lucide/svelte';
-  import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
+  import { openView } from '$lib/nav';
   import { listen } from '@tauri-apps/api/event';
   import { api, assetUrl } from '$lib/api';
   import { fmtCatalog, fmtRate, relDate } from '$lib/format';
@@ -276,48 +276,6 @@
     openPeer = null;
     peerGames = [];
     peerGamesError = null;
-  }
-
-  /** Opens (or focuses) the Settings child window. */
-  async function openSettingsWindow() {
-    const existing = await WebviewWindow.getByLabel('settings');
-    if (existing) {
-      await existing.setFocus();
-      return;
-    }
-    new WebviewWindow('settings', {
-      url: '/settings',
-      title: 'Spool — Settings',
-      width: 1180,
-      height: 760,
-      minWidth: 900,
-      minHeight: 600,
-      decorations: false,
-      resizable: true,
-      center: true,
-      backgroundColor: '#0b0c0e',
-    });
-  }
-
-  /** Opens (or focuses) the Browse Games child window. */
-  async function openBrowseWindow() {
-    const existing = await WebviewWindow.getByLabel('browse-games');
-    if (existing) {
-      await existing.setFocus();
-      return;
-    }
-    new WebviewWindow('browse-games', {
-      url: '/browse',
-      title: 'Browse Games',
-      width: 1280,
-      height: 800,
-      minWidth: 1100,
-      minHeight: 600,
-      decorations: false,
-      resizable: true,
-      center: true,
-      backgroundColor: '#0b0c0e',
-    });
   }
 
   /** Asks the backend to cancel the active install. The download task
@@ -567,28 +525,6 @@
     });
   }
 
-  // ── Add Game popup ─────────────────────────────────────────────────────
-  function openAddGame() {
-    WebviewWindow.getByLabel('add-game').then((win) => {
-      if (win) {
-        win.setFocus();
-        return;
-      }
-      new WebviewWindow('add-game', {
-        url: '/add',
-        title: 'Add Game · Spool',
-        width: 720,
-        height: 560,
-        minWidth: 600,
-        minHeight: 480,
-        decorations: false,
-        resizable: true,
-        center: true,
-        backgroundColor: '#0b0c0e',
-      });
-    });
-  }
-
   const filters: { id: typeof filter; label: string }[] = [
     { id: 'all', label: 'All' },
     { id: 'recent', label: 'Recent' },
@@ -605,7 +541,7 @@
       {#if config && config.download_sources.length > 0}
         <button
           type="button"
-          onclick={openBrowseWindow}
+          onclick={() => openView('browse')}
           title="Browse games · {config.download_sources.length} feeds"
           aria-label="Browse games"
           class="inline-flex cursor-pointer items-center justify-center rounded-sm text-ink-2 transition-colors hover:bg-white/10 hover:text-ink-0"
@@ -651,7 +587,7 @@
         <!-- Sync server status — cloud icon, tinted by reachability.
              Clicking opens Settings → Sync Server. -->
         <button
-          onclick={openSettingsWindow}
+          onclick={() => openView('settings')}
           aria-label="Sync server status"
           title={syncTitle}
           class="inline-flex cursor-pointer items-center justify-center rounded-sm border-none bg-transparent transition-colors hover:bg-white/10"
@@ -671,7 +607,7 @@
           {/if}
         </button>
         <button
-          onclick={openSettingsWindow}
+          onclick={() => openView('settings')}
           aria-label="Settings"
           class="inline-flex cursor-pointer items-center justify-center rounded-sm border-none bg-transparent text-ink-2 transition-colors hover:bg-white/10 hover:text-ink-0"
           style:height="var(--control-h-icon)"
@@ -1068,7 +1004,7 @@
       <div class="border-t border-line-1 bg-bg-0 px-3 py-2.5">
         <button
           type="button"
-          onclick={openAddGame}
+          onclick={() => openView('add')}
           class="inline-flex h-8 w-full cursor-pointer items-center justify-center gap-1.5 rounded-sm bg-spool px-3 text-[12.5px] font-medium text-bg-0 transition-colors hover:brightness-95"
         >
           <Plus size={14} />
@@ -1091,7 +1027,7 @@
         </p>
         <button
           type="button"
-          onclick={openAddGame}
+          onclick={() => openView('add')}
           class="inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-sm bg-spool px-3 text-[12.5px] font-medium text-bg-0 transition-colors hover:brightness-95"
         >
           <Plus size={14} />
