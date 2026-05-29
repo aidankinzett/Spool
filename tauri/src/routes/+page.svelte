@@ -622,8 +622,9 @@
   {#if transfersOpen}
     <div
       bind:this={transfersPanelEl}
-      class="fixed top-[44px] z-40"
+      class="fixed z-40"
       style:right="92px"
+      style:top="var(--chrome-h)"
     >
       <TransfersPanel
         download={activeDownload}
@@ -642,8 +643,9 @@
     <div
       bind:this={lanPopoverEl}
       role="dialog"
-      class="fixed right-3 top-[44px] z-40 w-[320px] overflow-hidden rounded-md border border-line-2 bg-bg-1"
+      class="fixed right-3 z-40 w-[320px] overflow-hidden rounded-md border border-line-2 bg-bg-1"
       style:box-shadow="0 18px 48px rgb(0 0 0 / 0.6)"
+      style:top="var(--chrome-h)"
     >
       {#if openPeer}
         <!-- Drilled view: one peer's library -->
