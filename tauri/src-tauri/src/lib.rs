@@ -28,6 +28,7 @@
 mod accent_backfill;
 mod browse_download;
 mod cli;
+mod diagnostics;
 mod config;
 mod error;
 mod hydra;
@@ -170,6 +171,7 @@ pub fn run() {
             config::detect_ludusavi,
             config::detect_umu_run,
             config::app_platform,
+            diagnostics::check_dependencies,
             // proton / linux launch
             proton::list_proton_versions,
             proton::install_proton_deps,

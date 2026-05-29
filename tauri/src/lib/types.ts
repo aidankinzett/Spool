@@ -342,6 +342,28 @@ export type RunPhaseEvent = {
  * the backend. Empty / falsy manifest fields are the signal for the "add
  * without save tracking" path.
  */
+/**
+ * Resolution source for a dependency, from `check_dependencies`.
+ *   config   — path set explicitly by the user in Settings
+ *   bundled  — sidecar shipped alongside the Spool executable
+ *   system   — found on the system PATH
+ *   missing  — not found anywhere
+ */
+export type DepSource = 'config' | 'bundled' | 'system' | 'missing';
+
+/**
+ * Status of a single runtime dependency (umu-run, ludusavi, rclone).
+ * Mirrors `DepStatus` in src-tauri/src/diagnostics.rs.
+ */
+export type DepStatus = {
+  name: string;
+  found: boolean;
+  path: string;
+  source: DepSource;
+  /** Copy-paste install command for the detected distro, or "" if found. */
+  install_hint: string;
+};
+
 export type NewGame = {
   game_name: string;
   exe_path: string;

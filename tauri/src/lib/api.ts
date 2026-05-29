@@ -12,6 +12,7 @@ import type {
   DownloadProgress,
   GameEntry,
   HydraEntry,
+  DepStatus,
   LanPeer,
   NewGame,
   PeerGame,
@@ -34,6 +35,7 @@ export const api = {
   detectLudusavi: (): Promise<string> => invoke('detect_ludusavi'),
   detectUmuRun: (): Promise<string> => invoke('detect_umu_run'),
   appPlatform: (): Promise<string> => invoke('app_platform'),
+  checkDependencies: (): Promise<DepStatus[]> => invoke('check_dependencies'),
 
   // Proton / Linux launch
   listProtonVersions: (): Promise<ProtonVersion[]> => invoke('list_proton_versions'),
