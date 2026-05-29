@@ -86,7 +86,15 @@ jobs:
         working-directory: tauri
         run: bun install --frozen-lockfile
 
+      - name: Cache sidecars
+        id: cache-sidecars
+        uses: actions/cache@v4
+        with:
+          path: tauri/src-tauri/binaries
+          key: sidecars-${{ runner.os }}-${{ hashFiles('tauri/scripts/download-sidecars.js') }}
+
       - name: Download sidecars
+        if: steps.cache-sidecars.outputs.cache-hit != 'true'
         working-directory: tauri
         run: bun run download-sidecars
 
@@ -173,7 +181,15 @@ jobs:
         working-directory: tauri
         run: bun install --frozen-lockfile
 
+      - name: Cache sidecars
+        id: cache-sidecars
+        uses: actions/cache@v4
+        with:
+          path: tauri/src-tauri/binaries
+          key: sidecars-${{ runner.os }}-${{ hashFiles('tauri/scripts/download-sidecars.js') }}
+
       - name: Download sidecars
+        if: steps.cache-sidecars.outputs.cache-hit != 'true'
         working-directory: tauri
         run: bun run download-sidecars
 
