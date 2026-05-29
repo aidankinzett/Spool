@@ -47,7 +47,7 @@ use crate::error::AppResult;
 use crate::ludusavi_config::{self, Redirect};
 use serde_yaml::Value;
 use std::collections::BTreeSet;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 // ── Public types ─────────────────────────────────────────────────────────────
 

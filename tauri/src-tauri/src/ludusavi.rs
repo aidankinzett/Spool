@@ -473,19 +473,9 @@ fn ludusavi_path_or_err(config: &State<'_, SharedConfig>) -> AppResult<PathBuf> 
     let cfg = config.lock().map_err(|_| AppError::LockPoisoned)?;
     let path = cfg.data.ludusavi_path.clone();
     drop(cfg);
-    if path.is_empty() {
-        return Err(AppError::Other(
-            "Ludusavi is not configured. Set its path in Settings.".to_string(),
-        ));
-    }
-    let pb = PathBuf::from(&path);
-    if !pb.is_file() {
-        return Err(AppError::Other(format!(
-            "Ludusavi not found at {}",
-            path
-        )));
-    }
-    Ok(pb)
+    crate::paths::resolve_ludusavi_path(&path).ok_or_else(|| {
+        AppError::Other("Ludusavi is not configured. Place ludusavi in your PATH or configure it in Settings.".to_string())
+    })
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────────

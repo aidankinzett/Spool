@@ -157,3 +157,75 @@ fn copy_dir_contents(src: &std::path::Path, dst: &std::path::Path) -> std::io::R
     }
     Ok(count)
 }
+
+pub fn resolve_sidecar_path(name: &str) -> Option<std::path::PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let dir = exe.parent()?;
+    let exe_ext = if cfg!(windows) { ".exe" } else { "" };
+
+    // 1. Try with target triple suffix (development / target/debug / unpackaged release)
+    let triple = target_triple();
+    let name_with_triple = format!("{}-{}{}", name, triple, exe_ext);
+    let dev_path = dir.join(name_with_triple);
+    if dev_path.is_file() {
+        return Some(dev_path);
+    }
+
+    // 2. Try without target triple suffix (production / packaged release)
+    let prod_name = format!("{}{}", name, exe_ext);
+    let prod_path = dir.join(prod_name);
+    if prod_path.is_file() {
+        return Some(prod_path);
+    }
+
+    None
+}
+
+pub fn resolve_ludusavi_path(configured_path: &str) -> Option<std::path::PathBuf> {
+    if !configured_path.is_empty() && std::path::PathBuf::from(configured_path).is_file() {
+        Some(std::path::PathBuf::from(configured_path))
+    } else if let Some(bundled) = resolve_sidecar_path("ludusavi") {
+        Some(bundled)
+    } else {
+        find_system_binary("ludusavi")
+    }
+}
+
+pub fn find_system_binary(name: &str) -> Option<std::path::PathBuf> {
+    let exe_name = if cfg!(windows) { format!("{}.exe", name) } else { name.to_string() };
+
+    // Check PATH
+    if let Some(path_env) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&path_env) {
+            let candidate = dir.join(&exe_name);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    None
+}
+
+fn target_triple() -> &'static str {
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    return "x86_64-unknown-linux-gnu";
+    #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+    return "aarch64-unknown-linux-gnu";
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    return "x86_64-pc-windows-msvc";
+    #[cfg(all(target_os = "windows", target_arch = "x86"))]
+    return "i686-pc-windows-msvc";
+    #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+    return "x86_64-apple-darwin";
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    return "aarch64-apple-darwin";
+    #[cfg(not(any(
+        all(target_os = "linux", target_arch = "x86_64"),
+        all(target_os = "linux", target_arch = "aarch64"),
+        all(target_os = "windows", target_arch = "x86_64"),
+        all(target_os = "windows", target_arch = "x86"),
+        all(target_os = "macos", target_arch = "x86_64"),
+        all(target_os = "macos", target_arch = "aarch64"),
+    )))]
+    return "unknown";
+}

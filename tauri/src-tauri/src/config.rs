@@ -300,12 +300,22 @@ pub fn update_config(
     cfg.data = data;
     cfg.save()?;
 
+    let rclone_val = if !cfg.data.rclone_path.is_empty() {
+        cfg.data.rclone_path.clone()
+    } else if let Some(bundled) = crate::paths::resolve_sidecar_path("rclone") {
+        bundled.to_string_lossy().to_string()
+    } else if let Some(system) = crate::paths::find_system_binary("rclone") {
+        system.to_string_lossy().to_string()
+    } else {
+        "".to_string()
+    };
+
     // Sync cloud/rclone settings to Spool-owned ludusavi config.yaml
     let _ = crate::ludusavi_config::set_cloud(
         Some(&cfg.data.cloud_provider),
         Some(&cfg.data.cloud_remote),
         Some(&cfg.data.cloud_path),
-        Some(&cfg.data.rclone_path),
+        Some(&rclone_val),
         Some(&cfg.data.rclone_args),
     );
 

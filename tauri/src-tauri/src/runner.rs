@@ -256,13 +256,11 @@ fn manual_prep(app: &AppHandle, game_id: &str) -> AppResult<(String, PathBuf, Pa
     let ludusavi_exe = {
         let config = app.state::<SharedConfig>();
         let cfg = config.lock().map_err(|_| AppError::LockPoisoned)?;
-        let p = cfg.data.ludusavi_path.clone();
-        if p.is_empty() || !PathBuf::from(&p).is_file() {
-            return Err(AppError::Other(
-                "Ludusavi is not configured. Set its path in Settings.".into(),
-            ));
-        }
-        PathBuf::from(p)
+        crate::paths::resolve_ludusavi_path(&cfg.data.ludusavi_path).ok_or_else(|| {
+            AppError::Other(
+                "Ludusavi is not configured. Place ludusavi in your PATH or configure it in Settings.".into(),
+            )
+        })?
     };
     let config_dir = crate::paths::ludusavi_config_dir();
     let wine_prefix = if cfg!(not(windows)) && use_proton {
@@ -321,13 +319,11 @@ pub async fn launch_game_inner(app: &AppHandle, game_id: &str) -> AppResult<()> 
     let ludusavi_exe = {
         let config = app.state::<SharedConfig>();
         let cfg = config.lock().map_err(|_| AppError::LockPoisoned)?;
-        let p = cfg.data.ludusavi_path.clone();
-        if p.is_empty() || !PathBuf::from(&p).is_file() {
-            return Err(AppError::Other(
-                "Ludusavi is not configured. Set its path in Settings.".into(),
-            ));
-        }
-        PathBuf::from(p)
+        crate::paths::resolve_ludusavi_path(&cfg.data.ludusavi_path).ok_or_else(|| {
+            AppError::Other(
+                "Ludusavi is not configured. Place ludusavi in your PATH or configure it in Settings.".into(),
+            )
+        })?
     };
 
     let (umu_run_path, default_proton_path) = {
