@@ -274,6 +274,60 @@ pub fn run() {
                 tracing::warn!(error = %e, "failed to initialise ludusavi config dir");
             }
 
+            // Re-stamp the rclone binary path on every startup. Spool ships
+            // rclone as an AppImage sidecar, and on Linux that resolves to a
+            // path inside the AppImage's FUSE mount (`/tmp/.mount_Spool_XXXX`)
+            // whose name is randomised per launch. A path persisted on a prior
+            // run is dead today, which makes `ludusavi backup --cloud-sync`
+            // fail silently (`cloudSyncFailed`). Resolving + rewriting it here
+            // keeps `apps.rclone.path` pointing at a binary that exists this
+            // session, regardless of which mount we landed on.
+            {
+                let configured_rclone = app
+                    .state::<SharedConfig>()
+                    .lock()
+                    .ok()
+                    .map(|g| g.data.rclone_path.clone())
+                    .unwrap_or_default();
+                if let Some(rclone) = paths::resolve_rclone_path(&configured_rclone) {
+                    if let Err(e) = ludusavi_config::set_cloud(
+                        None,
+                        None,
+                        None,
+                        Some(&rclone.to_string_lossy()),
+                        None,
+                    ) {
+                        tracing::warn!(error = %e, "failed to re-stamp rclone path at startup");
+                    }
+                }
+            }
+
+            // If the user opted into the turnkey self-hosted save store, refresh
+            // its WebDAV credentials on boot. The sync server's API key doubles
+            // as the WebDAV password; if it rotates (or the stored remote drifts
+            // out of sync), every cloud sync 401s. Re-fetching `/storage` and
+            // re-applying the remote keeps it authenticated — and as a bonus
+            // re-stamps the rclone path via the same path as Settings. Spawned
+            // off the setup thread since it makes a network call.
+            {
+                let provider = app
+                    .state::<SharedConfig>()
+                    .lock()
+                    .ok()
+                    .map(|g| g.data.cloud_provider.clone())
+                    .unwrap_or_default();
+                if provider == "spool-server" {
+                    let handle = app.handle().clone();
+                    tauri::async_runtime::spawn(async move {
+                        if let Err(e) = sync::use_server_save_storage(handle).await {
+                            tracing::warn!(error = %e, "startup: failed to refresh self-hosted save storage credentials");
+                        } else {
+                            tracing::info!("startup: refreshed self-hosted save storage credentials");
+                        }
+                    });
+                }
+            }
+
             // Kick off LAN peer discovery in the background. Logs and
             // skips if the socket can't bind (port in use, firewall, etc.)
             // — peer count stays at 0 in that case but everything else

@@ -398,7 +398,18 @@
         showRunErrorToast(game_id, message ?? 'Game launch failed');
       } else if (phase === 'done') {
         const game = games.find((g) => g.id === game_id);
-        if (game) {
+        if (message) {
+          // A message on `done` means the local backup succeeded but the
+          // cloud upload failed — surface it as a sticky warning rather than
+          // the usual "synced" confirmation.
+          toasts.show({
+            kind: 'warn',
+            label: 'LUDUSAVI',
+            title: 'Cloud upload failed',
+            sub: game ? `${game.game_name} · ${message}` : message,
+            catalog: game ? fmtCatalog(game.catalog_number) : undefined,
+          });
+        } else if (game) {
           toasts.show({
             kind: 'ok',
             label: 'LUDUSAVI',

@@ -697,6 +697,10 @@ async fn run_workflow(
     sync::push_playtime_delta(app, game_name, session_minutes).await;
 
     // ── Phase 3: backup (skip if ludusavi didn't recognise the game) ──
+    // Tracks whether the local backup succeeded but the cloud upload
+    // (`--cloud-sync`) failed — we still finish the workflow (the save is
+    // safe on disk) but warn the user rather than claiming a clean sync.
+    let mut cloud_upload_failed = false;
     if !no_saves {
         emit_phase(app, game_id, "backing-up", Some("Backing up saves…"));
         os_toast_if_hidden(
@@ -707,6 +711,23 @@ async fn run_workflow(
         tracing::info!(game_name, "ludusavi backup");
         match ludusavi_client.backup(ludusavi_exe, &config_dir, game_name, wine_prefix.as_deref()).await {
             Ok(out) => {
+                // ludusavi reports a cloud-sync failure as a non-fatal field on
+                // an otherwise-successful backup (the local snapshot still
+                // landed). Surface it — silently swallowing this is what made a
+                // dead rclone path / bad WebDAV creds look like "backup
+                // succeeded" while nothing reached the remote.
+                if out
+                    .errors
+                    .as_ref()
+                    .and_then(|e| e.cloud_sync_failed.as_ref())
+                    .is_some()
+                {
+                    cloud_upload_failed = true;
+                    tracing::warn!(
+                        game_name,
+                        "post-session cloud sync failed — saves backed up locally but not uploaded"
+                    );
+                }
                 if let Some(overall) = &out.overall {
                     if overall.total_games > 0 {
                         let library = app.state::<SharedLibrary>();
@@ -762,14 +783,26 @@ async fn run_workflow(
         }
     }
 
-    emit_phase(app, game_id, "done", None);
     // Final completion ping — the most useful native toast since the
-    // user may have closed the game and walked away from the PC.
-    os_toast_if_hidden(
-        app,
-        "Saves backed up",
-        &format!("{game_name} — session complete"),
-    );
+    // user may have closed the game and walked away from the PC. When the
+    // cloud upload failed we carry a message on the `done` phase so the
+    // frontend shows a sticky warning toast instead of a clean "synced".
+    if cloud_upload_failed {
+        let warning = "Saves backed up locally, but cloud upload failed. Check your cloud save settings.";
+        emit_phase(app, game_id, "done", Some(warning));
+        os_toast_if_hidden(
+            app,
+            "Cloud upload failed",
+            &format!("{game_name} — saves are safe locally but didn't reach the cloud"),
+        );
+    } else {
+        emit_phase(app, game_id, "done", None);
+        os_toast_if_hidden(
+            app,
+            "Saves backed up",
+            &format!("{game_name} — session complete"),
+        );
+    }
     tracing::info!(game_name, "run workflow complete");
     Ok(())
 }
