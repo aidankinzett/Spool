@@ -49,19 +49,21 @@ Run Windows games on the Steam Deck via Proton, and sync saves between a Windows
 - `windows_safe_name()`: handles `"Lego Batman: Legacy of the Dark Knight"` → folder `"Lego Batman_ Legacy of the Dark Knight"` on Windows
 - 15 unit tests, 3 against real backup files on disk
 
-### Phase 4 — Cloud/rclone settings UI + ludusavi-gui button 🔲 TODO
+### Phase 4 — Cloud/rclone settings UI + ludusavi-gui button ✅ DONE
 
-- `ConfigData` fields: `cloud_remote`, `cloud_path`, `rclone_path`, `rclone_args`
-- `update_config` pushes to owned `config.yaml` via `ludusavi_config::set_cloud()`
-- New Tauri command `open_ludusavi_gui_with_config` (already done as `open_ludusavi_gui`)
-- `settings/+page.svelte`: "Cloud saves (rclone)" card — remote, path, rclone binary path, rclone args
+- `ConfigData` fields: `cloud_provider`, `cloud_remote`, `cloud_path`, `rclone_path`, `rclone_args` (`config.rs`)
+- `update_config` pushes to owned `config.yaml` via `ludusavi_config::set_cloud()` (`config.rs`); the rclone path it writes is itself resolved config → bundled → system
+- `open_ludusavi_gui` opens the GUI against Spool's config (`ludusavi.rs`)
+- `settings/+page.svelte`: "Cloud saves (rclone)" card — provider dropdown, remote, path, rclone binary path, rclone args
 - "Open Ludusavi settings" button → opens GUI against Spool's config
+- **Beyond the original plan:** a `cloud_provider` dropdown maps presets (Box, Dropbox, GoogleDrive, OneDrive, Ftp, Smb, WebDav) plus a Custom rclone remote onto ludusavi's `cloud.remote` schema in `set_cloud`. Unit-tested via the pure `apply_cloud` helper in `ludusavi_config.rs`.
 
-### Phase 5 — Bundle pinned binaries (optional, later)
+### Phase 5 — Bundle pinned binaries ✅ DONE
 
-- Ship `ludusavi` (≥0.31) and `rclone` as Tauri `externalBin`/sidecar
-- Resolution order: config override → bundled → system
-- Set `apps.rclone.path` in owned config to bundled rclone
+- `ludusavi` and `rclone` shipped as Tauri `externalBin`/sidecar (`tauri.conf.json` → `binaries/ludusavi`, `binaries/rclone`)
+- Resolution order config override → bundled → system in `paths::resolve_ludusavi_path` and the rclone branch of `update_config`; `paths::resolve_sidecar_path` handles both dev (target-triple suffix) and packaged (bare name) layouts
+- `apps.rclone.path` set in owned config to the resolved rclone (`set_cloud` → `apps.rclone.path`)
+- Sidecars are fetched in CI/release via `tauri/scripts/download-sidecars.js` (wired as `bun run download-sidecars` in `ci.yml` + `release.yml`); `/binaries/` is gitignored so the blobs stay out of the repo
 
 ### Phase 6 — Turnkey self-hosted save storage (optional, later)
 
@@ -91,4 +93,4 @@ Run Windows games on the Steam Deck via Proton, and sync saves between a Windows
 ## Deferred packaging work
 
 - **(b) Dependency-doctor UI** in Settings → Compatibility: detect umu-run/ludusavi/rclone, show status, print per-distro install command for missing ones
-- **(c) Bundle ludusavi + rclone** in the AppImage/.deb channel via Tauri `externalBin`. umu-run stays a system prerequisite (it's a Python app with lib32/vulkan deps — not bundleable)
+- **(c) Bundle ludusavi + rclone** ✅ DONE in Phase 5 — shipped via Tauri `externalBin` and fetched at build time by `download-sidecars.js`. umu-run stays a system prerequisite (it's a Python app with lib32/vulkan deps — not bundleable)

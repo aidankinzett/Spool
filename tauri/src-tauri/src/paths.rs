@@ -229,3 +229,41 @@ fn target_triple() -> &'static str {
     )))]
     return "unknown";
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolve_ludusavi_prefers_a_valid_configured_path() {
+        // Phase 5 resolution order: config override → bundled → system.
+        // A configured path pointing at a real file must win outright.
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("ludusavi-custom");
+        std::fs::write(&bin, b"#!/bin/sh\n").unwrap();
+
+        let resolved = resolve_ludusavi_path(&bin.to_string_lossy());
+        assert_eq!(resolved, Some(bin));
+    }
+
+    #[test]
+    fn resolve_ludusavi_ignores_a_configured_path_that_is_not_a_file() {
+        // A stale/non-existent override must fall through to bundled/system
+        // discovery rather than being returned as-is. We can't assert what
+        // gets found here, only that the bogus override is never returned.
+        let bogus = "/nonexistent/path/to/ludusavi";
+        let resolved = resolve_ludusavi_path(bogus);
+        assert_ne!(
+            resolved.as_deref(),
+            Some(std::path::Path::new(bogus)),
+            "a non-file override must not be returned verbatim",
+        );
+    }
+
+    #[test]
+    fn resolve_sidecar_returns_none_for_unknown_binary() {
+        // Resolution is relative to the test runner's exe dir; a made-up name
+        // must never resolve there.
+        assert!(resolve_sidecar_path("definitely-not-a-real-sidecar").is_none());
+    }
+}

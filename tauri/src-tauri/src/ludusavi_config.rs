@@ -88,9 +88,24 @@ pub fn set_cloud(
     rclone_args: Option<&str>,
 ) -> AppResult<()> {
     let mut v = read_value_or_empty();
+    apply_cloud(&mut v, provider, remote, path, rclone_path, rclone_args);
+    write_value(&v)
+}
+
+/// Pure value-mutation half of [`set_cloud`] — no file IO, so it can be unit
+/// tested directly. Maps the Settings UI's `provider` enum onto ludusavi's
+/// `cloud.remote` schema (presets are bare strings; `custom` is a tagged map).
+fn apply_cloud(
+    v: &mut Value,
+    provider: Option<&str>,
+    remote: Option<&str>,
+    path: Option<&str>,
+    rclone_path: Option<&str>,
+    rclone_args: Option<&str>,
+) {
     if let (Some(prov), Some(rem)) = (provider, remote) {
         if prov.is_empty() {
-            set_path(&mut v, &["cloud", "remote"], Value::Null);
+            set_path(v, &["cloud", "remote"], Value::Null);
         } else {
             match prov {
                 "custom" => {
@@ -98,35 +113,34 @@ pub fn set_cloud(
                     custom_map.insert(Value::String("id".into()), Value::String(rem.to_string()));
                     let mut remote_map = serde_yaml::Mapping::new();
                     remote_map.insert(Value::String("Custom".into()), Value::Mapping(custom_map));
-                    set_path(&mut v, &["cloud", "remote"], Value::Mapping(remote_map));
+                    set_path(v, &["cloud", "remote"], Value::Mapping(remote_map));
                 }
-                "box" => { set_path(&mut v, &["cloud", "remote"], Value::String("Box".into())); }
-                "dropbox" => { set_path(&mut v, &["cloud", "remote"], Value::String("Dropbox".into())); }
-                "google-drive" => { set_path(&mut v, &["cloud", "remote"], Value::String("GoogleDrive".into())); }
-                "onedrive" => { set_path(&mut v, &["cloud", "remote"], Value::String("OneDrive".into())); }
-                "ftp" => { set_path(&mut v, &["cloud", "remote"], Value::String("Ftp".into())); }
-                "smb" => { set_path(&mut v, &["cloud", "remote"], Value::String("Smb".into())); }
-                "webdav" => { set_path(&mut v, &["cloud", "remote"], Value::String("WebDav".into())); }
+                "box" => { set_path(v, &["cloud", "remote"], Value::String("Box".into())); }
+                "dropbox" => { set_path(v, &["cloud", "remote"], Value::String("Dropbox".into())); }
+                "google-drive" => { set_path(v, &["cloud", "remote"], Value::String("GoogleDrive".into())); }
+                "onedrive" => { set_path(v, &["cloud", "remote"], Value::String("OneDrive".into())); }
+                "ftp" => { set_path(v, &["cloud", "remote"], Value::String("Ftp".into())); }
+                "smb" => { set_path(v, &["cloud", "remote"], Value::String("Smb".into())); }
+                "webdav" => { set_path(v, &["cloud", "remote"], Value::String("WebDav".into())); }
                 _ => {
-                    set_path(&mut v, &["cloud", "remote"], Value::Null);
+                    set_path(v, &["cloud", "remote"], Value::Null);
                 }
             }
         }
     }
     if let Some(p) = path {
-        set_path(&mut v, &["cloud", "path"], Value::String(p.into()));
+        set_path(v, &["cloud", "path"], Value::String(p.into()));
     }
     if let Some(p) = rclone_path {
-        set_path(&mut v, &["apps", "rclone", "path"], Value::String(p.into()));
+        set_path(v, &["apps", "rclone", "path"], Value::String(p.into()));
     }
     if let Some(a) = rclone_args {
         set_path(
-            &mut v,
+            v,
             &["apps", "rclone", "arguments"],
             Value::String(a.into()),
         );
     }
-    write_value(&v)
 }
 
 /// Replace the entire `redirects:` list in the owned config.yaml. Called
@@ -292,5 +306,120 @@ mod tests {
         let raw = serde_yaml::to_string(&list).unwrap();
         assert!(raw.contains("C:/Users/alice"));
         assert!(raw.contains("steamuser"));
+    }
+
+    // ── Phase 4: apply_cloud (provider → ludusavi cloud.remote schema) ──────
+
+    /// Look up a nested key path in a YAML value, returning the leaf if present.
+    fn get_path<'a>(root: &'a Value, path: &[&str]) -> Option<&'a Value> {
+        let mut cur = root;
+        for key in path {
+            cur = cur.as_mapping()?.get(Value::String((*key).to_string()))?;
+        }
+        Some(cur)
+    }
+
+    #[test]
+    fn apply_cloud_preset_remote_is_a_bare_string() {
+        let mut v = Value::Mapping(Default::default());
+        apply_cloud(&mut v, Some("google-drive"), Some(""), None, None, None);
+        assert_eq!(
+            get_path(&v, &["cloud", "remote"]),
+            Some(&Value::String("GoogleDrive".into())),
+        );
+    }
+
+    #[test]
+    fn apply_cloud_every_preset_maps_to_ludusavi_variant() {
+        let cases = [
+            ("box", "Box"),
+            ("dropbox", "Dropbox"),
+            ("google-drive", "GoogleDrive"),
+            ("onedrive", "OneDrive"),
+            ("ftp", "Ftp"),
+            ("smb", "Smb"),
+            ("webdav", "WebDav"),
+        ];
+        for (provider, expected) in cases {
+            let mut v = Value::Mapping(Default::default());
+            apply_cloud(&mut v, Some(provider), Some(""), None, None, None);
+            assert_eq!(
+                get_path(&v, &["cloud", "remote"]),
+                Some(&Value::String(expected.into())),
+                "provider {provider} should map to {expected}",
+            );
+        }
+    }
+
+    #[test]
+    fn apply_cloud_custom_remote_is_a_tagged_map() {
+        let mut v = Value::Mapping(Default::default());
+        apply_cloud(&mut v, Some("custom"), Some("bazzite"), None, None, None);
+        let remote = get_path(&v, &["cloud", "remote"]).unwrap();
+        // Expect: { Custom: { id: bazzite } }
+        let id = get_path(remote, &["Custom", "id"]);
+        assert_eq!(id, Some(&Value::String("bazzite".into())), "got: {remote:?}");
+    }
+
+    #[test]
+    fn apply_cloud_empty_provider_clears_remote() {
+        let mut v = Value::Mapping(Default::default());
+        // Seed an existing remote, then clear it.
+        apply_cloud(&mut v, Some("dropbox"), Some(""), None, None, None);
+        apply_cloud(&mut v, Some(""), Some(""), None, None, None);
+        assert_eq!(get_path(&v, &["cloud", "remote"]), Some(&Value::Null));
+    }
+
+    #[test]
+    fn apply_cloud_unknown_provider_clears_remote() {
+        let mut v = Value::Mapping(Default::default());
+        apply_cloud(&mut v, Some("dropbox"), Some(""), None, None, None);
+        apply_cloud(&mut v, Some("nonsense"), Some("x"), None, None, None);
+        assert_eq!(get_path(&v, &["cloud", "remote"]), Some(&Value::Null));
+    }
+
+    #[test]
+    fn apply_cloud_sets_path_and_rclone_under_apps() {
+        let mut v = Value::Mapping(Default::default());
+        apply_cloud(
+            &mut v,
+            None,
+            None,
+            Some("Spool/ludusavi-backup"),
+            Some("/usr/bin/rclone"),
+            Some("--fast-list"),
+        );
+        assert_eq!(
+            get_path(&v, &["cloud", "path"]),
+            Some(&Value::String("Spool/ludusavi-backup".into())),
+        );
+        assert_eq!(
+            get_path(&v, &["apps", "rclone", "path"]),
+            Some(&Value::String("/usr/bin/rclone".into())),
+        );
+        assert_eq!(
+            get_path(&v, &["apps", "rclone", "arguments"]),
+            Some(&Value::String("--fast-list".into())),
+        );
+    }
+
+    #[test]
+    fn apply_cloud_none_fields_leave_existing_values_intact() {
+        let mut v = Value::Mapping(Default::default());
+        apply_cloud(&mut v, Some("dropbox"), Some(""), Some("p"), None, None);
+        // A later call that only touches rclone args must not wipe the remote/path.
+        apply_cloud(&mut v, None, None, None, None, Some("--ignore-checksum"));
+        assert_eq!(
+            get_path(&v, &["cloud", "remote"]),
+            Some(&Value::String("Dropbox".into())),
+        );
+        assert_eq!(
+            get_path(&v, &["cloud", "path"]),
+            Some(&Value::String("p".into())),
+        );
+        assert_eq!(
+            get_path(&v, &["apps", "rclone", "arguments"]),
+            Some(&Value::String("--ignore-checksum".into())),
+        );
     }
 }
