@@ -63,10 +63,12 @@ pub fn ensure_config() -> AppResult<()> {
         &["backup", "format", "chosen"],
         Value::String("simple".into()),
     );
+    changed |= set_path(&mut v, &["backup", "retention", "full"], Value::Number(3.into()));
+    changed |= set_path(&mut v, &["backup", "retention", "differential"], Value::Number(0.into()));
 
     // Ensure cloud block exists with at least a remote key; leave existing
     // values intact so a user-configured remote survives a restart.
-    ensure_key_exists(&mut v, &["cloud", "remote"], Value::Bool(false));
+    ensure_key_exists(&mut v, &["cloud", "remote"], Value::Null);
 
     if changed || !file.exists() {
         write_value(&v)?;
@@ -89,7 +91,7 @@ pub fn set_cloud(
         // rclone remote names are strings like "gdrive:"; an empty string
         // serialises as the YAML `false`/null sentinel we use to mean "unset".
         if r.is_empty() {
-            set_path(&mut v, &["cloud", "remote"], Value::Bool(false));
+            set_path(&mut v, &["cloud", "remote"], Value::Null);
         } else {
             set_path(&mut v, &["cloud", "remote"], Value::String(r.into()));
         }

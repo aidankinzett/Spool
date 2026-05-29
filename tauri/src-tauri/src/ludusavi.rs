@@ -272,6 +272,13 @@ async fn run_find(ludusavi_exe: &Path, config_dir: &Path, query: &str) -> AppRes
         .map_err(|e| AppError::Other(format!("failed to spawn ludusavi: {e}")))?;
 
     let stdout = String::from_utf8_lossy(&output.stdout);
+    if !output.status.success() && stdout.trim().is_empty() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(AppError::Other(format!(
+            "ludusavi find failed: {}",
+            stderr.trim()
+        )));
+    }
     if stdout.trim().is_empty() {
         // ludusavi exits non-zero on no matches; surface an empty set.
         return Ok(FindOutput { games: HashMap::new() });
@@ -291,6 +298,13 @@ async fn run_api(ludusavi_exe: &Path, config_dir: &Path, args: &[&str]) -> AppRe
         .await
         .map_err(|e| AppError::Other(format!("failed to spawn ludusavi: {e}")))?;
     let stdout = String::from_utf8_lossy(&output.stdout);
+    if !output.status.success() && stdout.trim().is_empty() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(AppError::Other(format!(
+            "ludusavi execution failed: {}",
+            stderr.trim()
+        )));
+    }
     if stdout.trim().is_empty() {
         return Ok(ApiOutput::default());
     }
