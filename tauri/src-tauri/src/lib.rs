@@ -508,6 +508,9 @@ fn handle_forwarded_launch(app: &AppHandle, argv: &[String]) {
             });
         }
         CliMode::Normal => show_library(app),
+        CliMode::Backup { game_name } => {
+            tracing::warn!(name = %game_name, "forwarded --backup: headless backup not yet implemented in forwarded-launch path");
+        }
     }
 }
 

@@ -20,6 +20,9 @@ pub enum CliMode {
     Normal,
     /// Find a game by name and run its launch workflow.
     Run { game_name: String, exe_path: String },
+    /// Headless one-shot: back up a single game's saves, then exit. Used by
+    /// the Decky plugin's forced-close fallback. No GUI, no tray.
+    Backup { game_name: String },
 }
 
 /// Parses argv, skipping the program-name arg at position 0.
@@ -29,6 +32,11 @@ pub fn parse_args<S: AsRef<str>>(args: &[S]) -> CliMode {
         return CliMode::Run {
             game_name: rest[1].to_string(),
             exe_path: rest[2].to_string(),
+        };
+    }
+    if rest.len() >= 2 && rest[0] == "--backup" {
+        return CliMode::Backup {
+            game_name: rest[1].to_string(),
         };
     }
     CliMode::Normal
@@ -66,5 +74,21 @@ mod tests {
     fn unknown_flags_fall_through() {
         let argv = ["spool.exe", "--help"];
         assert_eq!(parse_args(&argv), CliMode::Normal);
+    }
+
+    #[test]
+    fn backup_with_name_parses() {
+        let argv = ["spool.exe", "--backup", "Hades"];
+        assert_eq!(
+            parse_args(&argv),
+            CliMode::Backup {
+                game_name: "Hades".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn backup_missing_name_falls_back_to_normal() {
+        assert_eq!(parse_args::<&str>(&["spool.exe", "--backup"]), CliMode::Normal);
     }
 }
