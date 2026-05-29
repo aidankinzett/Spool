@@ -17,6 +17,7 @@
       "allow": [{ "path": "**" }]
     },
     "notification:default",
-    "updater:default"
+    "updater:default",
+    "process:allow-restart"
   ]
 }

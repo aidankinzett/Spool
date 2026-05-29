@@ -187,7 +187,12 @@ pub fn run() {
         // Auto-update via Tauri's updater. Polls a signed JSON
         // manifest (URL configured in tauri.conf.json), verifies the
         // ed25519 signature, then runs the NSIS installer silently.
-        .plugin(tauri_plugin_updater::Builder::new().build());
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        // Process control — used by the updater UI to relaunch Spool
+        // after an update installs. On Windows the NSIS installer
+        // relaunches us itself, but on the Linux AppImage the updater
+        // only swaps the file in place, so we must restart explicitly.
+        .plugin(tauri_plugin_process::init());
     if !attached {
         // Single-instance: secondary `spool` invocations land here. We
         // dispatch on argv to either focus the library or kick off a
