@@ -56,7 +56,6 @@ async fn run_backfill(app: AppHandle) {
             })
             .collect()
     };
-    drop(library_state);
     if todo.is_empty() {
         return;
     }

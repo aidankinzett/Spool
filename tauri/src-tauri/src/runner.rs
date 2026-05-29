@@ -162,7 +162,7 @@ pub async fn backup_game_core(
     let (game_count, bytes_total) = out
         .overall
         .as_ref()
-        .map(|o| (o.total_games as i32, o.total_bytes))
+        .map(|o| (o.total_games, o.total_bytes))
         .unwrap_or((0, 0));
 
     if game_count > 0 {
@@ -178,7 +178,7 @@ pub async fn backup_game_core(
 
     Ok(ManualBackupResult {
         game_count,
-        bytes_total: bytes_total as u64,
+        bytes_total,
     })
 }
 
@@ -263,7 +263,7 @@ pub async fn manual_restore(app: AppHandle, game_id: String) -> AppResult<Manual
     let game_count = out
         .overall
         .as_ref()
-        .map(|o| o.total_games as i32)
+        .map(|o| o.total_games)
         .unwrap_or(0);
 
     // Record the restore on the sync server so peers know we just
@@ -865,7 +865,6 @@ async fn run_workflow(
                 } else {
                     false
                 };
-                drop(library);
                 if badge_changed {
                     let _ = app.emit("library:changed", &game_id.to_string());
                 }

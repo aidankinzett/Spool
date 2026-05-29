@@ -28,14 +28,13 @@ use tokio_util::io::ReaderStream;
 
 /// Shutdown coordinator for the LAN HTTP server. Holds two things:
 ///
-///   * `notify`  — what axum's `with_graceful_shutdown` awaits. Firing
-///                 this stops the listener from accepting new
-///                 connections and lets in-flight responses drain.
-///   * `handle`  — the tokio `JoinHandle` of the spawned `axum::serve`
-///                 task. After notifying we `.await` this handle so we
-///                 know the server is actually done before the process
-///                 exits (otherwise the runtime gets dropped and the
-///                 task is cancelled mid-drain).
+/// * `notify` — what axum's `with_graceful_shutdown` awaits. Firing this
+///   stops the listener from accepting new connections and lets in-flight
+///   responses drain.
+/// * `handle` — the tokio `JoinHandle` of the spawned `axum::serve` task.
+///   After notifying we `.await` this handle so we know the server is
+///   actually done before the process exits (otherwise the runtime gets
+///   dropped and the task is cancelled mid-drain).
 ///
 /// Per `domain-web` "graceful shutdown for in-flight drain" — without
 /// this an `app.exit(0)` from the tray rips the rug out from under

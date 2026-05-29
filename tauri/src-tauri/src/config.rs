@@ -202,11 +202,6 @@ impl Config {
         std::fs::rename(&tmp, &path)?;
         Ok(())
     }
-
-    /// True iff `ludusavi_path` points at a file that actually exists.
-    pub fn is_ludusavi_ok(&self) -> bool {
-        !self.data.ludusavi_path.is_empty() && PathBuf::from(&self.data.ludusavi_path).is_file()
-    }
 }
 
 /// Shared config state. Locks are short (read/clone or mutate+save) so a
