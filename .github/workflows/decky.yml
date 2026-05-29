@@ -26,13 +26,14 @@ jobs:
       - name: Backend unit tests
         run: python -m unittest discover -s tests -v
 
-      # Frontend: pnpm (matches the version that generated pnpm-lock.yaml).
+      # Frontend: pnpm. Version comes from package.json's `packageManager`
+      # field (pnpm 11.5.0). pnpm 11 requires Node >= 22.13 (it imports the
+      # node:sqlite builtin), so Node must be 22 or setup-node's pnpm store
+      # probe crashes with ERR_UNKNOWN_BUILTIN_MODULE.
       - uses: pnpm/action-setup@v4
-        with:
-          version: 11
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: pnpm
           cache-dependency-path: decky/pnpm-lock.yaml
       - name: Install
