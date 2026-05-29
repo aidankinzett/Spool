@@ -67,6 +67,12 @@ pub struct ConfigData {
     /// new installs) so the toast appears on the first close-to-tray.
     pub tray_intro_seen: bool,
 
+    // ── Cloud / rclone settings ──────────────────────────────────────────
+    pub cloud_provider: String,
+    pub cloud_remote: String,
+    pub cloud_path: String,
+    pub rclone_path: String,
+    pub rclone_args: String,
 }
 
 impl Default for ConfigData {
@@ -94,6 +100,11 @@ impl Default for ConfigData {
             default_proton_path: String::new(),
             touch_mode: "auto".to_string(),
             tray_intro_seen: false,
+            cloud_provider: String::new(),
+            cloud_remote: String::new(),
+            cloud_path: "Spool/ludusavi-backup".to_string(),
+            rclone_path: String::new(),
+            rclone_args: "--fast-list --ignore-checksum".to_string(),
         }
     }
 }
@@ -288,6 +299,16 @@ pub fn update_config(
     let mut cfg = state.lock().map_err(|_| AppError::LockPoisoned)?;
     cfg.data = data;
     cfg.save()?;
+
+    // Sync cloud/rclone settings to Spool-owned ludusavi config.yaml
+    let _ = crate::ludusavi_config::set_cloud(
+        Some(&cfg.data.cloud_provider),
+        Some(&cfg.data.cloud_remote),
+        Some(&cfg.data.cloud_path),
+        Some(&cfg.data.rclone_path),
+        Some(&cfg.data.rclone_args),
+    );
+
     Ok(cfg.data.clone())
 }
 

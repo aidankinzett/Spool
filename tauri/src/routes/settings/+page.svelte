@@ -148,6 +148,14 @@
     }
   }
 
+  async function browseRclone() {
+    const picked = await openDialog({ title: 'Locate rclone', multiple: false });
+    if (typeof picked === 'string' && config) {
+      config.rclone_path = picked;
+      await persist();
+    }
+  }
+
   async function browseLanInstallDir() {
     const picked = await openDialog({ title: 'Pick the LAN install folder', directory: true, multiple: false });
     if (typeof picked === 'string' && config) {
@@ -223,6 +231,7 @@
         ...(isLinux
           ? [{ id: 'compat', title: 'Compatibility', sub: 'Proton / umu-run' }]
           : []),
+        { id: 'cloud-saves', title: 'Cloud saves', sub: 'rclone remote' },
         { id: 'artwork', title: 'Cover artwork', sub: 'SteamGridDB' },
       ],
     },
@@ -391,6 +400,77 @@
                   </SettingsCard>
                 </div>
               {/if}
+
+              <!-- Cloud saves (rclone) -->
+              <div id="cloud-saves">
+                <SettingsCard title="Cloud saves (rclone)" helper="Configure a cloud remote here, then use 'Open Ludusavi settings' to run rclone config / authenticate.">
+                  
+                  {#if !config.cloud_provider || (config.cloud_provider === 'custom' && !config.cloud_remote)}
+                    <div class="mx-[18px] mb-3.5 rounded-sm border border-dashed border-warn/40 bg-warn/5 p-3 text-[11.5px] text-ink-2">
+                      Cloud sync is not configured — saves are backed up locally only.
+                    </div>
+                  {/if}
+
+                  <SettingsRow label="Provider" helper="Choose a cloud storage provider or Custom for a custom rclone remote name">
+                    {#snippet extras()}
+                      <select
+                        bind:value={config!.cloud_provider}
+                        onchange={persist}
+                        style="color-scheme: dark"
+                        class="rounded-[4px] border border-line-1 bg-bg-2 px-2 py-1 text-[11.5px] text-ink-0"
+                      >
+                        <option style="background: var(--color-bg-2); color: var(--color-ink-0)" value="">Disabled</option>
+                        <option style="background: var(--color-bg-2); color: var(--color-ink-0)" value="custom">Custom (rclone remote)</option>
+                        <option style="background: var(--color-bg-2); color: var(--color-ink-0)" value="google-drive">Google Drive</option>
+                        <option style="background: var(--color-bg-2); color: var(--color-ink-0)" value="onedrive">OneDrive</option>
+                        <option style="background: var(--color-bg-2); color: var(--color-ink-0)" value="dropbox">Dropbox</option>
+                        <option style="background: var(--color-bg-2); color: var(--color-ink-0)" value="box">Box</option>
+                        <option style="background: var(--color-bg-2); color: var(--color-ink-0)" value="ftp">FTP</option>
+                        <option style="background: var(--color-bg-2); color: var(--color-ink-0)" value="smb">SMB</option>
+                        <option style="background: var(--color-bg-2); color: var(--color-ink-0)" value="webdav">WebDAV</option>
+                      </select>
+                    {/snippet}
+                  </SettingsRow>
+
+                  {#if config.cloud_provider === 'custom'}
+                    <SettingsRow label="Remote" helper="rclone remote name (e.g. bazzite, gdrive, b2)">
+                      {#snippet control()}
+                        <TextField bind:value={config!.cloud_remote} placeholder="bazzite" mono oncommit={persist} />
+                      {/snippet}
+                    </SettingsRow>
+                  {/if}
+
+                  <SettingsRow label="Remote path" helper="Subpath on the remote where saves will be synced">
+                    {#snippet control()}
+                      <TextField bind:value={config!.cloud_path} placeholder="Spool/ludusavi-backup" mono oncommit={persist} />
+                    {/snippet}
+                  </SettingsRow>
+
+                  <SettingsRow label="rclone binary" helper="Path to rclone executable (leave blank to let ludusavi find it)">
+                    {#snippet extras()}
+                      <TextField bind:value={config!.rclone_path} placeholder="rclone" mono full oncommit={persist} />
+                      <Btn variant="ghost" onclick={browseRclone}>
+                        {#snippet icon()}<Folder size={14} />{/snippet}
+                        Browse
+                      </Btn>
+                    {/snippet}
+                  </SettingsRow>
+
+                  <SettingsRow label="rclone arguments" helper="Additional arguments passed to rclone calls">
+                    {#snippet control()}
+                      <TextField bind:value={config!.rclone_args} placeholder="--fast-list --ignore-checksum" mono oncommit={persist} />
+                    {/snippet}
+                  </SettingsRow>
+
+                  <div class="flex justify-end px-[18px] py-[10px] bg-bg-0">
+                    <Btn variant="ghost" onclick={() => api.openLudusaviGui().catch(err => toasts.show({ kind: 'bad', label: 'LUDUSAVI', title: 'Could not open settings', sub: String(err) }))}>
+                      {#snippet icon()}<Layers size={14} />{/snippet}
+                      Open Ludusavi settings
+                    </Btn>
+                  </div>
+
+                </SettingsCard>
+              </div>
 
               <!-- Cover artwork section -->
               <div id="artwork">

@@ -35,6 +35,11 @@ export type ConfigData = {
   /** True after the close-to-tray intro toast has been shown once. */
   tray_intro_seen: boolean;
 
+  cloud_provider: string;
+  cloud_remote: string;
+  cloud_path: string;
+  rclone_path: string;
+  rclone_args: string;
 };
 
 // Mirror of the Rust `GameEntry` struct in src-tauri/src/library.rs.

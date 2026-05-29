@@ -81,19 +81,36 @@ pub fn ensure_config() -> AppResult<()> {
 /// Called from `update_config` (Phase 4) when the user saves those fields.
 /// Pass `None` for a field to leave it unchanged.
 pub fn set_cloud(
+    provider: Option<&str>,
     remote: Option<&str>,
     path: Option<&str>,
     rclone_path: Option<&str>,
     rclone_args: Option<&str>,
 ) -> AppResult<()> {
     let mut v = read_value_or_empty();
-    if let Some(r) = remote {
-        // rclone remote names are strings like "gdrive:"; an empty string
-        // serialises as the YAML `false`/null sentinel we use to mean "unset".
-        if r.is_empty() {
+    if let (Some(prov), Some(rem)) = (provider, remote) {
+        if prov.is_empty() {
             set_path(&mut v, &["cloud", "remote"], Value::Null);
         } else {
-            set_path(&mut v, &["cloud", "remote"], Value::String(r.into()));
+            match prov {
+                "custom" => {
+                    let mut custom_map = serde_yaml::Mapping::new();
+                    custom_map.insert(Value::String("id".into()), Value::String(rem.to_string()));
+                    let mut remote_map = serde_yaml::Mapping::new();
+                    remote_map.insert(Value::String("Custom".into()), Value::Mapping(custom_map));
+                    set_path(&mut v, &["cloud", "remote"], Value::Mapping(remote_map));
+                }
+                "box" => { set_path(&mut v, &["cloud", "remote"], Value::String("Box".into())); }
+                "dropbox" => { set_path(&mut v, &["cloud", "remote"], Value::String("Dropbox".into())); }
+                "google-drive" => { set_path(&mut v, &["cloud", "remote"], Value::String("GoogleDrive".into())); }
+                "onedrive" => { set_path(&mut v, &["cloud", "remote"], Value::String("OneDrive".into())); }
+                "ftp" => { set_path(&mut v, &["cloud", "remote"], Value::String("Ftp".into())); }
+                "smb" => { set_path(&mut v, &["cloud", "remote"], Value::String("Smb".into())); }
+                "webdav" => { set_path(&mut v, &["cloud", "remote"], Value::String("WebDav".into())); }
+                _ => {
+                    set_path(&mut v, &["cloud", "remote"], Value::Null);
+                }
+            }
         }
     }
     if let Some(p) = path {
