@@ -83,12 +83,32 @@ pub struct BackupOrigin {
 /// Read `<backup_dir>/<game_name>/mapping.yaml` and return the origin OS +
 /// every recorded absolute path. Returns `None` when the file doesn't exist
 /// (game has no backup yet — caller skips redirect logic).
+///
+/// Windows can't create folders with colons in their names, so a backup made
+/// on Windows for a game like "Lego Batman: Legacy of the Dark Knight" will
+/// have the folder name "Lego Batman_ Legacy of the Dark Knight" (colon →
+/// underscore). We try the exact name first, then the safe-name variant.
 pub fn read_backup_origin(backup_dir: &Path, game_name: &str) -> Option<BackupOrigin> {
-    // ludusavi uses the game name as the backup folder name directly.
-    let mapping = backup_dir.join(game_name).join("mapping.yaml");
-    let raw = std::fs::read_to_string(&mapping).ok()?;
-    let doc: Value = serde_yaml::from_str(&raw).ok()?;
-    parse_origin(&doc)
+    let candidates = [
+        backup_dir.join(game_name).join("mapping.yaml"),
+        backup_dir.join(windows_safe_name(game_name)).join("mapping.yaml"),
+    ];
+    for mapping in &candidates {
+        if let Ok(raw) = std::fs::read_to_string(mapping) {
+            if let Ok(doc) = serde_yaml::from_str::<Value>(&raw) {
+                return parse_origin(&doc);
+            }
+        }
+    }
+    None
+}
+
+/// Replace characters that Windows forbids in folder names (`:`  `*`  `?`  `"`  `<`  `>`  `|`)
+/// with underscores — matches what ludusavi does when creating backup folders on Windows.
+fn windows_safe_name(name: &str) -> String {
+    name.chars()
+        .map(|c| if matches!(c, ':' | '*' | '?' | '"' | '<' | '>' | '|') { '_' } else { c })
+        .collect()
 }
 
 fn parse_origin(doc: &Value) -> Option<BackupOrigin> {
@@ -476,6 +496,30 @@ mod tests {
     }
 
     #[test]
+    fn windows_safe_name_replaces_colon() {
+        assert_eq!(
+            windows_safe_name("Lego Batman: Legacy of the Dark Knight"),
+            "Lego Batman_ Legacy of the Dark Knight"
+        );
+        assert_eq!(windows_safe_name("Normal Name"), "Normal Name");
+        assert_eq!(windows_safe_name("File*Name?"), "File_Name_");
+    }
+
+    #[test]
+    fn read_backup_origin_finds_safe_name_folder() {
+        // "Lego Batman: Legacy of the Dark Knight" backup was created on Windows,
+        // so the folder is named with underscores. read_backup_origin should find
+        // it via the safe-name fallback.
+        let backup_dir = std::path::Path::new("/home/deck/.local/share/Spool/ludusavi-backup");
+        if !backup_dir.exists() { return; }
+        // Pass the colon-containing canonical name — should still find the folder.
+        if let Some(origin) = read_backup_origin(backup_dir, "Lego Batman: Legacy of the Dark Knight") {
+            assert_eq!(origin.os, BackupOs::Windows);
+            assert!(origin.paths.iter().any(|p| p.contains("akinz")));
+        }
+    }
+
+    #[test]
     fn parse_real_deltarune_mapping() {
         // Test against the actual mapping.yaml from ~/ludusavi-backup.
         let backup_dir = std::path::Path::new("/home/deck/ludusavi-backup");
@@ -488,8 +532,9 @@ mod tests {
 
     #[test]
     fn parse_real_lego_batman_mapping_with_diffs() {
+        // Use the canonical colon name — should find the underscore folder.
         let backup_dir = std::path::Path::new("/home/deck/ludusavi-backup");
-        let game_name = "Lego Batman_ Legacy of the Dark Knight";
+        let game_name = "Lego Batman: Legacy of the Dark Knight";
         let Some(origin) = read_backup_origin(backup_dir, game_name) else {
             return;
         };

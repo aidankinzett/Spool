@@ -484,8 +484,16 @@ async fn restore_with_redirects(
     let backup_dir = ludusavi_config::backup_dir();
     let Some(origin) = redirects::read_backup_origin(&backup_dir, game_name) else {
         // No backup on disk yet (first-ever session). Nothing to redirect.
+        tracing::info!(game_name, "no mapping.yaml found — skipping redirect generation");
         return Ok(first);
     };
+
+    tracing::info!(
+        game_name,
+        origin_os = ?origin.os,
+        path_count = origin.paths.len(),
+        "mapping.yaml read"
+    );
 
     let local_win_user = redirects::local_windows_username();
     let n = redirects::apply_redirects_for_restore(
@@ -499,13 +507,14 @@ async fn restore_with_redirects(
         // Same-origin backup — clear any redirects left from a prior cross-
         // device restore so they don't linger.
         let _ = ludusavi_config::set_redirects(&[]);
+        tracing::info!(game_name, "same-origin backup — no redirects needed");
         return Ok(first);
     }
 
     tracing::info!(
         game_name,
         redirects = n,
-        "foreign-origin backup detected — running second restore with redirects"
+        "foreign-origin backup — running second restore with redirects"
     );
 
     // ── Pass 2: restore with redirects in place ───────────────────────────
