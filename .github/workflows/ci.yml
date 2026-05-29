@@ -46,6 +46,26 @@ jobs:
       - name: Setup sccache
         uses: mozilla-actions/sccache-action@v0.0.6
 
+      - name: Probe sccache backend (fall back to direct compile if down)
+        # SCCACHE_IGNORE_SERVER_IO_ERROR only covers failures talking to an
+        # already-running server — NOT the backend self-check sccache runs
+        # when the server first starts. A GitHub Actions cache outage fails
+        # that check, so every wrapped rustc call exits non-zero and breaks
+        # the build. Start the server up front; if it can't reach the cache
+        # backend, drop the wrapper for the rest of the job (GITHUB_ENV
+        # overrides the job-level env for later steps) so cargo compiles
+        # directly — uncached but green. bash runs on the Windows runners
+        # too, so one step covers every platform.
+        shell: bash
+        run: |
+          if sccache --start-server; then
+            echo "sccache backend reachable."
+          else
+            echo "::warning::sccache backend unreachable (likely a GitHub Actions cache outage); building without the compiler cache."
+            echo "RUSTC_WRAPPER=" >> "$GITHUB_ENV"
+            echo "SCCACHE_GHA_ENABLED=" >> "$GITHUB_ENV"
+          fi
+
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
         with:
@@ -154,6 +174,26 @@ jobs:
       - name: Setup sccache
         uses: mozilla-actions/sccache-action@v0.0.6
 
+      - name: Probe sccache backend (fall back to direct compile if down)
+        # SCCACHE_IGNORE_SERVER_IO_ERROR only covers failures talking to an
+        # already-running server — NOT the backend self-check sccache runs
+        # when the server first starts. A GitHub Actions cache outage fails
+        # that check, so every wrapped rustc call exits non-zero and breaks
+        # the build. Start the server up front; if it can't reach the cache
+        # backend, drop the wrapper for the rest of the job (GITHUB_ENV
+        # overrides the job-level env for later steps) so cargo compiles
+        # directly — uncached but green. bash runs on the Windows runners
+        # too, so one step covers every platform.
+        shell: bash
+        run: |
+          if sccache --start-server; then
+            echo "sccache backend reachable."
+          else
+            echo "::warning::sccache backend unreachable (likely a GitHub Actions cache outage); building without the compiler cache."
+            echo "RUSTC_WRAPPER=" >> "$GITHUB_ENV"
+            echo "SCCACHE_GHA_ENABLED=" >> "$GITHUB_ENV"
+          fi
+
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
         with:
@@ -207,6 +247,26 @@ jobs:
 
       - name: Setup sccache
         uses: mozilla-actions/sccache-action@v0.0.6
+
+      - name: Probe sccache backend (fall back to direct compile if down)
+        # SCCACHE_IGNORE_SERVER_IO_ERROR only covers failures talking to an
+        # already-running server — NOT the backend self-check sccache runs
+        # when the server first starts. A GitHub Actions cache outage fails
+        # that check, so every wrapped rustc call exits non-zero and breaks
+        # the build. Start the server up front; if it can't reach the cache
+        # backend, drop the wrapper for the rest of the job (GITHUB_ENV
+        # overrides the job-level env for later steps) so cargo compiles
+        # directly — uncached but green. bash runs on the Windows runners
+        # too, so one step covers every platform.
+        shell: bash
+        run: |
+          if sccache --start-server; then
+            echo "sccache backend reachable."
+          else
+            echo "::warning::sccache backend unreachable (likely a GitHub Actions cache outage); building without the compiler cache."
+            echo "RUSTC_WRAPPER=" >> "$GITHUB_ENV"
+            echo "SCCACHE_GHA_ENABLED=" >> "$GITHUB_ENV"
+          fi
 
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
