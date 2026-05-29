@@ -13,6 +13,7 @@
  */
 
 import { check, type Update } from '@tauri-apps/plugin-updater';
+import { relaunch } from '@tauri-apps/plugin-process';
 import { toasts } from './toasts.svelte';
 
 /**
@@ -64,8 +65,12 @@ async function installUpdate(update: Update): Promise<void> {
   try {
     await update.downloadAndInstall();
     // On Windows the NSIS installer relaunches Spool itself after
-    // running silently. We just leave the toast in place — the
-    // process will exit before the user notices.
+    // running silently, so the process is usually gone by now. On the
+    // Linux AppImage (and macOS) the updater just swaps the bundle in
+    // place and returns — nothing restarts the app, leaving the user
+    // on the old version. Relaunch explicitly so the new build takes
+    // effect; harmless on Windows if the process is still alive.
+    await relaunch();
   } catch (e) {
     console.error('[updater] downloadAndInstall failed:', e);
     toasts.show({
