@@ -21,7 +21,6 @@ fn decide(override_val: Option<&str>, gamescope: Option<&str>, is_linux: bool) -
 }
 
 /// True when Spool should use attached-launch behavior. See `decide`.
-#[allow(dead_code)]
 pub fn is_steam_game_mode() -> bool {
     let override_val = std::env::var("SPOOL_ATTACHED_LAUNCH").ok();
     let gamescope = std::env::var("GAMESCOPE_WAYLAND_DISPLAY").ok();

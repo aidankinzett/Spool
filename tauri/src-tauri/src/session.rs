@@ -23,7 +23,6 @@ pub struct ActiveSession {
 /// Steam's CRC-based appid for a non-Steam shortcut. MUST match
 /// `steam::upsert_spool_shortcut`'s computation so the value equals the appid
 /// Steam reports to the plugin: `calculate_app_id("\"<exe>\"", game_name)`.
-#[allow(dead_code)]
 pub fn compute_steam_appid(spool_exe: &str, game_name: &str) -> u32 {
     let quoted_exe = format!("\"{}\"", spool_exe.replace('"', "\\\""));
     steam_shortcuts_util::app_id_generator::calculate_app_id(&quoted_exe, game_name)
@@ -60,7 +59,6 @@ fn mark_backed_up_at(path: &Path) {
 }
 
 /// Write the session record for a launch starting now.
-#[allow(dead_code)]
 pub fn write_start(game: &str, steam_appid: u32) -> AppResult<String> {
     write_start_at(&crate::paths::active_session_file(), game, steam_appid, Utc::now())
 }
@@ -72,7 +70,6 @@ pub fn read() -> Option<ActiveSession> {
 }
 
 /// Mark the current session's backup as done. No-op when no record exists.
-#[allow(dead_code)]
 pub fn mark_backed_up() {
     mark_backed_up_at(&crate::paths::active_session_file());
 }
