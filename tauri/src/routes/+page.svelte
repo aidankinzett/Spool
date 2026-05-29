@@ -608,7 +608,9 @@
           onclick={openBrowseWindow}
           title="Browse games · {config.download_sources.length} feeds"
           aria-label="Browse games"
-          class="inline-flex h-7 w-7 cursor-pointer items-center justify-center rounded-sm text-ink-2 transition-colors hover:bg-white/10 hover:text-ink-0"
+          class="inline-flex cursor-pointer items-center justify-center rounded-sm text-ink-2 transition-colors hover:bg-white/10 hover:text-ink-0"
+          style:height="var(--control-h-icon)"
+          style:width="var(--control-h-icon)"
           data-tauri-drag-region="false"
         >
           <BookOpen size={14} />
@@ -631,7 +633,9 @@
           onclick={() => (lanOpen ? closeLanPopover() : (lanOpen = true))}
           aria-label={`${lanPeers.length} LAN peer${lanPeers.length === 1 ? '' : 's'}`}
           title={`${lanPeers.length} LAN peer${lanPeers.length === 1 ? '' : 's'}`}
-          class="relative inline-flex h-7 w-7 cursor-pointer items-center justify-center rounded-sm text-ink-2 transition-colors hover:bg-white/10 hover:text-ink-0"
+          class="relative inline-flex cursor-pointer items-center justify-center rounded-sm text-ink-2 transition-colors hover:bg-white/10 hover:text-ink-0"
+          style:height="var(--control-h-icon)"
+          style:width="var(--control-h-icon)"
           data-tauri-drag-region="false"
         >
           <Wifi size={14} />
@@ -650,7 +654,9 @@
           onclick={openSettingsWindow}
           aria-label="Sync server status"
           title={syncTitle}
-          class="inline-flex h-7 w-7 cursor-pointer items-center justify-center rounded-sm border-none bg-transparent transition-colors hover:bg-white/10"
+          class="inline-flex cursor-pointer items-center justify-center rounded-sm border-none bg-transparent transition-colors hover:bg-white/10"
+          style:height="var(--control-h-icon)"
+          style:width="var(--control-h-icon)"
           style:color={syncOk
             ? 'var(--color-ok)'
             : syncOff
@@ -667,7 +673,9 @@
         <button
           onclick={openSettingsWindow}
           aria-label="Settings"
-          class="inline-flex h-7 w-7 cursor-pointer items-center justify-center rounded-sm border-none bg-transparent text-ink-2 transition-colors hover:bg-white/10 hover:text-ink-0"
+          class="inline-flex cursor-pointer items-center justify-center rounded-sm border-none bg-transparent text-ink-2 transition-colors hover:bg-white/10 hover:text-ink-0"
+          style:height="var(--control-h-icon)"
+          style:width="var(--control-h-icon)"
           data-tauri-drag-region="false"
         >
           <Settings size={14} />
@@ -829,7 +837,9 @@
                     onclick={cancelActiveInstall}
                     aria-label="Cancel install"
                     title="Cancel install"
-                    class="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-sm border border-line-2 bg-bg-2 text-ink-2 transition-colors hover:border-bad/60 hover:text-bad"
+                    class="inline-flex shrink-0 items-center justify-center rounded-sm border border-line-2 bg-bg-2 text-ink-2 transition-colors hover:border-bad/60 hover:text-bad"
+                    style:height="var(--control-h-icon)"
+                    style:width="var(--control-h-icon)"
                   >
                     <X size={13} />
                   </button>
@@ -906,13 +916,14 @@
       <!-- Search + filters -->
       <div class="flex flex-col gap-2.5 px-3 py-3">
         <div
-          class="flex h-[30px] items-center gap-2 rounded-sm border border-line-1 bg-bg-2 px-2.5"
+          class="flex items-center gap-2 rounded-sm border border-line-1 bg-bg-2 px-2.5"
+          style:height="var(--control-h)"
         >
           <Search size={14} class="text-ink-2" />
           <input
             bind:value={searchQuery}
             placeholder={`Search ${games.length || 0} games`}
-            class="font-sans min-w-0 flex-1 bg-transparent text-[12.5px] text-ink-0 outline-none placeholder:text-ink-3"
+            class="font-sans min-w-0 flex-1 bg-transparent text-[length:var(--text-base)] text-ink-0 outline-none placeholder:text-ink-3"
           />
         </div>
         <div class="flex gap-1">
