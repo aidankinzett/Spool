@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**Spool** (formerly ludusavi-wrap) is a Windows-native game library + save-management wrapper built with [Tauri 2](https://v2.tauri.app/) (Rust backend) and [SvelteKit 5](https://kit.svelte.dev/) frontend. It maintains a persistent **game library** with cover art (via SteamGridDB) and lets users launch games directly from the app — automatically restoring saves before launch and backing them up on exit, with cloud-sync conflict detection via [ludusavi](https://github.com/mtkennerly/ludusavi). It also generates standalone launcher shortcuts for ASUS Armoury Crate and Steam, shares games over the LAN, locks play state across devices via a self-hosted Hono (Node) sync server, and downloads games from Hydra-format catalogues via TorBox.
+**Spool** (formerly ludusavi-wrap) is a cross-platform (Windows + Linux) game library + save-management wrapper built with [Tauri 2](https://v2.tauri.app/) (Rust backend) and [SvelteKit 5](https://kit.svelte.dev/) frontend. Windows is the primary target, but the app also builds and runs on Linux — notably the gaming-handheld distros like **Bazzite**, **CachyOS**, and **SteamOS** (Steam Deck). Linux ships as an AppImage (see Releasing below). A few OS-integration features are Windows-only and degrade gracefully on Linux (see the *Windows-only* modules below). It maintains a persistent **game library** with cover art (via SteamGridDB) and lets users launch games directly from the app — automatically restoring saves before launch and backing them up on exit, with cloud-sync conflict detection via [ludusavi](https://github.com/mtkennerly/ludusavi). It also generates standalone launcher shortcuts for ASUS Armoury Crate and Steam, shares games over the LAN, locks play state across devices via a self-hosted Hono (Node) sync server, and downloads games from Hydra-format catalogues via TorBox.
 
 For the user-facing feature tour see [`README.md`](README.md); the self-hosted sync server is documented in [`server/README.md`](server/README.md).
 
@@ -83,10 +83,10 @@ External integrations:
   * **Discovery** — every 5 s sends a small JSON announce packet over **UDP broadcast** (`255.255.255.255:47631`, *not* multicast — consumer mesh routers filter admin-scoped multicast but flood limited broadcasts). Peers stale out after 30 s. Announce carries the live `file_server_port`. Emits `lan:peers-changed`.
   * **Transfer** — an in-process axum HTTP server exposes `/games`, `/manifest` (walks a game folder and **blake3-hashes** every file; cached after first request), per-file `/file` downloads (HTTP range requests for resume), and cover/hero artwork. The install side (`start_peer_install` → `run_install`) downloads up to `LAN_PARALLEL_FILES` (4) files concurrently into a `<name>.partial` dir, verifies each file's blake3 hash, resumes interrupted transfers, then renames `.partial` → final and adds the game to the library. Single in-flight install slot with a cancel flag; throttled `lan:download` progress events. The serving side tracks `UploadSession`s (reaped when idle), exposed via `list_active_uploads` / `cancel_upload`, emitting `lan:uploads-changed`. Installs land in `lan_install_dir` from config, defaulting to `%LOCALAPPDATA%\Spool\lan-games\`.
 
-Windows-only:
+Windows-only (these are `#[cfg(windows)]`-gated or no-op on Linux — the rest of the app, including the runner, library, LAN, sync, and download flows, is fully cross-platform):
 * **`launcher.rs`** — extracts the embedded `launcher_stub.exe` to `%LOCALAPPDATA%\Spool\launchers\<safe_name>.exe` and appends a config payload bracketed by marker strings. The stub at runtime reads its own bytes and exec's `spool.exe --run`. Payload format matches the C# generator exactly so existing launchers stay compatible.
 * **`registry.rs`** — probes HKCU + HKLM `AppCompatFlags\Layers` for the `RUNASADMIN` token so launches honour the per-exe Windows admin flag even when the library entry's own `run_as_admin` toggle is off.
-* **`process.rs`** — game-process spawn. Normal path uses `tokio::process::Command`; elevated path uses the `runas` crate (`ShellExecuteExW` with the `runas` verb) wrapped in `spawn_blocking` so the blocking wait doesn't tie up the tokio runtime.
+* **`process.rs`** — game-process spawn. The normal path (`tokio::process::Command`) is cross-platform; only the elevated Run-As-Admin path is Windows-only — it uses the `runas` crate (`ShellExecuteExW` with the `runas` verb) wrapped in `spawn_blocking`. On Linux the elevated path returns an error (`run_as_admin` has no effect), so normal launches work everywhere.
 
 Workflow orchestration:
 * **`runner.rs`** — the marquee feature. Five-phase state machine: `restoring → launching → playing → backing-up → done`, emitting `run:phase` events at each transition. Single-launch RAII guard releases the slot even on panic. Cloud-sync conflicts during restore abort cleanly; backup failures after a successful session log-and-continue.
@@ -115,6 +115,8 @@ Shared code under `tauri/src/lib/`:
 * **`toasts.svelte.ts`** — global toast store (Svelte 5 runes). `format.ts` / `tokens.ts` — display helpers (sizes, durations, design tokens). `updater.ts` — wraps `tauri-plugin-updater` (checks `latest.json`, prompts, applies). `GameCard.svelte` — sidebar/grid cover thumbnail.
 
 ### Data Files
+
+All paths below are written as `%LOCALAPPDATA%\Spool\` (Windows). The root is resolved cross-platform via `paths::app_data_dir()` (`dirs::data_local_dir()`), so on Linux the same files live under `~/.local/share/Spool/` and on macOS under `~/Library/Application Support/Spool/`. The one-shot `ludusavi-wrap` → `Spool` rename migration only finds legacy data where it existed (effectively Windows); fresh Linux installs simply start clean.
 
 | File | Location | Contents |
 |------|----------|----------|
@@ -157,8 +159,8 @@ A small self-hostable [Hono](https://hono.dev/) app (TypeScript) served via `@ho
 ## CI / CD
 
 GitHub Actions workflows in `.github/workflows/`:
-* **`ci.yml`** — runs on push to `master` and on PRs. Windows runner; builds the backend and runs clippy/check (`sccache` + `Swatinem/rust-cache` for speed). The push/PR split is deliberate so the cache saves to the default-branch scope that the tag-triggered release build can later restore.
-* **`release.yml`** — tag-triggered release build (see below).
+* **`ci.yml`** — runs on push to `master` and on PRs. A `build-windows` job (Windows runner) builds the backend and runs clippy/check/test plus the frontend checks; a `build-linux` job (Ubuntu, push-only) does a release-profile Linux compile to smoke-test the Linux build and warm its cache; an `e2e-linux` job runs the WebDriver end-to-end suite under Xvfb; and a `server` job runs the sync-server tests. `sccache` + `Swatinem/rust-cache` keep it fast. The push/PR split is deliberate so the cache saves to the default-branch scope that the tag-triggered release build can later restore.
+* **`release.yml`** — tag-triggered release build. Builds **both** the Windows NSIS installer (`build-windows`) and the Linux AppImage (`build-linux`, with a Wayland-library strip + repack so it runs on Bazzite/CachyOS/SteamOS), then a `release` job publishes both plus a combined `latest.json` updater manifest (see Releasing below).
 * **`server-publish.yml`** — on `v*` tags, builds and pushes the sync-server Docker image to GHCR, but only when `server/` actually changed since the previous tag.
 * **`debug-token.yml`** — manual token/permissions diagnostics.
 
@@ -180,13 +182,21 @@ git push origin master v5.0.1
 
 **What the workflow does automatically (no manual steps needed):**
 
+The workflow has three jobs: **`build-windows`** and **`build-linux`** compile in parallel, then **`release`** (`needs: [build-windows, build-linux]`) assembles the GitHub Release from their uploaded artifacts.
+
+`build-windows` (Windows runner):
 1. Stamps the tag version into `tauri/src-tauri/tauri.conf.json` and `tauri/src-tauri/Cargo.toml` in-CI (no back-commit — Tauri's updater reads the version from the bundle metadata, not a static `update.xml`).
-2. Generates a categorised changelog from commit messages since the previous tag (Features / Bug Fixes / Other).
-3. Compiles the launcher stub (`launcher_stub.cs` → `launcher_stub.exe`) using the runner's framework `csc.exe`.
-4. Installs frontend dependencies with `bun install --frozen-lockfile`.
-5. Runs [`tauri-apps/tauri-action`](https://github.com/tauri-apps/tauri-action) with `--bundles nsis` to produce the NSIS installer plus a detached `.sig` signed with `TAURI_SIGNING_PRIVATE_KEY`. tauri-action's own `latest.json` upload runs only on its release-creation path, which we skip — the default `GITHUB_TOKEN` 403s on this repo, so we publish via `gh release create` with a PAT (`RELEASE_TOKEN`) instead.
-6. Creates a GitHub Release with the generated changelog and attaches the installer + `.sig`.
-7. After the Linux job finishes (`needs: build`), the workflow synthesizes `latest.json` itself — pulls the windows `.sig` back from the release, reads the freshly re-signed linux `.sig` locally, and `jq`s together a Tauri v2 updater manifest with both platforms, then `gh release upload --clobber`s it. This is what `tauri-plugin-updater` in the app fetches from `https://github.com/aidankinzett/Spool/releases/latest/download/latest.json`.
+2. Compiles the launcher stub (`launcher_stub.cs` → `launcher_stub.exe`) using the runner's framework `csc.exe`.
+3. Runs [`tauri-apps/tauri-action`](https://github.com/tauri-apps/tauri-action) with `--bundles nsis` to produce the NSIS installer + detached `.sig` (signed with `TAURI_SIGNING_PRIVATE_KEY`), and uploads them as the `windows-bundle` artifact.
+
+`build-linux` (Ubuntu 22.04 runner):
+4. Stamps the version the same way, installs the GTK/WebKit system deps, and runs `tauri-action` with `--bundles appimage` to produce `Spool_*_amd64.AppImage` + `.sig`.
+5. **Strips the bundled `libwayland-*` libraries and repacks the AppImage**, then re-signs it. linuxdeploy's GTK plugin over-bundles host `libwayland-client/cursor/egl/server`; on Wayland sessions with newer Mesa (Bazzite, CachyOS, SteamOS, modern Fedora) the stale bundled `libwayland-client` aborts WebKit with `EGL_BAD_PARAMETER` before render. Stripping them lets WebKit fall back to the host's matching libs. Uploads the repacked AppImage + `.sig` as the `linux-bundle` artifact.
+
+`release` (Ubuntu runner, after both builds):
+6. Generates a categorised changelog from commit messages since the previous tag (Features / Bug Fixes / Other).
+7. Downloads both bundle artifacts and creates the GitHub Release via `gh release create` with a PAT (`RELEASE_TOKEN`) — tauri-action's own release path uses the default `GITHUB_TOKEN`, which 403s on this repo — attaching the Windows installer + `.sig` and the Linux AppImage + `.sig`.
+8. Synthesizes `latest.json` itself from the uploaded artifacts — a Tauri v2 updater manifest with both `windows-x86_64` and `linux-x86_64` platforms — and `gh release upload --clobber`s it. This is what `tauri-plugin-updater` in the app fetches from `https://github.com/aidankinzett/Spool/releases/latest/download/latest.json`.
 
 **Version number conventions:**
 - The app version is derived entirely from the git tag — there is no hardcoded version string in source code.

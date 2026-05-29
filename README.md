@@ -5,7 +5,7 @@
 <h1 align="center">Spool</h1>
 
 <p align="center">
-  A Windows-native game library for handheld PCs and desktops.<br/>
+  A game library for handheld PCs and desktops — Windows and Linux.<br/>
   Cover-art shelf · cross-device save sync · LAN sharing · launcher generation.<br/>
   <em>Powered by <a href="https://github.com/mtkennerly/ludusavi">ludusavi</a> for the saves themselves.</em>
 </p>
@@ -15,6 +15,8 @@
 Spool started life as a thin wrapper around [ludusavi](https://github.com/mtkennerly/ludusavi) — restore saves before a game launches, back them up on exit. It's since grown into a full personal game shelf: cover art from SteamGridDB, LAN game-sharing between devices, a sync server that locks saves across machines, TorBox downloads, and one-click launcher shortcuts for Armoury Crate and Steam.
 
 Built with [Tauri 2](https://v2.tauri.app/) (Rust backend) and [SvelteKit 5](https://kit.svelte.dev/) — small native binary, instant startup, and a webview-rendered UI with system accent color integration.
+
+Runs on **Windows** and **Linux** — including the gaming-handheld distros like **Bazzite**, **CachyOS**, and **SteamOS** (Steam Deck). Windows is the primary target; a couple of OS-integration extras (Armoury Crate launcher generation, run-as-administrator) are Windows-only and simply don't appear on Linux, while everything else — the library, save restore/backup, LAN sharing, cloud sync, downloads, and notifications — works the same on both.
 
 ---
 
@@ -33,7 +35,7 @@ Built with [Tauri 2](https://v2.tauri.app/) (Rust backend) and [SvelteKit 5](htt
   - [Cloud Sync & Cross-Device Lock](#cloud-sync--cross-device-lock)
   - [TorBox Downloader Integration](#torbox-downloader-integration)
   - [Browse Games Window](#browse-games-window)
-  - [Windows Toast Notifications](#windows-toast-notifications)
+  - [Desktop Notifications](#desktop-notifications)
   - [Theming](#theming)
   - [Auto-Update](#auto-update)
 - [Settings](#settings)
@@ -43,7 +45,12 @@ Built with [Tauri 2](https://v2.tauri.app/) (Rust backend) and [SvelteKit 5](htt
 
 ## Download
 
-Grab the latest installer `spool-setup.exe` or the standalone executable from the [Releases](../../releases) page. No runtimes or external installations required.
+Grab the latest build from the [Releases](../../releases) page:
+
+* **Windows** — the `spool-setup.exe` installer (NSIS) or the standalone executable.
+* **Linux** — the `Spool_<version>_amd64.AppImage`. Mark it executable (`chmod +x`) and run it; it works on Bazzite, CachyOS, SteamOS, and other modern distros.
+
+No runtimes or external installations required, and both platforms auto-update in place.
 
 ## Requirements
 
@@ -70,13 +77,13 @@ Select a game in the sidebar and click the **Play** button. Spool will:
 4. Back up your saves automatically on exit
 5. Update the save sync status badge on the card
 
-The app hides itself during gameplay and communicates progress through **Windows toast notifications** — no modal window blocking your screen.
+The app hides itself during gameplay and communicates progress through **native desktop notifications** — no modal window blocking your screen.
 
 ### Generating shortcuts
 
 Select a game and use the action buttons in the detail panel:
 
-* **Armoury Crate** — creates a `launcher.exe` in `%LOCALAPPDATA%\Spool\launchers\`. In Armoury Crate: Library → Manage Library → Add, then browse to that file.
+* **Armoury Crate** *(Windows only)* — creates a `launcher.exe` in `%LOCALAPPDATA%\Spool\launchers\`. In Armoury Crate: Library → Manage Library → Add, then browse to that file.
 * **Add to Steam** — writes the shortcut directly to Steam's `shortcuts.vdf` and downloads all artwork types (grid, portrait, hero, logo) from SteamGridDB.
 * **Game settings → Install folder** — manually set the installation folder for a game (used by LAN sharing).
 
@@ -128,8 +135,8 @@ Share and receive games across your local network without any internet connectio
 - After a successful download, the game is **automatically added to your library** with its metadata (game name, run-as-admin flag, EXE path) synced from the sender.
 - Cover art is shared over HTTP alongside the game files, so new games arrive with artwork already in place.
 - Spool guards against duplicate downloads: if the game is already in your library, re-downloading is blocked until you remove it first.
-- **Administrator elevation** is supported — if the sender marked a game as requiring admin, the launcher respects that on the receiver's machine.
-- Transfers use 4 parallel streams with 512 KB buffers for near-line-rate throughput. File comparison uses size and modification time to skip already-up-to-date files.
+- **Administrator elevation** *(Windows)* — if the sender marked a game as requiring admin, the receiver respects that flag too.
+- Transfers download up to 4 files in parallel for near-line-rate throughput. Each file is content-verified with a blake3 hash from the sender's manifest, and interrupted transfers resume mid-file via HTTP range requests — already-complete files are skipped, so a retry is always safe.
 - Your device name (shown to peers) is configurable in Settings.
 
 **Configuring LAN Share:**
@@ -176,21 +183,21 @@ The **Browse Games** window lets you search a catalogue of downloadable games fr
 
 Open Settings → **Download Sources** — add one or more URLs pointing to Hydra-format JSON catalogues. Spool fetches and merges them on each open.
 
-### Windows Toast Notifications
+### Desktop Notifications
 
-Game sessions no longer show a blocking progress window. Instead, Spool hides itself and uses **Windows toast notifications** to communicate:
+Game sessions no longer show a blocking progress window. Instead, Spool hides itself and uses your operating system's **native notifications** (Windows toasts / the Linux notification centre) to communicate:
 
 - Save restore status before the game launches
 - Save backup status after the game closes
 - Any errors that occurred
 
-This keeps your desktop clear while gaming and works naturally with handheld devices where screen real estate is limited.
+Notifications are only shown while the main window is hidden, so you won't get a redundant toast on top of the in-app one. This keeps your desktop clear while gaming and works naturally with handheld devices where screen real estate is limited.
 
 ### Theming
 
 Three theme options are available in Settings:
 
-- **System** — follows your Windows light/dark preference automatically
+- **System** — follows your operating system's light/dark preference automatically
 - **Light**
 - **Dark**
 
@@ -223,14 +230,16 @@ The Settings window is resizable, making it usable on small screens and handheld
 
 ## Building from Source
 
-Spool is a Tauri 2 app: a Rust backend (`tauri/src-tauri/`) and a SvelteKit 5 frontend (`tauri/src/`). The repo also keeps a tiny C# launcher stub (`launcher_stub.cs`) that's embedded into the Rust binary at compile time — when generating per-game launcher shortcuts the Rust app writes a copy of this stub with a config payload appended.
+Spool builds on **Windows and Linux** from the same source tree. It's a Tauri 2 app: a Rust backend (`tauri/src-tauri/`) and a SvelteKit 5 frontend (`tauri/src/`). The repo also keeps a tiny C# launcher stub (`launcher_stub.cs`) — and its prebuilt `launcher_stub.exe` — that's embedded into the Rust binary at compile time; when generating per-game Armoury Crate shortcuts (a Windows-only feature) the Rust app writes a copy of this stub with a config payload appended. Because the compiled `launcher_stub.exe` is checked into the repo, a normal build never needs to recompile it — including on Linux.
 
 ### Prerequisites
 
 * [Rust](https://rustup.rs/) (stable toolchain — the Tauri build pulls in everything else it needs)
 * [Bun](https://bun.sh/) for the SvelteKit frontend
-* Windows: the framework `csc.exe` that ships with .NET Framework 4.x (already present on every Windows machine — used only to compile the ~5 KB `launcher_stub.exe`)
-* The [Tauri 2 system prerequisites](https://v2.tauri.app/start/prerequisites/) for your OS (WebView2 is preinstalled on Windows 11)
+* The [Tauri 2 system prerequisites](https://v2.tauri.app/start/prerequisites/) for your OS:
+  * **Windows** — WebView2 (preinstalled on Windows 11).
+  * **Linux** — the GTK/WebKit dev packages, e.g. on Debian/Ubuntu: `libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf`.
+* *(Optional, Windows only)* the framework `csc.exe` that ships with .NET Framework 4.x (already present on every Windows machine) — only needed to recompile `launcher_stub.exe` after editing `launcher_stub.cs`.
 
 ### Build steps
 
@@ -240,7 +249,7 @@ Spool is a Tauri 2 app: a Rust backend (`tauri/src-tauri/`) and a SvelteKit 5 fr
    cd Spool
    ```
 
-2. Compile the embedded launcher stub (once, or whenever `launcher_stub.cs` changes):
+2. *(Windows only, optional)* recompile the embedded launcher stub — **skip this unless you've edited `launcher_stub.cs`**, since the prebuilt `launcher_stub.exe` is committed to the repo:
    ```powershell
    & "C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe" `
        /target:winexe /win32icon:launcher_stub.ico `
@@ -258,13 +267,16 @@ Spool is a Tauri 2 app: a Rust backend (`tauri/src-tauri/`) and a SvelteKit 5 fr
    bun run tauri dev
    ```
 
-5. Build a release binary + NSIS installer:
+5. Build a release binary + installer:
    ```bash
    bun run tauri build
    ```
-   Output:
+   Output on **Windows**:
    * `tauri/src-tauri/target/release/spool.exe` — standalone exe
-   * `tauri/src-tauri/target/release/bundle/nsis/Spool_<version>_x64-setup.exe` — installer
+   * `tauri/src-tauri/target/release/bundle/nsis/Spool_<version>_x64-setup.exe` — NSIS installer
+
+   Output on **Linux** (build just the AppImage with `bun run tauri build --bundles appimage`):
+   * `tauri/src-tauri/target/release/bundle/appimage/Spool_<version>_amd64.AppImage`
 
 ---
 
