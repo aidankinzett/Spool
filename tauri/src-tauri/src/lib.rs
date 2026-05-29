@@ -44,6 +44,7 @@ mod proton;
 mod redirects;
 mod registry;
 mod runner;
+mod session;
 mod size_backfill;
 mod steam;
 mod steamgriddb;

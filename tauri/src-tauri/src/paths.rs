@@ -24,6 +24,13 @@ pub fn config_file() -> PathBuf {
     app_data_dir().join("config.json")
 }
 
+/// Record of the in-progress launch session, written by attached `--run` mode
+/// so the Decky plugin can decide whether a forced-close fallback backup is
+/// needed. Removed/marked done once a backup succeeds.
+pub fn active_session_file() -> PathBuf {
+    app_data_dir().join("active-session.json")
+}
+
 #[allow(dead_code)]
 pub fn covers_dir() -> PathBuf {
     app_data_dir().join("covers")
