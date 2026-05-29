@@ -987,6 +987,8 @@
                     : ''}
             <button
               type="button"
+              data-testid="game-row"
+              data-game-name={g.game_name}
               onclick={() => (selectedId = g.id)}
               oncontextmenu={(e) => openContextMenu(e, g)}
               class="flex w-full items-center gap-2.5 border-l-2 px-3 py-2 text-left transition-colors"

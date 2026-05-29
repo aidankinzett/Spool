@@ -1,9 +1,22 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { dirname, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import type { Options } from '@wdio/types';
+import { SEED_GAMES } from './e2e/fixtures/library.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
+
+// Isolate the app's data directory so seeded fixtures are deterministic and we
+// never touch a real user's library. On Linux, dirs::data_local_dir() honours
+// XDG_DATA_HOME, so the app reads <XDG_DATA_HOME>/Spool/library.json. Set at
+// module top-level so both the launcher process and forked workers (which spawn
+// the app) inherit it. (Windows ignores XDG_DATA_HOME — see the seeded spec,
+// which skips off-Linux.)
+const e2eDataHome = join(tmpdir(), 'spool-e2e-data');
+process.env.XDG_DATA_HOME = e2eDataHome;
+const spoolDataDir = join(e2eDataHome, 'Spool');
 
 // The production binary produced by `bun run tauri build --no-bundle`.
 // On Linux this is an unbundled ELF; on Windows it's `spool.exe`.
@@ -54,6 +67,21 @@ export const config: Options.Testrunner = {
   mochaOpts: {
     ui: 'bdd',
     timeout: 60_000,
+  },
+
+  // Seed a fresh, isolated library.json before any app launches. Runs once in
+  // the launcher process; the file persists on disk for every worker session.
+  onPrepare: () => {
+    rmSync(spoolDataDir, { recursive: true, force: true });
+    mkdirSync(spoolDataDir, { recursive: true });
+    writeFileSync(
+      join(spoolDataDir, 'library.json'),
+      JSON.stringify(SEED_GAMES, null, 2),
+    );
+  },
+
+  onComplete: () => {
+    rmSync(e2eDataHome, { recursive: true, force: true });
   },
 
   // Start tauri-driver before the session and tear it down after. tauri-driver

@@ -255,6 +255,7 @@
 
       <div>
         <h1
+          data-testid="game-title"
           class="font-display max-w-[720px] text-[44px] font-bold leading-[1.04] text-ink-0 text-balance"
           style:letter-spacing="-0.025em"
           style:text-shadow="0 2px 16px rgb(0 0 0 / 0.4)"
@@ -265,6 +266,7 @@
         <div class="mt-3.5 flex items-center gap-3.5">
           <button
             type="button"
+            data-testid="play-button"
             onclick={launch}
             disabled={isRunning || !game.exe_path}
             class="font-sans inline-flex h-[42px] items-center gap-2.5 rounded-md border-none px-5 text-[14px] font-semibold transition-opacity"
