@@ -87,9 +87,25 @@ pub async fn run_game(exe_path: &Path, spec: LaunchSpec<'_>) -> AppResult<i32> {
             // Block until the game exits — the run workflow's backup phase
             // depends on the real exit. (Notably NOT the detach/quick-exit
             // heuristic some launchers use.)
+            //
+            // When Spool runs as an AppImage, linuxdeploy's GTK plugin injects
+            // GTK_*/GDK_*/GIO_* env vars (including GDK_BACKEND=x11) into the
+            // process environment. These propagate into umu-run and corrupt the
+            // pressure-vessel/steamrt EGL setup, causing the game to exit
+            // immediately with no output. Unset them before spawning so the
+            // Proton container sees a clean environment.
             let mut child = Command::new(&launch.program)
                 .args(&launch.args)
                 .envs(launch.env)
+                .env_remove("GDK_BACKEND")
+                .env_remove("GTK_THEME")
+                .env_remove("GTK_DATA_PREFIX")
+                .env_remove("GTK_PATH")
+                .env_remove("GTK_IM_MODULE_FILE")
+                .env_remove("GTK_EXE_PREFIX")
+                .env_remove("GDK_PIXBUF_MODULE_FILE")
+                .env_remove("GIO_EXTRA_MODULES")
+                .env_remove("GSETTINGS_SCHEMA_DIR")
                 .current_dir(cwd)
                 .spawn()
                 .map_err(|e| AppError::Other(format!("failed to start game via Proton: {e}")))?;
