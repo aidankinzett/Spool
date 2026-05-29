@@ -120,6 +120,12 @@ pub fn run() {
     let _log_guard = init_tracing();
     tracing::info!("spool starting up");
 
+    // Headless one-shot backup (Decky plugin forced-close fallback). No GUI.
+    let initial_args: Vec<String> = std::env::args().collect();
+    if let CliMode::Backup { ref game_name } = cli::parse_args(&initial_args) {
+        std::process::exit(run_backup_headless(game_name));
+    }
+
     // One-shot migration: pull `%LOCALAPPDATA%\ludusavi-wrap\` data
     // into the new Spool dir on first run. No-op if already migrated,
     // if there's no legacy dir, or if Spool already has a library.
@@ -140,10 +146,6 @@ pub fn run() {
         tracing::warn!(error = %err, "failed to load config, starting with defaults");
         Config::default()
     });
-
-    // Pre-resolve the startup CLI mode so the single-instance plugin
-    // can install before we touch state.
-    let initial_args: Vec<String> = std::env::args().collect();
 
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
@@ -333,6 +335,72 @@ pub fn run() {
             }
         }
     });
+}
+
+/// Headless one-shot backup: load config + library, run ludusavi backup for
+/// the named game, mark the session record, then return a process exit code.
+/// No GUI / tray / single-instance. Used by `spool --backup "Name"` (the
+/// Decky plugin's forced-close fallback).
+fn run_backup_headless(game_name: &str) -> i32 {
+    let config = match Config::load() {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::error!(error = %e, "--backup: failed to load config");
+            return 1;
+        }
+    };
+    let library = match Library::load() {
+        Ok(l) => l,
+        Err(e) => {
+            tracing::error!(error = %e, "--backup: failed to load library");
+            return 1;
+        }
+    };
+    let Some(game_id) = library
+        .entries
+        .iter()
+        .find(|e| e.game_name == game_name)
+        .map(|e| e.id.clone())
+    else {
+        tracing::error!(name = %game_name, "--backup: no library entry matches");
+        return 1;
+    };
+    let Some(ludusavi_exe) = paths::resolve_ludusavi_path(&config.data.ludusavi_path) else {
+        tracing::error!("--backup: ludusavi not configured");
+        return 1;
+    };
+
+    // Make sure Spool's ludusavi config (backup path, cloud remote) exists.
+    if let Err(e) = ludusavi_config::ensure_config() {
+        tracing::warn!(error = %e, "--backup: ensure_config failed");
+    }
+
+    let config_dir = paths::ludusavi_config_dir();
+    let lib_state: SharedLibrary = Mutex::new(library);
+    let client = LudusaviClient::new();
+
+    let rt = match tokio::runtime::Runtime::new() {
+        Ok(rt) => rt,
+        Err(e) => {
+            tracing::error!(error = %e, "--backup: failed to start tokio runtime");
+            return 1;
+        }
+    };
+    let result = rt.block_on(async {
+        runner::backup_game_core(&client, &ludusavi_exe, &config_dir, &lib_state, &game_id).await
+    });
+
+    match result {
+        Ok(r) => {
+            tracing::info!(game_name, games = r.game_count, "--backup complete");
+            session::mark_backed_up();
+            0
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "--backup failed");
+            1
+        }
+    }
 }
 
 /// Builds the tray icon + context menu and registers click handlers.
