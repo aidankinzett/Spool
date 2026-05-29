@@ -53,3 +53,6 @@ filetime = "0.2"
 winreg = "0.55"
 runas = "1"
 
+[dev-dependencies]
+tempfile = "3.27.0"
+
