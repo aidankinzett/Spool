@@ -14,9 +14,17 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 use tauri::State;
 use tokio::process::Command;
 use tokio::sync::RwLock;
+
+/// Hard ceiling on a single `ludusavi {restore,backup} --api --cloud-sync`
+/// invocation. These shell out to rclone for the cloud step, which can hang
+/// indefinitely on a dropped/flaky network (common on a handheld) — leaving
+/// the Game-Mode launch frozen on "Restoring saves…" forever. We kill the
+/// stuck child after this window and surface a clean error instead.
+const RUN_API_TIMEOUT: Duration = Duration::from_secs(60);
 
 // ── DTOs: `ludusavi {restore,backup} --api` output ──────────────────────────
 
@@ -292,11 +300,22 @@ async fn run_find(ludusavi_exe: &Path, config_dir: &Path, query: &str) -> AppRes
 /// no-op (ludusavi sometimes exits non-zero with no output when the game
 /// isn't in its manifest, which we surface as "no saves to handle").
 async fn run_api(ludusavi_exe: &Path, config_dir: &Path, args: &[&str]) -> AppResult<ApiOutput> {
-    let output = hidden_command(ludusavi_exe, config_dir)
-        .args(args)
-        .output()
-        .await
-        .map_err(|e| AppError::Other(format!("failed to spawn ludusavi: {e}")))?;
+    let mut cmd = hidden_command(ludusavi_exe, config_dir);
+    // `kill_on_drop` so the timeout below actually terminates a stuck
+    // rclone child — dropping the `output()` future on timeout drops the
+    // spawned child, which then gets killed rather than orphaned.
+    cmd.args(args).kill_on_drop(true);
+    let output = match tokio::time::timeout(RUN_API_TIMEOUT, cmd.output()).await {
+        Ok(res) => res.map_err(|e| AppError::Other(format!("failed to spawn ludusavi: {e}")))?,
+        Err(_) => {
+            // `op` is the subcommand ("restore" / "backup") for a useful message.
+            let op = args.first().copied().unwrap_or("operation");
+            return Err(AppError::Other(format!(
+                "ludusavi {op} timed out after {}s — the network or cloud sync may be unavailable.",
+                RUN_API_TIMEOUT.as_secs()
+            )));
+        }
+    };
     let stdout = String::from_utf8_lossy(&output.stdout);
     if !output.status.success() && stdout.trim().is_empty() {
         let stderr = String::from_utf8_lossy(&output.stderr);

@@ -37,7 +37,9 @@
 <div class="splash">
   <div class="logo">SPOOL</div>
   <div class="spinner" class:error={phase === 'error'}></div>
-  <div class="label">{LABELS[phase] ?? message}</div>
+  <!-- On error, show the specific reason (e.g. a restore timeout) rather than
+       the generic "Launch failed" label so the user knows why the launch stopped. -->
+  <div class="label">{phase === 'error' ? message : (LABELS[phase] ?? message)}</div>
 </div>
 
 <style>
