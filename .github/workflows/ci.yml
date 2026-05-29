@@ -20,6 +20,11 @@ jobs:
       # entries that release.yml will restore on tag pushes.
       SCCACHE_GHA_ENABLED: "true"
       RUSTC_WRAPPER: "sccache"
+      # Fall back to the real compiler when sccache can't reach its
+      # backend. The GitHub Actions cache service has outages; without
+      # this, a failed cache read at server startup aborts every rustc
+      # call and breaks the build. With it, the run is just slower.
+      SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
       CARGO_INCREMENTAL: "0"
     defaults:
       run:
@@ -128,6 +133,11 @@ jobs:
     env:
       SCCACHE_GHA_ENABLED: "true"
       RUSTC_WRAPPER: "sccache"
+      # Fall back to the real compiler when sccache can't reach its
+      # backend. The GitHub Actions cache service has outages; without
+      # this, a failed cache read at server startup aborts every rustc
+      # call and breaks the build. With it, the run is just slower.
+      SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
       CARGO_INCREMENTAL: "0"
 
     steps:
@@ -177,6 +187,11 @@ jobs:
     env:
       SCCACHE_GHA_ENABLED: "true"
       RUSTC_WRAPPER: "sccache"
+      # Fall back to the real compiler when sccache can't reach its
+      # backend. The GitHub Actions cache service has outages; without
+      # this, a failed cache read at server startup aborts every rustc
+      # call and breaks the build. With it, the run is just slower.
+      SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
       CARGO_INCREMENTAL: "0"
 
     steps:

@@ -14,6 +14,11 @@ jobs:
       # the Swatinem/rust-cache key — only the changed crates rebuild.
       SCCACHE_GHA_ENABLED: "true"
       RUSTC_WRAPPER: "sccache"
+      # Fall back to the real compiler when sccache can't reach its
+      # backend. The GitHub Actions cache service has outages; without
+      # this, a failed cache read at server startup aborts every rustc
+      # call and breaks the build. With it, the run is just slower.
+      SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
       # rust-cache also serializes target/; disable that since sccache
       # is the source of truth for object files. Keep registry caching.
       CARGO_INCREMENTAL: "0"
@@ -112,6 +117,11 @@ jobs:
     env:
       SCCACHE_GHA_ENABLED: "true"
       RUSTC_WRAPPER: "sccache"
+      # Fall back to the real compiler when sccache can't reach its
+      # backend. The GitHub Actions cache service has outages; without
+      # this, a failed cache read at server startup aborts every rustc
+      # call and breaks the build. With it, the run is just slower.
+      SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
       CARGO_INCREMENTAL: "0"
 
     steps:
