@@ -72,7 +72,7 @@
     oninput={() => onchange?.(value)}
     onkeydown={handleKeydown}
     class="min-w-0 flex-1 bg-transparent text-ink-0 outline-none placeholder:text-ink-3 {isMono
-      ? 'font-mono text-[12px]'
+      ? 'font-mono'
       : ''}"
   />
   {#if masked}

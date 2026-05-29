@@ -26,10 +26,13 @@
   // Long-press detection
   let pressTimer: ReturnType<typeof setTimeout> | undefined;
 
-  function startLongPress(game: GameEntry) {
+  function startLongPress(e: PointerEvent, game: GameEntry) {
     pressTimer = setTimeout(() => {
-      // Position near center-bottom of screen
-      ctxMenu = { game, x: window.innerWidth / 2 - 120, y: window.innerHeight - 290 };
+      const menuW = 240;
+      const menuH = 280;
+      const x = Math.min(Math.max(e.clientX - menuW / 2, 8), window.innerWidth - menuW - 8);
+      const y = Math.min(Math.max(e.clientY + 20, 8), window.innerHeight - menuH - 8);
+      ctxMenu = { game, x, y };
     }, 500);
   }
 
@@ -313,7 +316,7 @@
             <button
               type="button"
               onclick={() => onTileTap(game)}
-              onpointerdown={() => startLongPress(game)}
+              onpointerdown={(e) => startLongPress(e, game)}
               onpointerup={cancelLongPress}
               onpointercancel={cancelLongPress}
               onpointermove={cancelLongPress}

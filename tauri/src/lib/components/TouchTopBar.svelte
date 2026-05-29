@@ -47,15 +47,22 @@
 
     // Battery API — Chromium/WebView2 only; degrades silently elsewhere.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let batteryObj: any = null;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const onLevelChange = () => { batteryPct = Math.round(batteryObj.level * 100); };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (navigator as any).getBattery?.()
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       .then((b: any) => {
-        batteryPct = Math.round(b.level * 100);
-        b.addEventListener('levelchange', () => { batteryPct = Math.round(b.level * 100); });
+        batteryObj = b;
+        batteryPct = Math.round(batteryObj.level * 100);
+        batteryObj.addEventListener('levelchange', onLevelChange);
       })
       .catch(() => { /* not available on this platform */ });
 
-    return () => clearInterval(timer);
+    return () => {
+      clearInterval(timer);
+      batteryObj?.removeEventListener('levelchange', onLevelChange);
+    };
   });
 </script>
 

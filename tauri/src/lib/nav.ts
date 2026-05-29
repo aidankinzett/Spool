@@ -32,8 +32,9 @@ export async function openView(view: View, params?: Record<string, string>): Pro
     return;
   }
   const w = WINDOWS[view];
+  const qs = params ? '?' + new URLSearchParams(params).toString() : '';
   new WebviewWindow(view, {
-    url: w.url,
+    url: w.url + qs,
     title: w.title,
     width: w.width,
     height: w.height,

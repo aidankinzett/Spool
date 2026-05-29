@@ -119,20 +119,24 @@
     }
   }
 
-  async function persist() {
-    if (!config) return;
+  async function persist(): Promise<boolean> {
+    if (!config) return false;
     try {
       config = await api.updateConfig($state.snapshot(config));
+      return true;
     } catch (e) {
       error = String(e);
+      return false;
     }
   }
 
   async function setUiMode(mode: ConfigData['ui_mode']) {
     if (!config) return;
     config.ui_mode = mode;
-    await persist();
-    await uiMode.init(mode); // applies <html data-mode> live in this window
+    const ok = await persist();
+    if (ok) {
+      await uiMode.init(mode); // applies <html data-mode> live in this window
+    }
   }
 
   async function autoDetect() {

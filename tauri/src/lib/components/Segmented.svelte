@@ -10,6 +10,8 @@
 </script>
 
 <div
+  role="group"
+  aria-label="Segmented control"
   class="inline-flex gap-1 rounded-sm border border-line-2 bg-white/5"
   style:padding="calc(var(--space-unit) * 1)"
 >
@@ -17,6 +19,7 @@
     {@const active = o.value === value}
     <button
       type="button"
+      aria-pressed={active}
       onclick={() => onchange(o.value)}
       class="cursor-pointer whitespace-nowrap rounded-sm border-none text-[length:var(--text-base)] transition-colors"
       style:height="var(--control-h)"
