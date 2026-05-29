@@ -7,20 +7,30 @@ Lightweight sync server that prevents two devices from playing the same game sim
 **Prerequisites:** Docker and Docker Compose (or Podman Compose).
 
 ```bash
-# 1. Download the compose file
+# 1. Download the compose file and the storage service's build files.
+#    All three must live in the same directory — the spool-storage service
+#    builds its image locally from Dockerfile.rclone (which COPYs the proxy
+#    script), so docker compose needs them present even if you don't enable
+#    save storage yet.
 curl -O https://raw.githubusercontent.com/aidankinzett/Spool/master/server/docker-compose.yml
+curl -O https://raw.githubusercontent.com/aidankinzett/Spool/master/server/Dockerfile.rclone
+curl -O https://raw.githubusercontent.com/aidankinzett/Spool/master/server/rclone-auth-proxy.sh
 
 # 2. Generate a strong admin secret and set it in docker-compose.yml
 openssl rand -base64 32
 #    Copy the output, then replace "changeme" in docker-compose.yml with it.
 
-# 3. Start the server
-docker compose up -d
+# 3. Start the server (--build compiles the local spool-storage image)
+docker compose up -d --build
 
 # 4. Verify it's running
 curl http://localhost:47633/health
 # → {"ok":true}
 ```
+
+> Only want the lock server? Delete the `spool-storage` service from
+> `docker-compose.yml` and you can skip the `Dockerfile.rclone` /
+> `rclone-auth-proxy.sh` downloads and the `--build` flag.
 
 The database is persisted in `./data/ludusavi.db` on your host machine.
 
