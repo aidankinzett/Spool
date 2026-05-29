@@ -5,7 +5,6 @@
 //! provides a per-distro install hint for anything that's missing, so the
 //! UI can show a copy-paste command rather than a generic error.
 
-use crate::config::SharedConfig;
 use crate::paths;
 use serde::Serialize;
 use tauri::State;

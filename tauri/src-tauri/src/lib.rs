@@ -91,6 +91,27 @@ fn take_pending_run(state: State<'_, PendingRun>) -> Option<String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // ── Linux WebKitGTK rendering workaround ──────────────────────────────
+    // WebKitGTK's GPU-accelerated compositing + DMA-BUF renderer fail to
+    // initialise on many Linux GPU/compositor combos (AMD/radeonsi + Mesa on
+    // Wayland here; also common on NVIDIA), leaving a black window with no
+    // error. The ecosystem-standard fix is to disable both paths *before*
+    // the webview initialises. Set in-process (not via the launch env) so it
+    // works from the desktop entry, a terminal, and the AppImage alike.
+    //
+    // Only set when the user hasn't already chosen a value, so power users can
+    // still opt back into the GPU path. These are WebKit-specific and harmless
+    // to the umu-run/Proton children (which also strip GDK_* in process.rs).
+    #[cfg(target_os = "linux")]
+    {
+        if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
+            std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+        }
+        if std::env::var_os("WEBKIT_DISABLE_COMPOSITING_MODE").is_none() {
+            std::env::set_var("WEBKIT_DISABLE_COMPOSITING_MODE", "1");
+        }
+    }
+
     // Initialize tracing first — everything below logs through it. The
     // worker guard is bound to the function frame so background log
     // writes flush before the process exits.
