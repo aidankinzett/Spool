@@ -56,6 +56,34 @@
   --radius-lg: 8px;
 }
 
+/* ── Density tokens (runtime mode-switched — NOT part of @theme) ──────
+   These are plain custom properties, not Tailwind theme colors: they are
+   *sizing* and flip at runtime via `[data-mode='touch']` on <html>.
+   :root values equal the historical hardcoded numbers so desktop is
+   unchanged; the touch block is a single density step up. The mode is
+   resolved + applied in PR 2 (lib/uiMode.svelte.ts). */
+:root {
+  --text-base: 13px;       /* body + control labels */
+  --text-sm: 11.5px;       /* helper / secondary */
+  --text-lg: 15px;         /* section headings */
+  --control-h: 32px;       /* Btn, text inputs, search field */
+  --control-h-icon: 28px;  /* square icon buttons */
+  --tap-min: 32px;         /* minimum hit target */
+  --space-unit: 4px;       /* multiply for gaps/padding */
+  --chrome-h: 40px;        /* title-bar strip height */
+}
+
+[data-mode='touch'] {
+  --text-base: 16px;
+  --text-sm: 13px;
+  --text-lg: 19px;
+  --control-h: 48px;
+  --control-h-icon: 48px;
+  --tap-min: 48px;
+  --space-unit: 6px;
+  --chrome-h: 60px;
+}
+
 /* ── Global resets / app shell ─────────────────────────────────────── */
 html, body {
   margin: 0;
@@ -63,7 +91,7 @@ html, body {
   background: var(--color-bg-0);
   color: var(--color-ink-0);
   font-family: var(--font-sans);
-  font-size: 13px;
+  font-size: var(--text-base);
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
