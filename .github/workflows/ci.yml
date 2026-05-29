@@ -62,8 +62,12 @@ jobs:
             echo "sccache backend reachable."
           else
             echo "::warning::sccache backend unreachable (likely a GitHub Actions cache outage); building without the compiler cache."
+            # Empty RUSTC_WRAPPER disables the wrapper so cargo compiles
+            # directly. SCCACHE_GHA_ENABLED must be a valid off-value (not
+            # empty) — the action's post-job `--show-stats` cleanup rejects
+            # an empty string and would fail the job.
             echo "RUSTC_WRAPPER=" >> "$GITHUB_ENV"
-            echo "SCCACHE_GHA_ENABLED=" >> "$GITHUB_ENV"
+            echo "SCCACHE_GHA_ENABLED=false" >> "$GITHUB_ENV"
           fi
 
       - name: Rust cache
@@ -190,8 +194,12 @@ jobs:
             echo "sccache backend reachable."
           else
             echo "::warning::sccache backend unreachable (likely a GitHub Actions cache outage); building without the compiler cache."
+            # Empty RUSTC_WRAPPER disables the wrapper so cargo compiles
+            # directly. SCCACHE_GHA_ENABLED must be a valid off-value (not
+            # empty) — the action's post-job `--show-stats` cleanup rejects
+            # an empty string and would fail the job.
             echo "RUSTC_WRAPPER=" >> "$GITHUB_ENV"
-            echo "SCCACHE_GHA_ENABLED=" >> "$GITHUB_ENV"
+            echo "SCCACHE_GHA_ENABLED=false" >> "$GITHUB_ENV"
           fi
 
       - name: Rust cache
@@ -264,8 +272,12 @@ jobs:
             echo "sccache backend reachable."
           else
             echo "::warning::sccache backend unreachable (likely a GitHub Actions cache outage); building without the compiler cache."
+            # Empty RUSTC_WRAPPER disables the wrapper so cargo compiles
+            # directly. SCCACHE_GHA_ENABLED must be a valid off-value (not
+            # empty) — the action's post-job `--show-stats` cleanup rejects
+            # an empty string and would fail the job.
             echo "RUSTC_WRAPPER=" >> "$GITHUB_ENV"
-            echo "SCCACHE_GHA_ENABLED=" >> "$GITHUB_ENV"
+            echo "SCCACHE_GHA_ENABLED=false" >> "$GITHUB_ENV"
           fi
 
       - name: Rust cache
