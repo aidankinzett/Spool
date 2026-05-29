@@ -17,7 +17,7 @@
   import { open as openDialog } from '@tauri-apps/plugin-dialog';
   import { api } from '$lib/api';
   import { toasts } from '$lib/toasts.svelte';
-  import type { ConfigData, LanPeer, ProtonVersion, SyncStatus } from '$lib/types';
+  import type { ConfigData, DepStatus, LanPeer, ProtonVersion, SyncStatus } from '$lib/types';
   import WindowChrome from '$lib/components/WindowChrome.svelte';
   import MonoLabel from '$lib/components/MonoLabel.svelte';
   import Btn from '$lib/components/Btn.svelte';
@@ -51,6 +51,8 @@
   // Proton / Compatibility (Linux only).
   let isLinux = $state(false);
   let protonVersions = $state<ProtonVersion[]>([]);
+  let deps = $state<DepStatus[]>([]);
+  let depsLoading = $state(false);
 
   onMount(async () => {
     try {
@@ -58,7 +60,10 @@
       syncStatus = await api.currentSyncStatus();
       peers = await api.listLanPeers();
       isLinux = (await api.appPlatform()) === 'linux';
-      if (isLinux) protonVersions = await api.listProtonVersions();
+      if (isLinux) {
+        protonVersions = await api.listProtonVersions();
+        deps = await api.checkDependencies();
+      }
     } catch (e) {
       error = String(e);
     }
@@ -133,11 +138,17 @@
     }
   }
 
+  async function refreshDeps() {
+    depsLoading = true;
+    try { deps = await api.checkDependencies(); } finally { depsLoading = false; }
+  }
+
   async function autoDetectUmu() {
     if (!config) return;
     const found = await api.detectUmuRun();
     if (found) config.umu_run_path = found;
     config = await api.getConfig();
+    await refreshDeps();
   }
 
   async function browseUmu() {
@@ -365,6 +376,62 @@
               {#if isLinux}
                 <div id="compat">
                   <SettingsCard title="Compatibility (Proton)" helper="Run Windows games on Linux via Proton. umu-run manages the runtime; each game gets its own prefix.">
+
+                    <!-- Dependency doctor -->
+                    {#if deps.length > 0}
+                      <div class="border-b border-dashed border-line-1 px-[18px] py-[14px]">
+                        <div class="mb-2 flex items-center justify-between">
+                          <span class="text-[12px] font-medium text-ink-1">Dependencies</span>
+                          <button
+                            onclick={refreshDeps}
+                            disabled={depsLoading}
+                            class="flex items-center gap-1 font-mono text-[10px] uppercase tracking-[0.1em] text-ink-3 hover:text-ink-1 disabled:opacity-40"
+                          >
+                            <RefreshCcw size={10} class={depsLoading ? 'animate-spin' : ''} />
+                            Refresh
+                          </button>
+                        </div>
+                        <div class="flex flex-col gap-2">
+                          {#each deps as dep (dep.name)}
+                            <div class="flex flex-col gap-0.5">
+                              <div class="flex items-center gap-2">
+                                <span
+                                  class="size-[6px] flex-shrink-0 rounded-full"
+                                  style:background={dep.found ? 'var(--color-ok)' : 'var(--color-warn)'}
+                                ></span>
+                                <span class="font-mono text-[12px] text-ink-0">{dep.name}</span>
+                                {#if dep.found}
+                                  <span
+                                    class="rounded-[3px] px-1.5 py-px font-mono text-[9.5px] uppercase tracking-[0.08em]"
+                                    style:background={
+                                      dep.source === 'bundled' ? 'rgba(126,198,255,0.12)' :
+                                      dep.source === 'config'  ? 'rgba(215,201,160,0.12)' :
+                                                                  'rgba(120,220,160,0.12)'
+                                    }
+                                    style:color={
+                                      dep.source === 'bundled' ? 'var(--color-info)' :
+                                      dep.source === 'config'  ? 'var(--color-spool)' :
+                                                                  'var(--color-ok)'
+                                    }
+                                  >{dep.source}</span>
+                                {/if}
+                              </div>
+                              {#if dep.found}
+                                <p class="ml-4 font-mono text-[10.5px] text-ink-3 break-all">{dep.path}</p>
+                              {:else}
+                                <div class="ml-4 flex flex-col gap-0.5">
+                                  <p class="text-[11px] text-warn">Not found</p>
+                                  {#if dep.install_hint}
+                                    <code class="rounded-[3px] bg-black/30 px-2 py-1 font-mono text-[10.5px] text-ink-2 select-all">{dep.install_hint}</code>
+                                  {/if}
+                                </div>
+                              {/if}
+                            </div>
+                          {/each}
+                        </div>
+                      </div>
+                    {/if}
+
                     <SettingsRow
                       label="umu-run"
                       helper={config.umu_run_path ? 'Detected — launcher reachable' : 'Install umu-launcher or browse to umu-run'}
