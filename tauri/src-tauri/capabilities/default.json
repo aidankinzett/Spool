@@ -12,6 +12,10 @@
     "core:webview:allow-create-webview-window",
     "dialog:default",
     "opener:default",
+    {
+      "identifier": "opener:allow-open-path",
+      "allow": [{ "path": "**" }]
+    },
     "notification:default",
     "updater:default"
   ]
