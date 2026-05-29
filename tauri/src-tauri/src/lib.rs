@@ -91,6 +91,26 @@ fn take_pending_run(state: State<'_, PendingRun>) -> Option<String> {
     state.take()
 }
 
+/// Readiness gate for the attached Game-Mode splash. The attached `--run`
+/// workflow emits `run:phase` events the moment it starts, so it must not
+/// begin until the splash window has wired up its `run:phase` listener —
+/// otherwise the early phases (restoring → launching → playing) fire into
+/// the void and the splash stays stuck on its default "Restoring saves…"
+/// label for the whole session. The splash calls `notify_splash_ready`
+/// once its listener is registered; the workflow task waits on this
+/// (with a timeout fallback so a webview that never loads can't hang the
+/// launch). Mirrors the `PendingRun` handshake the main library window
+/// uses for the desktop `--run` path.
+#[derive(Default)]
+pub struct SplashReady {
+    notify: tokio::sync::Notify,
+}
+
+#[tauri::command]
+fn notify_splash_ready(state: State<'_, SplashReady>) {
+    state.notify.notify_one();
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // ── Linux WebKitGTK rendering workaround ──────────────────────────────
@@ -183,6 +203,7 @@ pub fn run() {
         .manage::<SteamGridDbClient>(SteamGridDbClient::new())
         .manage::<RunState>(RunState::default())
         .manage::<PendingRun>(PendingRun::default())
+        .manage::<SplashReady>(SplashReady::default())
         .manage::<LanState>(LanState::new())
         // Single reqwest::Client shared across LAN code — reqwest is
         // designed for reuse (connection pooling, DNS cache). Per
@@ -204,6 +225,7 @@ pub fn run() {
         )
         .invoke_handler(tauri::generate_handler![
             take_pending_run,
+            notify_splash_ready,
             // library
             library::list_games,
             library::add_game,
@@ -311,8 +333,23 @@ pub fn run() {
 
                 // Launch + exit when done. app.exit(0) lets Steam see the
                 // game stop (RunEvent::ExitRequested only blocks code.is_none()).
+                //
+                // Wait for the splash to wire its `run:phase` listener before
+                // starting the workflow — otherwise the restoring/launching/
+                // playing phases fire before the webview is listening and the
+                // splash sits on its default "Restoring saves…" label for the
+                // whole session. A timeout fallback keeps a webview that never
+                // loads from blocking the launch entirely.
                 let app_handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
+                    {
+                        let ready = app_handle.state::<SplashReady>();
+                        let _ = tokio::time::timeout(
+                            std::time::Duration::from_secs(5),
+                            ready.notify.notified(),
+                        )
+                        .await;
+                    }
                     if let Err(e) = runner::launch_game_inner(&app_handle, &id).await {
                         tracing::error!(error = %e, "attached --run workflow failed");
                     }

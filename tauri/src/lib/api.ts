@@ -133,6 +133,10 @@ export const api = {
 
   // Lifecycle — pulls + clears the game id queued by a startup `--run` invocation.
   takePendingRun: (): Promise<string | null> => invoke('take_pending_run'),
+
+  // Game-Mode splash — signals that the splash's `run:phase` listener is wired
+  // so the attached `--run` workflow can start without racing the first phases.
+  notifySplashReady: (): Promise<void> => invoke('notify_splash_ready'),
 } as const;
 
 /**

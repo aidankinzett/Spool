@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { listen } from '@tauri-apps/api/event';
+  import { api } from '$lib/api';
   import type { RunPhaseEvent } from '$lib/types';
 
   let phase = $state<string>('restoring');
@@ -16,13 +17,20 @@
   };
 
   onMount(() => {
-    const unlisten = listen<RunPhaseEvent>('run:phase', (event) => {
+    let unlistenFn: (() => void) | undefined;
+    listen<RunPhaseEvent>('run:phase', (event) => {
       phase = event.payload.phase;
       message = event.payload.message ?? LABELS[phase] ?? phase;
-    });
-    return () => {
-      unlisten.then((fn) => fn());
-    };
+    })
+      .then((fn) => {
+        unlistenFn = fn;
+        // Listener is wired — tell the backend it's safe to start the
+        // workflow. Without this the early phases race the webview load
+        // and the splash stays stuck on its default "Restoring saves…".
+        return api.notifySplashReady();
+      })
+      .catch((e) => console.error('[splash] run-phase listener failed:', e));
+    return () => unlistenFn?.();
   });
 </script>
 
