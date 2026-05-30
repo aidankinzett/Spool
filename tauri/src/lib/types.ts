@@ -242,6 +242,10 @@ export type UploadSnapshot = {
   peer_addr: string;
   last_seen_ago_secs: number;
   cancelled: boolean;
+  /** Total bytes in the transfer (from the manifest). 0 until the manifest has been fetched. */
+  bytes_total: number;
+  /** Bytes served to the peer so far (optimistic — credited at request time). */
+  bytes_sent: number;
 };
 
 /**
