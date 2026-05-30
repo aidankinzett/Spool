@@ -193,18 +193,6 @@ pub fn place_grid_art(
     Ok(Some(dest))
 }
 
-/// Steam's "legacy" 64-bit grid id — the filename Big Picture / Steam Deck
-/// Gaming Mode uses for the horizontal capsule (`<id>.<ext>`). The modern
-/// desktop client reads `<appid>.<ext>` keyed by the 32-bit shortcut appid,
-/// but Gaming Mode — the default on SteamOS / Steam Deck and the gaming-handheld
-/// distros Spool targets — still resolves the landscape grid through this id.
-/// Layout: high 32 bits = the 32-bit shortcut appid, low 32 bits = 0x02000000.
-/// (The suffixed art kinds — `p` / `_hero` / `_logo` — use the 32-bit appid in
-/// both UIs, so only the bare landscape grid needs this extra filename.)
-pub fn legacy_grid_id(app_id: u32) -> u64 {
-    ((app_id as u64) << 32) | 0x0200_0000
-}
-
 /// Build the `--run "<name>" "<exe>"` launch-options string. Steam stores
 /// the value verbatim and splits args by shell rules at launch time, so
 /// each token gets its own quoted block. Interior `"` are escaped as `\"`
@@ -332,9 +320,7 @@ pub async fn add_to_steam(
         tracing::debug!(app_id, "add_to_steam: portrait placed");
     }
 
-    // 6. Fetch hero + wide grid + logo + icon from SteamGridDB. Also writes a
-    //    `_bigpicture` copy of the landscape grid — Gaming Mode on Steam Deck
-    //    reads this filename for the library tile in some UI contexts. Best-effort.
+    // 6. Fetch hero + wide grid + logo + icon from SteamGridDB. Best-effort.
     let extra_arts = match crate::steamgriddb::fetch_steam_grid_bundle(
         &app,
         steam_id,
@@ -418,16 +404,6 @@ mod tests {
         );
         assert_eq!(shortcuts.len(), 1, "should update in-place, not duplicate");
         assert!(shortcuts[0].launch_options.contains("new"));
-    }
-
-    #[test]
-    fn legacy_grid_id_packs_appid_and_marker() {
-        // High 32 bits = the 32-bit shortcut appid, low 32 bits = 0x02000000.
-        let app_id: u32 = 0x8000_0001;
-        let legacy = legacy_grid_id(app_id);
-        assert_eq!(legacy >> 32, app_id as u64);
-        assert_eq!(legacy & 0xFFFF_FFFF, 0x0200_0000);
-        assert_eq!(legacy, 0x8000_0001_0200_0000);
     }
 
     #[test]
