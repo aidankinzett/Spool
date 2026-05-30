@@ -327,23 +327,65 @@ async fn run_api(ludusavi_exe: &Path, config_dir: &Path, args: &[&str]) -> AppRe
     let cfg = config_dir.to_path_buf();
     let owned_args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
     let started = std::time::Instant::now();
+
+    let mut cmd = std::process::Command::new(&exe);
+    cmd.arg("--config").arg(&cfg);
+    cmd.args(&owned_args);
+    cmd.stdin(std::process::Stdio::null());
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+
+    let mut child = match cmd.spawn() {
+        Ok(child) => child,
+        Err(e) => return Err(AppError::Other(format!("failed to spawn ludusavi: {e}"))),
+    };
+
+    let mut stdout_pipe = child.stdout.take().unwrap();
+    let mut stderr_pipe = child.stderr.take().unwrap();
+
+    let child_arc = Arc::new(std::sync::Mutex::new(Some(child)));
+    let child_clone = child_arc.clone();
+
     let join = tokio::task::spawn_blocking(move || {
-        let mut cmd = std::process::Command::new(&exe);
-        cmd.arg("--config").arg(&cfg);
-        cmd.args(&owned_args);
-        cmd.stdin(std::process::Stdio::null());
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-        }
-        cmd.output()
+        use std::io::Read;
+        let mut stdout_bytes = Vec::new();
+        let mut stderr_bytes = Vec::new();
+        
+        let _ = stdout_pipe.read_to_end(&mut stdout_bytes);
+        let _ = stderr_pipe.read_to_end(&mut stderr_bytes);
+
+        let mut child_opt = child_clone.lock().unwrap();
+        let status = if let Some(mut c) = child_opt.take() {
+            c.wait()
+        } else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "ludusavi timed out",
+            ));
+        };
+        
+        status.map(|status| std::process::Output {
+            status,
+            stdout: stdout_bytes,
+            stderr: stderr_bytes,
+        })
     });
+
     let output = match tokio::time::timeout(RUN_API_TIMEOUT, join).await {
         Ok(Ok(Ok(out))) => out,
-        Ok(Ok(Err(e))) => return Err(AppError::Other(format!("failed to spawn ludusavi: {e}"))),
+        Ok(Ok(Err(e))) => return Err(AppError::Other(format!("failed to execute ludusavi: {e}"))),
         Ok(Err(e)) => return Err(AppError::Other(format!("ludusavi task panicked: {e}"))),
         Err(_) => {
+            let mut lock = child_arc.lock().unwrap();
+            if let Some(mut c) = lock.take() {
+                let _ = c.kill();
+                let _ = c.wait();
+            }
             return Err(AppError::Other(format!(
                 "ludusavi {op} timed out after {}s — the network or cloud sync may be unavailable.",
                 RUN_API_TIMEOUT.as_secs()

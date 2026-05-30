@@ -168,7 +168,11 @@ pub fn ensure_rclone_timeouts(user_args: &str) -> String {
     ];
     let mut out = user_args.trim().to_string();
     for (flag, val) in DEFAULTS {
-        if out.split_whitespace().any(|t| t == *flag) {
+        let eq_prefix = format!("{flag}=");
+        if out
+            .split_whitespace()
+            .any(|t| t == *flag || t.starts_with(&eq_prefix))
+        {
             continue;
         }
         if !out.is_empty() {
@@ -492,5 +496,16 @@ mod tests {
         let out = ensure_rclone_timeouts("");
         assert!(out.starts_with("--contimeout 5s"));
         assert!(!out.starts_with(' '));
+    }
+
+    #[test]
+    fn ensure_rclone_timeouts_preserves_user_overrides_equals_form() {
+        let out = ensure_rclone_timeouts("--contimeout=90s --retries=5");
+        assert_eq!(out.matches("--contimeout").count(), 1);
+        assert_eq!(out.matches("--retries").count(), 1);
+        assert!(out.contains("--contimeout=90s"));
+        assert!(out.contains("--retries=5"));
+        assert!(out.contains("--timeout 45s"));
+        assert!(out.contains("--low-level-retries 1"));
     }
 }
