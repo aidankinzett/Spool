@@ -77,14 +77,31 @@ struct RunPhaseEvent {
     /// True when a cloud remote is configured and this session synced
     /// (or attempted to sync) with it. False for local-only sessions.
     cloud_used: bool,
+    /// Duration of the play session in minutes. Set on `backing-up` and
+    /// `done` phases (after the game exits); null for pre-exit phases.
+    session_minutes: Option<i32>,
+    /// True when the local backup succeeded but the cloud upload failed.
+    /// Only ever true on the `done` phase. The save is safe on disk —
+    /// the UI should show the cloud leg as amber, not red.
+    cloud_upload_failed: bool,
 }
 
-fn emit_phase(app: &AppHandle, game_id: &str, phase: &str, message: Option<&str>, cloud_used: bool) {
+fn emit_phase(
+    app: &AppHandle,
+    game_id: &str,
+    phase: &str,
+    message: Option<&str>,
+    cloud_used: bool,
+    session_minutes: Option<i32>,
+    cloud_upload_failed: bool,
+) {
     let payload = RunPhaseEvent {
         game_id: game_id.to_string(),
         phase: phase.to_string(),
         message: message.map(String::from),
         cloud_used,
+        session_minutes,
+        cloud_upload_failed,
     };
     // Log every transition so a Game-Mode launch is diagnosable from
     // debug.log alone — confirms the workflow advanced past "restoring"
@@ -423,7 +440,7 @@ pub async fn launch_game_inner(app: &AppHandle, game_id: &str) -> AppResult<()> 
     .await;
 
     if let Err(e) = &result {
-        emit_phase(app, game_id, "error", Some(&e.to_string()), false);
+        emit_phase(app, game_id, "error", Some(&e.to_string()), false, None, false);
         // Surface the failure via the OS notification centre too —
         // most workflow errors happen while the user is mid-launch
         // with Spool tucked into the tray.
@@ -613,7 +630,7 @@ async fn run_workflow(
     } else {
         "Restoring local saves…"
     };
-    emit_phase(app, game_id, "restoring", Some(restore_msg), cloud_configured);
+    emit_phase(app, game_id, "restoring", Some(restore_msg), cloud_configured, None, false);
     os_toast_if_hidden(
         app,
         "Restoring saves",
@@ -677,7 +694,7 @@ async fn run_workflow(
     }
 
     // ── Phase 2: launch + wait ───────────────────────────────────────
-    emit_phase(app, game_id, "launching", Some("Launching game…"), cloud_configured);
+    emit_phase(app, game_id, "launching", Some("Launching game…"), cloud_configured, None, false);
     let exe_pathbuf = PathBuf::from(exe_path);
     if !exe_pathbuf.is_file() {
         return Err(AppError::Other(format!(
@@ -685,7 +702,7 @@ async fn run_workflow(
         )));
     }
 
-    emit_phase(app, game_id, "playing", None, cloud_configured);
+    emit_phase(app, game_id, "playing", None, cloud_configured, None, false);
     tracing::info!(exe_path, use_proton = launch.use_proton, "launching game process");
     let session_start = Utc::now();
 
@@ -777,7 +794,7 @@ async fn run_workflow(
         } else {
             "Backing up locally…"
         };
-        emit_phase(app, game_id, "backing-up", Some(backup_msg), cloud_configured);
+        emit_phase(app, game_id, "backing-up", Some(backup_msg), cloud_configured, Some(session_minutes), false);
         os_toast_if_hidden(
             app,
             "Backing up saves",
@@ -911,14 +928,14 @@ async fn run_workflow(
     // frontend shows a sticky warning toast instead of a clean "synced".
     if cloud_upload_failed {
         let warning = "Saves backed up locally, but cloud upload failed. Check your cloud save settings.";
-        emit_phase(app, game_id, "done", Some(warning), cloud_configured);
+        emit_phase(app, game_id, "done", Some(warning), cloud_configured, Some(session_minutes), true);
         os_toast_if_hidden(
             app,
             "Cloud upload failed",
             &format!("{game_name} — saves are safe locally but didn't reach the cloud"),
         );
     } else {
-        emit_phase(app, game_id, "done", None, cloud_configured);
+        emit_phase(app, game_id, "done", None, cloud_configured, Some(session_minutes), false);
         os_toast_if_hidden(
             app,
             "Saves backed up",

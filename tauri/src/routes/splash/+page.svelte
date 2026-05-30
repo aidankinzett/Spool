@@ -8,6 +8,8 @@
   let phase = $state<string>('restoring');
   let message = $state<string | null>(null);
   let cloudUsed = $state(false);
+  let cloudUploadFailed = $state(false);
+  let sessionMinutes = $state<number | null>(null);
   let game = $state<GameEntry | null>(null);
   let progress = $state(0);
   let progressRaf = $state<number | null>(null);
@@ -15,7 +17,8 @@
   let windowHeight = $state(800);
   let s = $derived(windowHeight / 800);
   let syncStatus = $state<'online' | 'offline' | 'unconfigured'>('online');
-  let net = $derived(syncStatus === 'offline' ? 'offline' : 'online');
+  // Cloud upload failure (local backup ok, remote upload failed) also renders as offline.
+  let net = $derived(syncStatus === 'offline' || cloudUploadFailed ? 'offline' : 'online');
 
   // Determine flow from phase. Error can occur in either flow; we track
   // which flow was active when the error hit via a separate flag.
@@ -189,7 +192,7 @@
   let footMeta = $derived(
     flow === 'exit'
       ? [
-          { label: 'New backup', value: game ? fmtSize(game.save_backup_size_mb) : '…' },
+          { label: 'This session', value: sessionMinutes != null ? fmtPlaytime(sessionMinutes) : '…' },
           { label: 'Revisions kept', value: game ? String(game.save_backup_count) : '…' },
         ]
       : [
@@ -212,6 +215,8 @@
     phase = ev.phase;
     message = ev.message ?? null;
     cloudUsed = ev.cloud_used;
+    cloudUploadFailed = ev.cloud_upload_failed;
+    if (ev.session_minutes != null) sessionMinutes = ev.session_minutes;
 
     // Hydrate game entry on first event if not yet loaded.
     if (!game && ev.game_id) {
@@ -257,6 +262,20 @@
       unlistenSyncStatus = fn;
     }).catch(() => {});
 
+    // Re-fetch game data whenever the library changes so exit-flow footer
+    // stats (revision count, backup size) reflect the just-completed backup.
+    let unlistenLibrary: (() => void) | undefined;
+    listen<string>('library:changed', (event) => {
+      if (game && event.payload === game.id) {
+        api.listGames().then((games) => {
+          const updated = games.find((g) => g.id === game!.id);
+          if (updated) game = updated;
+        }).catch(() => {});
+      }
+    }).then((fn) => {
+      unlistenLibrary = fn;
+    }).catch(() => {});
+
     let unlistenFn: (() => void) | undefined;
     listen<RunPhaseEvent>('run:phase', (event) => {
       queue.push(event.payload);
@@ -273,6 +292,7 @@
     return () => {
       unlistenFn?.();
       unlistenSyncStatus?.();
+      unlistenLibrary?.();
       if (progressRaf != null) cancelAnimationFrame(progressRaf);
     };
   });

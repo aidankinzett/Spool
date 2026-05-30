@@ -342,6 +342,10 @@ export type RunPhaseEvent = {
   message: string | null;
   /** True when a cloud remote is configured for this session. */
   cloud_used: boolean;
+  /** Play session duration in minutes. Set on backing-up and done phases; null before the game exits. */
+  session_minutes: number | null;
+  /** True when local backup succeeded but cloud upload failed. Only ever true on the done phase. */
+  cloud_upload_failed: boolean;
 };
 
 /**
