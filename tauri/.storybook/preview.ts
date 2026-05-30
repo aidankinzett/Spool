@@ -23,6 +23,8 @@ mockConvertFileSrc('windows');
 mockIPC(() => undefined);
 
 const preview: Preview = {
+  // Generate a Docs page for every component from its argTypes + stories.
+  tags: ['autodocs'],
   parameters: {
     layout: 'centered',
     backgrounds: {
