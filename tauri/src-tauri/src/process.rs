@@ -4,23 +4,22 @@
 //!
 //!   - Normal: `tokio::process::Command` — runs as the current user,
 //!     async wait, child inherits stdio, cwd set to the exe's dir.
-//!   - Elevated (Windows only): `runas` crate → `ShellExecuteExW`
-//!     with the `runas` verb. Triggers UAC. Sync wait wrapped in
+//!   - Elevated (Windows only): direct `ShellExecuteExW` with the
+//!     `runas` verb. Triggers UAC. Sync wait wrapped in
 //!     `tokio::task::spawn_blocking` so we don't block the runtime.
 //!
 //! Per `m07-concurrency` rule "Blocking code → spawn_blocking": the
 //! elevated path holds a blocking thread for the entire game session
 //! (potentially hours). That's a tokio blocking-pool thread, which
-//! defaults to 512 capacity — one stuck thread is fine. We could
-//! switch to direct `ShellExecuteExW` + tokio handle waiting later
-//! if the trade-off ever matters.
+//! defaults to 512 capacity — one stuck thread is fine.
 //!
-//! Caveat: the `runas` crate's API doesn't expose `lpDirectory`, so
-//! elevated games don't get their exe's directory as cwd. Most games
-//! work fine without it (they resolve resources relative to their
-//! own exe path). For the small set that need a specific cwd, the
-//! workaround is to disable Run-As-Admin and rely on the game's own
-//! UAC manifest if any.
+//! We call `ShellExecuteExW` ourselves (rather than via the `runas`
+//! crate) specifically so we can set `lpDirectory` to the exe's own
+//! folder. Without it the elevated game inherits Spool's working
+//! directory and games that resolve assets relative to cwd start but
+//! never open a window — the process shows in Task Manager and then
+//! dies. Matching the non-elevated path's cwd keeps the two launch
+//! routes behaving identically.
 
 use crate::error::{AppError, AppResult};
 use crate::proton;
@@ -183,16 +182,80 @@ pub async fn run_game(exe_path: &Path, spec: LaunchSpec<'_>) -> AppResult<i32> {
     }
 }
 
-/// Spawns the game via ShellExecuteExW with the `runas` verb. Triggers
-/// the UAC prompt; blocks the calling thread until the elevated
-/// process exits. Wrapped in `spawn_blocking` by the caller so the
-/// async runtime keeps moving.
+/// Spawns the game via `ShellExecuteExW` with the `runas` verb. Triggers
+/// the UAC prompt; blocks the calling thread until the elevated process
+/// exits. Wrapped in `spawn_blocking` by the caller so the async runtime
+/// keeps moving.
+///
+/// Sets `lpDirectory` to the exe's own folder so the elevated game gets
+/// the same working directory the non-elevated path passes via
+/// `current_dir` — see the module-level note on why this matters.
 #[cfg(windows)]
 async fn run_elevated(exe_path: &Path) -> AppResult<i32> {
+    use std::ffi::OsStr;
+    use std::iter::once;
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, ERROR_CANCELLED};
+    use windows_sys::Win32::System::Threading::{
+        GetExitCodeProcess, WaitForSingleObject, INFINITE,
+    };
+    use windows_sys::Win32::UI::Shell::{
+        ShellExecuteExW, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW,
+    };
+    use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+
     let exe = exe_path.to_path_buf();
+    let dir = exe
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .map(|p| p.to_path_buf());
+
+    let to_wide = |s: &OsStr| -> Vec<u16> { s.encode_wide().chain(once(0)).collect() };
+
     let code = tokio::task::spawn_blocking(move || -> std::io::Result<i32> {
-        let status = runas::Command::new(&exe).gui(true).status()?;
-        Ok(status.code().unwrap_or(-1))
+        // These wide buffers must outlive the ShellExecuteExW call — keep them
+        // in locals the struct only borrows via raw pointers.
+        let verb = to_wide(OsStr::new("runas"));
+        let file = to_wide(exe.as_os_str());
+        let dir_w = dir.as_ref().map(|p| to_wide(p.as_os_str()));
+
+        let mut info: SHELLEXECUTEINFOW = unsafe { std::mem::zeroed() };
+        info.cbSize = std::mem::size_of::<SHELLEXECUTEINFOW>() as u32;
+        info.fMask = SEE_MASK_NOCLOSEPROCESS;
+        info.lpVerb = verb.as_ptr();
+        info.lpFile = file.as_ptr();
+        info.lpDirectory = dir_w.as_ref().map_or(std::ptr::null(), |d| d.as_ptr());
+        info.nShow = SW_SHOWNORMAL;
+
+        // SAFETY: every pointer field references a buffer alive for this scope,
+        // and the struct is fully zero-initialised before the fields we set.
+        if unsafe { ShellExecuteExW(&mut info) } == 0 {
+            let err = unsafe { GetLastError() };
+            if err == ERROR_CANCELLED {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "UAC elevation was declined",
+                ));
+            }
+            return Err(std::io::Error::from_raw_os_error(err as i32));
+        }
+
+        // SEE_MASK_NOCLOSEPROCESS gives us a process handle to wait on. If the
+        // request was handed to an already-running instance there's no handle —
+        // treat that as a clean launch (exit code 0).
+        if info.hProcess.is_null() {
+            return Ok(0);
+        }
+
+        // SAFETY: hProcess is a valid handle owned by us until CloseHandle.
+        let exit_code = unsafe {
+            WaitForSingleObject(info.hProcess, INFINITE);
+            let mut exit_code: u32 = 0;
+            GetExitCodeProcess(info.hProcess, &mut exit_code);
+            CloseHandle(info.hProcess);
+            exit_code
+        };
+        Ok(exit_code as i32)
     })
     .await
     .map_err(|e| AppError::Other(format!("elevated spawn join: {e}")))?
