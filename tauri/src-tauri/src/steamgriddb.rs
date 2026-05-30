@@ -297,10 +297,11 @@ pub async fn fetch_steam_grid_bundle(
     std::fs::create_dir_all(grid_dir)?;
     let mut placed = Vec::new();
 
-    let kinds: [(&str, &str); 3] = [
+    let kinds: [(&str, &str); 4] = [
         ("hero", "_hero"),
         ("grid", ""),
         ("logo", "_logo"),
+        ("icon", "_icon"),
     ];
     for (kind, suffix) in kinds {
         if let Ok(Some(asset)) = fetch_first_art(&client.http, &api_key, sgdb_id, kind).await {
@@ -335,9 +336,11 @@ async fn fetch_first_art(
 ) -> AppResult<Option<Asset>> {
     let endpoint = match kind {
         "hero" => format!("{BASE}/heroes/game/{sgdb_id}"),
-        // Wide grid — explicit dimensions so we don't grab the portrait.
-        "grid" => format!("{BASE}/grids/game/{sgdb_id}?dimensions=920x430"),
+        // Wide grid — filter to landscape dimensions only so we don't grab
+        // the portrait (600x900). Both common sizes are accepted.
+        "grid" => format!("{BASE}/grids/game/{sgdb_id}?dimensions=920x430,460x215"),
         "logo" => format!("{BASE}/logos/game/{sgdb_id}"),
+        "icon" => format!("{BASE}/icons/game/{sgdb_id}"),
         _ => return Ok(None),
     };
     let resp = http
