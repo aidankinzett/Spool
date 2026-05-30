@@ -4,6 +4,8 @@
   import { api, assetUrl } from '$lib/api';
   import type { RunPhaseEvent, GameEntry, SyncStatus } from '$lib/types';
   import SpoolMark from '$lib/components/SpoolMark.svelte';
+  import CloudConflictModal from '$lib/components/CloudConflictModal.svelte';
+  import { getCurrentWindow } from '@tauri-apps/api/window';
 
   let phase = $state<string>('restoring');
   let message = $state<string | null>(null);
@@ -496,6 +498,40 @@
       </div>
     </div>
   </div>
+
+  {#if phase === 'error' && message && /cloud sync conflict/i.test(message)}
+    <CloudConflictModal
+      gameName={game?.game_name ?? 'Game'}
+      catalogId={game?.catalog_number ? catalogId(game.catalog_number) : undefined}
+      accent={accent}
+      coverUrl={assetUrl(game?.cover_image_path)}
+      context="gamemode"
+      resolve={async (side) => {
+        await api.resolveCloudConflict(game!.id, side);
+      }}
+      onCancel={async () => {
+        await getCurrentWindow().close();
+      }}
+      onContinue={async () => {
+        try {
+          // Reset state back to restoring since we're retrying launch
+          phase = 'restoring';
+          message = 'Syncing + restoring saves…';
+          startRamp();
+          await api.launchGame(game!.id);
+          await getCurrentWindow().close();
+        } catch (e) {
+          console.error('[splash] retry launch failed:', e);
+        }
+      }}
+      onLudusavi={() => {
+        api.openLudusaviGui().catch(() => {});
+      }}
+      onClose={async () => {
+        await getCurrentWindow().close();
+      }}
+    />
+  {/if}
 </div>
 
 <style>

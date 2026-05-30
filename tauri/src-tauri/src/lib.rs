@@ -374,6 +374,9 @@ pub fn run() {
                         // is showing. Hold it on screen briefly so the user can read
                         // the reason (e.g. a restore timeout) before we exit and hand
                         // control back to Steam.
+                        if e.to_string().contains("Cloud sync conflict") {
+                            return;
+                        }
                         tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                     }
                     app_handle.exit(0);

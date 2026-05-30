@@ -55,6 +55,7 @@ export function createLibrary() {
   let selectedId = $state<string | null>(null);
   let searchQuery = $state('');
   let filter = $state<'all' | 'recent' | 'played'>('all');
+  let conflictGameId = $state<string | null>(null);
 
   // Run tracking
   let runningId = $state<string | null>(null);
@@ -288,7 +289,11 @@ export function createLibrary() {
         runningPhase = phase;
       }
       if (phase === 'error') {
-        showRunErrorToast(game_id, message ?? 'Game launch failed');
+        if (message && /cloud sync conflict/i.test(message)) {
+          conflictGameId = game_id;
+        } else {
+          showRunErrorToast(game_id, message ?? 'Game launch failed');
+        }
       } else if (phase === 'done') {
         const game = games.find((g) => g.id === game_id);
         if (message) {
@@ -430,6 +435,8 @@ export function createLibrary() {
     set searchQuery(v: string) { searchQuery = v; },
     get filter() { return filter; },
     set filter(v: 'all' | 'recent' | 'played') { filter = v; },
+    get conflictGameId() { return conflictGameId; },
+    set conflictGameId(v: string | null) { conflictGameId = v; },
     // Derived (read-only)
     get filteredGames() { return filteredGames; },
     get selectedGame() { return selectedGame; },
