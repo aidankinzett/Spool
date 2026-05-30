@@ -42,6 +42,18 @@ export default tseslint.config(
     },
   },
   {
+    // Storybook stories: the root `{#snippet template(args)}` is consumed by
+    // the addon-svelte-csf compiler, not referenced in markup, so ESLint sees
+    // it as an unused variable. Allow snippet declarations named `template`.
+    files: ["**/*.stories.svelte"],
+    rules: {
+      "@typescript-eslint/no-unused-vars": [
+        "error",
+        { varsIgnorePattern: "^template$" },
+      ],
+    },
+  },
+  {
     ignores: [".svelte-kit/**", "build/**", "node_modules/**"],
   }
 );
