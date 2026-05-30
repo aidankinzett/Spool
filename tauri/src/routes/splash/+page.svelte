@@ -18,10 +18,11 @@
   let game = $state<GameEntry | null>(null);
   let progress = $state(0);
 
+  const isCloudConflict = $derived(phase === 'error' && !!message && /cloud sync conflict/i.test(message));
+
   $effect(() => {
-    const isConflict = phase === 'error' && message && /cloud sync conflict/i.test(message);
     const id = game?.id;
-    if (isConflict && id) {
+    if (isCloudConflict && id) {
       api.getCloudConflictDetails(id)
         .then((res) => {
           if (game?.id === id) {
@@ -568,7 +569,7 @@
     </div>
   </div>
 
-  {#if phase === 'error' && message && /cloud sync conflict/i.test(message)}
+  {#if isCloudConflict}
     <CloudConflictModal
       gameName={game?.game_name ?? 'Game'}
       catalogId={game?.catalog_number ? catalogId(game.catalog_number) : undefined}
