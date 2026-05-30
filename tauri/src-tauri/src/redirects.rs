@@ -455,18 +455,24 @@ fn classify_windows_path(
     Some(PathClass::Unknown)
 }
 
-/// Derive the deepest install-dir root for an install-dir save path.
+/// Derive the install-dir root for an install-dir save *file* path. The input
+/// is always a file (mapping.yaml keys are files), so the trailing filename is
+/// dropped first — otherwise a shallow path like `D:/Game/save.bin` would map
+/// the file itself as the root, restoring the save to the wrong location. We
+/// then keep the drive + up to two leading directories as a conservative guess
+/// at the game's install folder.
 /// e.g. `G:/Games/ULTRAKILL/Saves/Slot1/foo.bin` → `G:/Games/ULTRAKILL`
-/// We pick 3 segments (drive + 2 dirs) as a conservative common prefix.
+///      `D:/Game/save.bin`                        → `D:/Game`
 fn install_dir_root(path: &str) -> String {
-    let parts: Vec<&str> = path.splitn(5, '/').collect();
-    // parts[0]="G:", [1]="Games", [2]="ULTRAKILL", [3]="Saves"...
-    // Take drive + first 2 dirs (3 total segments after split on '/').
-    if parts.len() >= 3 {
-        parts[..3].join("/")
-    } else {
-        path.to_string()
-    }
+    // Drop the trailing filename so we never treat the save file as the root.
+    let dir = match path.rsplit_once('/') {
+        Some((parent, _file)) => parent,
+        None => return path.to_string(),
+    };
+    let parts: Vec<&str> = dir.split('/').collect();
+    // Take drive + up to 2 directories (never more than are present).
+    let take = parts.len().min(3);
+    parts[..take].join("/")
 }
 
 // ── Prefix → Windows (running a wine-prefix save on Windows) ───────────────────
@@ -603,6 +609,18 @@ mod tests {
         assert_eq!(redirects.len(), 1);
         assert_eq!(redirects[0].source, "G:/Games/ULTRAKILL");
         assert_eq!(redirects[0].target, "/home/deck/Games/ULTRAKILL");
+    }
+
+    #[test]
+    fn install_dir_root_drops_filename_for_shallow_path() {
+        // A save directly in the install folder (`D:/Game/save.bin`) must map the
+        // folder `D:/Game`, not the file itself — otherwise the filename is lost.
+        let origin = win_origin(&["D:/Game/save.bin"]);
+        let game_folder = PathBuf::from("/home/deck/Games/Game");
+        let redirects = derive_redirects(&origin, Some(&pfx()), Some(&game_folder), None, false);
+        assert_eq!(redirects.len(), 1);
+        assert_eq!(redirects[0].source, "D:/Game");
+        assert_eq!(redirects[0].target, "/home/deck/Games/Game");
     }
 
     #[test]
