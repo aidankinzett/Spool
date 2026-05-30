@@ -7,6 +7,7 @@
     Layers,
     Library,
     MonitorSmartphone,
+    Plus,
     RefreshCcw,
     Sparkles,
     Trash2,
