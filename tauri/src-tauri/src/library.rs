@@ -109,6 +109,16 @@ pub struct GameEntry {
     /// no backup history, or never queried). The library sidebar
     /// renders a small coloured dot on the cover when this is set.
     pub sync_badge: Option<String>,
+
+    /// Latest ludusavi backup name (the `mapping.yaml` tip) that was last
+    /// reconciled with the cloud on THIS device. Acts as the merge-base for
+    /// fast-forward vs. true-divergence detection: when ludusavi reports a
+    /// cloud conflict, comparing this baseline against the local and cloud
+    /// tips tells us whether one side is cleanly ahead (auto-resolve) or both
+    /// changed (real conflict — prompt the user). `None` for legacy entries /
+    /// games never synced — the workflow falls back to a timestamp heuristic
+    /// until the first sync records a baseline.
+    pub cloud_sync_baseline: Option<String>,
 }
 
 impl Default for GameEntry {
@@ -153,6 +163,7 @@ impl Default for GameEntry {
             save_paths: Vec::new(),
             accent_color: None,
             sync_badge: None,
+            cloud_sync_baseline: None,
         }
     }
 }

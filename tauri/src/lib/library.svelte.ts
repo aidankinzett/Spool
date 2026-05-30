@@ -269,6 +269,7 @@ export function createLibrary() {
 
     let unlistenLibraryChanged: (() => void) | undefined;
     let unlistenRunPhase: (() => void) | undefined;
+    let unlistenCloudNotice: (() => void) | undefined;
     let unlistenTrayIntro: (() => void) | undefined;
     let unlistenLanPeers: (() => void) | undefined;
     let unlistenLanDownload: (() => void) | undefined;
@@ -340,6 +341,18 @@ export function createLibrary() {
       })
       .catch((e) => console.error('[library] run-phase listener failed:', e));
 
+    // Informational note when the backend auto-resolves a clean cloud
+    // fast-forward (one side cleanly ahead). No modal — just a brief toast.
+    // True divergence still surfaces via the run:phase 'error' → conflict modal.
+    listen<string>('cloud:notice', (event) => {
+      const message = event.payload;
+      if (message) {
+        toasts.show({ kind: 'ok', label: 'LUDUSAVI · SYNC', title: 'Saves synced', sub: message });
+      }
+    })
+      .then((fn) => (unlistenCloudNotice = fn))
+      .catch((e) => console.error('[library] cloud-notice listener failed:', e));
+
     listen<null>('tray:first-hide', () => {
       toasts.show({
         kind: 'info',
@@ -403,6 +416,7 @@ export function createLibrary() {
     return () => {
       unlistenLibraryChanged?.();
       unlistenRunPhase?.();
+      unlistenCloudNotice?.();
       unlistenTrayIntro?.();
       unlistenLanPeers?.();
       unlistenLanDownload?.();

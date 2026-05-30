@@ -61,6 +61,7 @@ function makeGame(over: Partial<GameEntry> = {}): GameEntry {
     save_paths: [],
     accent_color: null,
     sync_badge: null,
+    cloud_sync_baseline: null,
     ...over,
   };
 }

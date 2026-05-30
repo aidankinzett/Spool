@@ -136,6 +136,75 @@ pub fn read_backup_origin(backup_dir: &Path, game_name: &str) -> Option<BackupOr
     None
 }
 
+/// The tip (most recent backup) of a game's `mapping.yaml` — the unique
+/// ludusavi backup name plus its timestamp. Used as a content-identity token
+/// for cloud fast-forward detection: ludusavi mirrors `mapping.yaml` across
+/// devices on every cloud sync, so the tip name is byte-identical wherever a
+/// given save state lives (and is independent of OS / drive letters).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BackupTip {
+    pub name: String,
+    pub when: chrono::DateTime<chrono::Utc>,
+}
+
+/// Read `<backup_dir>/<game_name>/mapping.yaml` and return its tip — the
+/// full-or-differential backup with the latest `when`. Tries the exact game
+/// folder name first, then the Windows-safe (colon-stripped) name, mirroring
+/// [`read_backup_origin`]. Returns `None` when there's no backup yet.
+pub fn read_local_backup_tip(backup_dir: &Path, game_name: &str) -> Option<BackupTip> {
+    let candidates = [
+        backup_dir.join(game_name).join("mapping.yaml"),
+        backup_dir.join(windows_safe_name(game_name)).join("mapping.yaml"),
+    ];
+    for mapping in &candidates {
+        if let Ok(raw) = std::fs::read_to_string(mapping) {
+            if let Some(tip) = read_backup_tip_from_str(&raw) {
+                return Some(tip);
+            }
+        }
+    }
+    None
+}
+
+/// Parse a `mapping.yaml` body and return the tip: the entry (full backup or
+/// differential child) with the maximum `when`. The backup `name` is ludusavi's
+/// unique, timestamp-derived id (e.g. `backup-20260530T120000Z`). Returns
+/// `None` if there are no dated backups.
+pub fn read_backup_tip_from_str(yaml: &str) -> Option<BackupTip> {
+    let doc: Value = serde_yaml::from_str(yaml).ok()?;
+    let backups = doc.get("backups")?.as_sequence()?;
+
+    let mut tip: Option<BackupTip> = None;
+    let mut consider = |node: &Value| {
+        let (Some(name), Some(when_str)) = (
+            node.get("name").and_then(|v| v.as_str()),
+            node.get("when").and_then(|v| v.as_str()),
+        ) else {
+            return;
+        };
+        let Ok(when) = chrono::DateTime::parse_from_rfc3339(when_str) else {
+            return;
+        };
+        let when = when.with_timezone(&chrono::Utc);
+        if tip.as_ref().is_none_or(|t| when > t.when) {
+            tip = Some(BackupTip { name: name.to_string(), when });
+        }
+    };
+
+    let empty = vec![];
+    for full in backups {
+        consider(full);
+        for child in full
+            .get("children")
+            .and_then(|v| v.as_sequence())
+            .unwrap_or(&empty)
+        {
+            consider(child);
+        }
+    }
+    tip
+}
+
 /// Replace characters that Windows forbids in folder names (`:`  `*`  `?`  `"`  `<`  `>`  `|`)
 /// with underscores — matches what ludusavi does when creating backup folders on Windows.
 pub fn windows_safe_name(name: &str) -> String {
