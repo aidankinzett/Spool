@@ -8,9 +8,21 @@ on:
   push:
     branches:
       - master
+    paths:
+      - 'tauri/**'
+      - 'server/**'
+      - 'decky/**'
+      - 'launcher_stub.*'
+      - '.github/workflows/ci.yml'
   pull_request:
     branches:
       - master
+    paths:
+      - 'tauri/**'
+      - 'server/**'
+      - 'decky/**'
+      - 'launcher_stub.*'
+      - '.github/workflows/ci.yml'
 
 jobs:
   build-windows:
