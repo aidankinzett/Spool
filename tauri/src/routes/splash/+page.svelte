@@ -513,6 +513,7 @@
         await getCurrentWindow().close();
       }}
       onContinue={async () => {
+        const priorPhase = phase;
         try {
           // Reset state back to restoring since we're retrying launch
           phase = 'restoring';
@@ -522,6 +523,10 @@
           await getCurrentWindow().close();
         } catch (e) {
           console.error('[splash] retry launch failed:', e);
+          phase = priorPhase;
+          message = String(e);
+          if (progressRaf != null) cancelAnimationFrame(progressRaf);
+          progress = 0;
         }
       }}
       onLudusavi={() => {
