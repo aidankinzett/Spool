@@ -44,7 +44,11 @@ use tokio::process::Command;
 ///
 /// No-op when not running from an AppImage (`APPDIR` unset) — so native
 /// installs (AUR, deb/rpm) and Windows are unaffected.
-fn strip_appimage_env(cmd: &mut Command) {
+///
+/// Shared with `system_open.rs`, which spawns the host file manager via
+/// `xdg-open` and must hand it the host environment for the same reason
+/// game launches do.
+pub(crate) fn strip_appimage_env(cmd: &mut Command) {
     let Some(appdir) = std::env::var_os("APPDIR") else {
         return;
     };
