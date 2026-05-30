@@ -17,7 +17,14 @@
     await uiMode.init(config.ui_mode);
     if (uiMode.resolved === 'touch') {
       // Deck/Ally are always fullscreen — maximize before first paint.
-      await getCurrentWindow().maximize();
+      // Isolated from init() above: a maximize failure must NOT fall through
+      // to resolveMode()'s caller and reset the mode to 'auto', which would
+      // silently drop touch back to desktop on every launch (issue #60).
+      try {
+        await getCurrentWindow().maximize();
+      } catch (e) {
+        console.error('[layout] maximize failed (non-fatal):', e);
+      }
     }
   }
 
