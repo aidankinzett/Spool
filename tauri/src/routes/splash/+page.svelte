@@ -311,7 +311,6 @@
 >
   <!-- Background -->
   <div class="bg" aria-hidden="true">
-    <div class="bloom"></div>
     <div class="grain"></div>
   </div>
 
@@ -399,14 +398,14 @@
             {:else if isActive}
               <!-- Spinning reel -->
               <svg width={22 * s} height={22 * s} viewBox="0 0 22 22" class="glyph glyph-spin" style="color:{accent}">
-                <circle cx="11" cy="11" r="9.68" fill="none" stroke="currentColor" stroke-width="0.99"/>
-                <!-- Spokes -->
-                <line x1="11" y1="7.48" x2="11" y2="3.08" stroke="currentColor" stroke-width="0.99" stroke-linecap="round"/>
-                <line x1="14.05" y1="9.24" x2="17.86" y2="7.04" stroke="currentColor" stroke-width="0.99" stroke-linecap="round"/>
-                <line x1="14.05" y1="12.76" x2="17.86" y2="14.96" stroke="currentColor" stroke-width="0.99" stroke-linecap="round"/>
-                <line x1="11" y1="14.52" x2="11" y2="18.92" stroke="currentColor" stroke-width="0.99" stroke-linecap="round"/>
-                <line x1="7.95" y1="12.76" x2="4.14" y2="14.96" stroke="currentColor" stroke-width="0.99" stroke-linecap="round"/>
-                <line x1="7.95" y1="9.24" x2="4.14" y2="7.04" stroke="currentColor" stroke-width="0.99" stroke-linecap="round"/>
+                <circle cx="11" cy="11" r="9.68" fill="none" stroke="currentColor" stroke-width="1.5"/>
+                <line x1="11" y1="7.48" x2="11" y2="3.08" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                <line x1="14.05" y1="9.24" x2="17.86" y2="7.04" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                <line x1="14.05" y1="12.76" x2="17.86" y2="14.96" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                <line x1="11" y1="14.52" x2="11" y2="18.92" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                <line x1="7.95" y1="12.76" x2="4.14" y2="14.96" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                <line x1="7.95" y1="9.24" x2="4.14" y2="7.04" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                <circle cx="11" cy="11" r="8.8" fill="none" stroke="currentColor" stroke-width="1.05" opacity="0.4"/>
                 <circle cx="11" cy="11" r="2.86" fill="currentColor"/>
               </svg>
             {:else if isErr}
