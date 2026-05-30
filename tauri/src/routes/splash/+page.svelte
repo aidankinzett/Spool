@@ -425,7 +425,7 @@
         <div class="tape-ticks" aria-hidden="true"></div>
       </div>
       <div class="foot-meta">
-        {#each footMeta as m}
+        {#each footMeta as m (m.label)}
           <div class="meta-cell">
             <span class="meta-label">{m.label}</span>
             <span class="meta-value">{m.value}</span>
