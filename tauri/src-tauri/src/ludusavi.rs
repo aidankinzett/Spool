@@ -124,7 +124,6 @@ pub struct ManifestEntry {
     pub install_dir: HashMap<String, serde_json::Value>,
     pub steam: Option<StoreRef>,
     pub gog: Option<StoreRef>,
-    pub cloud: Option<CloudInfo>,
     pub id: Option<ManifestIds>,
 }
 
@@ -138,12 +137,6 @@ pub struct ManifestFileEntry {
 #[serde(default)]
 pub struct StoreRef {
     pub id: u64,
-}
-
-#[derive(Debug, Clone, Deserialize, Default)]
-#[serde(default)]
-pub struct CloudInfo {
-    pub steam: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -172,7 +165,6 @@ pub struct SearchCandidate {
     pub steam_id: Option<u64>,
     pub gog_id: Option<u64>,
     pub lutris_slug: Option<String>,
-    pub has_cloud_save: bool,
     /// The folder name ludusavi expects ("Hades" for `D:\Games\Hades\`).
     pub manifest_install_dir: Option<String>,
 }
@@ -511,7 +503,6 @@ fn enrich(
             steam_id: None,
             gog_id: None,
             lutris_slug: None,
-            has_cloud_save: false,
             manifest_install_dir: None,
         };
     };
@@ -534,7 +525,6 @@ fn enrich(
         .map(|g| g.id)
         .or_else(|| entry.id.as_ref().and_then(|i| i.gog.first().copied()));
     let lutris_slug = entry.id.as_ref().and_then(|i| i.lutris.clone());
-    let has_cloud_save = entry.cloud.as_ref().map(|c| c.steam).unwrap_or(false);
 
     SearchCandidate {
         name,
@@ -544,7 +534,6 @@ fn enrich(
         steam_id,
         gog_id,
         lutris_slug,
-        has_cloud_save,
         manifest_install_dir,
     }
 }
@@ -811,14 +800,12 @@ mod tests {
         assert!(c.save_path.is_none());
         assert!(c.save_paths.is_empty());
         assert!(c.steam_id.is_none());
-        assert!(!c.has_cloud_save);
     }
 
     #[test]
-    fn enrich_picks_up_steam_and_cloud() {
+    fn enrich_picks_up_steam_and_install_dir() {
         let entry = ManifestEntry {
             steam: Some(StoreRef { id: 1145360 }),
-            cloud: Some(CloudInfo { steam: true }),
             install_dir: {
                 let mut m = HashMap::new();
                 m.insert("Hades".to_string(), serde_json::Value::Null);
@@ -836,7 +823,6 @@ mod tests {
         };
         let c = enrich("Hades".to_string(), 0.95, Some(&entry));
         assert_eq!(c.steam_id, Some(1145360));
-        assert!(c.has_cloud_save);
         assert_eq!(c.manifest_install_dir.as_deref(), Some("Hades"));
         assert_eq!(c.save_path.as_deref(), Some("%APPDATA%/Hades/save"));
     }

@@ -296,7 +296,6 @@ async fn get_manifest_handler(
         steam_id: entry.steam_id,
         gog_id: entry.gog_id,
         lutris_slug: entry.lutris_slug.clone(),
-        has_cloud_save: entry.has_cloud_save,
         manifest_install_dir: entry.manifest_install_dir.clone(),
         save_paths: entry.save_paths.clone(),
         developer: entry.developer.clone(),

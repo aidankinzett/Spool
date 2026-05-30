@@ -98,7 +98,6 @@ export type GameEntry = {
   steam_id: number | null;
   gog_id: number | null;
   lutris_slug: string | null;
-  has_cloud_save: boolean;
   manifest_install_dir: string | null;
   save_paths: string[];
 
@@ -145,7 +144,6 @@ export type SearchCandidate = {
   steam_id: number | null;
   gog_id: number | null;
   lutris_slug: string | null;
-  has_cloud_save: boolean;
   manifest_install_dir: string | null;
 };
 
@@ -177,7 +175,6 @@ export type PeerGame = {
   publisher: string;
   genres: string[];
   install_size_mb: number;
-  has_cloud_save: boolean;
   release_date: string | null;
   steam_id: number | null;
   gog_id: number | null;
@@ -340,7 +337,6 @@ export type NewGame = {
   steam_id?: number | null;
   gog_id?: number | null;
   lutris_slug?: string | null;
-  has_cloud_save?: boolean;
   manifest_install_dir?: string | null;
   save_paths?: string[];
 };

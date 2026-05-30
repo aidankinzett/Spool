@@ -40,7 +40,6 @@
   } from '$lib/format';
   import MonoLabel from './MonoLabel.svelte';
   import CatalogId from './CatalogId.svelte';
-  import Pill from './Pill.svelte';
   import Btn from './Btn.svelte';
   import DetailCard from './DetailCard.svelte';
 
@@ -276,15 +275,6 @@
               {fmtPlaytime(game.playtime_minutes)} · {game.save_backup_count} backup{game.save_backup_count === 1 ? '' : 's'}
             </span>
           </div>
-
-          <div class="flex-1"></div>
-
-          {#if game.has_cloud_save}
-            <Pill kind="info">
-              <Cloud size={9} />
-              Cloud sync
-            </Pill>
-          {/if}
         </div>
       </div>
     </div>
