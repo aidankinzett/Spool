@@ -460,6 +460,7 @@ async fn get_local_active_save_details(
     cmd.stdin(std::process::Stdio::null());
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
+    cmd.kill_on_drop(true);
     #[cfg(windows)]
     {
         #[allow(unused_imports)]
@@ -591,6 +592,7 @@ async fn query_rclone_details(
     cmd.stdin(std::process::Stdio::null());
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
+    cmd.kill_on_drop(true);
     #[cfg(windows)]
     {
         #[allow(unused_imports)]
