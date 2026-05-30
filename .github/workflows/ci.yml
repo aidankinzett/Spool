@@ -26,7 +26,7 @@ on:
 
 jobs:
   build-windows:
-    runs-on: windows-latest
+    runs-on: ubuntu-22.04
     env:
       # Mirror release.yml so this workflow populates the same sccache
       # entries that release.yml will restore on tag pushes.
@@ -36,9 +36,6 @@ jobs:
       # Workspace-local bun cache dir so actions/cache can persist it with
       # one OS-agnostic path.
       BUN_INSTALL_CACHE_DIR: "${{ github.workspace }}/.bun-cache"
-    defaults:
-      run:
-        shell: pwsh
 
     steps:
       - uses: actions/checkout@v4
@@ -51,26 +48,24 @@ jobs:
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy
+          targets: x86_64-pc-windows-msvc
+          components: clippy, llvm-tools-preview
 
-      - name: Enable LLD linker
-        # link.exe is the slow, uncached part of the Windows build (sccache
-        # only caches rustc codegen, never linking). Point rustc at LLVM's
-        # lld-link (the MSVC-flavour LLD, preinstalled on the runner) to cut
-        # link time across the test binaries and the release build. Probe
-        # first so a runner-image change that drops LLVM falls back to
-        # link.exe instead of breaking the build. Keep this identical to
-        # release.yml so both share the same sccache keys (RUSTFLAGS is part
-        # of the compile-cache hash).
+      - name: Install Linux system dependencies
         run: |
-          $llvm = "C:\Program Files\LLVM\bin"
-          if (Test-Path "$llvm\lld-link.exe") {
-            "$llvm" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
-            "RUSTFLAGS=-C linker=lld-link" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-            Write-Host "Using lld-link from $llvm"
-          } else {
-            Write-Warning "lld-link not found; falling back to link.exe"
-          }
+          sudo apt-get update
+          sudo apt-get install -y nsis lld llvm clang
+
+      - name: Install cargo-xwin
+        run: |
+          curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
+          cargo binstall cargo-xwin --no-confirm
+
+      - name: Cache xwin sysroot
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/xwin
+          key: xwin-cache-${{ runner.os }}
 
       - name: Bun cache
         uses: actions/cache@v4
@@ -87,10 +82,10 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ github.workspace }}/.sccache
-          key: sccache-${{ runner.os }}-${{ github.ref_name }}-${{ github.sha }}
+          key: sccache-${{ runner.os }}-windows-${{ github.ref_name }}-${{ github.sha }}
           restore-keys: |
-            sccache-${{ runner.os }}-${{ github.ref_name }}-
-            sccache-${{ runner.os }}-
+            sccache-${{ runner.os }}-windows-${{ github.ref_name }}-
+            sccache-${{ runner.os }}-windows-
 
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
@@ -118,14 +113,6 @@ jobs:
         working-directory: tauri
         run: bun run download-sidecars
 
-      - name: Compile launcher stub
-        # The launcher stub is a tiny standalone .NET console exe embedded
-        # into the Rust binary via `include_bytes!`. Compiled with the
-        # framework csc.exe that ships with Windows — no .NET SDK install
-        # needed on the runner.
-        run: |
-          & "C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe" /target:winexe /win32icon:launcher_stub.ico /out:launcher_stub.exe launcher_stub.cs
-
       # `cargo clippy --all-targets` compiles the same crates as
       # `cargo check` and emits the same errors plus lints, so a separate
       # check step is pure redundant compilation — dropped. Frontend
@@ -133,7 +120,7 @@ jobs:
       # job on Ubuntu, off the slow Windows critical path.
       - name: Cargo clippy
         working-directory: tauri/src-tauri
-        run: cargo clippy --all-targets
+        run: cargo xwin clippy --target x86_64-pc-windows-msvc --all-targets
 
       - name: Cargo test
         working-directory: tauri/src-tauri
@@ -147,7 +134,7 @@ jobs:
         # bundle generation; release.yml produces the artifacts.
         if: github.event_name == 'push'
         working-directory: tauri
-        run: bun run tauri build --no-bundle
+        run: bun run tauri build --no-bundle --runner cargo-xwin --target x86_64-pc-windows-msvc
 
   # Frontend checks (svelte-check / eslint / vitest). Platform-independent,
   # so they run on a fast Ubuntu runner in parallel instead of sitting in
