@@ -257,14 +257,13 @@ fn rgb_to_hsl(r: u8, g: u8, b: u8) -> (f32, f32, f32) {
 
 // ── Multi-art bundle for Add-to-Steam ───────────────────────────────────────
 
-/// Fetches hero / wide-grid / logo from SteamGridDB and writes them
+/// Fetches hero / wide-grid / logo / icon from SteamGridDB and writes them
 /// straight into Steam's grid dir with the filenames Steam expects:
 ///
 ///   `<app_id>_hero.<ext>`   — hero banner
-///   `<app_id>.<ext>`        — wide grid (920×430), modern desktop client
-///   `<legacy_id>.<ext>`     — same wide grid under the legacy 64-bit id, so
-///                             Big Picture / Steam Deck Gaming Mode shows it
+///   `<app_id>.<ext>`        — wide grid (920×430)
 ///   `<app_id>_logo.<ext>`   — logo (transparent PNG)
+///   `<app_id>_icon.<ext>`   — icon
 ///
 /// Portrait cover is handled separately by `fetch_and_save_cover` (called
 /// at add-time and reused by `place_grid_art` in `steam.rs`).
@@ -304,20 +303,33 @@ pub async fn fetch_steam_grid_bundle(
         ("icon", "_icon"),
     ];
     for (kind, suffix) in kinds {
-        if let Ok(Some(asset)) = fetch_first_art(&client.http, &api_key, sgdb_id, kind).await {
-            let ext = mime_to_ext(&asset.mime).unwrap_or_else(|| url_ext(&asset.url).unwrap_or("png"));
-            let dest = grid_dir.join(format!("{app_id}{suffix}.{ext}"));
-            if let Ok(bytes) = download_bytes(&client.http, &asset.url).await {
-                if std::fs::write(&dest, &bytes).is_ok() {
-                    placed.push(kind.to_string());
-                    // The landscape grid (bare `<appid>.<ext>`) also needs the
-                    // legacy 64-bit-id filename so Big Picture / Steam Deck
-                    // Gaming Mode picks it up. Reuse the bytes we already have.
-                    if suffix.is_empty() {
-                        let legacy = crate::steam::legacy_grid_id(app_id);
-                        let _ = std::fs::write(grid_dir.join(format!("{legacy}.{ext}")), &bytes);
-                    }
-                }
+        let asset = match fetch_first_art(&client.http, &api_key, sgdb_id, kind).await {
+            Ok(Some(a)) => a,
+            Ok(None) => {
+                tracing::debug!(kind, "fetch_steam_grid_bundle: no {kind} art on SteamGridDB");
+                continue;
+            }
+            Err(e) => {
+                tracing::warn!(kind, %e, "fetch_steam_grid_bundle: {kind} API request failed");
+                continue;
+            }
+        };
+        let ext = mime_to_ext(&asset.mime).unwrap_or_else(|| url_ext(&asset.url).unwrap_or("png"));
+        let dest = grid_dir.join(format!("{app_id}{suffix}.{ext}"));
+        let bytes = match download_bytes(&client.http, &asset.url).await {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::warn!(kind, %e, "fetch_steam_grid_bundle: {kind} download failed");
+                continue;
+            }
+        };
+        match std::fs::write(&dest, &bytes) {
+            Ok(()) => {
+                tracing::debug!(kind, dest = %dest.display(), "fetch_steam_grid_bundle: {kind} placed");
+                placed.push(kind.to_string());
+            }
+            Err(e) => {
+                tracing::warn!(kind, dest = %dest.display(), %e, "fetch_steam_grid_bundle: {kind} write failed");
             }
         }
     }
@@ -454,7 +466,9 @@ async fn fetch_portrait_grids(
     api_key: &str,
     sgdb_game_id: u64,
 ) -> AppResult<Vec<Grid>> {
-    let url = format!("{BASE}/grids/game/{sgdb_game_id}?dimensions=600x900");
+    // Include all three common portrait capsule dimensions that SteamGridDB
+    // hosts — some games only have 342x482 or 660x930 entries, not 600x900.
+    let url = format!("{BASE}/grids/game/{sgdb_game_id}?dimensions=600x900,342x482,660x930");
     let resp = http
         .get(&url)
         .bearer_auth(api_key)
