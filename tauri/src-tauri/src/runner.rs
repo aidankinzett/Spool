@@ -506,9 +506,9 @@ async fn get_local_active_save_details(
     let parsed: LocalPreviewOutput = serde_json::from_slice(&output.stdout)
         .map_err(|e| {
             tracing::error!(
-                "get_local_active_save_details: failed to parse ludusavi output: {:?}. Output: {}",
+                "get_local_active_save_details: failed to parse ludusavi output: {:?}. Output length: {} bytes",
                 e,
-                String::from_utf8_lossy(&output.stdout)
+                output.stdout.len()
             );
             e
         })
@@ -649,9 +649,9 @@ async fn query_rclone_details(
         Ok(parsed) => parsed,
         Err(e) => {
             tracing::error!(
-                "query_rclone_details: failed to deserialize JSON from rclone: {:?}. Output: {}",
+                "query_rclone_details: failed to deserialize JSON from rclone: {:?}. Output length: {} bytes",
                 e,
-                String::from_utf8_lossy(&output.stdout)
+                output.stdout.len()
             );
             return None;
         }
