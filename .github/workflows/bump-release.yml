@@ -1,0 +1,84 @@
+name: Bump & Tag Release
+
+# Manually-triggered release kickoff. Pick major / minor / patch in the
+# GitHub UI; this finds the latest vMAJOR.MINOR.PATCH tag, bumps the chosen
+# component, and pushes the new tag — which in turn fires release.yml.
+#
+# The tag is pushed with RELEASE_TOKEN (a PAT), not the default GITHUB_TOKEN:
+# GitHub deliberately does NOT trigger workflows from refs created by the
+# built-in token, so a GITHUB_TOKEN push would create the tag but never start
+# the release build. The PAT push triggers `on: push: tags: v*` as expected.
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Which version component to bump"
+        type: choice
+        required: true
+        default: patch
+        options:
+          - major
+          - minor
+          - patch
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history + tags so we can find the latest version tag.
+          fetch-depth: 0
+          # Use the PAT so the tag push below triggers release.yml.
+          token: ${{ secrets.RELEASE_TOKEN }}
+
+      - name: Compute next version
+        id: next
+        env:
+          BUMP: ${{ github.event.inputs.bump }}
+        run: |
+          set -euo pipefail
+          git fetch --tags --force
+
+          # Latest semver tag of the form vMAJOR.MINOR.PATCH, sorted by version
+          # (not commit date) so the highest number always wins.
+          LATEST=$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n1)
+          if [ -z "$LATEST" ]; then
+            LATEST="v0.0.0"
+            echo "No existing version tag found; starting from $LATEST"
+          fi
+          echo "Latest tag: $LATEST"
+
+          VERSION="${LATEST#v}"
+          MAJOR="${VERSION%%.*}"
+          REST="${VERSION#*.}"
+          MINOR="${REST%%.*}"
+          PATCH="${REST#*.}"
+
+          case "$BUMP" in
+            major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
+            minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
+            patch) PATCH=$((PATCH + 1)) ;;
+            *) echo "Unknown bump '$BUMP'" >&2; exit 1 ;;
+          esac
+
+          NEW_TAG="v${MAJOR}.${MINOR}.${PATCH}"
+          echo "New tag: $NEW_TAG"
+
+          if git rev-parse "$NEW_TAG" >/dev/null 2>&1; then
+            echo "Tag $NEW_TAG already exists" >&2
+            exit 1
+          fi
+
+          echo "tag=$NEW_TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Create and push tag
+        env:
+          NEW_TAG: ${{ steps.next.outputs.tag }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "$NEW_TAG" -m "$NEW_TAG"
+          git push origin "$NEW_TAG"
+          echo "Pushed $NEW_TAG — release.yml will build and publish it." >> "$GITHUB_STEP_SUMMARY"
