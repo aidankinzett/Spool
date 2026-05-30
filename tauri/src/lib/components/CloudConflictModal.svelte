@@ -78,9 +78,9 @@
     coverUrl?: string | null;
     /** Which side is the most recent revision — drives the "MOST RECENT" tag. */
     cloudNewer?: boolean;
-    /** Local-copy metadata; both metas present ⇒ the detailed card variant. */
+    /** Local-copy metadata; detail card renders if either side has metadata. */
     localMeta?: SaveMeta | null;
-    /** Cloud-copy metadata; both metas present ⇒ the detailed card variant. */
+    /** Cloud-copy metadata; detail card renders if either side has metadata. */
     cloudMeta?: SaveMeta | null;
     /** Surface this modal floats over — tweaks the scrim + the done CTA copy. */
     context?: 'desktop' | 'gamemode';
