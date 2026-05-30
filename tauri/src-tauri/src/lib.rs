@@ -190,7 +190,28 @@ pub fn run() {
         // after an update installs. On Windows the NSIS installer
         // relaunches us itself, but on the Linux AppImage the updater
         // only swaps the file in place, so we must restart explicitly.
-        .plugin(tauri_plugin_process::init());
+        .plugin(tauri_plugin_process::init())
+        // Persist + restore each window's size/position so Spool reopens
+        // where the user last left it. Two deliberate tweaks:
+        //   * `VISIBLE` is excluded from the saved flags — `main` is a
+        //     tray-resident window whose visibility we manage by hand
+        //     (close hides to tray; we `show()` it explicitly in setup).
+        //     Letting the plugin restore visibility would fight that and
+        //     could pop the window open on launch / reintroduce the
+        //     white-flash the hidden-then-show dance exists to avoid.
+        //   * the `splash` window is denylisted — it's the fullscreen
+        //     Game-Mode launch splash, never something to restore a
+        //     prior geometry for.
+        .plugin(
+            tauri_plugin_window_state::Builder::default()
+                .with_state_flags(
+                    tauri_plugin_window_state::StateFlags::SIZE
+                        | tauri_plugin_window_state::StateFlags::POSITION
+                        | tauri_plugin_window_state::StateFlags::MAXIMIZED,
+                )
+                .with_denylist(&["splash"])
+                .build(),
+        );
     if !attached {
         // Single-instance: secondary `spool` invocations land here. We
         // dispatch on argv to either focus the library or kick off a
