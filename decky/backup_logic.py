@@ -53,10 +53,18 @@ def should_backup(rec: Optional[dict], appid: int) -> bool:
     - `rec is None`              -> no Spool session -> no-op
     - appid mismatch             -> a non-Spool game stopped -> no-op
     - `backed_up` already true   -> normal quit already handled it -> no-op
+
+    Spool's shortcut appids set the high bit (`crc32 | 0x80000000`), and Steam
+    surfaces those as a signed int32 in some code paths, so the *same* id can
+    arrive negative. Compare both sides masked to unsigned 32-bit so the sign
+    never causes a false mismatch.
     """
     if not isinstance(rec, dict):
         return False
-    if rec.get("steam_appid") != appid:
+    rec_appid = rec.get("steam_appid")
+    if not isinstance(rec_appid, int) or not isinstance(appid, int):
+        return False
+    if (rec_appid & 0xFFFFFFFF) != (appid & 0xFFFFFFFF):
         return False
     return not bool(rec.get("backed_up", False))
 
