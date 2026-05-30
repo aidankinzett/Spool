@@ -6,6 +6,7 @@
   const { Story } = defineMeta({
     title: 'Primitives/Btn',
     component: Btn,
+    render: template,
     argTypes: {
       variant: {
         control: 'select',

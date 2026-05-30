@@ -6,6 +6,7 @@
   const { Story } = defineMeta({
     title: 'Primitives/TextField',
     component: TextField,
+    render: template,
     argTypes: {
       placeholder: { control: 'text' },
       mono: { control: 'boolean' },

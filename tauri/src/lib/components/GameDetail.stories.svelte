@@ -74,6 +74,7 @@
   const { Story } = defineMeta({
     title: 'Detail/GameDetail',
     component: GameDetail,
+    render: template,
     // The component is a full right-hand pane — give it the whole canvas.
     parameters: { layout: 'fullscreen' },
     argTypes: {

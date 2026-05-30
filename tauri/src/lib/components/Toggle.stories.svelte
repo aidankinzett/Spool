@@ -6,6 +6,7 @@
   const { Story } = defineMeta({
     title: 'Primitives/Toggle',
     component: Toggle,
+    render: template,
     argTypes: {
       checked: { control: 'boolean' },
       disabled: { control: 'boolean' },
