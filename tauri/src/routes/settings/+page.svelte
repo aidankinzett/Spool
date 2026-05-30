@@ -13,9 +13,12 @@
     Trash2,
     Wifi,
   } from '@lucide/svelte';
+  import { goto } from '$app/navigation';
   import { openPath } from '@tauri-apps/plugin-opener';
   import { appLocalDataDir } from '@tauri-apps/api/path';
   import { open as openDialog } from '@tauri-apps/plugin-dialog';
+  import { getCurrentWindow } from '@tauri-apps/api/window';
+  import { emit } from '@tauri-apps/api/event';
   import { api, type DeckyPluginInfo } from '$lib/api';
   import { toasts } from '$lib/toasts.svelte';
   import type { ConfigData, DepStatus, LanPeer, ProtonVersion, SyncStatus } from '$lib/types';
@@ -143,8 +146,36 @@
     if (!config) return;
     config.ui_mode = mode;
     const ok = await persist();
-    if (ok) {
-      await uiMode.init(mode); // applies <html data-mode> live in this window
+    if (!ok) return;
+    await uiMode.init(mode); // applies <html data-mode> live in this window
+    // Tell every other open window (the main library) to re-resolve the mode
+    // so the switch takes effect everywhere without a restart.
+    await emit('config:ui-mode-changed');
+
+    // Keep this window coherent with the new windowing model. Desktop opens
+    // each view as its own decorated child window; touch routes everything
+    // inside the main window. When the model flips under us the current
+    // window's chrome no longer matches — without this the Settings window
+    // loses its close button in touch mode (the back chevron's history.back()
+    // is a dead-end in a freshly-spawned window) and traps the user.
+    const win = getCurrentWindow();
+    if (win.label !== 'main') {
+      // Spawned desktop child window. Touch mode has no separate Settings
+      // window, so hand control back to the main library window.
+      if (uiMode.resolved === 'touch') {
+        toasts.show({
+          kind: 'ok',
+          label: 'DISPLAY',
+          title: 'Touch mode on',
+          sub: 'Switched the library to touch layout.',
+        });
+        await win.close();
+      }
+    } else if (uiMode.resolved === 'desktop') {
+      // We're the main window showing the in-app Settings route (touch nav).
+      // Desktop chrome's close button targets the whole window, so step back
+      // to the library where that chrome belongs.
+      await goto('/');
     }
   }
 
