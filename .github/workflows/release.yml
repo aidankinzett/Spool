@@ -17,6 +17,7 @@ jobs:
       # is the source of truth for object files. Keep registry caching.
       CARGO_INCREMENTAL: "0"
       BUN_INSTALL_CACHE_DIR: "${{ github.workspace }}/.bun-cache"
+      XWIN_ARCH: "x86_64"
 
     steps:
       - uses: actions/checkout@v4
@@ -181,7 +182,7 @@ jobs:
       - name: Install Linux system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf zsync
 
       - name: Stamp version into Tauri config + Cargo.toml
         env:
@@ -273,7 +274,7 @@ jobs:
             https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
           chmod +x appimagetool
           rm "$APPIMAGE" "$APPIMAGE.sig"
-          ARCH=x86_64 ./appimagetool --appimage-extract-and-run squashfs-root "$APPIMAGE"
+          ARCH=x86_64 ./appimagetool --appimage-extract-and-run -u "gh-releases-zsync|aidankinzett|Spool|latest|Spool_amd64.AppImage.zsync" squashfs-root Spool_amd64.AppImage
           rm -rf squashfs-root appimagetool
 
       - name: Re-sign repacked AppImage
@@ -286,8 +287,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           set -euo pipefail
-          APPIMAGE=$(ls Spool_*_amd64.AppImage)
-          bunx @tauri-apps/cli signer sign "$APPIMAGE"
+          bunx @tauri-apps/cli signer sign Spool_amd64.AppImage
 
       - name: Package raw binary tarball (for AUR spool-bin)
         # The AppImage bundles its own libs (and we strip libwayland from it);
@@ -313,8 +313,9 @@ jobs:
         with:
           name: linux-bundle
           path: |
-            tauri/src-tauri/target/release/bundle/appimage/Spool_*_amd64.AppImage
-            tauri/src-tauri/target/release/bundle/appimage/Spool_*_amd64.AppImage.sig
+            tauri/src-tauri/target/release/bundle/appimage/Spool_amd64.AppImage
+            tauri/src-tauri/target/release/bundle/appimage/Spool_amd64.AppImage.sig
+            tauri/src-tauri/target/release/bundle/appimage/Spool_amd64.AppImage.zsync
             tauri/src-tauri/target/release/bundle/appimage/spool-*-x86_64.tar.gz
           if-no-files-found: error
 
@@ -372,13 +373,14 @@ jobs:
           set -euo pipefail
           WIN_EXE=$(ls artifacts/windows-bundle/Spool_*_x64-setup.exe)
           WIN_SIG=$(ls artifacts/windows-bundle/Spool_*_x64-setup.exe.sig)
-          LIN_APP=$(ls artifacts/linux-bundle/Spool_*_amd64.AppImage)
-          LIN_SIG=$(ls artifacts/linux-bundle/Spool_*_amd64.AppImage.sig)
+          LIN_APP=$(ls artifacts/linux-bundle/Spool_amd64.AppImage)
+          LIN_SIG=$(ls artifacts/linux-bundle/Spool_amd64.AppImage.sig)
+          LIN_ZSYNC=$(ls artifacts/linux-bundle/Spool_amd64.AppImage.zsync)
           LIN_TAR=$(ls artifacts/linux-bundle/spool-*-x86_64.tar.gz)
           gh release create "$TAG_NAME" \
             --title "Spool $TAG_NAME" \
             --notes-file notes.md \
-            "$WIN_EXE" "$WIN_SIG" "$LIN_APP" "$LIN_SIG" "$LIN_TAR"
+            "$WIN_EXE" "$WIN_SIG" "$LIN_APP" "$LIN_SIG" "$LIN_ZSYNC" "$LIN_TAR"
 
       - name: Build and upload latest.json updater manifest
         # tauri-action only emits latest.json on its own release-creation
@@ -399,7 +401,7 @@ jobs:
           WIN_EXE_NAME=$(basename "$WIN_SIG_FILE" .sig)
           WIN_SIG=$(cat "$WIN_SIG_FILE")
 
-          LIN_APP_FILE=$(ls artifacts/linux-bundle/Spool_*_amd64.AppImage)
+          LIN_APP_FILE=$(ls artifacts/linux-bundle/Spool_amd64.AppImage)
           LIN_SIG_FILE="${LIN_APP_FILE}.sig"
           LIN_APP_NAME=$(basename "$LIN_APP_FILE")
           LIN_SIG=$(cat "$LIN_SIG_FILE")
