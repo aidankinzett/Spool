@@ -17,10 +17,10 @@
     accent: string;
     /** Left-hand status label — bytes / speed / ETA / verb. */
     label: string;
-    /** Optional peer string on the right — `Workshop · Desktop`, `TorBox · debrid`, … */
+    /** Optional peer string on the right — `Workshop · Desktop`, … */
     source?: string;
     /** Categorises the peer for icon selection. */
-    sourceKind?: 'lan' | 'torbox' | 'cloud' | null;
+    sourceKind?: 'lan' | 'cloud' | null;
     /** Up = uploading from us, down = downloading to us. */
     dir?: 'up' | 'down';
     /** Bar height in pixels. */
@@ -42,7 +42,7 @@
   const sourceColor = $derived(
     sourceKind === 'lan'
       ? 'var(--color-ok)'
-      : sourceKind === 'torbox' || sourceKind === 'cloud'
+      : sourceKind === 'cloud'
         ? 'var(--color-info)'
         : 'var(--color-ink-3)',
   );
@@ -82,7 +82,7 @@
         {/if}
         {#if sourceKind === 'lan'}
           <Wifi size={9} color={sourceColor} />
-        {:else if sourceKind === 'torbox' || sourceKind === 'cloud'}
+        {:else if sourceKind === 'cloud'}
           <Cloud size={9} color={sourceColor} />
         {/if}
         {source}

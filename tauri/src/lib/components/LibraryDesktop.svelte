@@ -2,7 +2,6 @@
   import { onMount } from 'svelte';
   import {
     ArrowLeft,
-    BookOpen,
     ChevronRight,
     Cloud,
     CloudOff,
@@ -88,23 +87,6 @@
     conflict={lib.syncOff}
   >
     <div class="flex h-full items-center justify-end gap-1.5 pr-2">
-      <!-- Browse Games: opens the Hydra source aggregator as a child
-           window. Hidden when no feeds are configured so users
-           without TorBox/Hydra setup don't see a dead button. -->
-      {#if lib.config && lib.config.download_sources.length > 0}
-        <button
-          type="button"
-          onclick={() => openView('browse')}
-          title="Browse games · {lib.config.download_sources.length} feeds"
-          aria-label="Browse games"
-          class="inline-flex cursor-pointer items-center justify-center rounded-sm text-ink-2 transition-colors hover:bg-white/10 hover:text-ink-0"
-          style:height="var(--control-h-icon)"
-          style:width="var(--control-h-icon)"
-          data-tauri-drag-region="false"
-        >
-          <BookOpen size={14} />
-        </button>
-      {/if}
       <!-- Transfers pill — central hub for both downloads and uploads -->
       <span bind:this={transferPillEl} class="inline-flex">
         <TransferPill

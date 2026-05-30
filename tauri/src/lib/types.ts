@@ -23,11 +23,6 @@ export type ConfigData = {
   /** Max aggregate LAN download throughput in MB/s. `0` = unlimited. */
   lan_download_max_mbps: number;
 
-  torbox_enabled: boolean;
-  torbox_api_key: string;
-  download_dir: string;
-  download_sources: string[];
-
   /** Path to `umu-run`. `""` = autodetect. Linux-only. */
   umu_run_path: string;
   /** Default Proton build dir; `""` = auto-pick newest. */
@@ -242,54 +237,6 @@ export type UploadSnapshot = {
   peer_addr: string;
   last_seen_ago_secs: number;
   cancelled: boolean;
-};
-
-/**
- * One Hydra source entry (a downloadable game). Mirrors
- * `HydraEntry` in hydra.rs.
- */
-export type HydraEntry = {
-  title: string;
-  uris: string[];
-  upload_date: string;
-  file_size: string;
-  source_name: string;
-  source_url: string;
-};
-
-/** Per-feed fetch outcome reported by `hydra_fetch_all`. */
-export type FeedStatus = {
-  url: string;
-  name: string | null;
-  entry_count: number;
-  error: string | null;
-};
-
-/** Top-level result from `hydra_fetch_all`. */
-export type BrowseFetchResult = {
-  entries: HydraEntry[];
-  feeds: FeedStatus[];
-};
-
-/**
- * In-flight progress for a Browse Games download. Same shape as the
- * Rust `BrowseDownloadProgress` in browse_download.rs. Emitted on
- * `browse:download` events; queryable via `currentBrowseDownload`.
- *
- *   source_kind  "torbox" | "direct"
- *   status       starting | queuing | downloading | done | error | canceled
- */
-export type BrowseDownloadProgress = {
-  install_token: string;
-  source_kind: string;
-  source_name: string;
-  game_name: string;
-  bytes_done: number;
-  bytes_total: number;
-  current_file: string;
-  status: string;
-  message: string | null;
-  dest_path: string | null;
 };
 
 /**

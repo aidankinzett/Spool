@@ -2,9 +2,9 @@
 //!
 //! The on-disk format mirrors the C# `ConfigData` exactly so an existing
 //! Spool installation's config loads without migration. Fields that aren't
-//! yet exposed in the new UI (LAN share, sync server, TorBox, download
-//! sources) are still modelled so the file round-trips cleanly with the
-//! C# app — they're just inert until v2.
+//! yet exposed in the new UI (LAN share, sync server) are still modelled so
+//! the file round-trips cleanly with the C# app — they're just inert until
+//! v2.
 
 use crate::error::{AppError, AppResult};
 use crate::paths;
@@ -59,11 +59,6 @@ pub struct ConfigData {
     /// the next sleep brings the average back.
     pub lan_download_max_mbps: f64,
 
-    pub torbox_enabled: bool,
-    pub torbox_api_key: String,
-    pub download_dir: String,
-    pub download_sources: Vec<String>,
-
     // ── Proton / Linux launch ────────────────────────────────────────────
     /// Path to the `umu-run` launcher. `""` = autodetect (`/usr/bin/umu-run`
     /// then PATH). Linux-only; ignored on Windows.
@@ -113,10 +108,6 @@ impl Default for ConfigData {
             lan_share_port: 47632,
             lan_install_dir: String::new(),
             lan_download_max_mbps: 0.0,
-            torbox_enabled: false,
-            torbox_api_key: String::new(),
-            download_dir: String::new(),
-            download_sources: Vec::new(),
             umu_run_path: String::new(),
             default_proton_path: String::new(),
             ui_mode: UiMode::default(),

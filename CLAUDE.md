@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**Spool** (formerly ludusavi-wrap) is a cross-platform (Windows + Linux) game library + save-management wrapper built with [Tauri 2](https://v2.tauri.app/) (Rust backend) and [SvelteKit 5](https://kit.svelte.dev/) frontend. Windows is the primary target, but the app also builds and runs on Linux — notably the gaming-handheld distros like **Bazzite**, **CachyOS**, and **SteamOS** (Steam Deck). Linux ships as an AppImage (see Releasing below). A few OS-integration features are Windows-only and degrade gracefully on Linux (see the *Windows-only* modules below). It maintains a persistent **game library** with cover art (via SteamGridDB) and lets users launch games directly from the app — automatically restoring saves before launch and backing them up on exit, with cloud-sync conflict detection via [ludusavi](https://github.com/mtkennerly/ludusavi). It also generates standalone launcher shortcuts for ASUS Armoury Crate and Steam, shares games over the LAN, locks play state across devices via a self-hosted Hono (Node) sync server, and downloads games from Hydra-format catalogues via TorBox.
+**Spool** (formerly ludusavi-wrap) is a cross-platform (Windows + Linux) game library + save-management wrapper built with [Tauri 2](https://v2.tauri.app/) (Rust backend) and [SvelteKit 5](https://kit.svelte.dev/) frontend. Windows is the primary target, but the app also builds and runs on Linux — notably the gaming-handheld distros like **Bazzite**, **CachyOS**, and **SteamOS** (Steam Deck). Linux ships as an AppImage (see Releasing below). A few OS-integration features are Windows-only and degrade gracefully on Linux (see the *Windows-only* modules below). It maintains a persistent **game library** with cover art (via SteamGridDB) and lets users launch games directly from the app — automatically restoring saves before launch and backing them up on exit, with cloud-sync conflict detection via [ludusavi](https://github.com/mtkennerly/ludusavi). It also generates standalone launcher shortcuts for ASUS Armoury Crate and Steam, shares games over the LAN, and locks play state across devices via a self-hosted Hono (Node) sync server.
 
 For the user-facing feature tour see [`README.md`](README.md); the self-hosted sync server is documented in [`server/README.md`](server/README.md).
 
@@ -69,15 +69,13 @@ Foundation:
 * **`cli.rs`** — argv parsing for `--run "Name" "Exe"` vs normal launch. Used both at startup and by the single-instance forwarding callback.
 
 Persistence:
-* **`config.rs`** — app-wide settings persisted to `%LOCALAPPDATA%\Spool\config.json` (Ludusavi path, SteamGridDB key, theme, sync server, device identity, LAN share, TorBox, download sources). On-disk shape mirrors the C# `ConfigData` exactly; `#[serde(default)]` on every field means existing files load without migration.
+* **`config.rs`** — app-wide settings persisted to `%LOCALAPPDATA%\Spool\config.json` (Ludusavi path, SteamGridDB key, theme, sync server, device identity, LAN share). On-disk shape mirrors the C# `ConfigData` exactly; `#[serde(default)]` on every field means existing files load without migration.
 * **`library.rs`** — `GameEntry` + `Library` CRUD with atomic JSON saves (write-then-replace, `.bak` rotation) to `%LOCALAPPDATA%\Spool\library.json`. Sequential catalog numbers backfilled on first load. Emits `library:changed` on every mutation.
 
 External integrations:
 * **`ludusavi.rs`** — subprocess invocation of the ludusavi CLI. Owns the ~9 MB manifest cache (lazy-loaded into `Arc<HashMap>`), the search/find/enrich flow, and restore/backup invoked by the run workflow.
 * **`steamgriddb.rs`** — HTTP client for SteamGridDB. Prefers Steam ID lookup (near-100% accurate) and falls back to name autocomplete. Downloads portrait covers to `%LOCALAPPDATA%\Spool\covers\` and extracts a vibrant accent colour from the image.
 * **`steam.rs`** — non-Steam shortcut creation. Writes to `<steam>/userdata/<uid>/config/shortcuts.vdf` via `steam_shortcuts_util` with `--run` launch options, plus grid art placement under `grid/<appid>{suffix}.{ext}`. Uses `steamlocate` for Steam install discovery.
-* **`hydra.rs`** — fetches and merges user-configured Hydra-format JSON catalogues (community game-download lists) for the Browse Games window.
-* **`torbox.rs`** — HTTP client for the TorBox debrid service (POST magnet → poll until cached → request signed per-file URL). Pure request wrappers exposed as Tauri commands.
 * **`sync.rs`** — sync-server HTTP client (Hono/Node server in `server/`). Account registration, per-game play-state lock acquire/release/heartbeat, save event recording, playtime + last-played cross-device sync. Background task polls `/health` every 30 s and emits `sync:status-changed`.
 * **`lan.rs`** — the largest module (~100 KB). Two halves:
   * **Discovery** — every 5 s sends a small JSON announce packet over **UDP broadcast** (`255.255.255.255:47631`, *not* multicast — consumer mesh routers filter admin-scoped multicast but flood limited broadcasts). Peers stale out after 30 s. Announce carries the live `file_server_port`. Emits `lan:peers-changed`.
@@ -91,9 +89,6 @@ Windows-only (these are `#[cfg(windows)]`-gated or no-op on Linux — the rest o
 Workflow orchestration:
 * **`runner.rs`** — the marquee feature. Five-phase state machine: `restoring → launching → playing → backing-up → done`, emitting `run:phase` events at each transition. Single-launch RAII guard releases the slot even on panic. Cloud-sync conflicts during restore abort cleanly; backup failures after a successful session log-and-continue.
 
-Download orchestration:
-* **`browse_download.rs`** — drives file transfers when the user clicks Download in the Browse Games window. Picks TorBox for `magnet:` URIs and direct HTTP otherwise. Single in-flight slot, cancel flag, throttled `browse:download` progress events.
-
 Startup backfills (one-shot tasks at boot, results saved once at the end):
 * **`accent_backfill.rs`** — picks library entries with a cover on disk but no accent colour yet, runs `extract_vibrant_color` against each.
 * **`size_backfill.rs`** — picks entries with a `game_folder_path` on disk but `install_size_mb == 0`, computes the recursive directory size via `walkdir` in `spawn_blocking`.
@@ -104,13 +99,12 @@ Routes under `tauri/src/routes/`:
 * **`+layout.svelte` / `+layout.ts`** — global chrome (frameless title bar, toast stack), theme application, cross-window event subscriptions, navigation shell.
 * **`+page.svelte`** — main library window: sidebar (searchable game list, filter tabs, cover thumbnails, sync-status badges, peer-WiFi indicator) + detail panel (cover art, Play button with per-phase label, stats strip, action toolbar, About/Saves/Details cards).
 * **`add/+page.svelte`** — Add Game popup (opened as a separate `WebviewWindow`). Drop or browse for an exe → ludusavi auto-identifies → ranked candidate list with confidence scores → Add to Library / Armoury Crate / Add to Steam.
-* **`browse/+page.svelte`** — Browse Games window. Three-pane Hydra catalogue browser with searchable/filterable list, detail pane, and inline download progress.
 * **`edit/+page.svelte`** — per-game settings dialog (install folder, run-as-admin, manual cover refresh).
-* **`settings/+page.svelte`** — application settings (Ludusavi path with autodetect, SteamGridDB key, theme, LAN share, sync server, TorBox, download sources, device name). Live save on commit, no Save button.
+* **`settings/+page.svelte`** — application settings (Ludusavi path with autodetect, SteamGridDB key, theme, LAN share, sync server, device name). Live save on commit, no Save button.
 
 Shared code under `tauri/src/lib/`:
 * **`api.ts`** — the single typed wrapper around Tauri's `invoke` IPC bridge. Every backend command is a method on the exported `api` object (e.g. `api.listGames()`, `api.startPeerInstall(...)`); components never call `invoke` directly. Also exports `assetUrl()` which wraps `convertFileSrc` for loading local files (covers, art) into the webview via the `asset:` protocol. **When you add a Rust `#[tauri::command]`, add its typed wrapper here.**
-* **`types.ts`** — TypeScript mirrors of the Rust serde types (`GameEntry`, `ConfigData`, `LanPeer`, `PeerGame`, `DownloadProgress`, `SyncStatus`, `HydraEntry`, `SearchCandidate`, etc.). Keep these in sync with the Rust structs they mirror.
+* **`types.ts`** — TypeScript mirrors of the Rust serde types (`GameEntry`, `ConfigData`, `LanPeer`, `PeerGame`, `DownloadProgress`, `SyncStatus`, `SearchCandidate`, etc.). Keep these in sync with the Rust structs they mirror.
 * **`components/`** — reusable Svelte components: primitives (`Btn`, `Toggle`, `TextField`, `Pill`, `Icon`), layout/chrome (`WindowChrome`, `SettingsCard`, `SettingsRow`, `DetailCard`), the toast stack (`Toast`, `ToastStack`), the LAN transfer UI (`TransfersPanel`, `TransferPill`), `GameDetail`, `LibraryContextMenu`, `CassetteProgress`, and `CandidateRow`.
 * **`toasts.svelte.ts`** — global toast store (Svelte 5 runes). `format.ts` / `tokens.ts` — display helpers (sizes, durations, design tokens). `updater.ts` — wraps `tauri-plugin-updater` (checks `latest.json`, prompts, applies). `GameCard.svelte` — sidebar/grid cover thumbnail.
 
@@ -120,7 +114,7 @@ All paths below are written as `%LOCALAPPDATA%\Spool\` (Windows). The root is re
 
 | File | Location | Contents |
 |------|----------|----------|
-| `config.json` | `%LOCALAPPDATA%\Spool\` | App-wide settings (Ludusavi path, API keys, theme, sync server, LAN share, TorBox, device ID) |
+| `config.json` | `%LOCALAPPDATA%\Spool\` | App-wide settings (Ludusavi path, API keys, theme, sync server, LAN share, device ID) |
 | `library.json` | `%LOCALAPPDATA%\Spool\` | Game library — list of `GameEntry` objects |
 | `covers/` | `%LOCALAPPDATA%\Spool\` | Downloaded SteamGridDB cover images |
 | `launchers/` | `%LOCALAPPDATA%\Spool\` | Generated per-game `.exe` launcher stubs (Armoury Crate) |
@@ -132,7 +126,7 @@ All paths below are written as `%LOCALAPPDATA%\Spool\` (Windows). The root is re
 * **Per-concern Tauri `State<T>`**: every command declares its dependencies as parameters (e.g. `library: State<'_, SharedLibrary>`, `config: State<'_, SharedConfig>`) — explicit, compiler-enforced, refactor-friendly. No single `AppState` god object.
 * **Lock discipline**: never hold a `std::sync::Mutex` guard across `.await`. Every async command snapshots what it needs from state, drops the guard, then awaits. If state must cross an await point, that specific state moves to `tokio::sync::Mutex`.
 * **Atomic JSON saves**: `library.rs` writes to a temp file then `rename`s over the target, rotating a `.bak` of the previous good file. Survives crash mid-write without corrupting either copy.
-* **`AppHandle::emit` cross-window broadcast**: events go to all open webviews. The Add Game popup mutating the library triggers a refresh in the main window for free — no targeted emit needed. Current events: `library:changed`, `run:phase`, `sync:status-changed`, `browse:download`, `lan:peers-changed`, `lan:download`, `lan:uploads-changed`, and the tray events `tray:show` / `tray:first-hide` / `tray:quit`.
+* **`AppHandle::emit` cross-window broadcast**: events go to all open webviews. The Add Game popup mutating the library triggers a refresh in the main window for free — no targeted emit needed. Current events: `library:changed`, `run:phase`, `sync:status-changed`, `lan:peers-changed`, `lan:download`, `lan:uploads-changed`, and the tray events `tray:show` / `tray:first-hide` / `tray:quit`.
 * **Event naming**: colon-namespaced (`library:changed`, `run:phase`). Tauri 2 rejects `.` in event names at runtime (allowed charset is `[A-Za-z0-9_\-/:]+`).
 * **RAII run-lock**: `runner.rs` acquires a single-launch guard whose `Drop` impl releases the slot. Releases on panic too — without it a crashed workflow would leave Spool unable to launch any game until restart.
 * **Backfill tasks**: legacy library entries (pre-rename `ludusavi-wrap` users) lack newer fields like `accent_color` or `install_size_mb`. `accent_backfill.rs` and `size_backfill.rs` walk the library at startup, fill in the gaps via `walkdir` + colour extraction, save once at the end, emit `library:changed` so the UI repaints.

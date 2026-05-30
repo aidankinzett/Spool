@@ -12,7 +12,7 @@
 
 ---
 
-Spool started life as a thin wrapper around [ludusavi](https://github.com/mtkennerly/ludusavi) — restore saves before a game launches, back them up on exit. It's since grown into a full personal game shelf: cover art from SteamGridDB, LAN game-sharing between devices, a sync server that locks saves across machines, TorBox downloads, and one-click launcher shortcuts for Armoury Crate and Steam.
+Spool started life as a thin wrapper around [ludusavi](https://github.com/mtkennerly/ludusavi) — restore saves before a game launches, back them up on exit. It's since grown into a full personal game shelf: cover art from SteamGridDB, LAN game-sharing between devices, a sync server that locks saves across machines, and one-click launcher shortcuts for Armoury Crate and Steam.
 
 Built with [Tauri 2](https://v2.tauri.app/) (Rust backend) and [SvelteKit 5](https://kit.svelte.dev/) — small native binary, instant startup, and a webview-rendered UI with system accent color integration.
 
@@ -33,8 +33,6 @@ Runs on **Windows** and **Linux** — including the gaming-handheld distros like
   - [Playtime Tracking](#playtime-tracking)
   - [LAN Game Sharing](#lan-game-sharing)
   - [Cloud Sync & Cross-Device Lock](#cloud-sync--cross-device-lock)
-  - [TorBox Downloader Integration](#torbox-downloader-integration)
-  - [Browse Games Window](#browse-games-window)
   - [Desktop Notifications](#desktop-notifications)
   - [Theming](#theming)
   - [Auto-Update](#auto-update)
@@ -162,27 +160,6 @@ Before launching a game, Spool acquires a lock on the sync server. If another de
 
 After each play session, the card's badge updates to reflect whether the local and cloud saves are in sync. This gives you a quick visual health check across your library without opening Ludusavi.
 
-### TorBox Downloader Integration
-
-[TorBox](https://torbox.app) is a torrent debrid service — it downloads torrents server-side and lets you pull the result at full speed. Spool integrates directly:
-
-- Configure your TorBox API key and a local download directory in Settings.
-- When downloading a game via the **Browse Games** window (see below), Spool can send the torrent/magnet to TorBox and then download the cached result to your machine.
-- Download progress is tracked inline.
-
-### Browse Games Window
-
-The **Browse Games** window lets you search a catalogue of downloadable games from configured Hydra-format download sources.
-
-- Click **Browse Games** in the toolbar (if download sources are configured in Settings).
-- The window fetches all sources and presents a searchable, filterable list showing title, file size, and upload date.
-- Select a game and click **Download** (or double-click) to initiate a download via TorBox or a direct link.
-- After the download completes, you're prompted to add the game to your library.
-
-**Configuring download sources:**
-
-Open Settings → **Download Sources** — add one or more URLs pointing to Hydra-format JSON catalogues. Spool fetches and merges them on each open.
-
 ### Desktop Notifications
 
 Game sessions no longer show a blocking progress window. Instead, Spool hides itself and uses your operating system's **native notifications** (Windows toasts / the Linux notification centre) to communicate:
@@ -218,11 +195,9 @@ Open Settings (gear icon) to configure. Settings are organised into tabs:
 | General | Ludusavi executable | Path to `ludusavi.exe`. Shows "Detected" if found automatically. |
 | General | Theme | System / Light / Dark — applied live across all open windows. |
 | Artwork | SteamGridDB | API key for automatic cover art download. |
-| Sources | Download Sources | Hydra-format catalogue URLs for the Browse Games window. |
 | LAN sharing | LAN Share | Enable/disable, port number, and default install directory for received games. |
 | Cloud sync | Sync Server | URL and API key for the cloud sync / play-state-lock server. |
 | Cloud sync | Device Name | How this machine appears to peers and on the sync server. |
-| Downloads | TorBox | API key and local download directory for the debrid downloader. |
 
 The Settings window is resizable, making it usable on small screens and handhelds.
 
