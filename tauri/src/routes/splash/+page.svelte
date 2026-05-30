@@ -10,17 +10,45 @@
   const LABELS: Record<string, string> = {
     restoring: 'Restoring saves…',
     launching: 'Launching game…',
-    playing: 'Starting…',
+    playing: 'Game running',
     'backing-up': 'Backing up saves…',
     done: 'Done',
     error: 'Launch failed',
   };
 
+  // Keep each phase on screen for at least this long, so transitions the
+  // backend fires almost simultaneously (e.g. `launching` → `playing`) are
+  // shown in sequence instead of one instantly replacing the other.
+  const MIN_VISIBLE_MS = 700;
+  const queue: RunPhaseEvent[] = [];
+  let draining = false;
+
+  function apply(ev: RunPhaseEvent) {
+    phase = ev.phase;
+    message = ev.message ?? LABELS[ev.phase] ?? ev.phase;
+  }
+
+  async function pump() {
+    if (draining) return;
+    draining = true;
+    while (queue.length > 0) {
+      const ev = queue.shift()!;
+      apply(ev);
+      // Terminal states shouldn't hold the window open.
+      if (ev.phase === 'done' || ev.phase === 'error') break;
+      // Only pace when another phase is already waiting behind this one.
+      if (queue.length > 0) {
+        await new Promise((r) => setTimeout(r, MIN_VISIBLE_MS));
+      }
+    }
+    draining = false;
+  }
+
   onMount(() => {
     let unlistenFn: (() => void) | undefined;
     listen<RunPhaseEvent>('run:phase', (event) => {
-      phase = event.payload.phase;
-      message = event.payload.message ?? LABELS[phase] ?? phase;
+      queue.push(event.payload);
+      void pump();
     })
       .then((fn) => {
         unlistenFn = fn;

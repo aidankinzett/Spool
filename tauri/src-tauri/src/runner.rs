@@ -86,6 +86,10 @@ fn emit_phase(app: &AppHandle, game_id: &str, phase: &str, message: Option<&str>
         message: message.map(String::from),
         cloud_used,
     };
+    // Log every transition so a Game-Mode launch is diagnosable from
+    // debug.log alone — confirms the workflow advanced past "restoring"
+    // and shows how long each phase took (e.g. a slow cloud-sync restore).
+    tracing::info!(game_id, phase, ?message, "run:phase");
     if let Err(e) = app.emit("run:phase", &payload) {
         tracing::warn!(phase = phase, error = %e, "failed to emit run:phase");
     }

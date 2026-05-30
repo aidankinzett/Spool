@@ -142,9 +142,51 @@ fn apply_cloud(
         set_path(
             v,
             &["apps", "rclone", "arguments"],
-            Value::String(a.into()),
+            Value::String(ensure_rclone_timeouts(a)),
         );
     }
+}
+
+/// Connection / IO timeout + retry caps we always fold into rclone's arguments.
+///
+/// `ludusavi {restore,backup} --cloud-sync` shells out to rclone. With rclone's
+/// defaults, an unreachable remote (e.g. the save-sync server at SteamOS
+/// Game-Mode boot, before Wi-Fi is up) blocks for *minutes* (long connect
+/// timeout × retries × low-level-retries) — which wedges the run workflow on
+/// the "restoring" phase and the game never launches. Capping these makes
+/// `--cloud-sync` give up in seconds; ludusavi then proceeds with the local
+/// restore (the saves that matter are already on disk).
+///
+/// Each flag is appended only if the user hasn't already set it in their
+/// configured `rclone_args`, so a deliberate override is preserved.
+pub fn ensure_rclone_timeouts(user_args: &str) -> String {
+    // Aggressive on purpose: when the remote is unreachable at Game-Mode boot
+    // we want to give up and launch in a few seconds, not tens of seconds. A
+    // healthy LAN/cloud remote connects well under 5s; if it can't, falling
+    // back to the local save and launching immediately is the better outcome.
+    const DEFAULTS: &[(&str, &str)] = &[
+        ("--contimeout", "5s"),
+        ("--timeout", "45s"),
+        ("--retries", "1"),
+        ("--low-level-retries", "1"),
+    ];
+    let mut out = user_args.trim().to_string();
+    for (flag, val) in DEFAULTS {
+        let eq_prefix = format!("{flag}=");
+        if out
+            .split_whitespace()
+            .any(|t| t == *flag || t.starts_with(&eq_prefix))
+        {
+            continue;
+        }
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        out.push_str(flag);
+        out.push(' ');
+        out.push_str(val);
+    }
+    out
 }
 
 /// Replace the entire `redirects:` list in the owned config.yaml. Called
@@ -414,9 +456,11 @@ mod tests {
             get_path(&v, &["apps", "rclone", "path"]),
             Some(&Value::String("/usr/bin/rclone".into())),
         );
+        // Arguments get the fast-fail timeout flags folded in (the user's
+        // flag is preserved at the front).
         assert_eq!(
             get_path(&v, &["apps", "rclone", "arguments"]),
-            Some(&Value::String("--fast-list".into())),
+            Some(&Value::String(ensure_rclone_timeouts("--fast-list"))),
         );
     }
 
@@ -436,7 +480,49 @@ mod tests {
         );
         assert_eq!(
             get_path(&v, &["apps", "rclone", "arguments"]),
-            Some(&Value::String("--ignore-checksum".into())),
+            Some(&Value::String(ensure_rclone_timeouts("--ignore-checksum"))),
         );
+    }
+
+    #[test]
+    fn ensure_rclone_timeouts_appends_missing_flags() {
+        let out = ensure_rclone_timeouts("--fast-list --ignore-checksum");
+        for flag in ["--contimeout", "--timeout", "--retries", "--low-level-retries"] {
+            assert!(out.contains(flag), "expected {flag} in {out:?}");
+        }
+        // User flags survive at the front.
+        assert!(out.starts_with("--fast-list --ignore-checksum"));
+    }
+
+    #[test]
+    fn ensure_rclone_timeouts_preserves_user_overrides() {
+        // A user who set their own --contimeout / --retries keeps them; we
+        // don't duplicate the flag.
+        let out = ensure_rclone_timeouts("--contimeout 90s --retries 5");
+        assert_eq!(out.matches("--contimeout").count(), 1);
+        assert_eq!(out.matches("--retries").count(), 1);
+        assert!(out.contains("--contimeout 90s"));
+        assert!(out.contains("--retries 5"));
+        // The ones they didn't set still get added.
+        assert!(out.contains("--timeout 45s"));
+        assert!(out.contains("--low-level-retries 1"));
+    }
+
+    #[test]
+    fn ensure_rclone_timeouts_handles_empty() {
+        let out = ensure_rclone_timeouts("");
+        assert!(out.starts_with("--contimeout 5s"));
+        assert!(!out.starts_with(' '));
+    }
+
+    #[test]
+    fn ensure_rclone_timeouts_preserves_user_overrides_equals_form() {
+        let out = ensure_rclone_timeouts("--contimeout=90s --retries=5");
+        assert_eq!(out.matches("--contimeout").count(), 1);
+        assert_eq!(out.matches("--retries").count(), 1);
+        assert!(out.contains("--contimeout=90s"));
+        assert!(out.contains("--retries=5"));
+        assert!(out.contains("--timeout 45s"));
+        assert!(out.contains("--low-level-retries 1"));
     }
 }

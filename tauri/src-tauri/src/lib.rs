@@ -324,6 +324,15 @@ pub fn run() {
                     tracing::warn!(error = %e, "failed to initialise ludusavi config dir");
                 }
 
+                // Re-stamp the rclone path + fast-fail cloud-sync timeouts.
+                // The normal startup branch does this; the attached launch
+                // skipped it, leaving a stale AppImage-mount rclone path and
+                // (worse) unbounded rclone retries that wedged the restore
+                // phase forever when the save-sync server was unreachable at
+                // Game-Mode boot. Game Mode is exactly where that hang hurts
+                // most — there's no window to recover from, just a splash.
+                restamp_rclone(app.handle());
+
                 // Splash window (the `main` window stays hidden / unused).
                 if let Err(e) = tauri::WebviewWindowBuilder::new(
                     app,
@@ -405,33 +414,11 @@ pub fn run() {
                 tracing::warn!(error = %e, "failed to initialise ludusavi config dir");
             }
 
-            // Re-stamp the rclone binary path on every startup. Spool ships
-            // rclone as an AppImage sidecar, and on Linux that resolves to a
-            // path inside the AppImage's FUSE mount (`/tmp/.mount_Spool_XXXX`)
-            // whose name is randomised per launch. A path persisted on a prior
-            // run is dead today, which makes `ludusavi backup --cloud-sync`
-            // fail silently (`cloudSyncFailed`). Resolving + rewriting it here
-            // keeps `apps.rclone.path` pointing at a binary that exists this
-            // session, regardless of which mount we landed on.
-            {
-                let configured_rclone = app
-                    .state::<SharedConfig>()
-                    .lock()
-                    .ok()
-                    .map(|g| g.data.rclone_path.clone())
-                    .unwrap_or_default();
-                if let Some(rclone) = paths::resolve_rclone_path(&configured_rclone) {
-                    if let Err(e) = ludusavi_config::set_cloud(
-                        None,
-                        None,
-                        None,
-                        Some(&rclone.to_string_lossy()),
-                        None,
-                    ) {
-                        tracing::warn!(error = %e, "failed to re-stamp rclone path at startup");
-                    }
-                }
-            }
+            // Re-stamp the rclone binary path + timeout args on every startup
+            // (see `restamp_rclone`). Keeps `apps.rclone.path` pointing at the
+            // sidecar that exists this session and guarantees the fast-fail
+            // cloud-sync flags are present.
+            restamp_rclone(app.handle());
 
             // If the user opted into the turnkey self-hosted save store, refresh
             // its WebDAV credentials on boot. The sync server's API key doubles
@@ -671,6 +658,42 @@ fn find_game_id_by_name(library: &SharedLibrary, name: &str) -> Option<String> {
         .iter()
         .find(|e| e.game_name == name)
         .map(|e| e.id.clone())
+}
+
+/// Re-stamp the rclone binary path **and** its timeout arguments into Spool's
+/// owned ludusavi config on every boot.
+///
+/// Two reasons this must run each launch:
+///   * Spool ships rclone as an AppImage sidecar, so on Linux the resolved
+///     path lives inside the AppImage's FUSE mount (`/tmp/.mount_Spool_XXXX`)
+///     whose name is randomised per launch — a path persisted last run is dead
+///     today.
+///   * The fast-fail timeout flags (see [`ludusavi_config::ensure_rclone_timeouts`])
+///     must be present so `--cloud-sync` can't block a launch for minutes when
+///     the save-sync remote is unreachable (the classic SteamOS Game-Mode boot,
+///     before Wi-Fi is up).
+///
+/// Critically this is called from the attached Game-Mode launch path too — the
+/// one place a wedged cloud sync is most painful (no window, just a splash) and
+/// the one that historically skipped this step.
+fn restamp_rclone(app: &AppHandle) {
+    let (configured_rclone, rclone_args) = app
+        .state::<SharedConfig>()
+        .lock()
+        .ok()
+        .map(|g| (g.data.rclone_path.clone(), g.data.rclone_args.clone()))
+        .unwrap_or_default();
+    if let Some(rclone) = paths::resolve_rclone_path(&configured_rclone) {
+        if let Err(e) = ludusavi_config::set_cloud(
+            None,
+            None,
+            None,
+            Some(&rclone.to_string_lossy()),
+            Some(&rclone_args),
+        ) {
+            tracing::warn!(error = %e, "failed to re-stamp rclone path/args");
+        }
+    }
 }
 
 /// Initialises the global `tracing` subscriber. Two layers:
