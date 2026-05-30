@@ -31,6 +31,38 @@ use tokio::sync::RwLock;
 /// the local restore.
 const RUN_API_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// Direction of a cloud-conflict resolution — which copy of the save wins.
+/// Maps onto the `cloud upload` / `cloud download` ludusavi subcommands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CloudOp {
+    /// Keep this device's saves: push local backups up, overwriting the cloud.
+    Upload,
+    /// Keep the cloud's saves: pull cloud backups down, overwriting local.
+    Download,
+}
+
+impl CloudOp {
+    /// The ludusavi `cloud` subcommand name for this direction.
+    fn subcommand(self) -> &'static str {
+        match self {
+            CloudOp::Upload => "upload",
+            CloudOp::Download => "download",
+        }
+    }
+
+    /// Parse the frontend's side token. `"local"` keeps this device (upload);
+    /// `"cloud"` keeps the cloud (download).
+    pub fn from_side(side: &str) -> AppResult<Self> {
+        match side {
+            "local" => Ok(CloudOp::Upload),
+            "cloud" => Ok(CloudOp::Download),
+            other => Err(AppError::Other(format!(
+                "invalid conflict resolution side: {other:?} (expected \"local\" or \"cloud\")"
+            ))),
+        }
+    }
+}
+
 // ── DTOs: `ludusavi {restore,backup} --api` output ──────────────────────────
 
 /// Parsed `--api` output from `ludusavi restore` / `ludusavi backup`.
@@ -229,6 +261,35 @@ impl LudusaviClient {
             args.push(&prefix_str);
         }
         run_api(ludusavi_exe, config_dir, &args).await
+    }
+
+    /// Resolve a cloud-sync conflict in one direction, overwriting the losing
+    /// side, then parse the `--api` envelope.
+    ///
+    ///   [`CloudOp::Upload`]   → `cloud upload --api --force <name>`
+    ///                           local backups overwrite the cloud (keep this
+    ///                           device's saves).
+    ///   [`CloudOp::Download`] → `cloud download --api --force <name>`
+    ///                           cloud backups overwrite local (keep the cloud's
+    ///                           saves).
+    ///
+    /// `--force` is what makes this non-interactive: it skips ludusavi's own
+    /// conflict guard (the very guard that produced the `cloudConflict` we're
+    /// resolving) and unconditionally mirrors the chosen side. Restricted to the
+    /// single `game_name` so we never touch unrelated games in the library.
+    pub async fn cloud_resolve(
+        &self,
+        ludusavi_exe: &Path,
+        config_dir: &Path,
+        op: CloudOp,
+        game_name: &str,
+    ) -> AppResult<ApiOutput> {
+        run_api(
+            ludusavi_exe,
+            config_dir,
+            &["cloud", op.subcommand(), "--api", "--force", game_name],
+        )
+        .await
     }
 
     async fn manifest_or_load(
@@ -713,6 +774,16 @@ mod tests {
             "Hades 2"
         );
         assert_eq!(infer_name_from_exe(Path::new("")), "");
+    }
+
+    #[test]
+    fn cloud_op_maps_side_to_subcommand() {
+        assert_eq!(CloudOp::from_side("local").unwrap(), CloudOp::Upload);
+        assert_eq!(CloudOp::from_side("cloud").unwrap(), CloudOp::Download);
+        assert_eq!(CloudOp::Upload.subcommand(), "upload");
+        assert_eq!(CloudOp::Download.subcommand(), "download");
+        assert!(CloudOp::from_side("nonsense").is_err());
+        assert!(CloudOp::from_side("").is_err());
     }
 
     #[test]

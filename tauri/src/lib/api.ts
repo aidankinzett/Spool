@@ -150,6 +150,17 @@ export const api = {
     invoke('manual_backup', { gameId }),
   manualRestore: (gameId: string): Promise<{ game_count: number }> =>
     invoke('manual_restore', { gameId }),
+  /**
+   * Resolve a cloud-sync conflict in-app by picking which copy wins, then
+   * land the reconciled saves. `side` is `'local'` (keep this device, upload)
+   * or `'cloud'` (keep the cloud, download). Throws if the resolve fails —
+   * the caller surfaces that and keeps the "Open Ludusavi" fallback.
+   */
+  resolveCloudConflict: (
+    gameId: string,
+    side: 'local' | 'cloud',
+  ): Promise<{ game_count: number }> =>
+    invoke('resolve_cloud_conflict', { gameId, side }),
 
   // Lifecycle — pulls + clears the game id queued by a startup `--run` invocation.
   takePendingRun: (): Promise<string | null> => invoke('take_pending_run'),
