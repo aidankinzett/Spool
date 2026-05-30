@@ -79,6 +79,11 @@ export const api = {
   addSpoolToSteam: (): Promise<AddToSteamResult> => invoke('add_spool_to_steam'),
   addToSteam: (gameId: string): Promise<AddToSteamResult> => invoke('add_to_steam', { gameId }),
 
+  // Open a file/folder with the OS default handler. Goes through Rust (not
+  // the opener plugin) so it can strip the AppImage environment before
+  // spawning the host file manager on Linux — see system_open.rs / issue #95.
+  openPath: (path: string): Promise<void> => invoke('open_path', { path }),
+
   // Armoury Crate launcher
   generateArmouryLauncher: (gameId: string): Promise<string> =>
     invoke('generate_armoury_launcher', { gameId }),

@@ -48,6 +48,7 @@ mod size_backfill;
 mod steam;
 mod steamgriddb;
 mod sync;
+mod system_open;
 
 use cli::CliMode;
 use config::{Config, SharedConfig};
@@ -298,6 +299,8 @@ pub fn run() {
             // decky plugin installer (Linux / SteamOS)
             decky_install::decky_plugin_status,
             decky_install::install_decky_plugin,
+            // open a path with the OS default handler (AppImage-safe)
+            system_open::open_path,
         ])
         .setup(move |app| {
             if attached {

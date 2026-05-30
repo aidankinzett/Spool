@@ -25,7 +25,6 @@
     Sparkles,
     Trash2,
   } from '@lucide/svelte';
-  import { openPath } from '@tauri-apps/plugin-opener';
   import { openView } from '$lib/nav';
   import { api } from '$lib/api';
   import { toasts } from '$lib/toasts.svelte';
@@ -103,7 +102,7 @@
 
   async function openFolder() {
     const folder = folderForGame(game);
-    if (folder) await openPath(folder);
+    if (folder) await api.openPath(folder);
   }
 
   async function copyToClipboard(text: string) {
@@ -138,7 +137,7 @@
         cta: {
           label: 'Open folder',
           onClick: () => {
-            openPath(dir).catch((e) => console.error('[launcher] open folder failed:', e));
+            api.openPath(dir).catch((e) => console.error('[launcher] open folder failed:', e));
           },
         },
       });

@@ -14,7 +14,6 @@
     Wifi,
   } from '@lucide/svelte';
   import { goto } from '$app/navigation';
-  import { openPath } from '@tauri-apps/plugin-opener';
   import { appLocalDataDir } from '@tauri-apps/api/path';
   import { open as openDialog } from '@tauri-apps/plugin-dialog';
   import { getCurrentWindow } from '@tauri-apps/api/window';
@@ -1116,7 +1115,7 @@
                   onclick={async () => {
                     try {
                       const dir = await appLocalDataDir();
-                      await openPath(dir);
+                      await api.openPath(dir);
                     } catch (e) {
                       toasts.show({ kind: 'bad', label: 'SETTINGS', title: "Couldn't open config folder", sub: String(e) });
                     }

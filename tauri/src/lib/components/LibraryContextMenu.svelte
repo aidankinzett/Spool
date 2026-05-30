@@ -15,7 +15,6 @@
    */
   import { onMount, onDestroy } from 'svelte';
   import { ArrowDownToLine, ArrowUpFromLine, Folder, Package, Pencil, Play, Trash2 } from '@lucide/svelte';
-  import { openPath } from '@tauri-apps/plugin-opener';
   import { openView } from '$lib/nav';
   import { api, assetUrl } from '$lib/api';
   import { fmtCatalog } from '$lib/format';
@@ -108,7 +107,7 @@
   async function openFolder() {
     onclose();
     const f = folderForGame(game);
-    if (f) await openPath(f);
+    if (f) await api.openPath(f);
   }
 
   async function generateArmouryLauncher() {
@@ -131,7 +130,7 @@
         cta: {
           label: 'Open folder',
           onClick: () => {
-            openPath(dir).catch((e) => console.error('[launcher] open folder failed:', e));
+            api.openPath(dir).catch((e) => console.error('[launcher] open folder failed:', e));
           },
         },
       });

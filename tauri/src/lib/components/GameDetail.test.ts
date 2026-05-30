@@ -3,10 +3,10 @@ import { render, screen } from '@testing-library/svelte';
 import type { GameEntry } from '$lib/types';
 import GameDetail from './GameDetail.svelte';
 
-// GameDetail reaches into Tauri (opener, webview windows, IPC) from its action
+// GameDetail reaches into Tauri (webview windows, IPC) from its action
 // handlers. None fire on mount, but stub them so importing the component never
-// touches a real Tauri runtime.
-vi.mock('@tauri-apps/plugin-opener', () => ({ openPath: vi.fn() }));
+// touches a real Tauri runtime. ("Open folder" now goes through `api`, mocked
+// below, rather than the opener plugin — see system_open.rs / issue #95.)
 vi.mock('@tauri-apps/api/webviewWindow', () => ({
   WebviewWindow: class {
     static getByLabel = vi.fn(async () => null);
