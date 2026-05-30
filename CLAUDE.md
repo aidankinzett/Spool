@@ -29,7 +29,7 @@ bun run tauri build
 # Backend-only checks
 cd tauri/src-tauri
 cargo check
-cargo clippy
+cargo clippy --all-targets -- -D warnings  # CI fails on any warning
 cargo test
 
 # Frontend-only checks

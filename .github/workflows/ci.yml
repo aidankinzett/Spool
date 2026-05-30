@@ -133,7 +133,7 @@ jobs:
       # tests).
       - name: Cargo clippy
         working-directory: tauri/src-tauri
-        run: cargo clippy --all-targets
+        run: cargo clippy --all-targets -- -D warnings
 
       - name: Tauri build (no bundle)
         # master pushes only. This is the slow release-profile compile —
@@ -295,7 +295,7 @@ jobs:
       # genuine plugin bundle isn't needed just to compile and lint.
       - name: Cargo clippy
         working-directory: tauri/src-tauri
-        run: cargo clippy --all-targets
+        run: cargo clippy --all-targets -- -D warnings
 
       - name: Cargo test
         working-directory: tauri/src-tauri
