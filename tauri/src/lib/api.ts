@@ -76,6 +76,7 @@ export const api = {
   fetchCover: (gameId: string): Promise<string | null> => invoke('fetch_cover', { gameId }),
 
   // Steam shortcut
+  addSpoolToSteam: (): Promise<AddToSteamResult> => invoke('add_spool_to_steam'),
   addToSteam: (gameId: string): Promise<AddToSteamResult> => invoke('add_to_steam', { gameId }),
 
   // Armoury Crate launcher

@@ -215,7 +215,45 @@ pub fn build_launch_options(game_name: &str, exe_path: &str) -> String {
     format!("--run \"{name}\" \"{exe}\"")
 }
 
-// ── Tauri command ───────────────────────────────────────────────────────────
+// ── Tauri commands ──────────────────────────────────────────────────────────
+
+/// Adds Spool itself as a non-Steam shortcut so the user can launch the
+/// library from Steam's Gaming Mode on SteamOS / Steam Deck.
+#[tauri::command]
+pub async fn add_spool_to_steam() -> AppResult<AddToSteamResult> {
+    let spool_exe = crate::paths::spool_executable()
+        .ok_or_else(|| AppError::Other("can't resolve own exe path".to_string()))?;
+    let spool_exe_str = spool_exe.to_string_lossy().to_string();
+    let spool_start_dir = spool_exe
+        .parent()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|| ".".to_string());
+
+    let users = locate_steam_users()?;
+    let user = users
+        .first()
+        .cloned()
+        .ok_or_else(|| AppError::Other("No Steam user accounts found".into()))?;
+
+    let mut shortcuts = read_shortcuts(&user.shortcuts_path)?;
+    // No --run args — this shortcut opens the Spool library itself.
+    let app_id = upsert_spool_shortcut(
+        &mut shortcuts,
+        "Spool",
+        &spool_exe_str,
+        &spool_start_dir,
+        "",
+    );
+    write_shortcuts(&user.shortcuts_path, &shortcuts)?;
+
+    Ok(AddToSteamResult {
+        steam_user_id: user.user_id,
+        app_id,
+        shortcuts_path: user.shortcuts_path.to_string_lossy().to_string(),
+        portrait_placed: false,
+        extras_placed: vec![],
+    })
+}
 
 #[tauri::command]
 pub async fn add_to_steam(

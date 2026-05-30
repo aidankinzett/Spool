@@ -249,6 +249,7 @@ pub fn run() {
             // steamgriddb
             steamgriddb::fetch_cover,
             // steam shortcut
+            steam::add_spool_to_steam,
             steam::add_to_steam,
             // armoury crate launcher
             launcher::generate_armoury_launcher,

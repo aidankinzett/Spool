@@ -64,6 +64,9 @@
   let deckyPlugin = $state<DeckyPluginInfo | null>(null);
   let deckyInstalling = $state(false);
 
+  // Add Spool to Steam — Linux only.
+  let addingSpoolToSteam = $state(false);
+
   onMount(async () => {
     try {
       config = await api.getConfig();
@@ -215,6 +218,23 @@
     }
   }
 
+  async function addSpoolToSteam() {
+    addingSpoolToSteam = true;
+    try {
+      await api.addSpoolToSteam();
+      toasts.show({
+        kind: 'ok',
+        label: 'STEAM',
+        title: 'Spool added to Steam',
+        sub: 'Restart Steam to see the Spool shortcut in your library.',
+      });
+    } catch (e) {
+      toasts.show({ kind: 'bad', label: 'STEAM', title: "Couldn't add to Steam", sub: String(e) });
+    } finally {
+      addingSpoolToSteam = false;
+    }
+  }
+
   async function autoDetectUmu() {
     if (!config) return;
     const found = await api.detectUmuRun();
@@ -324,6 +344,7 @@
         ...(isLinux
           ? [
               { id: 'compat', title: 'Compatibility', sub: 'Proton / umu-run' },
+              { id: 'steam', title: 'Steam', sub: 'Add Spool to Steam library' },
               { id: 'decky', title: 'Steam Deck', sub: 'Backup safety net plugin' },
             ]
           : []),
@@ -571,6 +592,32 @@
                             <option style="background: var(--color-bg-2); color: var(--color-ink-0)" value={p.path}>{p.name}</option>
                           {/each}
                         </select>
+                      {/snippet}
+                    </SettingsRow>
+                  </SettingsCard>
+                </div>
+              {/if}
+
+              <!-- Steam — add Spool to the Steam library -->
+              {#if isLinux}
+                <div id="steam">
+                  <SettingsCard
+                    title="Steam"
+                    helper="Add Spool to your Steam library so you can launch it from Gaming Mode on SteamOS and Steam Deck."
+                  >
+                    <SettingsRow
+                      label="Add Spool to Steam"
+                      helper="Creates a non-Steam shortcut in your Steam library. Restart Steam after adding."
+                    >
+                      {#snippet extras()}
+                        <Btn
+                          variant="primary"
+                          onclick={addSpoolToSteam}
+                          disabled={addingSpoolToSteam}
+                        >
+                          {#snippet icon()}<Plus size={14} />{/snippet}
+                          {addingSpoolToSteam ? 'Adding…' : 'Add to Steam'}
+                        </Btn>
                       {/snippet}
                     </SettingsRow>
                   </SettingsCard>
