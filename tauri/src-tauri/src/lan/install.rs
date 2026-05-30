@@ -758,7 +758,6 @@ async fn download_one_file(
         };
         if existing_size == file.size {
             bytes_done.fetch_add(file.size, Ordering::Relaxed);
-            bytes_added += file.size;
             maybe_emit_progress(&app, &bytes_done, &last_emit, &file.path);
             return Ok(());
         }

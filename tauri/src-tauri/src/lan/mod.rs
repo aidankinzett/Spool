@@ -47,7 +47,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 /// Snapshot of one upload session — i.e., a peer currently downloading
 /// from us. Surfaced to the host UI so they can see and (optionally)
