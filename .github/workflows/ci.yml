@@ -21,6 +21,9 @@ jobs:
       SCCACHE_DIR: "${{ github.workspace }}/.sccache"
       RUSTC_WRAPPER: "sccache"
       CARGO_INCREMENTAL: "0"
+      # Workspace-local bun cache dir so actions/cache can persist it with
+      # one OS-agnostic path.
+      BUN_INSTALL_CACHE_DIR: "${{ github.workspace }}/.bun-cache"
     defaults:
       run:
         shell: pwsh
@@ -37,6 +40,33 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
+
+      - name: Enable LLD linker
+        # link.exe is the slow, uncached part of the Windows build (sccache
+        # only caches rustc codegen, never linking). Point rustc at LLVM's
+        # lld-link (the MSVC-flavour LLD, preinstalled on the runner) to cut
+        # link time across the test binaries and the release build. Probe
+        # first so a runner-image change that drops LLVM falls back to
+        # link.exe instead of breaking the build. Keep this identical to
+        # release.yml so both share the same sccache keys (RUSTFLAGS is part
+        # of the compile-cache hash).
+        run: |
+          $llvm = "C:\Program Files\LLVM\bin"
+          if (Test-Path "$llvm\lld-link.exe") {
+            "$llvm" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+            "RUSTFLAGS=-C linker=lld-link" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+            Write-Host "Using lld-link from $llvm"
+          } else {
+            Write-Warning "lld-link not found; falling back to link.exe"
+          }
+
+      - name: Bun cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.bun-cache
+          key: bun-${{ runner.os }}-${{ hashFiles('tauri/bun.lock') }}
+          restore-keys: |
+            bun-${{ runner.os }}-
 
       - name: Setup sccache
         uses: mozilla-actions/sccache-action@v0.0.6
@@ -84,10 +114,11 @@ jobs:
         run: |
           & "C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe" /target:winexe /win32icon:launcher_stub.ico /out:launcher_stub.exe launcher_stub.cs
 
-      - name: Cargo check
-        working-directory: tauri/src-tauri
-        run: cargo check --all-targets
-
+      # `cargo clippy --all-targets` compiles the same crates as
+      # `cargo check` and emits the same errors plus lints, so a separate
+      # check step is pure redundant compilation — dropped. Frontend
+      # checks (svelte-check / eslint / vitest) moved to the `frontend`
+      # job on Ubuntu, off the slow Windows critical path.
       - name: Cargo clippy
         working-directory: tauri/src-tauri
         run: cargo clippy --all-targets
@@ -95,6 +126,43 @@ jobs:
       - name: Cargo test
         working-directory: tauri/src-tauri
         run: cargo test --all
+
+      - name: Tauri build (no bundle)
+        # master pushes only. This is the slow release-profile compile —
+        # PRs get fast feedback from check/clippy/test above, while master
+        # smoke-tests the full app build and warms the release-profile
+        # sccache cache that release.yml restores on tag pushes. Skip
+        # bundle generation; release.yml produces the artifacts.
+        if: github.event_name == 'push'
+        working-directory: tauri
+        run: bun run tauri build --no-bundle
+
+  # Frontend checks (svelte-check / eslint / vitest). Platform-independent,
+  # so they run on a fast Ubuntu runner in parallel instead of sitting in
+  # the critical path of the slow Windows build.
+  frontend:
+    runs-on: ubuntu-latest
+    env:
+      BUN_INSTALL_CACHE_DIR: "${{ github.workspace }}/.bun-cache"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.x"
+
+      - name: Bun cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.bun-cache
+          key: bun-${{ runner.os }}-${{ hashFiles('tauri/bun.lock') }}
+          restore-keys: |
+            bun-${{ runner.os }}-
+
+      - name: Install frontend dependencies
+        working-directory: tauri
+        run: bun install --frozen-lockfile
 
       - name: Svelte check
         working-directory: tauri
@@ -107,16 +175,6 @@ jobs:
       - name: Frontend tests
         working-directory: tauri
         run: bun run test
-
-      - name: Tauri build (no bundle)
-        # master pushes only. This is the slow release-profile compile —
-        # PRs get fast feedback from check/clippy/test above, while master
-        # smoke-tests the full app build and warms the release-profile
-        # sccache cache that release.yml restores on tag pushes. Skip
-        # bundle generation; release.yml produces the artifacts.
-        if: github.event_name == 'push'
-        working-directory: tauri
-        run: bun run tauri build --no-bundle
 
   # Sync-server unit tests. Lightweight and platform-independent, so it
   # runs on Ubuntu in its own job rather than bloating the Windows build.
@@ -150,6 +208,7 @@ jobs:
       SCCACHE_DIR: "${{ github.workspace }}/.sccache"
       RUSTC_WRAPPER: "sccache"
       CARGO_INCREMENTAL: "0"
+      BUN_INSTALL_CACHE_DIR: "${{ github.workspace }}/.bun-cache"
 
     steps:
       - uses: actions/checkout@v4
@@ -186,6 +245,14 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
 
+      - name: Bun cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.bun-cache
+          key: bun-${{ runner.os }}-${{ hashFiles('tauri/bun.lock') }}
+          restore-keys: |
+            bun-${{ runner.os }}-
+
       - name: Install frontend dependencies
         working-directory: tauri
         run: bun install --frozen-lockfile
@@ -198,11 +265,18 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 22
+      - name: pnpm store cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.pnpm-store
+          key: pnpm-${{ runner.os }}-${{ hashFiles('decky/pnpm-lock.yaml') }}
+          restore-keys: |
+            pnpm-${{ runner.os }}-
       - name: Build Decky plugin
         working-directory: decky
         run: |
           corepack enable
-          corepack pnpm install --frozen-lockfile
+          corepack pnpm install --frozen-lockfile --store-dir ${{ github.workspace }}/.pnpm-store
           corepack pnpm build
 
       - name: Cache sidecars
@@ -225,14 +299,17 @@ jobs:
 
   # WebDriver end-to-end smoke tests against the real Tauri window via
   # tauri-driver (WebKitWebDriver under Xvfb). Runs on PRs and master so UI
-  # regressions are gated before merge. Shares the sccache populated by
-  # build-linux/build-windows, so the release build it needs stays cheap even
-  # though those heavier jobs are push-only. Keeps its own rust-cache
-  # registry key to avoid racing build-linux on save.
+  # regressions are gated before merge. Uses the same SCCACHE_DIR filesystem
+  # backend as build-linux (not the GHA backend) and restores its caches via
+  # the shared `sccache-Linux-` restore-keys, so the release build it needs
+  # actually reuses build-linux's compiled objects instead of cold-compiling
+  # a parallel GHA cache. Saves under its own `-e2e-` key to avoid colliding
+  # with build-linux's save, and keeps its own rust-cache registry key for
+  # the same reason.
   e2e-linux:
     runs-on: ubuntu-22.04
     env:
-      SCCACHE_GHA_ENABLED: "true"
+      SCCACHE_DIR: "${{ github.workspace }}/.sccache"
       RUSTC_WRAPPER: "sccache"
       # Fall back to the real compiler when sccache can't reach its
       # backend. The GitHub Actions cache service has outages; without
@@ -240,6 +317,7 @@ jobs:
       # call and breaks the build. With it, the run is just slower.
       SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
       CARGO_INCREMENTAL: "0"
+      BUN_INSTALL_CACHE_DIR: "${{ github.workspace }}/.bun-cache"
 
     steps:
       - uses: actions/checkout@v4
@@ -255,28 +333,39 @@ jobs:
       - name: Setup sccache
         uses: mozilla-actions/sccache-action@v0.0.6
 
+      - name: Sccache cache
+        # Restore via the shared `sccache-Linux-` keys so the release-profile
+        # objects build-linux compiled are reused here. Save under a distinct
+        # `-e2e-` key so this job doesn't collide with build-linux's save on
+        # master pushes (same key = first-to-save wins, dropping the other's
+        # extra objects).
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.sccache
+          key: sccache-${{ runner.os }}-e2e-${{ github.ref_name }}-${{ github.sha }}
+          restore-keys: |
+            sccache-${{ runner.os }}-e2e-${{ github.ref_name }}-
+            sccache-${{ runner.os }}-${{ github.ref_name }}-
+            sccache-${{ runner.os }}-
+
       - name: Probe sccache backend (fall back to direct compile if down)
         # SCCACHE_IGNORE_SERVER_IO_ERROR only covers failures talking to an
         # already-running server — NOT the backend self-check sccache runs
-        # when the server first starts. A GitHub Actions cache outage fails
-        # that check, so every wrapped rustc call exits non-zero and breaks
-        # the build. Start the server up front; if it can't reach the cache
-        # backend, drop the wrapper for the rest of the job (GITHUB_ENV
-        # overrides the job-level env for later steps) so cargo compiles
-        # directly — uncached but green. bash runs on the Windows runners
-        # too, so one step covers every platform.
+        # when the server first starts. If the start-up self-check fails,
+        # every wrapped rustc call exits non-zero and breaks the build. Start
+        # the server up front; if it can't initialise its backend, drop the
+        # wrapper for the rest of the job (GITHUB_ENV overrides the job-level
+        # env for later steps) so cargo compiles directly — uncached but
+        # green.
         shell: bash
         run: |
           if sccache --start-server; then
             echo "sccache backend reachable."
           else
-            echo "::warning::sccache backend unreachable (likely a GitHub Actions cache outage); building without the compiler cache."
+            echo "::warning::sccache backend unreachable; building without the compiler cache."
             # Empty RUSTC_WRAPPER disables the wrapper so cargo compiles
-            # directly. SCCACHE_GHA_ENABLED must be a valid off-value (not
-            # empty) — the action's post-job `--show-stats` cleanup rejects
-            # an empty string and would fail the job.
+            # directly.
             echo "RUSTC_WRAPPER=" >> "$GITHUB_ENV"
-            echo "SCCACHE_GHA_ENABLED=false" >> "$GITHUB_ENV"
           fi
 
       - name: Rust cache
@@ -298,8 +387,26 @@ jobs:
             webkit2gtk-driver \
             xvfb
 
+      # tauri-driver was compiled from source on every run (~minutes, fully
+      # uncached). Pin the version and cache the built binary so it installs
+      # once and restores instantly thereafter.
+      - name: Cache tauri-driver
+        id: cache-tauri-driver
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/tauri-driver
+          key: tauri-driver-${{ runner.os }}-2.0.5
       - name: Install tauri-driver
-        run: cargo install tauri-driver --locked
+        if: steps.cache-tauri-driver.outputs.cache-hit != 'true'
+        run: cargo install tauri-driver --version 2.0.5 --locked
+
+      - name: Bun cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.bun-cache
+          key: bun-${{ runner.os }}-${{ hashFiles('tauri/bun.lock') }}
+          restore-keys: |
+            bun-${{ runner.os }}-
 
       - name: Install frontend dependencies
         working-directory: tauri
