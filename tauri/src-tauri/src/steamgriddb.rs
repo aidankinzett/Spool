@@ -482,7 +482,9 @@ async fn fetch_portrait_grids(
     api_key: &str,
     sgdb_game_id: u64,
 ) -> AppResult<Vec<Grid>> {
-    let url = format!("{BASE}/grids/game/{sgdb_game_id}?dimensions=600x900");
+    // Include all three common portrait capsule dimensions that SteamGridDB
+    // hosts — some games only have 342x482 or 660x930 entries, not 600x900.
+    let url = format!("{BASE}/grids/game/{sgdb_game_id}?dimensions=600x900,342x482,660x930");
     let resp = http
         .get(&url)
         .bearer_auth(api_key)
