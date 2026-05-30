@@ -37,6 +37,7 @@ function g(over: Partial<GameEntry> & { id: string; game_name: string }): GameEn
     save_paths: [],
     accent_color: null,
     sync_badge: null,
+    cloud_sync_baseline: null,
     use_proton: false,
     proton_version_path: null,
     wine_prefix_path: null,

@@ -112,6 +112,20 @@ fn emit_phase(
     }
 }
 
+/// Surfaces an informational note about an automatic cloud-sync resolution
+/// (a fast-forward) without interrupting the launch. Emitted as a dedicated
+/// `cloud:notice` event the frontend shows as a brief success toast — kept off
+/// the `run:phase` channel because non-terminal phases carry no toast (their
+/// generic "Syncing…" label would swallow this message). The conflict modal is
+/// reserved for true divergence. Also fires a native toast when Spool is hidden
+/// so a Game-Mode launch still gets feedback.
+fn emit_cloud_notice(app: &AppHandle, _game_id: &str, message: &str) {
+    if let Err(e) = app.emit("cloud:notice", message.to_string()) {
+        tracing::warn!(error = %e, "failed to emit cloud:notice");
+    }
+    os_toast_if_hidden(app, "Saves synced", message);
+}
+
 /// Fires a native OS notification, but only when the main Spool
 /// window isn't visible — otherwise we'd double up with the in-app
 /// toasts the frontend renders for the same run-phase events.
@@ -369,6 +383,14 @@ pub async fn resolve_cloud_conflict(
         sync::record_restore_event(&app, &game_name).await;
     }
 
+    // The user just reconciled a real divergence: both sides now mirror the
+    // chosen copy. Record the resulting tip as the baseline so the very next
+    // launch doesn't immediately re-prompt for the same (now-resolved) state.
+    let backup_dir = ludusavi_config::backup_dir();
+    if let Some(tip) = redirects::read_local_backup_tip(&backup_dir, &game_name) {
+        let _ = set_cloud_baseline(&app, &game_id, &tip.name);
+    }
+
     Ok(ManualRestoreResult { game_count })
 }
 
@@ -552,6 +574,155 @@ async fn get_local_active_save_details(
     }
 }
 
+
+/// Resolve `(rclone_exe, remote_name, remote_path)` from the ludusavi
+/// `config.yaml` + app config. `None` when cloud isn't configured or the
+/// rclone binary can't be found.
+fn resolve_rclone_remote(app: &AppHandle) -> Option<(PathBuf, String, String)> {
+    let raw = std::fs::read_to_string(crate::paths::ludusavi_config_file()).ok()?;
+    let config: serde_yaml::Value = serde_yaml::from_str(&raw).ok()?;
+    let remote_name = get_rclone_remote_name(&config)?;
+    let remote_path = config
+        .get("cloud")
+        .and_then(|c| c.get("path"))
+        .and_then(|p| p.as_str())
+        .unwrap_or("ludusavi-backup")
+        .to_string();
+    let rclone_exe = {
+        let config_state = app.state::<SharedConfig>();
+        let cfg = config_state.lock().ok()?;
+        crate::paths::resolve_rclone_path(&cfg.data.rclone_path)?
+    };
+    Some((rclone_exe, remote_name, remote_path))
+}
+
+/// `rclone cat <target>` and parse the streamed `mapping.yaml` into its tip.
+/// `None` on any failure (missing file, network error, parse error).
+async fn rclone_cat_tip(rclone_exe: &Path, target: &str) -> Option<redirects::BackupTip> {
+    let mut cmd = tokio::process::Command::new(rclone_exe);
+    cmd.arg("cat").arg(target);
+    cmd.stdin(std::process::Stdio::null());
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+    cmd.kill_on_drop(true);
+    #[cfg(windows)]
+    {
+        #[allow(unused_imports)]
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    let child = cmd.spawn().ok()?;
+    let output = tokio::time::timeout(
+        std::time::Duration::from_secs(6),
+        child.wait_with_output(),
+    )
+    .await
+    .ok()? // timeout
+    .ok()?; // process run error
+    if !output.status.success() {
+        tracing::info!(
+            target,
+            "rclone_cat_tip: cat failed (likely no cloud mapping.yaml yet)"
+        );
+        return None;
+    }
+    let body = String::from_utf8_lossy(&output.stdout);
+    redirects::read_backup_tip_from_str(&body)
+}
+
+/// Fetch the cloud copy of a game's `mapping.yaml` tip. Tries the exact game
+/// folder name then the Windows-safe variant (mirrors the local lookup and
+/// `query_rclone_details`). `None` when cloud isn't configured or absent.
+async fn fetch_cloud_backup_tip(app: &AppHandle, game_name: &str) -> Option<redirects::BackupTip> {
+    let (rclone_exe, remote_name, remote_path) = resolve_rclone_remote(app)?;
+    let mut folders = vec![game_name.to_string()];
+    let safe = redirects::windows_safe_name(game_name);
+    if safe != game_name {
+        folders.push(safe);
+    }
+    for folder in folders {
+        let target = format!("{remote_name}:{remote_path}/{folder}/mapping.yaml");
+        if let Some(tip) = rclone_cat_tip(&rclone_exe, &target).await {
+            return Some(tip);
+        }
+    }
+    None
+}
+
+/// How to reconcile a ludusavi-reported cloud conflict.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CloudSyncDecision {
+    /// Local and cloud already match — nothing to do, proceed.
+    InSync,
+    /// Cloud is cleanly ahead — pull it down (download + re-restore).
+    FastForwardDownload,
+    /// Local is cleanly ahead — push it up (upload).
+    FastForwardUpload,
+    /// Both sides advanced past the baseline — real conflict, prompt the user.
+    Diverged,
+}
+
+/// Decide how to reconcile a cloud conflict from three backup-tip fingerprints.
+///
+/// `base` is the tip name last synced on THIS device (the merge-base);
+/// `local`/`cloud` are the current tips. Only called once ludusavi has already
+/// flagged a difference.
+///
+/// With a baseline the call is exact: the side still equal to `base` is the one
+/// that didn't move, so the *other* side is a clean fast-forward; if neither
+/// equals `base`, both moved → divergence. Without a baseline (legacy entry /
+/// never synced) we fall back to a timestamp heuristic — the newer tip wins as
+/// a fast-forward; ties or missing data are treated as divergence so we prompt
+/// rather than guess. A missing *cloud* tip while ludusavi reports a conflict is
+/// also treated as divergence: the conflict means the cloud has *something* we
+/// couldn't read (e.g. transient rclone failure), so we must not clobber it.
+fn decide_cloud_sync(
+    base: Option<&str>,
+    local: Option<&redirects::BackupTip>,
+    cloud: Option<&redirects::BackupTip>,
+) -> CloudSyncDecision {
+    match (local, cloud) {
+        (Some(l), Some(c)) => {
+            if l.name == c.name {
+                return CloudSyncDecision::InSync;
+            }
+            if let Some(base) = base {
+                return match (l.name == base, c.name == base) {
+                    (true, false) => CloudSyncDecision::FastForwardDownload,
+                    (false, true) => CloudSyncDecision::FastForwardUpload,
+                    (false, false) => CloudSyncDecision::Diverged,
+                    // Both equal base yet names differ is impossible; stay safe.
+                    (true, true) => CloudSyncDecision::InSync,
+                };
+            }
+            // No baseline — timestamp heuristic.
+            match c.when.cmp(&l.when) {
+                std::cmp::Ordering::Greater => CloudSyncDecision::FastForwardDownload,
+                std::cmp::Ordering::Less => CloudSyncDecision::FastForwardUpload,
+                std::cmp::Ordering::Equal => CloudSyncDecision::Diverged,
+            }
+        }
+        // Local has no backup → nothing to lose locally, pulling is safe.
+        (None, Some(_)) => CloudSyncDecision::FastForwardDownload,
+        // Cloud tip unreadable despite a reported conflict → don't guess, prompt.
+        (Some(_), None) => CloudSyncDecision::Diverged,
+        (None, None) => CloudSyncDecision::Diverged,
+    }
+}
+
+/// Record `tip_name` as the cloud-sync baseline for `game_id` and persist
+/// (only writes when it actually changed).
+fn set_cloud_baseline(app: &AppHandle, game_id: &str, tip_name: &str) -> AppResult<()> {
+    let library = app.state::<SharedLibrary>();
+    let mut lib = library.lock().map_err(|_| AppError::LockPoisoned)?;
+    if let Some(entry) = lib.entries.iter_mut().find(|e| e.id == game_id) {
+        if entry.cloud_sync_baseline.as_deref() != Some(tip_name) {
+            entry.cloud_sync_baseline = Some(tip_name.to_string());
+            lib.save()?;
+        }
+    }
+    Ok(())
+}
 
 fn get_rclone_remote_name(config: &serde_yaml::Value) -> Option<String> {
     let cloud = config.get("cloud")?;
@@ -1113,9 +1284,76 @@ async fn run_workflow(
         .and_then(|e| e.cloud_conflict.as_ref())
         .is_some()
     {
-        return Err(AppError::Other(
-            "Cloud sync conflict — open Ludusavi to resolve before launching.".into(),
-        ));
+        // ludusavi saw local ≠ cloud and refused to sync. Decide whether one
+        // side is cleanly ahead (auto-resolve = fast-forward) or both changed
+        // since our last sync (true divergence → prompt the user). The
+        // baseline (last-synced tip) is what makes this distinction possible.
+        let backup_dir = ludusavi_config::backup_dir();
+        let local_tip = redirects::read_local_backup_tip(&backup_dir, game_name);
+        let cloud_tip = fetch_cloud_backup_tip(app, game_name).await;
+        let base = {
+            let library = app.state::<SharedLibrary>();
+            let lib = library.lock().map_err(|_| AppError::LockPoisoned)?;
+            lib.find(game_id).and_then(|e| e.cloud_sync_baseline.clone())
+        };
+        let decision = decide_cloud_sync(base.as_deref(), local_tip.as_ref(), cloud_tip.as_ref());
+        tracing::info!(
+            game_name,
+            ?decision,
+            base = ?base,
+            local = ?local_tip.as_ref().map(|t| t.name.as_str()),
+            cloud = ?cloud_tip.as_ref().map(|t| t.name.as_str()),
+            "cloud conflict reconciliation"
+        );
+        match decision {
+            CloudSyncDecision::Diverged => {
+                return Err(AppError::Other(
+                    "Cloud sync conflict — open Ludusavi to resolve before launching.".into(),
+                ));
+            }
+            CloudSyncDecision::FastForwardDownload => {
+                // Cloud is cleanly ahead — pull it down and re-restore.
+                ludusavi_client
+                    .cloud_resolve(ludusavi_exe, &config_dir, crate::ludusavi::CloudOp::Download, game_name)
+                    .await?;
+                let out = restore_with_redirects(
+                    ludusavi_client,
+                    ludusavi_exe,
+                    &config_dir,
+                    game_name,
+                    wine_prefix.as_deref(),
+                    game_folder.as_deref(),
+                )
+                .await?;
+                if out.errors.as_ref().and_then(|e| e.cloud_conflict.as_ref()).is_some() {
+                    return Err(AppError::Other(
+                        "Cloud sync conflict — open Ludusavi to resolve before launching.".into(),
+                    ));
+                }
+                if let Some(tip) = cloud_tip.as_ref() {
+                    let _ = set_cloud_baseline(app, game_id, &tip.name);
+                }
+                emit_cloud_notice(app, game_id, "Restored newer saves from the cloud");
+            }
+            CloudSyncDecision::FastForwardUpload => {
+                // Local is cleanly ahead — push it up. Pass-1 restore already
+                // landed the local saves, so no re-restore is needed.
+                ludusavi_client
+                    .cloud_resolve(ludusavi_exe, &config_dir, crate::ludusavi::CloudOp::Upload, game_name)
+                    .await?;
+                if let Some(tip) = local_tip.as_ref() {
+                    let _ = set_cloud_baseline(app, game_id, &tip.name);
+                }
+            }
+            CloudSyncDecision::InSync => {}
+        }
+    } else if cloud_configured {
+        // Clean restore with cloud configured — record the current local tip as
+        // the synced baseline so the next conflict check is exact.
+        let backup_dir = ludusavi_config::backup_dir();
+        if let Some(tip) = redirects::read_local_backup_tip(&backup_dir, game_name) {
+            let _ = set_cloud_baseline(app, game_id, &tip.name);
+        }
     }
     // "No saves to restore" is fine — game just hasn't been played yet.
     let no_saves = restore
@@ -1318,6 +1556,26 @@ async fn run_workflow(
                         "post-session cloud sync failed — saves backed up locally but not uploaded"
                     );
                 }
+                // A cloud conflict on the *post-play* backup means the cloud
+                // advanced while we held the play-state lock (lock unavailable
+                // or sync server down). We just played, so local is
+                // authoritative — force an upload so the next device sees a
+                // clean fast-forward instead of a phantom conflict.
+                if out
+                    .errors
+                    .as_ref()
+                    .and_then(|e| e.cloud_conflict.as_ref())
+                    .is_some()
+                {
+                    tracing::warn!(game_name, "post-session backup hit cloud conflict — forcing upload (local is authoritative)");
+                    if let Err(e) = ludusavi_client
+                        .cloud_resolve(ludusavi_exe, &config_dir, crate::ludusavi::CloudOp::Upload, game_name)
+                        .await
+                    {
+                        cloud_upload_failed = true;
+                        tracing::warn!(game_name, error = %e, "forced post-session upload failed");
+                    }
+                }
                 if let Some(overall) = &out.overall {
                     if overall.total_games > 0 {
                         let library = app.state::<SharedLibrary>();
@@ -1337,6 +1595,17 @@ async fn run_workflow(
                 // Tell the sync server we backed up — peers can use
                 // this to know they're behind on saves. Best-effort.
                 sync::record_backup_event(app, game_name).await;
+
+                // Advance the cloud-sync baseline to the freshly-written tip,
+                // but only when the upload actually reached the cloud — otherwise
+                // local and cloud genuinely differ and the next launch should
+                // re-evaluate rather than assume we're synced.
+                if cloud_configured && !cloud_upload_failed {
+                    let backup_dir = ludusavi_config::backup_dir();
+                    if let Some(tip) = redirects::read_local_backup_tip(&backup_dir, game_name) {
+                        let _ = set_cloud_baseline(app, game_id, &tip.name);
+                    }
+                }
 
                 // Mark the entry as synced. After a successful backup
                 // we ARE the most recent device on the server (assuming
@@ -1421,5 +1690,123 @@ cloud:
         let val: serde_yaml::Value = serde_yaml::from_str(yaml_str).unwrap();
         let remote = get_rclone_remote_name(&val);
         assert_eq!(remote, Some("ludusavi-1780143898".to_string()));
+    }
+
+    fn tip(name: &str, secs: i64) -> redirects::BackupTip {
+        redirects::BackupTip {
+            name: name.to_string(),
+            when: chrono::DateTime::from_timestamp(secs, 0).unwrap(),
+        }
+    }
+
+    #[test]
+    fn ff_download_when_local_equals_base() {
+        // Local unchanged since last sync, cloud advanced → pull cloud.
+        let local = tip("A", 100);
+        let cloud = tip("B", 200);
+        assert_eq!(
+            decide_cloud_sync(Some("A"), Some(&local), Some(&cloud)),
+            CloudSyncDecision::FastForwardDownload
+        );
+    }
+
+    #[test]
+    fn ff_upload_when_cloud_equals_base() {
+        // Cloud unchanged since last sync, local advanced → push local.
+        let local = tip("B", 200);
+        let cloud = tip("A", 100);
+        assert_eq!(
+            decide_cloud_sync(Some("A"), Some(&local), Some(&cloud)),
+            CloudSyncDecision::FastForwardUpload
+        );
+    }
+
+    #[test]
+    fn diverged_when_both_moved_past_base() {
+        // Neither side matches the baseline → both changed → real conflict.
+        let local = tip("B", 200);
+        let cloud = tip("C", 210);
+        assert_eq!(
+            decide_cloud_sync(Some("A"), Some(&local), Some(&cloud)),
+            CloudSyncDecision::Diverged
+        );
+    }
+
+    #[test]
+    fn in_sync_when_tips_match() {
+        let local = tip("A", 100);
+        let cloud = tip("A", 100);
+        assert_eq!(
+            decide_cloud_sync(Some("A"), Some(&local), Some(&cloud)),
+            CloudSyncDecision::InSync
+        );
+    }
+
+    #[test]
+    fn no_baseline_uses_timestamp_heuristic() {
+        let older = tip("A", 100);
+        let newer = tip("B", 200);
+        // Cloud newer → download.
+        assert_eq!(
+            decide_cloud_sync(None, Some(&older), Some(&newer)),
+            CloudSyncDecision::FastForwardDownload
+        );
+        // Local newer → upload.
+        assert_eq!(
+            decide_cloud_sync(None, Some(&newer), Some(&older)),
+            CloudSyncDecision::FastForwardUpload
+        );
+        // Equal timestamps, different names → can't tell → prompt.
+        let a = tip("A", 100);
+        let b = tip("B", 100);
+        assert_eq!(
+            decide_cloud_sync(None, Some(&a), Some(&b)),
+            CloudSyncDecision::Diverged
+        );
+    }
+
+    #[test]
+    fn missing_cloud_tip_is_conservative() {
+        // ludusavi flagged a conflict but we couldn't read the cloud tip —
+        // don't clobber it, prompt instead.
+        let local = tip("A", 100);
+        assert_eq!(
+            decide_cloud_sync(Some("A"), Some(&local), None),
+            CloudSyncDecision::Diverged
+        );
+    }
+
+    #[test]
+    fn missing_local_tip_pulls_cloud() {
+        let cloud = tip("B", 200);
+        assert_eq!(
+            decide_cloud_sync(None, None, Some(&cloud)),
+            CloudSyncDecision::FastForwardDownload
+        );
+    }
+
+    #[test]
+    fn backup_tip_parser_picks_latest_child() {
+        let yaml = r#"
+name: TestGame
+drives:
+  drive-C: "C:"
+backups:
+  - name: backup-1
+    when: "2026-05-01T10:00:00Z"
+    os: windows
+    files: {}
+    children:
+      - name: backup-1-diff-1
+        when: "2026-05-02T10:00:00Z"
+        os: windows
+        files: {}
+  - name: backup-2
+    when: "2026-05-03T10:00:00Z"
+    os: windows
+    files: {}
+"#;
+        let tip = redirects::read_backup_tip_from_str(yaml).unwrap();
+        assert_eq!(tip.name, "backup-2");
     }
 }

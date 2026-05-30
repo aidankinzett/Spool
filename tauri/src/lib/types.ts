@@ -125,6 +125,14 @@ export type GameEntry = {
    * small coloured dot on the cover when this is set.
    */
   sync_badge: string | null;
+
+  /**
+   * Latest ludusavi backup name last reconciled with the cloud on this
+   * device — the merge-base for fast-forward vs. true-divergence detection.
+   * `null` for legacy/never-synced entries. Backend-managed; the UI doesn't
+   * read it directly but it round-trips through `GameEntry`.
+   */
+  cloud_sync_baseline: string | null;
 };
 
 /**
