@@ -6,12 +6,9 @@
 import { invoke, convertFileSrc } from '@tauri-apps/api/core';
 import type {
   AddToSteamResult,
-  BrowseDownloadProgress,
-  BrowseFetchResult,
   ConfigData,
   DownloadProgress,
   GameEntry,
-  HydraEntry,
   DepStatus,
   LanPeer,
   NewGame,
@@ -90,30 +87,6 @@ export const api = {
   // exe flagged "always run as administrator" via AppCompatFlags.
   getRunAsAdminInRegistry: (exePath: string): Promise<boolean> =>
     invoke('get_run_as_admin_in_registry', { exePath }),
-
-  // Hydra source feeds (Browse Games)
-  hydraFetchAll: (): Promise<BrowseFetchResult> => invoke('hydra_fetch_all'),
-  hydraAddSource: (url: string): Promise<string[]> =>
-    invoke('hydra_add_source', { url }),
-  hydraRemoveSource: (url: string): Promise<string[]> =>
-    invoke('hydra_remove_source', { url }),
-
-  // TorBox debrid
-  torboxPing: (): Promise<void> => invoke('torbox_ping'),
-  torboxAddMagnet: (magnetUri: string): Promise<number> =>
-    invoke('torbox_add_magnet', { magnetUri }),
-  torboxTorrentInfo: (torrentId: number): Promise<unknown> =>
-    invoke('torbox_torrent_info', { torrentId }),
-  torboxRequestDownloadLink: (torrentId: number, fileId: number): Promise<string> =>
-    invoke('torbox_request_download_link', { torrentId, fileId }),
-
-  // Browse Games download orchestrator
-  startBrowseDownload: (entry: HydraEntry): Promise<string> =>
-    invoke('start_browse_download', { entry }),
-  cancelBrowseDownload: (installToken: string): Promise<boolean> =>
-    invoke('cancel_browse_download', { installToken }),
-  currentBrowseDownload: (): Promise<BrowseDownloadProgress | null> =>
-    invoke('current_browse_download'),
 
   // Sync server
   currentSyncStatus: (): Promise<SyncStatus> => invoke('current_sync_status'),

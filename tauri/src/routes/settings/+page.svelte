@@ -55,11 +55,6 @@
   let webdavConnecting = $state(false);
   let serverStorageConnecting = $state(false);
 
-  let torboxPinging = $state(false);
-  let torboxLastPing = $state<{ ok: boolean; message: string } | null>(null);
-  let newSourceUrl = $state('');
-  let addingSource = $state(false);
-
   // Proton / Compatibility (Linux only).
   let isLinux = $state(false);
   let protonVersions = $state<ProtonVersion[]>([]);
@@ -322,52 +317,6 @@
     }
   }
 
-  async function browseDownloadDir() {
-    const picked = await openDialog({ title: 'Pick the TorBox download folder', directory: true, multiple: false });
-    if (typeof picked === 'string' && config) {
-      config.download_dir = picked;
-      await persist();
-    }
-  }
-
-  async function addSourceFeed() {
-    if (!config || !newSourceUrl.trim()) return;
-    addingSource = true;
-    try {
-      const list = await api.hydraAddSource(newSourceUrl.trim());
-      config.download_sources = list;
-      newSourceUrl = '';
-    } catch (e) {
-      toasts.show({ kind: 'bad', label: 'SOURCE', title: "Couldn't add feed", sub: String(e) });
-    } finally {
-      addingSource = false;
-    }
-  }
-
-  async function removeSourceFeed(url: string) {
-    if (!config) return;
-    try {
-      const list = await api.hydraRemoveSource(url);
-      config.download_sources = list;
-    } catch (e) {
-      console.error('[settings] remove source failed:', e);
-    }
-  }
-
-  async function testTorBoxConnection() {
-    if (!config) return;
-    torboxPinging = true;
-    torboxLastPing = null;
-    try {
-      await api.torboxPing();
-      torboxLastPing = { ok: true, message: 'API key works — TorBox is reachable.' };
-    } catch (e) {
-      torboxLastPing = { ok: false, message: String(e) };
-    } finally {
-      torboxPinging = false;
-    }
-  }
-
   function onLanPortCommit() {
     if (!config) return;
     if (!Number.isFinite(config.lan_share_port) || config.lan_share_port < 1024) config.lan_share_port = 47632;
@@ -411,14 +360,6 @@
         { id: 'lan', title: 'LAN sharing', sub: 'Transfers between devices' },
         { id: 'sync', title: 'Sync server', sub: 'Session locks' },
         { id: 'device', title: 'This device', sub: 'Shown to peers' },
-      ],
-    },
-    {
-      id: 'sources',
-      title: 'Sources & Downloads',
-      items: [
-        { id: 'hydra', title: 'Source feeds', sub: 'Hydra JSON URLs' },
-        { id: 'torbox', title: 'TorBox', sub: 'Debrid download provider' },
       ],
     },
   ]);
@@ -1156,143 +1097,6 @@
                       <TextField bind:value={config!.device_name} placeholder="Workshop · Desktop" oncommit={persist} />
                     {/snippet}
                   </SettingsRow>
-                </SettingsCard>
-              </div>
-
-            </div>
-          </section>
-
-          <!-- ════════════════ SOURCES & DOWNLOADS GROUP ════════════════ -->
-          <section class="mb-9">
-            <div class="mb-3.5 border-b border-line-1 pb-2.5">
-              <h2 class="font-display text-[20px] font-semibold tracking-[-0.01em] text-ink-0">Sources & Downloads</h2>
-              <div class="mt-[3px] text-[12px] text-ink-2">Where to find new games, and how to fetch them.</div>
-            </div>
-            <div class="flex flex-col gap-4">
-
-              <!-- Source feeds section -->
-              <div id="hydra">
-                <SettingsCard title="Source feeds" helper="Hydra-compatible JSON feeds. The Browse Games window aggregates everything listed here.">
-                  <div class="px-[18px] py-3">
-                    <!-- Add new feed -->
-                    <div class="flex gap-2">
-                      <TextField
-                        bind:value={newSourceUrl}
-                        placeholder="https://example.com/source.json"
-                        mono
-                        full
-                      />
-                      <Btn
-                        onclick={addSourceFeed}
-                        disabled={addingSource || !newSourceUrl.trim()}
-                      >
-                        {#snippet icon()}<Plus size={14} />{/snippet}
-                        {addingSource ? 'Adding…' : 'Add'}
-                      </Btn>
-                    </div>
-
-                    <!-- Feed list -->
-                    {#if config.download_sources.length > 0}
-                      <div class="mt-2.5 overflow-hidden rounded-sm border border-line-1 bg-bg-0">
-                        {#each config.download_sources as url, i (url)}
-                          <div
-                            class="flex items-center gap-2.5 px-3 py-2"
-                            class:border-b={i < config.download_sources.length - 1}
-                            class:border-dashed={i < config.download_sources.length - 1}
-                            class:border-line-1={i < config.download_sources.length - 1}
-                          >
-                            <span class="size-1.5 shrink-0 rounded-full bg-ok"></span>
-                            <code class="font-mono min-w-0 flex-1 truncate text-[11px] text-ink-1" title={url}>{url}</code>
-                            <button
-                              onclick={() => removeSourceFeed(url)}
-                              title="Remove feed"
-                              class="inline-flex size-6 shrink-0 items-center justify-center rounded-sm text-ink-3 transition-colors hover:bg-white/10 hover:text-bad"
-                            >
-                              <Trash2 size={12} />
-                            </button>
-                          </div>
-                        {/each}
-                      </div>
-                    {:else}
-                      <div class="mt-2.5 rounded-sm border border-dashed border-line-1 px-3 py-4 text-center">
-                        <p class="font-mono text-[11px] uppercase tracking-[0.08em] text-ink-3">No feeds configured</p>
-                      </div>
-                    {/if}
-
-                    <div class="mt-2.5 flex items-center justify-between text-[11px] text-ink-3">
-                      <span>{config.download_sources.length} feed{config.download_sources.length === 1 ? '' : 's'}</span>
-                      <span class="text-ink-2">Refreshed on every Browse Games open</span>
-                    </div>
-                  </div>
-                </SettingsCard>
-              </div>
-
-              <!-- TorBox section -->
-              <div id="torbox">
-                <SettingsCard title="TorBox" helper="Cloud debrid service. Spool fetches files via your TorBox account when you click Download.">
-                  <div class="border-b border-dashed border-line-1">
-                    <div class="flex items-center gap-[14px] px-[18px] py-[14px]">
-                      <div class="flex-1">
-                        <div class="flex items-center gap-2 text-[13px] font-medium text-ink-0">
-                          Enable TorBox
-                          <Pill kind={config.torbox_enabled ? 'ok' : 'off'}>
-                            {config.torbox_enabled ? 'Linked' : 'OFF'}
-                          </Pill>
-                        </div>
-                        <div class="mt-[3px] text-[11.5px] text-ink-2">
-                          {config.torbox_enabled
-                            ? 'Debrid downloads active — magnet URIs go through TorBox.'
-                            : 'Off — Browse Games downloads fall back to direct links only.'}
-                        </div>
-                      </div>
-                      <Toggle bind:checked={config!.torbox_enabled} onchange={persist} />
-                    </div>
-
-                    {#if config.torbox_enabled}
-                      <div class="bg-bg-0 pb-1">
-                        <SettingsRow
-                          label="API key"
-                          helper={torboxLastPing ? torboxLastPing.message : 'Generate at torbox.app — Account → API.'}
-                          status={torboxLastPing ? (torboxLastPing.ok ? 'ok' : 'warn') : undefined}
-                        >
-                          {#snippet extras()}
-                            <TextField
-                              bind:value={config!.torbox_api_key}
-                              placeholder="Paste TorBox key…"
-                              mono
-                              masked
-                              full
-                              oncommit={() => { torboxLastPing = null; persist(); }}
-                            />
-                            <Btn
-                              variant="ghost"
-                              onclick={testTorBoxConnection}
-                              disabled={torboxPinging || !config!.torbox_api_key}
-                            >
-                              {#snippet icon()}<Check size={14} />{/snippet}
-                              {torboxPinging ? 'Testing…' : 'Test'}
-                            </Btn>
-                          {/snippet}
-                        </SettingsRow>
-
-                        <SettingsRow label="Download to" helper="Where TorBox-fetched games land before they're installed.">
-                          {#snippet extras()}
-                            <TextField
-                              bind:value={config!.download_dir}
-                              placeholder="(default · ~/Downloads)"
-                              mono
-                              full
-                              oncommit={persist}
-                            />
-                            <Btn variant="ghost" onclick={browseDownloadDir}>
-                              {#snippet icon()}<Folder size={14} />{/snippet}
-                              Browse
-                            </Btn>
-                          {/snippet}
-                        </SettingsRow>
-                      </div>
-                    {/if}
-                  </div>
                 </SettingsCard>
               </div>
 

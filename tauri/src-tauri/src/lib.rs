@@ -26,14 +26,12 @@
 //!   - [`steamgriddb`] — cover art fetch
 
 mod accent_backfill;
-mod browse_download;
 mod cli;
 mod decky_install;
 mod diagnostics;
 mod config;
 mod error;
 mod gamemode;
-mod hydra;
 mod lan;
 mod launcher;
 mod library;
@@ -50,7 +48,6 @@ mod size_backfill;
 mod steam;
 mod steamgriddb;
 mod sync;
-mod torbox;
 
 use cli::CliMode;
 use config::{Config, SharedConfig};
@@ -226,9 +223,6 @@ pub fn run() {
         .manage::<LanUploadsState>(LanUploadsState::default())
         .manage::<LanServerShutdown>(LanServerShutdown::default())
         .manage::<SyncStatusState>(SyncStatusState::default())
-        .manage::<browse_download::BrowseDownloadState>(
-            browse_download::BrowseDownloadState::default(),
-        )
         .invoke_handler(tauri::generate_handler![
             take_pending_run,
             notify_splash_ready,
@@ -266,19 +260,6 @@ pub fn run() {
             sync::refresh_sync_status,
             sync::sync_register_account,
             sync::use_server_save_storage,
-            // torbox
-            torbox::torbox_add_magnet,
-            torbox::torbox_torrent_info,
-            torbox::torbox_request_download_link,
-            torbox::torbox_ping,
-            // hydra feeds (Browse Games)
-            hydra::hydra_fetch_all,
-            hydra::hydra_add_source,
-            hydra::hydra_remove_source,
-            // browse-games download orchestrator
-            browse_download::start_browse_download,
-            browse_download::cancel_browse_download,
-            browse_download::current_browse_download,
             // lan discovery
             lan::discovery::list_lan_peers,
             lan::install::fetch_peer_games,

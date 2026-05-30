@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { BookOpen, Info, Play, Search, Settings } from '@lucide/svelte';
+  import { Info, Play, Search, Settings } from '@lucide/svelte';
   import { api, assetUrl } from '$lib/api';
   import { fmtCatalog, fmtPlaytime, relDate } from '$lib/format';
   import { openView } from '$lib/nav';
@@ -135,18 +135,6 @@
           <Search size={13} />
           <span style:font-size="var(--text-sm)">{lib.games.length} games</span>
         </button>
-        {#if lib.config && lib.config.download_sources.length > 0}
-          <button
-            type="button"
-            onclick={() => openView('browse')}
-            class="inline-flex cursor-pointer items-center justify-center rounded-sm border-none bg-transparent text-ink-2 transition-colors hover:bg-white/10 hover:text-ink-0"
-            style:height="var(--control-h-icon)"
-            style:width="var(--control-h-icon)"
-            aria-label="Browse games"
-          >
-            <BookOpen size={14} />
-          </button>
-        {/if}
         <button
           type="button"
           onclick={() => openView('settings')}
