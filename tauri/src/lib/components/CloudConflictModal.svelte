@@ -467,6 +467,9 @@
 >
   <div
     class="cc-modal flex flex-col overflow-hidden text-ink-0"
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="cc-modal-title"
     style:width="640px"
     style:max-width="calc(100vw - 48px)"
     style:background="var(--color-bg-0)"
@@ -493,9 +496,12 @@
       <div class="flex-1"></div>
       <button
         type="button"
-        onclick={() => onClose?.()}
+        onclick={() => {
+          if (phase === 'choose' || phase === 'error') onClose?.();
+        }}
+        disabled={phase === 'applying' || phase === 'done'}
         aria-label="Close"
-        class="inline-flex items-center justify-center rounded-sm border-none bg-transparent text-ink-2 transition-colors hover:bg-bad/20 hover:text-[#ff9b9b]"
+        class="inline-flex items-center justify-center rounded-sm border-none bg-transparent text-ink-2 transition-colors hover:bg-bad/20 hover:text-[#ff9b9b] disabled:pointer-events-none disabled:opacity-50"
         style:width="28px"
         style:height="22px"
       >
@@ -520,6 +526,7 @@
           >
         </div>
         <h1
+          id="cc-modal-title"
           class="font-display"
           style:margin="0"
           style:font-size="26px"
