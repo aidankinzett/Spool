@@ -485,6 +485,14 @@ pub async fn start_peer_install(
     let manifest = match manifest_result {
         Ok(m) => m,
         Err(e) => {
+            // Emit a terminal error snapshot so the frontend stops showing
+            // "Fetching manifest…" before the slot is cleared.
+            if let Some(snap) = app.state::<LanDownloadState>().update(|p| {
+                p.status = "error".into();
+                p.message = Some(format!("{e}"));
+            }) {
+                emit_progress(&app, &snap);
+            }
             app.state::<LanDownloadState>()
                 .clear_if_token(&install_token);
             return Err(e);
@@ -720,6 +728,7 @@ async fn download_one_file(
             // will re-credit from the updated partial file size.
             bytes_done.fetch_sub(bytes_added, Ordering::Relaxed);
             bytes_added = 0;
+            let rolled_back = bytes_done.load(Ordering::Relaxed);
 
             let delay = RETRY_BASE_DELAY.saturating_mul(2u32.pow(attempt - 1));
             tracing::info!(
@@ -732,6 +741,7 @@ async fn download_one_file(
             let msg = format!("Reconnecting… (attempt {attempt}/{MAX_DOWNLOAD_RETRIES})");
             if let Some(snap) = app.state::<LanDownloadState>().update(|p| {
                 p.current_file = msg.clone();
+                p.bytes_done = rolled_back;
             }) {
                 emit_progress(&app, &snap);
             }
@@ -757,9 +767,47 @@ async fn download_one_file(
             _ => 0,
         };
         if existing_size == file.size {
-            bytes_done.fetch_add(file.size, Ordering::Relaxed);
-            maybe_emit_progress(&app, &bytes_done, &last_emit, &file.path);
-            return Ok(());
+            // If the manifest includes a hash, verify the on-disk file before
+            // accepting it — a previous interrupted write can leave a
+            // full-length but corrupt file.
+            if !file.hash.is_empty() {
+                let mut f = tokio::fs::File::open(&target)
+                    .await
+                    .map_err(|e| AppError::Other(format!("open {target:?}: {e}")))?;
+                let mut hasher = blake3::Hasher::new();
+                let mut buf = vec![0u8; 64 * 1024];
+                loop {
+                    let n = f
+                        .read(&mut buf)
+                        .await
+                        .map_err(|e| AppError::Other(format!("read {target:?}: {e}")))?;
+                    if n == 0 {
+                        break;
+                    }
+                    hasher.update(&buf[..n]);
+                }
+                drop(f);
+                let actual = hasher.finalize().to_hex().to_string();
+                if actual == file.hash {
+                    bytes_done.fetch_add(file.size, Ordering::Relaxed);
+                    maybe_emit_progress(&app, &bytes_done, &last_emit, &file.path);
+                    return Ok(());
+                }
+                // Hash mismatch — truncate so the normal download path
+                // re-fetches from scratch on this same attempt.
+                tracing::warn!(
+                    path = %file.path,
+                    expected = %file.hash,
+                    actual = %actual,
+                    "LAN install: full-size partial hash mismatch, re-fetching"
+                );
+                let _ = tokio::fs::File::create(&target).await;
+                // Fall through to the normal GET path with resume_from = 0.
+            } else {
+                bytes_done.fetch_add(file.size, Ordering::Relaxed);
+                maybe_emit_progress(&app, &bytes_done, &last_emit, &file.path);
+                return Ok(());
+            }
         }
         let resume_from = if existing_size < file.size {
             existing_size

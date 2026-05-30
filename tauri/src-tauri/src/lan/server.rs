@@ -15,6 +15,7 @@ use axum::{
     routing::get,
     Router,
 };
+use futures_util::StreamExt as _;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::io::SeekFrom;
@@ -420,8 +421,26 @@ async fn get_file_handler(
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
         let body_len = total_len - start;
         let end = total_len - 1;
-        let stream = ReaderStream::new(file);
-        let body = Body::from_stream(stream);
+        let raw_stream = ReaderStream::new(file);
+        let body = if !query.session.is_empty() {
+            // Credit bytes as they are actually yielded to the socket so
+            // a mid-stream disconnect or range-request retry never
+            // over-counts.
+            let app_h = state.app.clone();
+            let session_id = query.session.clone();
+            let accounting_stream = raw_stream.map(move |result| {
+                if let Ok(ref chunk) = result {
+                    let uploads = app_h.state::<LanUploadsState>();
+                    if uploads.add_bytes_sent(&session_id, chunk.len() as u64) {
+                        let _ = app_h.emit("lan:uploads-changed", &());
+                    }
+                }
+                result
+            });
+            Body::from_stream(accounting_stream)
+        } else {
+            Body::from_stream(raw_stream)
+        };
         let mut resp = Response::new(body);
         *resp.status_mut() = StatusCode::PARTIAL_CONTENT;
         let h = resp.headers_mut();
@@ -438,18 +457,26 @@ async fn get_file_handler(
             format!("bytes {start}-{end}/{total_len}").parse().unwrap(),
         );
         h.insert(header::ACCEPT_RANGES, "bytes".parse().unwrap());
-        // Credit bytes to the upload session so the host UI shows progress.
-        if !query.session.is_empty() {
-            let uploads = state.app.state::<LanUploadsState>();
-            if uploads.add_bytes_sent(&query.session, body_len) {
-                let _ = state.app.emit("lan:uploads-changed", &());
-            }
-        }
         return Ok(resp);
     }
 
-    let stream = ReaderStream::new(file);
-    let body = Body::from_stream(stream);
+    let raw_stream = ReaderStream::new(file);
+    let body = if !query.session.is_empty() {
+        let app_h = state.app.clone();
+        let session_id = query.session.clone();
+        let accounting_stream = raw_stream.map(move |result| {
+            if let Ok(ref chunk) = result {
+                let uploads = app_h.state::<LanUploadsState>();
+                if uploads.add_bytes_sent(&session_id, chunk.len() as u64) {
+                    let _ = app_h.emit("lan:uploads-changed", &());
+                }
+            }
+            result
+        });
+        Body::from_stream(accounting_stream)
+    } else {
+        Body::from_stream(raw_stream)
+    };
     let mut resp = Response::new(body);
     let h = resp.headers_mut();
     h.insert(
@@ -461,13 +488,6 @@ async fn get_file_handler(
         total_len.to_string().parse().unwrap(),
     );
     h.insert(header::ACCEPT_RANGES, "bytes".parse().unwrap());
-    // Credit bytes to the upload session.
-    if !query.session.is_empty() {
-        let uploads = state.app.state::<LanUploadsState>();
-        if uploads.add_bytes_sent(&query.session, total_len) {
-            let _ = state.app.emit("lan:uploads-changed", &());
-        }
-    }
     Ok(resp)
 }
 
