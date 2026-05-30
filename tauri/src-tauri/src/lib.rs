@@ -341,8 +341,7 @@ pub fn run() {
                 )
                 .title("Spool")
                 .decorations(false)
-                .inner_size(520.0, 260.0)
-                .center()
+                .fullscreen(true)
                 .resizable(false)
                 .build()
                 {
