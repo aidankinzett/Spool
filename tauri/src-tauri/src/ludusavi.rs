@@ -24,6 +24,11 @@ use tokio::sync::RwLock;
 /// indefinitely on a dropped/flaky network (common on a handheld) — leaving
 /// the Game-Mode launch frozen on "Restoring saves…" forever. We kill the
 /// stuck child after this window and surface a clean error instead.
+///
+/// This is the backstop; the first line of defence is the fast-fail rclone
+/// timeout flags injected by [`crate::ludusavi_config::ensure_rclone_timeouts`],
+/// which make `--cloud-sync` give up in seconds so ludusavi can still complete
+/// the local restore.
 const RUN_API_TIMEOUT: Duration = Duration::from_secs(60);
 
 // ── DTOs: `ludusavi {restore,backup} --api` output ──────────────────────────
@@ -300,22 +305,60 @@ async fn run_find(ludusavi_exe: &Path, config_dir: &Path, query: &str) -> AppRes
 /// no-op (ludusavi sometimes exits non-zero with no output when the game
 /// isn't in its manifest, which we surface as "no saves to handle").
 async fn run_api(ludusavi_exe: &Path, config_dir: &Path, args: &[&str]) -> AppResult<ApiOutput> {
-    let mut cmd = hidden_command(ludusavi_exe, config_dir);
-    // `kill_on_drop` so the timeout below actually terminates a stuck
-    // rclone child — dropping the `output()` future on timeout drops the
-    // spawned child, which then gets killed rather than orphaned.
-    cmd.args(args).kill_on_drop(true);
-    let output = match tokio::time::timeout(RUN_API_TIMEOUT, cmd.output()).await {
-        Ok(res) => res.map_err(|e| AppError::Other(format!("failed to spawn ludusavi: {e}")))?,
+    // The subcommand ("restore" / "backup") for log/error messages — the first
+    // non-flag arg, since global flags like `--no-manifest-update` precede it.
+    let op = args
+        .iter()
+        .find(|a| !a.starts_with('-'))
+        .copied()
+        .unwrap_or("operation");
+    // Run ludusavi as a BLOCKING std::process call on a spawn_blocking thread
+    // rather than via tokio::process.
+    //
+    // tokio::process reaps child exits via the runtime's SIGCHLD/IO driver,
+    // which only makes progress while the runtime is actively driven. In the
+    // standalone SteamOS Game-Mode attached launch the process is near-idle
+    // (just a splash window — no main window, no pollers), so the driver wasn't
+    // ticking: ludusavi had already exited in ~1.5s but `cmd.output().await`
+    // didn't observe it for ~40s, leaving the launch stuck on "Restoring saves".
+    // A synchronous `waitpid` via std::process doesn't depend on the async
+    // runtime at all, so the wait returns the instant ludusavi exits.
+    let exe = ludusavi_exe.to_path_buf();
+    let cfg = config_dir.to_path_buf();
+    let owned_args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+    let started = std::time::Instant::now();
+    let join = tokio::task::spawn_blocking(move || {
+        let mut cmd = std::process::Command::new(&exe);
+        cmd.arg("--config").arg(&cfg);
+        cmd.args(&owned_args);
+        cmd.stdin(std::process::Stdio::null());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+        }
+        cmd.output()
+    });
+    let output = match tokio::time::timeout(RUN_API_TIMEOUT, join).await {
+        Ok(Ok(Ok(out))) => out,
+        Ok(Ok(Err(e))) => return Err(AppError::Other(format!("failed to spawn ludusavi: {e}"))),
+        Ok(Err(e)) => return Err(AppError::Other(format!("ludusavi task panicked: {e}"))),
         Err(_) => {
-            // `op` is the subcommand ("restore" / "backup") for a useful message.
-            let op = args.first().copied().unwrap_or("operation");
             return Err(AppError::Other(format!(
                 "ludusavi {op} timed out after {}s — the network or cloud sync may be unavailable.",
                 RUN_API_TIMEOUT.as_secs()
             )));
         }
     };
+    // Record how long the restore/backup subprocess took + its exit code. Cheap
+    // (only fires on the run-workflow path) and makes a slow or failing
+    // cloud-sync visible in debug.log without re-instrumenting.
+    tracing::info!(
+        op,
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        exit = output.status.code().unwrap_or(-1),
+        "ludusavi {op} finished"
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
     if !output.status.success() && stdout.trim().is_empty() {
         let stderr = String::from_utf8_lossy(&output.stderr);
