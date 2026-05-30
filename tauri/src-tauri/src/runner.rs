@@ -558,13 +558,13 @@ fn get_rclone_remote_name(config: &serde_yaml::Value) -> Option<String> {
     match remote {
         serde_yaml::Value::String(s) => Some(s.clone()),
         serde_yaml::Value::Mapping(m) => {
-            if let Some(custom) = m.get(&serde_yaml::Value::String("Custom".into())) {
-                if let Some(id) = custom.get(&serde_yaml::Value::String("id".into())) {
+            if let Some(custom) = m.get(serde_yaml::Value::String("Custom".into())) {
+                if let Some(id) = custom.get(serde_yaml::Value::String("id".into())) {
                     return id.as_str().map(String::from);
                 }
             }
-            if let Some(webdav) = m.get(&serde_yaml::Value::String("WebDav".into())) {
-                if let Some(id) = webdav.get(&serde_yaml::Value::String("id".into())) {
+            if let Some(webdav) = m.get(serde_yaml::Value::String("WebDav".into())) {
+                if let Some(id) = webdav.get(serde_yaml::Value::String("id".into())) {
                     return id.as_str().map(String::from);
                 }
             }
