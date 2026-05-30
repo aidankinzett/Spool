@@ -26,6 +26,9 @@
   // Accent color from game or brand default.
   let accent = $derived(game?.accent_color ?? '#d7c9a0');
 
+  // True during phases where Spool is actively doing work (drives kicker dot pulse).
+  let working = $derived(phase === 'restoring' || phase === 'backing-up');
+
   // Active ramp phases drive an animated progress bar.
   const RAMP_PHASES = new Set(['restoring', 'backing-up']);
 
@@ -282,7 +285,7 @@
   style="
     --accent: {accent};
     --tone: {toneColor(copy.tone)};
-    --bloom-col: {phase === 'error' ? '#ff7a7a' : accent};
+    --bloom-col: {phase === 'error' ? '#ff7a7a' : net === 'offline' ? '#f4b66c' : accent}1f;
     --s: {s};
   "
 >
@@ -340,7 +343,7 @@
     <!-- Headline -->
     <div class="headline-area">
       <div class="kicker">
-        <span class="kicker-dot" style="background:{toneColor(copy.tone)}"></span>
+        <span class="kicker-dot" style="background:{toneColor(copy.tone)}; box-shadow:0 0 {8 * s}px {toneColor(copy.tone)}; animation:{working ? 'gm-pulse 1.3s ease-in-out infinite' : 'none'}"></span>
         <span class="kicker-text" style="color:{toneColor(copy.tone)}">{copy.kicker}</span>
       </div>
       <h1 class="game-title" class:error-title={phase === 'error'}>
@@ -516,7 +519,7 @@
     position: absolute;
     inset: 0;
     background:
-      radial-gradient(120% 90% at -5% 30%, var(--bloom-col, #d7c9a0) 0%, transparent 45%),
+      radial-gradient(120% 90% at -5% 30%, var(--bloom-col, #d7c9a01f) 0%, transparent 45%),
       linear-gradient(180deg, #0c0e11 0%, #0b0c0e 60%, #060708 100%);
   }
   .grain {
@@ -633,7 +636,6 @@
     width: calc(7px * var(--s, 1));
     height: calc(7px * var(--s, 1));
     border-radius: 99px;
-    animation: gm-pulse 1.3s ease-in-out infinite;
   }
   .kicker-text {
     font-family: "JetBrains Mono", ui-monospace, monospace;
