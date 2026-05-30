@@ -1279,7 +1279,6 @@ async fn run_install(
             steam_id: manifest.steam_id,
             gog_id: manifest.gog_id,
             lutris_slug: manifest.lutris_slug.clone(),
-            has_cloud_save: manifest.has_cloud_save,
             manifest_install_dir: manifest.manifest_install_dir.clone(),
             save_paths: manifest.save_paths.clone(),
             developer: manifest.developer.clone(),

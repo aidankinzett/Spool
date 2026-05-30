@@ -32,7 +32,6 @@ function g(over: Partial<GameEntry> & { id: string; game_name: string }): GameEn
     steam_id: null,
     gog_id: null,
     lutris_slug: null,
-    has_cloud_save: false,
     manifest_install_dir: null,
     save_paths: [],
     accent_color: null,

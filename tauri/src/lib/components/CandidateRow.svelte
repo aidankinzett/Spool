@@ -8,7 +8,7 @@
    *   ● = picked (oxide radio + name bold + tinted background)
    *   numeric keyboard hint (1-9) on the right fades in on hover/pick
    */
-  import { Cloud, Folder } from '@lucide/svelte';
+  import { Folder } from '@lucide/svelte';
   import type { SearchCandidate } from '$lib/types';
 
   let {
@@ -103,14 +103,6 @@
         class="font-mono inline-flex size-[18px] items-center justify-center rounded-sm border border-line-2 bg-white/5 text-[8.5px] font-bold text-ink-2"
       >
         GOG
-      </span>
-    {/if}
-    {#if cand.has_cloud_save}
-      <span
-        title="Steam Cloud sync available"
-        class="inline-flex size-[18px] items-center justify-center text-info opacity-85"
-      >
-        <Cloud size={13} strokeWidth={1.4} />
       </span>
     {/if}
   </span>

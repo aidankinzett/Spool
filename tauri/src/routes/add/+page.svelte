@@ -133,7 +133,6 @@
         steam_id: picked.steam_id,
         gog_id: picked.gog_id,
         lutris_slug: picked.lutris_slug,
-        has_cloud_save: picked.has_cloud_save,
         manifest_install_dir: picked.manifest_install_dir,
         save_paths: picked.save_paths,
       });
@@ -150,7 +149,6 @@
       await api.addGame({
         game_name: picked?.name ?? fallbackName,
         exe_path: exePath,
-        has_cloud_save: false,
         save_paths: [],
       });
       await getCurrentWindow().close();

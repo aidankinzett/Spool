@@ -86,7 +86,6 @@ pub struct GameEntry {
     pub steam_id: Option<u64>,
     pub gog_id: Option<u64>,
     pub lutris_slug: Option<String>,
-    pub has_cloud_save: bool,
     /// The folder name ludusavi expects, e.g. `"Hades"`. Useful for hinting
     /// at the install dir when the user picks an exe.
     pub manifest_install_dir: Option<String>,
@@ -161,7 +160,6 @@ impl Default for GameEntry {
             steam_id: None,
             gog_id: None,
             lutris_slug: None,
-            has_cloud_save: false,
             manifest_install_dir: None,
             save_paths: Vec::new(),
             accent_color: None,
@@ -193,8 +191,6 @@ pub struct NewGame {
     pub gog_id: Option<u64>,
     #[serde(default)]
     pub lutris_slug: Option<String>,
-    #[serde(default)]
-    pub has_cloud_save: bool,
     #[serde(default)]
     pub manifest_install_dir: Option<String>,
     #[serde(default)]
@@ -354,7 +350,6 @@ pub fn add_game(
             steam_id: new_game.steam_id,
             gog_id: new_game.gog_id,
             lutris_slug: new_game.lutris_slug,
-            has_cloud_save: new_game.has_cloud_save,
             manifest_install_dir: new_game.manifest_install_dir,
             save_paths: new_game.save_paths,
             ..GameEntry::default()
