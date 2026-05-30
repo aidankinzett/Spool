@@ -161,9 +161,19 @@ fn version_score(name: &str) -> u32 {
     digits.parse::<u32>().unwrap_or(0).min(9_999)
 }
 
-/// Pick the Proton dir to launch with: explicit per-game override → config
-/// default → newest discovered. Errors if none can be resolved.
-pub fn resolve_proton_path(override_path: Option<&str>, default_path: Option<&str>) -> AppResult<PathBuf> {
+/// Pick the Proton dir to force via `PROTONPATH`, if the user has chosen one.
+///
+/// Returns `Some` only for an explicit per-game override or a config default
+/// that points at a valid Proton dir. When neither is set, returns `None`:
+/// Spool leaves `PROTONPATH` unset and lets `umu-run` pick its own default
+/// (its bundled UMU-Proton).
+///
+/// We deliberately do *not* fall back to a "newest installed" guess here.
+/// Forcing such a guess broke launches when it didn't match the Proton that
+/// built the game's prefix — the game would exit instantly (issue: auto-Proton
+/// regression after #80). Letting umu-run choose keeps prefix and runtime in
+/// sync, matching what a bare `umu-run <exe>` does.
+pub fn resolve_proton_path(override_path: Option<&str>, default_path: Option<&str>) -> Option<PathBuf> {
     for candidate in [override_path, default_path].into_iter().flatten() {
         let trimmed = candidate.trim();
         if trimmed.is_empty() {
@@ -171,15 +181,10 @@ pub fn resolve_proton_path(override_path: Option<&str>, default_path: Option<&st
         }
         let p = PathBuf::from(trimmed);
         if is_valid_proton_dir(&p) {
-            return Ok(p);
+            return Some(p);
         }
     }
-    if let Some(newest) = installed_proton_versions().into_iter().next() {
-        return Ok(PathBuf::from(newest.path));
-    }
-    Err(AppError::Other(
-        "No Proton version found. Install Proton via Steam (or a GE-Proton build).".into(),
-    ))
+    None
 }
 
 fn name_is_umu_or_ge(name: &str) -> bool {
@@ -272,23 +277,29 @@ pub struct UmuLaunch {
 
 /// Build the umu-run command + environment for a Windows exe. The caller
 /// sets the working directory (to the exe's parent) and spawns/waits.
+///
+/// `proton_path` is `None` when the user hasn't pinned a Proton version — in
+/// that case `PROTONPATH` is left unset so umu-run picks its own default (its
+/// bundled UMU-Proton). See [`resolve_proton_path`].
 pub fn build_umu_launch(
     umu_run: &Path,
     exe_path: &Path,
     extra_args: &[String],
     prefix_root: &Path,
-    proton_path: &Path,
+    proton_path: Option<&Path>,
     game_id: &str,
 ) -> UmuLaunch {
     let mut args = Vec::with_capacity(1 + extra_args.len());
     args.push(exe_path.to_string_lossy().to_string());
     args.extend(extra_args.iter().cloned());
 
-    let env = vec![
+    let mut env = vec![
         ("GAMEID".to_string(), format!("umu-{game_id}")),
         ("WINEPREFIX".to_string(), prefix_root.to_string_lossy().to_string()),
-        ("PROTONPATH".to_string(), proton_path.to_string_lossy().to_string()),
     ];
+    if let Some(proton_path) = proton_path {
+        env.push(("PROTONPATH".to_string(), proton_path.to_string_lossy().to_string()));
+    }
 
     UmuLaunch {
         program: umu_run.to_path_buf(),
@@ -396,7 +407,7 @@ mod tests {
             Path::new("/games/Hades/Hades.exe"),
             &["--skip-intro".to_string()],
             Path::new("/prefixes/abc"),
-            Path::new("/proton/Experimental"),
+            Some(Path::new("/proton/Experimental")),
             "abc",
         );
         assert_eq!(l.program, PathBuf::from("/usr/bin/umu-run"));
@@ -405,6 +416,27 @@ mod tests {
         assert_eq!(get("GAMEID"), Some("umu-abc".to_string()));
         assert_eq!(get("WINEPREFIX"), Some("/prefixes/abc".to_string()));
         assert_eq!(get("PROTONPATH"), Some("/proton/Experimental".to_string()));
+    }
+
+    #[test]
+    fn umu_launch_omits_protonpath_when_unpinned() {
+        // No pinned Proton → PROTONPATH unset so umu-run uses its own default.
+        let l = build_umu_launch(
+            Path::new("/usr/bin/umu-run"),
+            Path::new("/games/Hades/Hades.exe"),
+            &[],
+            Path::new("/prefixes/abc"),
+            None,
+            "abc",
+        );
+        assert!(l.env.iter().all(|(n, _)| n != "PROTONPATH"));
+    }
+
+    #[test]
+    fn resolve_proton_path_none_when_unconfigured() {
+        // Neither override nor default set → None (let umu-run choose).
+        assert_eq!(resolve_proton_path(None, Some("")), None);
+        assert_eq!(resolve_proton_path(Some("   "), None), None);
     }
 
     #[test]

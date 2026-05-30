@@ -1124,14 +1124,16 @@ fn build_launch_plan(
 
     if effective_proton {
         let umu_run = crate::proton::resolve_umu_run(Some(umu_run_path))?;
+        // `None` when the user hasn't pinned a Proton — we then leave
+        // PROTONPATH unset and let umu-run pick its own default.
         let proton_path = crate::proton::resolve_proton_path(
             proton_version_path.as_deref(),
             Some(default_proton_path),
-        )?;
+        );
         return Ok(LaunchPlan {
             use_proton: true,
             umu_run: Some(umu_run),
-            proton_path: Some(proton_path),
+            proton_path,
             prefix_root,
             extra_args,
             run_as_admin: false,
@@ -1416,10 +1418,7 @@ async fn run_workflow(
                 .as_deref()
                 .expect("umu_run resolved for proton launch"),
             prefix_root: &launch.prefix_root,
-            proton_path: launch
-                .proton_path
-                .as_deref()
-                .expect("proton_path resolved for proton launch"),
+            proton_path: launch.proton_path.as_deref(),
             game_id,
             extra_args: &launch.extra_args,
         }

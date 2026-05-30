@@ -108,7 +108,8 @@ pub enum LaunchSpec<'a> {
     Proton {
         umu_run: &'a Path,
         prefix_root: &'a Path,
-        proton_path: &'a Path,
+        /// `None` leaves `PROTONPATH` unset so umu-run picks its own default.
+        proton_path: Option<&'a Path>,
         game_id: &'a str,
         extra_args: &'a [String],
     },
