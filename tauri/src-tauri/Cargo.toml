@@ -53,7 +53,12 @@ serde_yaml = "0.9"
 # compatibility flag, and ShellExecuteExW-based elevated launch.
 [target.'cfg(windows)'.dependencies]
 winreg = "0.55"
-runas = "1"
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_System_Threading",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
 
 [dev-dependencies]
 tempfile = "3.27.0"
