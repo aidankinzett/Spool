@@ -75,8 +75,14 @@
     title: 'Detail/GameDetail',
     component: GameDetail,
     render: template,
-    // The component is a full right-hand pane — give it the whole canvas.
-    parameters: { layout: 'fullscreen' },
+    parameters: {
+      // The component is a full right-hand pane — give it the whole canvas
+      // when viewed as a standalone story.
+      layout: 'fullscreen',
+      // In the Docs page, render each preview in a bounded iframe instead of
+      // inline, so the 100vh-tall pane doesn't blow out the page height.
+      docs: { story: { inline: false, height: '640px' } },
+    },
     argTypes: {
       runPhase: {
         control: 'select',
