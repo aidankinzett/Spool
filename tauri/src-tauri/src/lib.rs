@@ -291,6 +291,7 @@ pub fn run() {
             runner::manual_backup,
             runner::manual_restore,
             runner::resolve_cloud_conflict,
+            runner::get_cloud_conflict_details,
             // decky plugin installer (Linux / SteamOS)
             decky_install::decky_plugin_status,
             decky_install::install_decky_plugin,

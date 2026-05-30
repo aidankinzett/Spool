@@ -78,9 +78,9 @@
     coverUrl?: string | null;
     /** Which side is the most recent revision — drives the "MOST RECENT" tag. */
     cloudNewer?: boolean;
-    /** Local-copy metadata; both metas present ⇒ the detailed card variant. */
+    /** Local-copy metadata; detail card renders if either side has metadata. */
     localMeta?: SaveMeta | null;
-    /** Cloud-copy metadata; both metas present ⇒ the detailed card variant. */
+    /** Cloud-copy metadata; detail card renders if either side has metadata. */
     cloudMeta?: SaveMeta | null;
     /** Surface this modal floats over — tweaks the scrim + the done CTA copy. */
     context?: 'desktop' | 'gamemode';
@@ -107,7 +107,6 @@
   let hover = $state<Record<string, boolean>>({});
 
   const acc = $derived(accent ?? BRAND_SPOOL);
-  const hasMeta = $derived(localMeta != null && cloudMeta != null);
   const locked = $derived(phase !== 'choose');
 
   const sides = $derived<{ local: SideModel; cloud: SideModel }>({
@@ -342,7 +341,7 @@
         >
           {loseBadge}
         </span>
-      {:else if side.recent && !locked && !active}
+      {:else if side.recent && side.meta && !locked && !active}
         <span
           class="font-mono inline-flex items-center gap-1.5 whitespace-nowrap"
           style:font-size="9px"
@@ -364,7 +363,7 @@
         {side.sub}
       </div>
 
-      {#if hasMeta && side.meta}
+      {#if side.meta}
         <div class="grid items-end" style:grid-template-columns="1fr auto" style:gap="12px">
           <div class="flex min-w-0 flex-col" style:gap="4px">
             <span

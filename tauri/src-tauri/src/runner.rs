@@ -372,6 +372,394 @@ pub async fn resolve_cloud_conflict(
     Ok(ManualRestoreResult { game_count })
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct RawSaveDetails {
+    pub modified: Option<String>,
+    pub size_bytes: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RawConflictDetails {
+    pub local: Option<RawSaveDetails>,
+    pub cloud: Option<RawSaveDetails>,
+}
+
+fn get_local_backup_details(game_name: &str) -> Option<RawSaveDetails> {
+    let backup_dir = ludusavi_config::backup_dir();
+    let candidates = [
+        backup_dir.join(game_name),
+        backup_dir.join(redirects::windows_safe_name(game_name)),
+    ];
+    for dir in &candidates {
+        if dir.is_dir() {
+            let mapping_file = dir.join("mapping.yaml");
+            let mut modified = if mapping_file.is_file() {
+                std::fs::metadata(&mapping_file)
+                    .and_then(|m| m.modified())
+                    .ok()
+                    .map(|sys_time| {
+                        let dt: chrono::DateTime<chrono::Utc> = chrono::DateTime::from(sys_time);
+                        dt.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+                    })
+            } else {
+                None
+            };
+            
+            let mut total_size = 0u64;
+            for entry in walkdir::WalkDir::new(dir).follow_links(true) {
+                let Ok(entry) = entry else { continue };
+                if !entry.file_type().is_file() {
+                    continue;
+                }
+                if let Ok(meta) = entry.metadata() {
+                    total_size += meta.len();
+                    if modified.is_none() {
+                        if let Ok(mod_time) = meta.modified() {
+                            let dt: chrono::DateTime<chrono::Utc> = chrono::DateTime::from(mod_time);
+                            modified = Some(dt.to_rfc3339_opts(chrono::SecondsFormat::Secs, true));
+                        }
+                    } else if let Ok(mod_time) = meta.modified() {
+                        let dt: chrono::DateTime<chrono::Utc> = chrono::DateTime::from(mod_time);
+                        let dt_str = dt.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+                        if let Some(ref m) = modified {
+                            if &dt_str > m {
+                                modified = Some(dt_str);
+                            }
+                        }
+                    }
+                }
+            }
+            if modified.is_some() || total_size > 0 {
+                return Some(RawSaveDetails {
+                    modified,
+                    size_bytes: total_size,
+                });
+            }
+        }
+    }
+    None
+}
+
+async fn get_local_active_save_details(
+    ludusavi_exe: &Path,
+    config_dir: &Path,
+    game_name: &str,
+    wine_prefix: Option<&Path>,
+) -> Option<RawSaveDetails> {
+    let mut args = vec!["backup", "--preview", "--api", game_name];
+    let prefix_str;
+    if let Some(pfx) = wine_prefix {
+        prefix_str = pfx.to_string_lossy().into_owned();
+        args.push("--wine-prefix");
+        args.push(&prefix_str);
+    }
+    
+    let mut cmd = tokio::process::Command::new(ludusavi_exe);
+    cmd.arg("--config").arg(config_dir);
+    cmd.args(&args);
+    cmd.stdin(std::process::Stdio::null());
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+    cmd.kill_on_drop(true);
+    #[cfg(windows)]
+    {
+        #[allow(unused_imports)]
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    
+    let child = cmd.spawn().ok()?;
+    let output = tokio::time::timeout(
+        std::time::Duration::from_secs(6),
+        child.wait_with_output(),
+    )
+    .await
+    .ok()? // timeout
+    .ok()?; // process run error
+    
+    if !output.status.success() {
+        tracing::warn!(
+            "get_local_active_save_details: ludusavi preview failed with status {:?}. Stderr: {}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+        return None;
+    }
+    
+    #[derive(Debug, serde::Deserialize)]
+    struct LocalPreviewFile {
+        bytes: u64,
+    }
+    
+    #[derive(Debug, serde::Deserialize)]
+    struct LocalPreviewGame {
+        #[serde(default)]
+        files: std::collections::HashMap<String, LocalPreviewFile>,
+    }
+    
+    #[derive(Debug, serde::Deserialize)]
+    struct LocalPreviewOutput {
+        #[serde(default)]
+        games: std::collections::HashMap<String, LocalPreviewGame>,
+    }
+    
+    let parsed: LocalPreviewOutput = serde_json::from_slice(&output.stdout)
+        .map_err(|e| {
+            tracing::error!(
+                "get_local_active_save_details: failed to parse ludusavi output: {:?}. Output length: {} bytes",
+                e,
+                output.stdout.len()
+            );
+            e
+        })
+        .ok()?;
+        
+    let mut total_size = 0u64;
+    let mut modified: Option<String> = None;
+    
+    for game in parsed.games.values() {
+        for (path_str, file_info) in &game.files {
+            total_size += file_info.bytes;
+            let path = Path::new(path_str);
+            if let Ok(meta) = std::fs::metadata(path) {
+                if let Ok(mod_time) = meta.modified() {
+                    let dt: chrono::DateTime<chrono::Utc> = chrono::DateTime::from(mod_time);
+                    let dt_str = dt.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+                    if let Some(ref m) = modified {
+                        if &dt_str > m {
+                            modified = Some(dt_str);
+                        }
+                    } else {
+                        modified = Some(dt_str);
+                    }
+                }
+            }
+        }
+    }
+    
+    if total_size > 0 {
+        tracing::info!(
+            "get_local_active_save_details: found active local saves. size={}, modified={:?}",
+            total_size,
+            modified
+        );
+        Some(RawSaveDetails {
+            modified,
+            size_bytes: total_size,
+        })
+    } else {
+        None
+    }
+}
+
+
+fn get_rclone_remote_name(config: &serde_yaml::Value) -> Option<String> {
+    let cloud = config.get("cloud")?;
+    let remote = cloud.get("remote")?;
+    match remote {
+        serde_yaml::Value::String(s) => Some(s.clone()),
+        serde_yaml::Value::Mapping(m) => {
+            if let Some(custom) = m.get(serde_yaml::Value::String("Custom".into())) {
+                if let Some(id) = custom.get(serde_yaml::Value::String("id".into())) {
+                    return id.as_str().map(String::from);
+                }
+            }
+            if let Some(webdav) = m.get(serde_yaml::Value::String("WebDav".into())) {
+                if let Some(id) = webdav.get(serde_yaml::Value::String("id".into())) {
+                    return id.as_str().map(String::from);
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+async fn query_rclone_details(
+    rclone_exe: &Path,
+    remote_name: &str,
+    remote_path: &str,
+    game_folder_name: &str,
+) -> Option<RawSaveDetails> {
+    let target = format!("{}:{}/{}", remote_name, remote_path, game_folder_name);
+    tracing::info!("query_rclone_details: target={}", target);
+    
+    let mut cmd = tokio::process::Command::new(rclone_exe);
+    cmd.arg("lsjson")
+        .arg("--no-mimetype")
+        .arg("--recursive")
+        .arg(&target);
+    cmd.stdin(std::process::Stdio::null());
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+    cmd.kill_on_drop(true);
+    #[cfg(windows)]
+    {
+        #[allow(unused_imports)]
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    
+    let child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::error!("query_rclone_details: failed to spawn rclone: {:?}", e);
+            return None;
+        }
+    };
+    
+    let output = match tokio::time::timeout(
+        std::time::Duration::from_secs(6),
+        child.wait_with_output(),
+    )
+    .await
+    {
+        Ok(Ok(o)) => o,
+        Ok(Err(e)) => {
+            tracing::error!("query_rclone_details: rclone process run error: {:?}", e);
+            return None;
+        }
+        Err(_) => {
+            tracing::warn!("query_rclone_details: rclone command timed out");
+            return None;
+        }
+    };
+    
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        tracing::warn!(
+            "query_rclone_details: rclone failed with status {:?}. Stderr: {}",
+            output.status.code(),
+            stderr.trim()
+        );
+        return None;
+    }
+    
+    #[derive(Debug, serde::Deserialize)]
+    struct RcloneItem {
+        #[serde(rename = "Size")]
+        size: i64,
+        #[serde(rename = "ModTime")]
+        mod_time: String,
+        #[serde(rename = "IsDir")]
+        is_dir: bool,
+    }
+    
+    let items: Vec<RcloneItem> = match serde_json::from_slice(&output.stdout) {
+        Ok(parsed) => parsed,
+        Err(e) => {
+            tracing::error!(
+                "query_rclone_details: failed to deserialize JSON from rclone: {:?}. Output length: {} bytes",
+                e,
+                output.stdout.len()
+            );
+            return None;
+        }
+    };
+    
+    if items.is_empty() {
+        tracing::info!("query_rclone_details: target contains no files");
+        return None;
+    }
+    
+    let total_size: u64 = items
+        .iter()
+        .filter(|i| !i.is_dir)
+        .map(|i| i.size.max(0) as u64)
+        .sum();
+    let latest_mod = items
+        .iter()
+        .filter(|i| !i.is_dir)
+        .filter_map(|i| {
+            chrono::DateTime::parse_from_rfc3339(&i.mod_time)
+                .ok()
+                .map(|dt| (dt, &i.mod_time))
+        })
+        .max_by_key(|(dt, _)| *dt)
+        .map(|(_, mod_time)| mod_time.clone());
+        
+    tracing::info!(
+        "query_rclone_details success: files_count={}, total_size={}, latest_mod={:?}",
+        items.iter().filter(|i| !i.is_dir).count(),
+        total_size,
+        latest_mod
+    );
+    
+    Some(RawSaveDetails {
+        modified: latest_mod,
+        size_bytes: total_size,
+    })
+}
+
+#[tauri::command]
+pub async fn get_cloud_conflict_details(
+    app: AppHandle,
+    game_id: String,
+) -> AppResult<RawConflictDetails> {
+    tracing::info!("get_cloud_conflict_details called for game_id={}", game_id);
+    // 1. Get local details
+    let (game_name, ludusavi_exe, config_dir, wine_prefix) = manual_prep(&app, &game_id)?;
+    let mut local = get_local_active_save_details(&ludusavi_exe, &config_dir, &game_name, wine_prefix.as_deref()).await;
+    if local.is_none() {
+        tracing::info!("get_local_active_save_details returned None; falling back to local backup directory stats");
+        local = get_local_backup_details(&game_name);
+    }
+    tracing::info!("local details for {}: {:?}", game_name, local);
+    
+    // 2. Get cloud details if cloud is configured
+    let config_file = crate::paths::ludusavi_config_file();
+    if !config_file.exists() {
+        tracing::warn!("get_cloud_conflict_details: config.yaml does not exist at {:?}", config_file);
+        return Ok(RawConflictDetails { local, cloud: None });
+    }
+    let raw = std::fs::read_to_string(&config_file)
+        .map_err(|e| AppError::Other(format!("failed to read config.yaml: {e}")))?;
+    let config: serde_yaml::Value = serde_yaml::from_str(&raw)
+        .map_err(|e| AppError::Other(format!("failed to parse config.yaml: {e}")))?;
+        
+    let Some(remote_name) = get_rclone_remote_name(&config) else {
+        tracing::warn!("get_cloud_conflict_details: cloud remote is not configured in config.yaml");
+        return Ok(RawConflictDetails { local, cloud: None });
+    };
+    
+    let remote_path = config
+        .get("cloud")
+        .and_then(|c| c.get("path"))
+        .and_then(|p| p.as_str())
+        .unwrap_or("ludusavi-backup");
+        
+    let rclone_exe = {
+        let config = app.state::<SharedConfig>();
+        let cfg = config.lock().map_err(|_| AppError::LockPoisoned)?;
+        crate::paths::resolve_rclone_path(&cfg.data.rclone_path).ok_or_else(|| {
+            AppError::Other("rclone binary not found".into())
+        })?
+    };
+    
+    tracing::info!(
+        "get_cloud_conflict_details: querying rclone_exe={:?}, remote_name={}, remote_path={}",
+        rclone_exe,
+        remote_name,
+        remote_path
+    );
+    
+    // Query cloud remote (try exact name first, then windows safe name)
+    let mut cloud = query_rclone_details(&rclone_exe, &remote_name, remote_path, &game_name).await;
+    if cloud.is_none() {
+        let safe_name = redirects::windows_safe_name(&game_name);
+        if safe_name != game_name {
+            tracing::info!(
+                "get_cloud_conflict_details: exact name failed, retrying with windows safe name: {}",
+                safe_name
+            );
+            cloud = query_rclone_details(&rclone_exe, &remote_name, remote_path, &safe_name).await;
+        }
+    }
+    
+    tracing::info!("get_cloud_conflict_details results: local={:?}, cloud={:?}", local, cloud);
+    Ok(RawConflictDetails { local, cloud })
+}
+
 #[derive(Debug, Serialize)]
 pub struct ManualBackupResult {
     pub game_count: i32,
@@ -1016,4 +1404,27 @@ async fn run_workflow(
     }
     tracing::info!(game_name, "run workflow complete");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_get_rclone_remote_name() {
+        let yaml_str = r#"
+cloud:
+  remote:
+    WebDav:
+      id: ludusavi-1780143898
+      url: http://192.168.86.34:47634
+      username: DESKTOP-OAA3RS6
+      provider: Other
+  path: ludusavi-backup
+  synchronize: true
+        "#;
+        let val: serde_yaml::Value = serde_yaml::from_str(yaml_str).unwrap();
+        let remote = get_rclone_remote_name(&val);
+        assert_eq!(remote, Some("ludusavi-1780143898".to_string()));
+    }
 }

@@ -397,3 +397,13 @@ export type ProtonVersion = {
   path: string;
   source: string;
 };
+
+export type RawSaveDetails = {
+  modified: string | null;
+  size_bytes: number;
+};
+
+export type RawConflictDetails = {
+  local: RawSaveDetails | null;
+  cloud: RawSaveDetails | null;
+};

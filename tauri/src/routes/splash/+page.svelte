@@ -2,10 +2,13 @@
   import { onMount } from 'svelte';
   import { listen } from '@tauri-apps/api/event';
   import { api, assetUrl } from '$lib/api';
-  import type { RunPhaseEvent, GameEntry, SyncStatus } from '$lib/types';
+  import type { RunPhaseEvent, GameEntry, SyncStatus, RawConflictDetails } from '$lib/types';
   import SpoolMark from '$lib/components/SpoolMark.svelte';
   import CloudConflictModal from '$lib/components/CloudConflictModal.svelte';
   import { getCurrentWindow } from '@tauri-apps/api/window';
+  import { absDateTime, relDate, fmtSize as formatFmtSize } from '$lib/format';
+
+  let conflictDetails = $state<RawConflictDetails | null>(null);
 
   let phase = $state<string>('restoring');
   let message = $state<string | null>(null);
@@ -14,6 +17,54 @@
   let sessionMinutes = $state<number | null>(null);
   let game = $state<GameEntry | null>(null);
   let progress = $state(0);
+
+  const isCloudConflict = $derived(phase === 'error' && !!message && /cloud sync conflict/i.test(message));
+
+  $effect(() => {
+    const id = game?.id;
+    if (isCloudConflict && id) {
+      api.getCloudConflictDetails(id)
+        .then((res) => {
+          if (game?.id === id) {
+            conflictDetails = res;
+          }
+        })
+        .catch((e) => {
+          console.error('[splash] failed to fetch conflict details:', e);
+        });
+    } else {
+      conflictDetails = null;
+    }
+  });
+
+  const localMeta = $derived.by(() => {
+    if (!conflictDetails?.local || !conflictDetails.local.modified) return null;
+    const mb = conflictDetails.local.size_bytes / (1024 * 1024);
+    return {
+      abs: absDateTime(conflictDetails.local.modified),
+      rel: relDate(conflictDetails.local.modified),
+      size: formatFmtSize(mb),
+    };
+  });
+
+  const cloudMeta = $derived.by(() => {
+    if (!conflictDetails?.cloud || !conflictDetails.cloud.modified) return null;
+    const mb = conflictDetails.cloud.size_bytes / (1024 * 1024);
+    return {
+      abs: absDateTime(conflictDetails.cloud.modified),
+      rel: relDate(conflictDetails.cloud.modified),
+      size: formatFmtSize(mb),
+    };
+  });
+
+  const cloudNewer = $derived.by(() => {
+    const localTime = conflictDetails?.local?.modified;
+    const cloudTime = conflictDetails?.cloud?.modified;
+    if (localTime && cloudTime) {
+      return new Date(cloudTime) > new Date(localTime);
+    }
+    return !localTime;
+  });
   let progressRaf = $state<number | null>(null);
 
   let windowHeight = $state(800);
@@ -518,12 +569,15 @@
     </div>
   </div>
 
-  {#if phase === 'error' && message && /cloud sync conflict/i.test(message)}
+  {#if isCloudConflict}
     <CloudConflictModal
       gameName={game?.game_name ?? 'Game'}
       catalogId={game?.catalog_number ? catalogId(game.catalog_number) : undefined}
       accent={accent}
       coverUrl={assetUrl(game?.cover_image_path)}
+      cloudNewer={cloudNewer}
+      localMeta={localMeta}
+      cloudMeta={cloudMeta}
       context="gamemode"
       resolve={async (side) => {
         await api.resolveCloudConflict(game!.id, side);
