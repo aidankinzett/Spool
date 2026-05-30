@@ -271,6 +271,7 @@ pub fn run() {
             // runner
             runner::launch_game,
             runner::manual_backup,
+            runner::refresh_save_metadata,
             runner::manual_restore,
             runner::resolve_cloud_conflict,
             runner::get_cloud_conflict_details,

@@ -160,6 +160,49 @@ fn os_toast_if_hidden(app: &AppHandle, title: &str, body: &str) {
     }
 }
 
+/// Persist a game's save-backup stats after a successful backup. The revision
+/// count and latest-backup timestamp come from `ludusavi backups` — ludusavi's
+/// real backup store is authoritative, so the card stays correct even across
+/// pruned revisions or backups made outside Spool. The just-written snapshot's
+/// source size is recorded from this run's reported bytes (ludusavi exposes no
+/// per-backup or total on-disk size via its API). If the backup list can't be
+/// queried we fall back to a simple increment so the signal isn't lost.
+async fn persist_backup_stats(
+    ludusavi_client: &LudusaviClient,
+    ludusavi_exe: &Path,
+    config_dir: &Path,
+    library: &SharedLibrary,
+    game_id: &str,
+    game_name: &str,
+    bytes_total: u64,
+) -> AppResult<()> {
+    let stats = ludusavi_client
+        .list_backups(ludusavi_exe, config_dir, game_name)
+        .await;
+    let mut lib = library.lock().map_err(|_| AppError::LockPoisoned)?;
+    if let Some(entry) = lib.entries.iter_mut().find(|e| e.id == game_id) {
+        match &stats {
+            Ok(s) => {
+                entry.save_backup_count = s.count;
+                entry.save_last_backed_up_at = s.last_backed_up_at;
+            }
+            Err(e) => {
+                tracing::warn!(game_name, error = %e, "ludusavi backups query failed; incrementing count");
+                entry.save_backup_count += 1;
+                entry.save_last_backed_up_at = Some(Utc::now());
+            }
+        }
+        entry.save_backup_size_mb = (bytes_total as f64) / (1024.0 * 1024.0);
+    } else {
+        tracing::warn!(
+            game_id,
+            "backup stats not persisted: library entry missing after session"
+        );
+    }
+    lib.save()?;
+    Ok(())
+}
+
 /// AppHandle-free backup core. Resolves the game's name + wine prefix from the
 /// library, runs `ludusavi backup`, and persists the entry's backup stats.
 /// Returns the bundle count + total bytes. Callers handle event emission and
@@ -205,11 +248,20 @@ pub async fn backup_game_core(
         .unwrap_or((0, 0));
 
     if game_count > 0 {
+        persist_backup_stats(
+            ludusavi_client,
+            ludusavi_exe,
+            config_dir,
+            library,
+            game_id,
+            &game_name,
+            bytes_total,
+        )
+        .await?;
+        // Manual backups also flip the sync badge to "synced" — the run
+        // workflow handles its own badge elsewhere.
         let mut lib = library.lock().map_err(|_| AppError::LockPoisoned)?;
         if let Some(entry) = lib.entries.iter_mut().find(|e| e.id == game_id) {
-            entry.save_backup_count += 1;
-            entry.save_last_backed_up_at = Some(Utc::now());
-            entry.save_backup_size_mb = (bytes_total as f64) / (1024.0 * 1024.0);
             entry.sync_badge = Some("synced".to_string());
         }
         lib.save()?;
@@ -261,6 +313,69 @@ pub async fn manual_backup(app: AppHandle, game_id: String) -> AppResult<ManualB
         }
     }
     Ok(result)
+}
+
+/// Refresh a game's save-backup stats (revision count + latest-backup
+/// timestamp) from ludusavi's real backup store, without running a backup.
+/// The detail view calls this when a game is selected so the card reflects
+/// ludusavi truth — including backups made outside Spool and pre-existing
+/// backups on freshly-added or migrated entries (which the old per-session
+/// counter could never show). Best-effort and silent: an unconfigured or
+/// missing ludusavi simply leaves the entry untouched. Emits `library:changed`
+/// only when a value actually changed, to avoid pointless UI churn.
+#[tauri::command]
+pub async fn refresh_save_metadata(app: AppHandle, game_id: String) -> AppResult<()> {
+    let ludusavi_exe = {
+        let config = app.state::<SharedConfig>();
+        let cfg = config.lock().map_err(|_| AppError::LockPoisoned)?;
+        match crate::paths::resolve_ludusavi_path(&cfg.data.ludusavi_path) {
+            Some(p) => p,
+            None => return Ok(()),
+        }
+    };
+    let config_dir = crate::paths::ludusavi_config_dir();
+    let game_name = {
+        let library = app.state::<SharedLibrary>();
+        let lib = library.lock().map_err(|_| AppError::LockPoisoned)?;
+        match lib.find(&game_id) {
+            Some(e) => e.game_name.clone(),
+            None => return Ok(()),
+        }
+    };
+
+    let ludusavi_client = app.state::<LudusaviClient>();
+    let stats = match ludusavi_client
+        .list_backups(&ludusavi_exe, &config_dir, &game_name)
+        .await
+    {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::debug!(game_name, error = %e, "refresh_save_metadata: backups query failed");
+            return Ok(());
+        }
+    };
+
+    let library = app.state::<SharedLibrary>();
+    let mut lib = library.lock().map_err(|_| AppError::LockPoisoned)?;
+    let changed = if let Some(entry) = lib.entries.iter_mut().find(|e| e.id == game_id) {
+        let changed = entry.save_backup_count != stats.count
+            || entry.save_last_backed_up_at != stats.last_backed_up_at;
+        if changed {
+            entry.save_backup_count = stats.count;
+            entry.save_last_backed_up_at = stats.last_backed_up_at;
+        }
+        changed
+    } else {
+        false
+    };
+    if changed {
+        lib.save()?;
+    }
+    drop(lib);
+    if changed {
+        let _ = app.emit("library:changed", &game_id);
+    }
+    Ok(())
 }
 
 /// Manual restore — runs `ludusavi restore` for a single game.
@@ -1578,16 +1693,16 @@ async fn run_workflow(
                 if let Some(overall) = &out.overall {
                     if overall.total_games > 0 {
                         let library = app.state::<SharedLibrary>();
-                        let mut lib = library.lock().map_err(|_| AppError::LockPoisoned)?;
-                        if let Some(entry) = lib.entries.iter_mut().find(|e| e.id == game_id) {
-                            entry.save_backup_count += 1;
-                            entry.save_last_backed_up_at = Some(Utc::now());
-                            entry.save_backup_size_mb =
-                                (overall.total_bytes as f64) / (1024.0 * 1024.0);
-                        } else {
-                            tracing::warn!(game_id, "backup stats not persisted: library entry missing after session");
-                        }
-                        lib.save()?;
+                        persist_backup_stats(
+                            ludusavi_client,
+                            ludusavi_exe,
+                            &config_dir,
+                            &library,
+                            game_id,
+                            game_name,
+                            overall.total_bytes,
+                        )
+                        .await?;
                         let _ = app.emit("library:changed", &game_id.to_string());
                     }
                 }

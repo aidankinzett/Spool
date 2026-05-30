@@ -126,6 +126,13 @@ export const api = {
   manualRestore: (gameId: string): Promise<{ game_count: number }> =>
     invoke('manual_restore', { gameId }),
   /**
+   * Refresh a game's save-backup stats (revision count + latest-backup time)
+   * from ludusavi's real backup store. Fire-and-forget from the detail view;
+   * the backend emits `library:changed` only when something actually changed.
+   */
+  refreshSaveMetadata: (gameId: string): Promise<void> =>
+    invoke('refresh_save_metadata', { gameId }),
+  /**
    * Resolve a cloud-sync conflict in-app by picking which copy wins, then
    * land the reconciled saves. `side` is `'local'` (keep this device, upload)
    * or `'cloud'` (keep the cloud, download). Throws if the resolve fails —
