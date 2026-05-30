@@ -123,13 +123,17 @@ jobs:
       # check step is pure redundant compilation — dropped. Frontend
       # checks (svelte-check / eslint / vitest) moved to the `frontend`
       # job on Ubuntu, off the slow Windows critical path.
+      #
+      # This job stays the authoritative lint for the cfg(windows) code
+      # (registry.rs, launcher.rs, the Windows arms of process.rs/ludusavi.rs)
+      # — clippy only ever sees the code compiled for its own target, so the
+      # fast clippy-linux job can't cover it. --all-targets still compiles the
+      # cfg(windows) test targets here too, so test *execution* moving to
+      # clippy-linux loses no compile coverage (the suite has no cfg(windows)
+      # tests).
       - name: Cargo clippy
         working-directory: tauri/src-tauri
         run: cargo clippy --all-targets
-
-      - name: Cargo test
-        working-directory: tauri/src-tauri
-        run: cargo test --all
 
       - name: Tauri build (no bundle)
         # master pushes only. This is the slow release-profile compile —
@@ -199,6 +203,103 @@ jobs:
       - name: Server tests
         working-directory: server
         run: bun run test
+
+  # Backend lint + unit tests on a fast Ubuntu runner. Dev-profile clippy
+  # compiles far quicker than the release-profile Windows job, so PRs get
+  # their first green backend signal here while build-windows runs in
+  # parallel as the cfg(windows) backstop. This is also the only job that
+  # lints the cfg(target_os = "linux") code (the Decky installer) — the
+  # Windows clippy never compiles it. The platform-independent test suite
+  # runs here too (it has no cfg(windows) tests), off the slow Windows path.
+  # Runs on PRs and master.
+  clippy-linux:
+    runs-on: ubuntu-22.04
+    env:
+      SCCACHE_DIR: "${{ github.workspace }}/.sccache"
+      RUSTC_WRAPPER: "sccache"
+      CARGO_INCREMENTAL: "0"
+      BUN_INSTALL_CACHE_DIR: "${{ github.workspace }}/.bun-cache"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.x"
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.6
+
+      - name: Sccache cache
+        # Restore the shared sccache-Linux- objects build-linux populated, but
+        # save under a distinct -clippy- key so this job doesn't collide with
+        # build-linux's or e2e-linux's save on master pushes (same key =
+        # first-to-save wins, dropping the others' objects). These are
+        # dev-profile objects, distinct from the release builds' — the shared
+        # registry cache below is the real cross-job win.
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.sccache
+          key: sccache-${{ runner.os }}-clippy-${{ github.ref_name }}-${{ github.sha }}
+          restore-keys: |
+            sccache-${{ runner.os }}-clippy-${{ github.ref_name }}-
+            sccache-${{ runner.os }}-${{ github.ref_name }}-
+            sccache-${{ runner.os }}-
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: tauri/src-tauri -> target
+          cache-targets: "false"
+          shared-key: spool-linux-clippy
+
+      - name: Install Linux system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev
+
+      - name: Bun cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.bun-cache
+          key: bun-${{ runner.os }}-${{ hashFiles('tauri/bun.lock') }}
+          restore-keys: |
+            bun-${{ runner.os }}-
+
+      - name: Install frontend dependencies
+        working-directory: tauri
+        run: bun install --frozen-lockfile
+
+      - name: Cache sidecars
+        id: cache-sidecars
+        uses: actions/cache@v4
+        with:
+          path: tauri/src-tauri/binaries
+          key: sidecars-${{ runner.os }}-${{ hashFiles('tauri/scripts/download-sidecars.js') }}
+
+      - name: Download sidecars
+        # tauri_build validates the externalBin sidecar exists at compile time,
+        # so it must be present even for clippy/test (no bundle).
+        if: steps.cache-sidecars.outputs.cache-hit != 'true'
+        working-directory: tauri
+        run: bun run download-sidecars
+
+      # Lints the cfg(linux) Decky installer the Windows job never sees.
+      # build.rs writes a placeholder decky/dist/index.js when missing, so the
+      # genuine plugin bundle isn't needed just to compile and lint.
+      - name: Cargo clippy
+        working-directory: tauri/src-tauri
+        run: cargo clippy --all-targets
+
+      - name: Cargo test
+        working-directory: tauri/src-tauri
+        run: cargo test --all
 
   # Mirrors the `build-linux` job in release.yml so the rust-cache key
   # matches. master pushes only — this job is a pure release-profile
