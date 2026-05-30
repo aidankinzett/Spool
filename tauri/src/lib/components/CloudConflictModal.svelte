@@ -107,7 +107,6 @@
   let hover = $state<Record<string, boolean>>({});
 
   const acc = $derived(accent ?? BRAND_SPOOL);
-  const hasMeta = $derived(localMeta != null && cloudMeta != null);
   const locked = $derived(phase !== 'choose');
 
   const sides = $derived<{ local: SideModel; cloud: SideModel }>({
@@ -364,7 +363,7 @@
         {side.sub}
       </div>
 
-      {#if hasMeta && side.meta}
+      {#if side.meta}
         <div class="grid items-end" style:grid-template-columns="1fr auto" style:gap="12px">
           <div class="flex min-w-0 flex-col" style:gap="4px">
             <span

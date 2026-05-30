@@ -20,6 +20,7 @@ import type {
   SyncStatus,
   UploadSnapshot,
   SearchCandidate,
+  RawConflictDetails,
 } from './types';
 
 /** Status of the companion Spool Backup Decky plugin (mirrors the Rust
@@ -161,6 +162,8 @@ export const api = {
     side: 'local' | 'cloud',
   ): Promise<{ game_count: number }> =>
     invoke('resolve_cloud_conflict', { gameId, side }),
+  getCloudConflictDetails: (gameId: string): Promise<RawConflictDetails> =>
+    invoke('get_cloud_conflict_details', { gameId }),
 
   // Lifecycle — pulls + clears the game id queued by a startup `--run` invocation.
   takePendingRun: (): Promise<string | null> => invoke('take_pending_run'),

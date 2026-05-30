@@ -138,7 +138,7 @@ pub fn read_backup_origin(backup_dir: &Path, game_name: &str) -> Option<BackupOr
 
 /// Replace characters that Windows forbids in folder names (`:`  `*`  `?`  `"`  `<`  `>`  `|`)
 /// with underscores — matches what ludusavi does when creating backup folders on Windows.
-fn windows_safe_name(name: &str) -> String {
+pub fn windows_safe_name(name: &str) -> String {
     name.chars()
         .map(|c| if matches!(c, ':' | '*' | '?' | '"' | '<' | '>' | '|') { '_' } else { c })
         .collect()
