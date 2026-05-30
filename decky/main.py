@@ -139,7 +139,15 @@ class Plugin:
         settings = _load_settings()
         rec = logic.read_session(logic.session_path(settings, _home()))
         if not logic.should_backup(rec, appid):
-            decky.logger.debug("Spool Backup: no-op for appid %s", appid)
+            # INFO (not debug) so the common "stopped game isn't ours / already
+            # backed up" path is visible when diagnosing on-device. Surface both
+            # appids since a sign/encoding mismatch is the usual culprit.
+            session_appid = rec.get("steam_appid") if isinstance(rec, dict) else None
+            backed_up = rec.get("backed_up") if isinstance(rec, dict) else None
+            decky.logger.info(
+                "Spool Backup: no-op for appid %s (session appid=%s, backed_up=%s)",
+                appid, session_appid, backed_up,
+            )
             return {"acted": False}
 
         game = rec.get("game", "")

@@ -51,6 +51,17 @@ class ShouldBackup(unittest.TestCase):
     def test_appid_mismatch(self):
         self.assertFalse(logic.should_backup(SAMPLE, 12345))
 
+    def test_matches_signed_int32_appid(self):
+        # Steam surfaces high-bit shortcut appids (crc32 | 0x80000000) as a
+        # signed int32 in some paths. 2147483649 == -2147483647 as int32 —
+        # both encodings must match the unsigned value in the session record.
+        self.assertTrue(logic.should_backup(SAMPLE, 2147483649 - (1 << 32)))
+        self.assertTrue(logic.should_backup(SAMPLE, 2147483649))
+
+    def test_non_int_appid_is_false(self):
+        rec = dict(SAMPLE, steam_appid="2147483649")
+        self.assertFalse(logic.should_backup(rec, 2147483649))
+
     def test_already_backed_up(self):
         rec = dict(SAMPLE, backed_up=True)
         self.assertFalse(logic.should_backup(rec, 2147483649))

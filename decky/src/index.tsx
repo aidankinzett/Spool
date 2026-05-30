@@ -148,7 +148,12 @@ export default definePlugin(() => {
   const sub = SteamClient.GameSessions.RegisterForAppLifetimeNotifications(
     (n) => {
       if (!n.bRunning) {
-        void onAppStop(n.unAppID);
+        // Spool's non-Steam shortcut appids are `crc32(...) | 0x80000000`, so
+        // the high bit is set. Steam surfaces those through `unAppID` as a
+        // *signed* int32 (e.g. -105595925 instead of 4189371371), which would
+        // never match the unsigned `steam_appid` in active-session.json. `>>> 0`
+        // coerces it back to the unsigned 32-bit value the backend compares.
+        void onAppStop(n.unAppID >>> 0);
       }
     },
   );
