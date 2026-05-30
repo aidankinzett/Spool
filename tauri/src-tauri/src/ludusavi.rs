@@ -10,6 +10,7 @@
 
 use crate::config::SharedConfig;
 use crate::error::{AppError, AppResult};
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -109,6 +110,51 @@ struct FindOutput {
 struct FindHit {
     #[serde(default)]
     score: f64,
+}
+
+// ── DTOs: `ludusavi backups --api` output ───────────────────────────────────
+
+/// Parsed `ludusavi backups --api` output. Maps each game name to the list of
+/// backups ludusavi actually has on disk for it. This is the authoritative
+/// source for "how many save revisions exist" and "when was the last one" —
+/// it reflects ludusavi's real backup store, including backups Spool didn't
+/// make itself.
+#[derive(Debug, Deserialize, Default)]
+#[serde(default)]
+struct BackupsOutput {
+    games: HashMap<String, GameBackups>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(default)]
+struct GameBackups {
+    backups: Vec<ApiBackup>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ApiBackup {
+    when: DateTime<Utc>,
+}
+
+/// Reduce a `ludusavi backups` response to authoritative stats: the total
+/// revision count and the most recent backup timestamp. ludusavi keys results
+/// by its own canonical game name, so we flatten whatever it returned rather
+/// than matching names — callers query a single game at a time.
+fn reduce_backups(out: BackupsOutput) -> BackupStats {
+    let backups: Vec<ApiBackup> = out.games.into_values().flat_map(|g| g.backups).collect();
+    BackupStats {
+        count: backups.len() as i32,
+        last_backed_up_at: backups.iter().map(|b| b.when).max(),
+    }
+}
+
+/// Authoritative save-backup stats for a game, derived from `ludusavi backups`.
+#[derive(Debug, Clone, Default)]
+pub struct BackupStats {
+    /// Number of backups (revisions) ludusavi currently retains for the game.
+    pub count: i32,
+    /// Timestamp of the most recent backup, if any.
+    pub last_backed_up_at: Option<DateTime<Utc>>,
 }
 
 // ── DTOs: `ludusavi manifest show --api` output ─────────────────────────────
@@ -284,6 +330,21 @@ impl LudusaviClient {
         .await
     }
 
+    /// Runs `ludusavi backups --api <name>` and reduces it to authoritative
+    /// stats: the real revision count and the latest backup timestamp. Unlike
+    /// the old Spool-maintained counters, this reflects ludusavi's actual
+    /// backup store, so it stays correct across externally-made backups,
+    /// pruned revisions, and freshly-added/migrated library entries.
+    pub async fn list_backups(
+        &self,
+        ludusavi_exe: &Path,
+        config_dir: &Path,
+        game_name: &str,
+    ) -> AppResult<BackupStats> {
+        let out = run_backups(ludusavi_exe, config_dir, game_name).await?;
+        Ok(reduce_backups(out))
+    }
+
     async fn manifest_or_load(
         &self,
         ludusavi_exe: &Path,
@@ -351,6 +412,30 @@ async fn run_find(ludusavi_exe: &Path, config_dir: &Path, query: &str) -> AppRes
     }
     serde_json::from_str(&stdout)
         .map_err(|e| AppError::Other(format!("failed to parse ludusavi find output: {e}")))
+}
+
+/// Runs `ludusavi backups --api <name>` and parses the result. A game with no
+/// backups (or unknown to ludusavi) produces empty/non-zero output, which we
+/// treat as "no backups" rather than an error — the detail card handles a zero
+/// count gracefully.
+async fn run_backups(
+    ludusavi_exe: &Path,
+    config_dir: &Path,
+    game_name: &str,
+) -> AppResult<BackupsOutput> {
+    let output = hidden_command(ludusavi_exe, config_dir)
+        .args(["backups", "--api", game_name])
+        .output()
+        .await
+        .map_err(|e| AppError::Other(format!("failed to spawn ludusavi backups: {e}")))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    if stdout.trim().is_empty() {
+        // ludusavi can exit non-zero with no output for an unknown game.
+        return Ok(BackupsOutput::default());
+    }
+    serde_json::from_str(&stdout)
+        .map_err(|e| AppError::Other(format!("failed to parse ludusavi backups output: {e}")))
 }
 
 /// Generic runner for ludusavi subcommands that emit the `--api` envelope
@@ -763,6 +848,36 @@ mod tests {
             "Hades 2"
         );
         assert_eq!(infer_name_from_exe(Path::new("")), "");
+    }
+
+    #[test]
+    fn reduce_backups_counts_and_picks_latest() {
+        // Two backups for one game; latest `when` should win, count = 2.
+        let json = r#"{
+            "games": {
+                "Hades": {
+                    "backups": [
+                        { "name": "ftp", "when": "2024-01-02T10:00:00Z", "locked": false },
+                        { "name": ".", "when": "2024-03-15T18:30:00Z", "locked": false }
+                    ]
+                }
+            }
+        }"#;
+        let out: BackupsOutput = serde_json::from_str(json).unwrap();
+        let stats = reduce_backups(out);
+        assert_eq!(stats.count, 2);
+        assert_eq!(
+            stats.last_backed_up_at.unwrap().to_rfc3339(),
+            "2024-03-15T18:30:00+00:00"
+        );
+    }
+
+    #[test]
+    fn reduce_backups_empty_is_zero() {
+        let out: BackupsOutput = serde_json::from_str(r#"{"games":{}}"#).unwrap();
+        let stats = reduce_backups(out);
+        assert_eq!(stats.count, 0);
+        assert!(stats.last_backed_up_at.is_none());
     }
 
     #[test]

@@ -13,7 +13,7 @@ vi.mock('@tauri-apps/api/webviewWindow', () => ({
   },
 }));
 vi.mock('$lib/api', () => ({
-  api: new Proxy({}, { get: () => vi.fn() }),
+  api: new Proxy({}, { get: () => vi.fn(() => Promise.resolve()) }),
   assetUrl: () => '',
 }));
 vi.mock('$lib/toasts.svelte', () => ({

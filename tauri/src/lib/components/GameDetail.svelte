@@ -51,6 +51,16 @@
     runPhase?: RunPhase | null;
   } = $props();
 
+  // When the selected game changes, refresh its save-backup stats from
+  // ludusavi's real backup store. Fire-and-forget — the backend emits
+  // `library:changed` (which re-feeds `game`) only if a value actually moved,
+  // so this can't loop. Tracks `game.id` alone so it doesn't re-run on every
+  // unrelated field update.
+  $effect(() => {
+    const id = game.id;
+    void api.refreshSaveMetadata(id).catch(() => {});
+  });
+
   const isRunning = $derived(runPhase != null);
   const playLabel = $derived.by(() => {
     switch (runPhase) {
@@ -319,7 +329,9 @@
         ? `${game.save_backup_count} backup${game.save_backup_count === 1 ? '' : 's'}`
         : '—',
       game.save_backup_count > 0
-        ? `${fmtSize(game.save_backup_size_mb)} · ${relDate(game.save_last_backed_up_at)}`
+        ? game.save_backup_size_mb > 0
+          ? `${fmtSize(game.save_backup_size_mb)} · ${relDate(game.save_last_backed_up_at)}`
+          : relDate(game.save_last_backed_up_at)
         : 'no backups yet',
     )}
   </div>
@@ -410,8 +422,12 @@
               </div>
             {/snippet}
             {@render stat('LAST BACKUP', relDate(game.save_last_backed_up_at), absDateTime(game.save_last_backed_up_at))}
-            {@render stat('REVISIONS', `${game.save_backup_count}`, 'across all profiles')}
-            {@render stat('TOTAL SIZE', fmtSize(game.save_backup_size_mb), 'compressed')}
+            {@render stat('REVISIONS', `${game.save_backup_count}`, 'kept by ludusavi')}
+            {@render stat(
+              'SAVE SIZE',
+              game.save_backup_size_mb > 0 ? fmtSize(game.save_backup_size_mb) : '—',
+              game.save_backup_size_mb > 0 ? 'latest backup' : 'not measured yet',
+            )}
           </div>
           <div
             class="mt-3 flex items-center gap-2 rounded-sm border px-3 py-2 text-[11.5px] text-ink-1"
