@@ -260,11 +260,11 @@ fn rgb_to_hsl(r: u8, g: u8, b: u8) -> (f32, f32, f32) {
 /// Fetches hero / wide-grid / logo from SteamGridDB and writes them
 /// straight into Steam's grid dir with the filenames Steam expects:
 ///
-///   `<app_id>_hero.<ext>`   — hero banner
-///   `<app_id>.<ext>`        — wide grid (920×430), modern desktop client
-///   `<legacy_id>.<ext>`     — same wide grid under the legacy 64-bit id, so
-///                             Big Picture / Steam Deck Gaming Mode shows it
-///   `<app_id>_logo.<ext>`   — logo (transparent PNG)
+///   `<app_id>_hero.<ext>`         — hero banner
+///   `<app_id>.<ext>`              — wide grid (920×430), modern desktop client
+///   `<legacy_id>.<ext>`           — same wide grid under the legacy 64-bit id
+///   `<app_id>_bigpicture.<ext>`   — same wide grid; Gaming Mode library tile
+///   `<app_id>_logo.<ext>`         — logo (transparent PNG)
 ///
 /// Portrait cover is handled separately by `fetch_and_save_cover` (called
 /// at add-time and reused by `place_grid_art` in `steam.rs`).
@@ -304,20 +304,48 @@ pub async fn fetch_steam_grid_bundle(
         ("icon", "_icon"),
     ];
     for (kind, suffix) in kinds {
-        if let Ok(Some(asset)) = fetch_first_art(&client.http, &api_key, sgdb_id, kind).await {
-            let ext = mime_to_ext(&asset.mime).unwrap_or_else(|| url_ext(&asset.url).unwrap_or("png"));
-            let dest = grid_dir.join(format!("{app_id}{suffix}.{ext}"));
-            if let Ok(bytes) = download_bytes(&client.http, &asset.url).await {
-                if std::fs::write(&dest, &bytes).is_ok() {
-                    placed.push(kind.to_string());
-                    // The landscape grid (bare `<appid>.<ext>`) also needs the
-                    // legacy 64-bit-id filename so Big Picture / Steam Deck
-                    // Gaming Mode picks it up. Reuse the bytes we already have.
-                    if suffix.is_empty() {
-                        let legacy = crate::steam::legacy_grid_id(app_id);
-                        let _ = std::fs::write(grid_dir.join(format!("{legacy}.{ext}")), &bytes);
+        let asset = match fetch_first_art(&client.http, &api_key, sgdb_id, kind).await {
+            Ok(Some(a)) => a,
+            Ok(None) => {
+                tracing::debug!(kind, "fetch_steam_grid_bundle: no {kind} art on SteamGridDB");
+                continue;
+            }
+            Err(e) => {
+                tracing::warn!(kind, %e, "fetch_steam_grid_bundle: {kind} API request failed");
+                continue;
+            }
+        };
+        let ext = mime_to_ext(&asset.mime).unwrap_or_else(|| url_ext(&asset.url).unwrap_or("png"));
+        let dest = grid_dir.join(format!("{app_id}{suffix}.{ext}"));
+        let bytes = match download_bytes(&client.http, &asset.url).await {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::warn!(kind, %e, "fetch_steam_grid_bundle: {kind} download failed");
+                continue;
+            }
+        };
+        match std::fs::write(&dest, &bytes) {
+            Ok(()) => {
+                tracing::debug!(kind, dest = %dest.display(), "fetch_steam_grid_bundle: {kind} placed");
+                placed.push(kind.to_string());
+                // The landscape grid needs two extra copies so Gaming Mode on
+                // Steam Deck / Bazzite / SteamOS shows it:
+                //   • legacy 64-bit id filename — older Gaming Mode path
+                //   • _bigpicture suffix        — newer Gaming Mode library tile
+                if suffix.is_empty() {
+                    let legacy = crate::steam::legacy_grid_id(app_id);
+                    let legacy_dest = grid_dir.join(format!("{legacy}.{ext}"));
+                    if let Err(e) = std::fs::write(&legacy_dest, &bytes) {
+                        tracing::warn!(%e, "fetch_steam_grid_bundle: legacy grid write failed");
+                    }
+                    let bp_dest = grid_dir.join(format!("{app_id}_bigpicture.{ext}"));
+                    if let Err(e) = std::fs::write(&bp_dest, &bytes) {
+                        tracing::warn!(%e, "fetch_steam_grid_bundle: _bigpicture grid write failed");
                     }
                 }
+            }
+            Err(e) => {
+                tracing::warn!(kind, dest = %dest.display(), %e, "fetch_steam_grid_bundle: {kind} write failed");
             }
         }
     }

@@ -273,24 +273,69 @@ pub async fn add_to_steam(
     );
     write_shortcuts(&user.shortcuts_path, &shortcuts)?;
 
-    // 5. Place the portrait capsule (`<appid>p`) — the main library tile in
-    //    both desktop and Gaming Mode. Prefer the cover already on disk; if the
-    //    entry never got one (no cover downloaded at add-time), fetch one now so
-    //    the Steam tile isn't blank. Both best-effort — missing art never fails
-    //    the flow.
-    let placed_portrait = match cover_image_path.as_deref() {
-        Some(cover) => place_grid_art(&user.grid_dir, app_id, "p", Some(Path::new(cover)))?,
-        None => match crate::steamgriddb::fetch_and_save_cover(&app, &game_id).await {
-            Ok(Some(fetched)) => {
-                place_grid_art(&user.grid_dir, app_id, "p", Some(Path::new(&fetched)))?
+    tracing::debug!(
+        grid_dir = %user.grid_dir.display(),
+        app_id,
+        "add_to_steam: placing artwork"
+    );
+
+    // 5. Place the portrait capsule (`<appid>p`) — the main library tile.
+    //    Two-step fallback: existing library cover → fresh SteamGridDB fetch.
+    //    The previous implementation only fell back to SteamGridDB when
+    //    cover_image_path was None, not when the path existed but the file had
+    //    been deleted or moved. Both branches are best-effort — art failures
+    //    never abort the shortcut write.
+    let placed_portrait = {
+        // Step 1: try the library cover already on disk.
+        let from_lib = match cover_image_path.as_deref() {
+            Some(cover) => {
+                match place_grid_art(&user.grid_dir, app_id, "p", Some(Path::new(cover))) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        tracing::warn!(cover, %e, "add_to_steam: portrait copy from library cover failed");
+                        None
+                    }
+                }
             }
-            _ => None,
-        },
+            None => None,
+        };
+
+        // Step 2: if we still don't have a portrait, fetch one from SteamGridDB.
+        if from_lib.is_some() {
+            from_lib
+        } else {
+            match crate::steamgriddb::fetch_and_save_cover(&app, &game_id).await {
+                Ok(Some(fetched)) => {
+                    match place_grid_art(&user.grid_dir, app_id, "p", Some(Path::new(&fetched))) {
+                        Ok(p) => p,
+                        Err(e) => {
+                            tracing::warn!(%e, "add_to_steam: portrait copy after SteamGridDB fetch failed");
+                            None
+                        }
+                    }
+                }
+                Ok(None) => {
+                    tracing::debug!("add_to_steam: no portrait from SteamGridDB (not configured or no results)");
+                    None
+                }
+                Err(e) => {
+                    tracing::warn!(%e, "add_to_steam: SteamGridDB portrait fetch failed");
+                    None
+                }
+            }
+        }
     };
 
-    // 6. Try fetching hero + wide + logo from SteamGridDB if configured.
-    //    Best-effort — missing art doesn't fail the whole flow.
-    let extra_arts = crate::steamgriddb::fetch_steam_grid_bundle(
+    if placed_portrait.is_none() {
+        tracing::warn!(app_id, "add_to_steam: portrait not placed — Steam tile will be blank");
+    } else {
+        tracing::debug!(app_id, "add_to_steam: portrait placed");
+    }
+
+    // 6. Fetch hero + wide grid + logo + icon from SteamGridDB. Also writes a
+    //    `_bigpicture` copy of the landscape grid — Gaming Mode on Steam Deck
+    //    reads this filename for the library tile in some UI contexts. Best-effort.
+    let extra_arts = match crate::steamgriddb::fetch_steam_grid_bundle(
         &app,
         steam_id,
         &app_name,
@@ -298,7 +343,13 @@ pub async fn add_to_steam(
         app_id,
     )
     .await
-    .unwrap_or_default();
+    {
+        Ok(arts) => arts,
+        Err(e) => {
+            tracing::warn!(%e, "add_to_steam: SteamGridDB bundle fetch failed");
+            Vec::new()
+        }
+    };
 
     // 7. Notify the library so the UI can react if any state changed.
     let _ = app.emit("library:changed", &game_id);
