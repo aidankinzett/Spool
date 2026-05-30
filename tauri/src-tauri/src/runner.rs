@@ -300,6 +300,78 @@ pub async fn manual_restore(app: AppHandle, game_id: String) -> AppResult<Manual
     Ok(ManualRestoreResult { game_count })
 }
 
+/// Resolve a cloud-sync conflict in-app, then land the reconciled saves.
+///
+/// `side` is the frontend's choice of which copy wins:
+///   `"local"` → keep this device's saves (`cloud upload --force`)
+///   `"cloud"` → keep the cloud's saves (`cloud download --force`)
+///
+/// Flow:
+///   1. `ludusavi cloud {upload,download} --force <game>` — mirrors the chosen
+///      side over the loser, which is what clears the `cloudConflict` guard.
+///   2. A normal restore (with cross-platform redirects) — lands the now-
+///      reconciled backup into the live save location so the game is ready to
+///      launch, and confirms the conflict is actually gone.
+///
+/// The follow-up launch (frontend re-triggers `launch_game` on success) then
+/// restores idempotently and proceeds without a conflict. Used by the in-app
+/// Cloud Save Conflict resolver, replacing the "Open Ludusavi" hop-out.
+#[tauri::command]
+pub async fn resolve_cloud_conflict(
+    app: AppHandle,
+    game_id: String,
+    side: String,
+) -> AppResult<ManualRestoreResult> {
+    let op = crate::ludusavi::CloudOp::from_side(&side)?;
+    let (game_name, ludusavi_exe, config_dir, wine_prefix) = manual_prep(&app, &game_id)?;
+    let game_folder = {
+        let library = app.state::<SharedLibrary>();
+        let lib = library.lock().map_err(|_| AppError::LockPoisoned)?;
+        lib.find(&game_id)
+            .and_then(|e| e.game_folder_path.as_ref().map(PathBuf::from))
+    };
+    let ludusavi_client = app.state::<LudusaviClient>();
+
+    // ── Step 1: mirror the chosen side, clearing the conflict ─────────────
+    tracing::info!(game_name, ?op, "resolving cloud conflict");
+    ludusavi_client
+        .cloud_resolve(&ludusavi_exe, &config_dir, op, &game_name)
+        .await
+        .map_err(|e| AppError::Other(format!("ludusavi cloud {side}: {e}")))?;
+
+    // ── Step 2: restore the reconciled backup into the live save location ─
+    let out = restore_with_redirects(
+        &ludusavi_client,
+        &ludusavi_exe,
+        &config_dir,
+        &game_name,
+        wine_prefix.as_deref(),
+        game_folder.as_deref(),
+    )
+    .await
+    .map_err(|e| AppError::Other(format!("ludusavi restore: {e}")))?;
+
+    // A conflict here would mean the mirror didn't take — surface it rather
+    // than silently launching with mismatched saves.
+    if out
+        .errors
+        .as_ref()
+        .and_then(|e| e.cloud_conflict.as_ref())
+        .is_some()
+    {
+        return Err(AppError::Other(
+            "Cloud sync conflict persisted after resolving — open Ludusavi to inspect.".into(),
+        ));
+    }
+
+    let game_count = out.overall.as_ref().map(|o| o.total_games).unwrap_or(0);
+    if game_count > 0 {
+        sync::record_restore_event(&app, &game_name).await;
+    }
+
+    Ok(ManualRestoreResult { game_count })
+}
+
 #[derive(Debug, Serialize)]
 pub struct ManualBackupResult {
     pub game_count: i32,

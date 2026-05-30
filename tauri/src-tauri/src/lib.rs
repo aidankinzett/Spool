@@ -290,6 +290,7 @@ pub fn run() {
             runner::launch_game,
             runner::manual_backup,
             runner::manual_restore,
+            runner::resolve_cloud_conflict,
             // decky plugin installer (Linux / SteamOS)
             decky_install::decky_plugin_status,
             decky_install::install_decky_plugin,
@@ -373,6 +374,9 @@ pub fn run() {
                         // is showing. Hold it on screen briefly so the user can read
                         // the reason (e.g. a restore timeout) before we exit and hand
                         // control back to Steam.
+                        if e.to_string().contains("Cloud sync conflict") {
+                            return;
+                        }
                         tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                     }
                     app_handle.exit(0);

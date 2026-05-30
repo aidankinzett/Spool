@@ -78,7 +78,10 @@
       await api.launchGame(lib.selectedId);
       detailOpen = true; // navigate to detail so run-phase events are visible
     } catch (e) {
-      toasts.show({ kind: 'bad', label: 'LAUNCH', title: "Couldn't launch game", sub: String(e) });
+      const msg = String(e);
+      if (!/cloud sync conflict/i.test(msg)) {
+        toasts.show({ kind: 'bad', label: 'LAUNCH', title: "Couldn't launch game", sub: msg });
+      }
     }
   }
 
