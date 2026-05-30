@@ -57,8 +57,12 @@
   });
 
   const cloudNewer = $derived.by(() => {
-    if (!conflictDetails?.local?.modified || !conflictDetails?.cloud?.modified) return true;
-    return new Date(conflictDetails.cloud.modified) > new Date(conflictDetails.local.modified);
+    const localTime = conflictDetails?.local?.modified;
+    const cloudTime = conflictDetails?.cloud?.modified;
+    if (localTime && cloudTime) {
+      return new Date(cloudTime) > new Date(localTime);
+    }
+    return !localTime;
   });
   let progressRaf = $state<number | null>(null);
 

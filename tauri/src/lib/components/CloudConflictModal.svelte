@@ -341,7 +341,7 @@
         >
           {loseBadge}
         </span>
-      {:else if side.recent && !locked && !active}
+      {:else if side.recent && side.meta && !locked && !active}
         <span
           class="font-mono inline-flex items-center gap-1.5 whitespace-nowrap"
           style:font-size="9px"
