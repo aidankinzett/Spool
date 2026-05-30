@@ -670,9 +670,13 @@ async fn query_rclone_details(
     let latest_mod = items
         .iter()
         .filter(|i| !i.is_dir)
-        .map(|i| &i.mod_time)
-        .max()
-        .cloned();
+        .filter_map(|i| {
+            chrono::DateTime::parse_from_rfc3339(&i.mod_time)
+                .ok()
+                .map(|dt| (dt, &i.mod_time))
+        })
+        .max_by_key(|(dt, _)| *dt)
+        .map(|(_, mod_time)| mod_time.clone());
         
     tracing::info!(
         "query_rclone_details success: files_count={}, total_size={}, latest_mod={:?}",
