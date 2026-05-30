@@ -16,6 +16,7 @@ jobs:
       # rust-cache also serializes target/; disable that since sccache
       # is the source of truth for object files. Keep registry caching.
       CARGO_INCREMENTAL: "0"
+      BUN_INSTALL_CACHE_DIR: "${{ github.workspace }}/.bun-cache"
     defaults:
       run:
         shell: pwsh
@@ -28,8 +29,32 @@ jobs:
         with:
           bun-version: "1.x"
 
+      - name: Bun cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.bun-cache
+          key: bun-${{ runner.os }}-${{ hashFiles('tauri/bun.lock') }}
+          restore-keys: |
+            bun-${{ runner.os }}-
+
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Enable LLD linker
+        # Keep this identical to ci.yml's build-windows: RUSTFLAGS is part of
+        # the sccache compile-cache hash, so the release build only reuses
+        # ci.yml's warmed objects if the linker flag matches. Point rustc at
+        # LLVM's preinstalled lld-link to cut Windows link time; probe first
+        # so a runner-image change falls back to link.exe rather than break.
+        run: |
+          $llvm = "C:\Program Files\LLVM\bin"
+          if (Test-Path "$llvm\lld-link.exe") {
+            "$llvm" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+            "RUSTFLAGS=-C linker=lld-link" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+            Write-Host "Using lld-link from $llvm"
+          } else {
+            Write-Warning "lld-link not found; falling back to link.exe"
+          }
 
       - name: Setup sccache
         uses: mozilla-actions/sccache-action@v0.0.6
@@ -133,6 +158,7 @@ jobs:
       SCCACHE_DIR: "${{ github.workspace }}/.sccache"
       RUSTC_WRAPPER: "sccache"
       CARGO_INCREMENTAL: "0"
+      BUN_INSTALL_CACHE_DIR: "${{ github.workspace }}/.bun-cache"
 
     steps:
       - uses: actions/checkout@v4
@@ -185,12 +211,27 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 22
+      - name: pnpm store cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.pnpm-store
+          key: pnpm-${{ runner.os }}-${{ hashFiles('decky/pnpm-lock.yaml') }}
+          restore-keys: |
+            pnpm-${{ runner.os }}-
       - name: Build Decky plugin
         working-directory: decky
         run: |
           corepack enable
-          corepack pnpm install --frozen-lockfile
+          corepack pnpm install --frozen-lockfile --store-dir ${{ github.workspace }}/.pnpm-store
           corepack pnpm build
+
+      - name: Bun cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.bun-cache
+          key: bun-${{ runner.os }}-${{ hashFiles('tauri/bun.lock') }}
+          restore-keys: |
+            bun-${{ runner.os }}-
 
       - name: Install frontend dependencies
         working-directory: tauri
