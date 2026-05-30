@@ -2,7 +2,8 @@
   import { onMount } from 'svelte';
   import { listen } from '@tauri-apps/api/event';
   import { api, assetUrl } from '$lib/api';
-  import type { RunPhaseEvent, GameEntry } from '$lib/types';
+  import type { RunPhaseEvent, GameEntry, SyncStatus } from '$lib/types';
+  import SpoolMark from '$lib/components/SpoolMark.svelte';
 
   let phase = $state<string>('restoring');
   let message = $state<string | null>(null);
@@ -10,6 +11,11 @@
   let game = $state<GameEntry | null>(null);
   let progress = $state(0);
   let progressRaf = $state<number | null>(null);
+
+  let windowHeight = $state(800);
+  let s = $derived(windowHeight / 800);
+  let syncStatus = $state<'online' | 'offline' | 'unconfigured'>('online');
+  let net = $derived(syncStatus === 'offline' ? 'offline' : 'online');
 
   // Determine flow from phase. Error can occur in either flow; we track
   // which flow was active when the error hit via a separate flag.
@@ -41,16 +47,19 @@
   }
 
   // Phase copy
-  const COPY: Record<string, { kicker: string; sub: string; tone: string }> = {
-    restoring:     { kicker: 'RESTORING',       sub: 'Pulling the latest revision before launch',             tone: 'accent' },
-    launching:     { kicker: 'SAVES RESTORED',  sub: 'Starting game…',                                       tone: 'ok'     },
-    playing:       { kicker: 'STARTING',         sub: 'Handing off to your game',                             tone: 'ok'     },
-    'backing-up':  { kicker: 'BACKING UP',       sub: 'Saving your progress before you go',                   tone: 'accent' },
-    done:          { kicker: 'ALL SAVED',         sub: 'Returning you to Steam…',                              tone: 'ok'     },
-    error:         { kicker: 'FAILED',            sub: '',   tone: 'bad' },
+  const COPY: Record<string, { kicker: string; sub: (g: GameEntry | null) => string; tone: string }> = {
+    restoring:     { kicker: 'RESTORING',       sub: () => 'Pulling the latest revision before launch',             tone: 'accent' },
+    launching:     { kicker: 'SAVES RESTORED',  sub: (g) => g ? `Starting ${g.game_name}…` : 'Starting game…',        tone: 'ok'     },
+    playing:       { kicker: 'STARTING',        sub: (g) => g ? `${g.game_name} is taking the screen` : 'Handing off to your game', tone: 'ok' },
+    'backing-up':  { kicker: 'BACKING UP',      sub: (g) => g ? `You closed ${g.game_name} — saving your progress before you go` : 'Saving your progress before you go', tone: 'accent' },
+    done:          { kicker: 'ALL SAVED',       sub: () => 'Returning you to Steam…',                              tone: 'ok'     },
+    error:         { kicker: 'FAILED',          sub: () => '',                                                     tone: 'bad'    },
   };
   let copy = $derived.by(() => {
-    const base = COPY[phase] ?? { kicker: phase.toUpperCase(), sub: '', tone: 'accent' as string };
+    const baseFn = COPY[phase];
+    const base = baseFn
+      ? { kicker: baseFn.kicker, sub: baseFn.sub(game), tone: baseFn.tone }
+      : { kicker: phase.toUpperCase(), sub: '', tone: 'accent' };
     if (phase === 'error') {
       return {
         ...base,
@@ -74,7 +83,7 @@
 
   // ── Steps ──────────────────────────────────────────────────────────
 
-  type Step = { id: string; label: string; detail: string; state: string; badge?: string };
+  type Step = { id: string; label: string; detail: string; state: string; badge?: string; warn?: boolean };
 
   function launchSteps(): Step[] {
     const LAUNCH_ORDER = ['restoring', 'launching', 'playing'];
@@ -86,15 +95,22 @@
       if (n === idx) return 'active';
       return 'pending';
     };
+    
+    const offline = net === 'offline';
+    const restoreDetail = offline
+      ? `Latest copy on this device · ${game ? fmtSize(game.save_backup_size_mb) : '…'} · cloud remote unreachable`
+      : `Newest revision · ${game ? fmtSize(game.save_backup_size_mb) : '…'} · pulled from your cloud remote`;
+
     return [
       {
         id: 'restore', label: 'Restore saves',
-        detail: game ? `Latest revision · pulled from your cloud remote` : 'Checking latest revision…',
+        detail: game ? restoreDetail : 'Checking latest revision…',
         state: state(0),
+        warn: offline && state(0) === 'done' ? true : undefined,
       },
       {
         id: 'launch', label: 'Launch game',
-        detail: game ? game.exe_path.split(/[\\/]/).pop() ?? game.game_name : '…',
+        detail: game ? `${game.exe_path.split(/[\\/]/).pop() ?? game.game_name} · ${game.use_proton ? 'Proton' : 'Native'}` : '…',
         state: state(1),
       },
       {
@@ -113,8 +129,11 @@
   function exitSteps(): Step[] {
     const isErr = phase === 'error';
     const backupState = isErr ? 'error' : phase === 'backing-up' ? 'active' : 'done';
+    
+    const offline = net === 'offline';
     const syncState = !cloudUsed ? 'skipped'
       : isErr ? 'pending'
+      : offline ? 'warn'
       : phase === 'backing-up' ? 'pending'
       : phase === 'done' ? 'done'
       : 'active';
@@ -124,8 +143,10 @@
       : 'New revision written to this device';
     const syncDetail = !cloudUsed
       ? 'No cloud remote configured'
-      : phase === 'done' ? 'Mirrors to your cloud remote · all devices in step'
-      : 'Mirrors to your cloud remote after local backup completes';
+      : syncState === 'warn'
+        ? 'Couldn\'t reach your cloud remote · 1 revision queued · retries automatically'
+        : phase === 'done' ? 'Mirrors to your cloud remote · all devices in step'
+        : 'Mirrors to your cloud remote after local backup completes';
 
     return [
       { id: 'ended',  label: 'Session ended', detail: `Closed by game`, state: 'done' },
@@ -220,6 +241,19 @@
     // data as soon as the list resolves.
     api.listGames().catch(() => {});
 
+    api.currentSyncStatus()
+      .then((s) => {
+        syncStatus = s.reachability;
+      })
+      .catch(() => {});
+
+    let unlistenSyncStatus: (() => void) | undefined;
+    listen<SyncStatus>('sync:status-changed', (event) => {
+      syncStatus = event.payload.reachability;
+    }).then((fn) => {
+      unlistenSyncStatus = fn;
+    }).catch(() => {});
+
     let unlistenFn: (() => void) | undefined;
     listen<RunPhaseEvent>('run:phase', (event) => {
       queue.push(event.payload);
@@ -231,15 +265,17 @@
       })
       .catch((e) => console.error('[splash] run-phase listener failed:', e));
 
-    // Start with an animated ramp for the initial restoring phase.
     startRamp();
 
     return () => {
       unlistenFn?.();
+      unlistenSyncStatus?.();
       if (progressRaf != null) cancelAnimationFrame(progressRaf);
     };
   });
 </script>
+
+<svelte:window bind:innerHeight={windowHeight} />
 
 <div
   class="splash"
@@ -247,6 +283,7 @@
     --accent: {accent};
     --tone: {toneColor(copy.tone)};
     --bloom-col: {phase === 'error' ? '#ff7a7a' : accent};
+    --s: {s};
   "
 >
   <!-- Background -->
@@ -260,14 +297,7 @@
     <div class="top-row">
       <div class="lockup">
         <!-- Spool cassette mark -->
-        <svg width="22" height="16" viewBox="0 0 22 16" fill="none" class="mark">
-          <rect x="0.75" y="0.75" width="20.5" height="14.5" rx="1.4" stroke="rgba(244,244,245,0.78)" stroke-width="1.5"/>
-          <circle cx="6.5" cy="8" r="2.4" stroke="rgba(244,244,245,0.78)" stroke-width="1.4"/>
-          <circle cx="6.5" cy="8" r="0.7" fill="rgba(244,244,245,0.78)"/>
-          <circle cx="15.5" cy="8" r="2.4" stroke="rgba(244,244,245,0.78)" stroke-width="1.4"/>
-          <circle cx="15.5" cy="8" r="0.7" fill="rgba(244,244,245,0.78)"/>
-          <rect x="3" y="12.5" width="16" height="1.4" rx="0.4" fill={accent} opacity="0.85"/>
-        </svg>
+        <SpoolMark size={22 * s} color="rgba(244,244,245,0.78)" tape={accent} />
         <span class="lockup-spool">SPOOL</span>
         <span class="lockup-sep"></span>
         <span class="lockup-mode">GAME MODE</span>
@@ -276,9 +306,24 @@
       <!-- Game identity (right) -->
       <div class="game-id-area">
         <div class="game-id-meta">
-          {#if game?.catalog_number}
-            <span class="catalog-chip" style="color:{accent};border-color:{accent}55">{catalogId(game.catalog_number)}</span>
-          {/if}
+          <div style="display: flex; align-items: center; gap: calc(8px * var(--s, 1)); justify-content: flex-end; margin-bottom: calc(4px * var(--s, 1));">
+            {#if cloudUsed}
+              {@const off = net === 'offline'}
+              {@const col = off ? '#f4b66c' : '#7ec6ff'}
+              <span class="cloud-chip" style="color: {col}">
+                <svg width={12 * s} height={12 * s} viewBox="0 0 16 16" fill="none" stroke={col} stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="display: block; flex-shrink: 0;">
+                  <path d="M4.5 11.5a3 3 0 0 1-.3-6 3.5 3.5 0 0 1 6.8-.6 2.8 2.8 0 0 1 .5 5.6Z" />
+                  {#if off}
+                    <line x1="2.2" y1="2.2" x2="13.8" y2="13.8" stroke={col} stroke-width="1.5" />
+                  {/if}
+                </svg>
+                <span>{off ? 'CLOUD OFFLINE' : 'CLOUD'}</span>
+              </span>
+            {/if}
+            {#if game?.catalog_number}
+              <span class="catalog-chip" style="color:{accent};border-color:{accent}55">{catalogId(game.catalog_number)}</span>
+            {/if}
+          </div>
           {#if game?.developer}
             <span class="dev-label">{game.developer}</span>
           {/if}
@@ -311,55 +356,59 @@
         {@const isActive = step.state === 'active'}
         {@const isDone = step.state === 'done'}
         {@const isErr = step.state === 'error'}
-        {@const isWarn = step.state === 'warn'}
+        {@const isWarn = step.state === 'warn' || (step.warn && isDone)}
         {@const isSkipped = step.state === 'skipped'}
         {@const isPending = step.state === 'pending'}
         {@const tint = isErr ? '#ff7a7a' : isWarn ? '#f4b66c' : isDone ? '#7ee2a4' : isActive ? accent : 'rgba(244,244,245,0.36)'}
         {@const badge = step.badge ?? (isDone ? 'DONE' : isActive ? ({'restore':'RESTORING','launch':'RUNNING','handoff':'RUNNING','backup':'SAVING','sync':'UPLOADING','exitbackup':'QUEUED'}[step.id] ?? 'RUNNING') : isErr ? 'FAILED' : isWarn ? 'OFFLINE' : isSkipped ? 'OFF' : 'QUEUED')}
+        {@const badgeText = (step.warn && isDone) ? 'LOCAL ONLY' : badge}
+        {@const badgeTint = (step.warn && isDone) ? '#f4b66c' : tint}
+        {@const railColor = isDone ? (step.warn ? '#f4b66c' : '#7ee2a4') : 'rgba(255,255,255,0.10)'}
         <div class="step" class:step-dim={isPending || isSkipped}>
           <!-- Rail left -->
           <div class="step-rail">
             <!-- Glyph -->
-            {#if isDone}
-              <svg width="22" height="22" viewBox="0 0 22 22" class="glyph">
+            {#if isDone && !step.warn}
+              <svg width={22 * s} height={22 * s} viewBox="0 0 22 22" class="glyph">
                 <circle cx="11" cy="11" r="10" fill="none" stroke="#7ee2a4" stroke-width="1.6"/>
                 <path d="M6.5 11.2l3 3 6-6.4" fill="none" stroke="#7ee2a4" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
               </svg>
             {:else if isActive}
               <!-- Spinning reel -->
-              <svg width="22" height="22" viewBox="0 0 22 22" class="glyph glyph-spin" style="color:{accent}">
+              <svg width={22 * s} height={22 * s} viewBox="0 0 22 22" class="glyph glyph-spin" style="color:{accent}">
                 <circle cx="11" cy="11" r="9.68" fill="none" stroke="currentColor" stroke-width="0.99"/>
-                <line x1="11" y1="7.48" x2="11" y2="4.84" stroke="currentColor" stroke-width="0.99" stroke-linecap="round"/>
-                <line x1="13.59" y1="8.29" x2="15.87" y2="6.32" stroke="currentColor" stroke-width="0.99" stroke-linecap="round"/>
-                <line x1="14.96" y1="11.16" x2="17.60" y2="11.88" stroke="currentColor" stroke-width="0.99" stroke-linecap="round"/>
-                <line x1="13.37" y1="13.94" x2="15.32" y2="16.23" stroke="currentColor" stroke-width="0.99" stroke-linecap="round"/>
-                <line x1="8.63" y1="13.94" x2="6.68" y2="16.23" stroke="currentColor" stroke-width="0.99" stroke-linecap="round"/>
-                <line x1="7.04" y1="11.16" x2="4.40" y2="11.88" stroke="currentColor" stroke-width="0.99" stroke-linecap="round"/>
+                <!-- Spokes -->
+                <line x1="11" y1="7.48" x2="11" y2="3.08" stroke="currentColor" stroke-width="0.99" stroke-linecap="round"/>
+                <line x1="14.05" y1="9.24" x2="17.86" y2="7.04" stroke="currentColor" stroke-width="0.99" stroke-linecap="round"/>
+                <line x1="14.05" y1="12.76" x2="17.86" y2="14.96" stroke="currentColor" stroke-width="0.99" stroke-linecap="round"/>
+                <line x1="11" y1="14.52" x2="11" y2="18.92" stroke="currentColor" stroke-width="0.99" stroke-linecap="round"/>
+                <line x1="7.95" y1="12.76" x2="4.14" y2="14.96" stroke="currentColor" stroke-width="0.99" stroke-linecap="round"/>
+                <line x1="7.95" y1="9.24" x2="4.14" y2="7.04" stroke="currentColor" stroke-width="0.99" stroke-linecap="round"/>
                 <circle cx="11" cy="11" r="2.86" fill="currentColor"/>
               </svg>
             {:else if isErr}
-              <svg width="22" height="22" viewBox="0 0 22 22" class="glyph">
+              <svg width={22 * s} height={22 * s} viewBox="0 0 22 22" class="glyph">
                 <circle cx="11" cy="11" r="10" fill="none" stroke="#ff7a7a" stroke-width="1.6"/>
                 <path d="M11 6v6M11 15.4v.2" fill="none" stroke="#ff7a7a" stroke-width="1.8" stroke-linecap="round"/>
               </svg>
             {:else if isWarn}
-              <svg width="22" height="22" viewBox="0 0 22 22" class="glyph">
+              <svg width={22 * s} height={22 * s} viewBox="0 0 22 22" class="glyph">
                 <circle cx="11" cy="11" r="10" fill="none" stroke="#f4b66c" stroke-width="1.6"/>
                 <path d="M11 6v6M11 15.4v.2" fill="none" stroke="#f4b66c" stroke-width="1.8" stroke-linecap="round"/>
               </svg>
             {:else if isSkipped}
-              <svg width="22" height="22" viewBox="0 0 22 22" class="glyph">
+              <svg width={22 * s} height={22 * s} viewBox="0 0 22 22" class="glyph">
                 <circle cx="11" cy="11" r="10" fill="none" stroke="rgba(255,255,255,0.16)" stroke-width="1.5"/>
                 <path d="M7 11h8" fill="none" stroke="rgba(244,244,245,0.36)" stroke-width="1.6" stroke-linecap="round"/>
               </svg>
             {:else}
-              <svg width="22" height="22" viewBox="0 0 22 22" class="glyph">
+              <svg width={22 * s} height={22 * s} viewBox="0 0 22 22" class="glyph">
                 <circle cx="11" cy="11" r="10" fill="none" stroke="rgba(255,255,255,0.16)" stroke-width="1.5" stroke-dasharray="2.5 3.5"/>
               </svg>
             {/if}
             <!-- Connector rail -->
             {#if !isLast}
-              <div class="rail-line" style="background:{isDone ? '#7ee2a4' : 'rgba(255,255,255,0.10)'}; opacity:{isDone ? 0.5 : 1}"></div>
+              <div class="rail-line" style="background:{railColor}; opacity:{isDone ? 0.5 : 1}"></div>
             {/if}
           </div>
 
@@ -369,8 +418,8 @@
               <span class="step-label" class:step-label-active={isActive || isErr || isWarn} class:step-label-strike={isSkipped}>
                 {step.label}
               </span>
-              <span class="step-badge" style="color:{tint}; border-color:{tint}55">
-                {badge}
+              <span class="step-badge" style="color:{badgeTint}; border-color:{badgeTint}55">
+                {badgeText}
               </span>
             </div>
             <div class="step-detail" style="color:{isWarn ? '#f4b66c' : 'rgba(244,244,245,0.56)'}">
@@ -383,24 +432,34 @@
 
     <!-- Cloud sync row -->
     {#if cloudUsed}
-      {@const cloudTone = phase === 'error' ? '#ff7a7a'
+      {@const offline = net === 'offline'}
+      {@const cloudTone = offline ? '#f4b66c'
+        : phase === 'error' ? '#ff7a7a'
         : phase === 'done' ? '#7ee2a4'
         : phase === 'backing-up' || phase === 'restoring' ? '#7ec6ff'
         : 'rgba(244,244,245,0.36)'}
-      {@const cloudLabel = phase === 'done' ? 'CLOUD SYNC · UP TO DATE'
+      {@const cloudLabel = offline ? 'CLOUD SYNC · OFFLINE'
+        : phase === 'done' ? 'CLOUD SYNC · UP TO DATE'
         : phase === 'backing-up' ? 'CLOUD SYNC · WAITING'
         : phase === 'restoring' ? 'CLOUD SYNC · CHECKING'
         : phase === 'error' ? 'CLOUD SYNC · ON HOLD'
         : 'CLOUD SYNC'}
-      {@const cloudNote = phase === 'done' ? 'Every device now has this revision.'
+      {@const cloudNote = offline
+        ? (flow === 'exit'
+            ? 'Backup saved on this device. Spool will push it to your cloud remote the moment you reconnect.'
+            : 'Couldn\'t reach your cloud remote — launched with this device\'s latest save. Newer remote saves (if any) merge when you reconnect.')
+        : phase === 'done' ? 'Every device now has this revision.'
         : phase === 'backing-up' ? 'Will mirror to your cloud remote once the local backup is written.'
         : phase === 'restoring' ? 'Checking your cloud remote for newer saves from your other devices…'
         : phase === 'error' && flow === 'exit' ? 'Sync paused until the local backup succeeds.'
         : phase === 'error' ? 'Remote check paused while the restore is retried.'
         : ''}
       <div class="cloud-row" style="border-color:{cloudTone}; background:linear-gradient(90deg,{cloudTone}1f,{cloudTone}08 40%,transparent)">
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke={cloudTone} stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0">
+        <svg width={16 * s} height={16 * s} viewBox="0 0 16 16" fill="none" stroke={cloudTone} stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0">
           <path d="M4.5 11.5a3 3 0 0 1-.3-6 3.5 3.5 0 0 1 6.8-.6 2.8 2.8 0 0 1 .5 5.6Z"/>
+          {#if offline}
+            <line x1="2.2" y1="2.2" x2="13.8" y2="13.8" stroke={cloudTone} stroke-width="1.5" />
+          {/if}
         </svg>
         <div>
           <div class="cloud-label" style="color:{cloudTone}">{cloudLabel}</div>
@@ -460,11 +519,6 @@
       radial-gradient(120% 90% at -5% 30%, var(--bloom-col, #d7c9a0) 0%, transparent 45%),
       linear-gradient(180deg, #0c0e11 0%, #0b0c0e 60%, #060708 100%);
   }
-  .bloom {
-    position: absolute;
-    inset: 0;
-    /* bloom is baked into .bg above */
-  }
   .grain {
     position: absolute;
     inset: 0;
@@ -481,7 +535,7 @@
     z-index: 1;
     width: 100%;
     height: 100%;
-    padding: clamp(40px, 8vh, 64px) clamp(40px, 8vw, 64px);
+    padding: calc(64px * var(--s, 1));
     display: flex;
     flex-direction: column;
     box-sizing: border-box;
@@ -496,23 +550,22 @@
   .lockup {
     display: inline-flex;
     align-items: center;
-    gap: 10px;
+    gap: calc(10px * var(--s, 1));
   }
-  .mark { display: block; flex-shrink: 0; }
   .lockup-spool {
     font-family: "JetBrains Mono", ui-monospace, monospace;
-    font-size: 11px;
+    font-size: calc(11px * var(--s, 1));
     letter-spacing: 0.22em;
     color: rgba(244,244,245,0.78);
   }
   .lockup-sep {
     width: 1px;
-    height: 12px;
+    height: calc(12px * var(--s, 1));
     background: rgba(255,255,255,0.16);
   }
   .lockup-mode {
     font-family: "JetBrains Mono", ui-monospace, monospace;
-    font-size: 11px;
+    font-size: calc(11px * var(--s, 1));
     letter-spacing: 0.22em;
     color: rgba(244,244,245,0.36);
   }
@@ -520,31 +573,39 @@
   .game-id-area {
     display: flex;
     align-items: center;
-    gap: 14px;
+    gap: calc(14px * var(--s, 1));
   }
   .game-id-meta {
     display: flex;
     flex-direction: column;
     align-items: flex-end;
-    gap: 4px;
+    gap: calc(4px * var(--s, 1));
+  }
+  .cloud-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: calc(5px * var(--s, 1));
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-size: calc(9.5px * var(--s, 1));
+    letter-spacing: 0.1em;
   }
   .catalog-chip {
     font-family: "JetBrains Mono", ui-monospace, monospace;
-    font-size: 9.5px;
+    font-size: calc(9.5px * var(--s, 1));
     letter-spacing: 0.1em;
     border: 1px solid;
     border-radius: 3px;
-    padding: 1.5px 6px;
+    padding: calc(1.5px * var(--s, 1)) calc(6px * var(--s, 1));
   }
   .dev-label {
     font-family: "JetBrains Mono", ui-monospace, monospace;
-    font-size: 10px;
+    font-size: calc(10px * var(--s, 1));
     letter-spacing: 0.1em;
     color: rgba(244,244,245,0.36);
   }
   .cover-thumb {
-    width: 52px;
-    height: 74px;
+    width: calc(52px * var(--s, 1));
+    height: calc(74px * var(--s, 1));
     border-radius: 3px;
     overflow: hidden;
     background: #15181d;
@@ -560,49 +621,52 @@
   /* ── Headline ── */
   .headline-area {
     margin-top: auto;
-    margin-bottom: 30px;
+    margin-bottom: calc(30px * var(--s, 1));
   }
   .kicker {
     display: inline-flex;
     align-items: center;
-    gap: 9px;
-    margin-bottom: 14px;
+    gap: calc(9px * var(--s, 1));
+    margin-bottom: calc(14px * var(--s, 1));
   }
   .kicker-dot {
-    width: 7px;
-    height: 7px;
+    width: calc(7px * var(--s, 1));
+    height: calc(7px * var(--s, 1));
     border-radius: 99px;
     animation: gm-pulse 1.3s ease-in-out infinite;
   }
   .kicker-text {
     font-family: "JetBrains Mono", ui-monospace, monospace;
-    font-size: clamp(10px, 1.4vh, 11px);
+    font-size: calc(11px * var(--s, 1));
     letter-spacing: 0.2em;
   }
   .game-title {
     margin: 0;
     font-family: "Space Grotesk", system-ui, sans-serif;
     font-weight: 600;
-    font-size: clamp(28px, 5vh, 40px);
+    font-size: calc(40px * var(--s, 1));
     letter-spacing: -0.02em;
     color: #f4f4f5;
     line-height: 1.04;
   }
   .game-title.error-title { color: #ff7a7a; }
   .sub {
-    margin: 10px 0 0;
-    font-size: clamp(13px, 2vh, 16px);
+    margin-top: calc(10px * var(--s, 1));
+    margin-bottom: 0;
+    margin-left: 0;
+    margin-right: 0;
+    font-size: calc(16px * var(--s, 1));
     color: rgba(244,244,245,0.56);
     line-height: 1.4;
   }
 
   /* ── Pipeline ── */
   .pipeline {
-    max-width: min(640px, 65vw);
+    max-width: calc(640px * var(--s, 1));
   }
   .step {
     display: flex;
-    gap: 16px;
+    gap: calc(16px * var(--s, 1));
     transition: opacity 250ms ease;
   }
   .step-dim { opacity: 0.5; }
@@ -618,26 +682,26 @@
     transform-origin: center;
   }
   .rail-line {
-    width: 1.5px;
+    width: calc(1.5px * var(--s, 1));
     flex: 1;
-    margin: 4px 0;
-    min-height: 26px;
+    margin: calc(4px * var(--s, 1)) 0;
+    min-height: calc(26px * var(--s, 1));
   }
 
   .step-body {
     flex: 1;
-    padding-bottom: 22px;
+    padding-bottom: calc(22px * var(--s, 1));
   }
   .step-body-last { padding-bottom: 0; }
   .step-header {
     display: flex;
     align-items: center;
-    gap: 10px;
+    gap: calc(10px * var(--s, 1));
   }
   .step-label {
     font-family: "Space Grotesk", system-ui, sans-serif;
     font-weight: 600;
-    font-size: clamp(14px, 2.2vh, 18px);
+    font-size: calc(18px * var(--s, 1));
     color: rgba(244,244,245,0.78);
     letter-spacing: -0.01em;
   }
@@ -645,55 +709,55 @@
   .step-label-strike { text-decoration: line-through; }
   .step-badge {
     font-family: "JetBrains Mono", ui-monospace, monospace;
-    font-size: 9px;
+    font-size: calc(9px * var(--s, 1));
     letter-spacing: 0.14em;
     border: 1px solid;
     border-radius: 3px;
-    padding: 1.5px 6px;
+    padding: calc(1.5px * var(--s, 1)) calc(6px * var(--s, 1));
   }
   .step-detail {
-    margin-top: 5px;
+    margin-top: calc(5px * var(--s, 1));
     font-family: "JetBrains Mono", ui-monospace, monospace;
-    font-size: clamp(10px, 1.4vh, 11px);
+    font-size: calc(11px * var(--s, 1));
     letter-spacing: 0.03em;
   }
 
   /* ── Cloud row ── */
   .cloud-row {
-    margin-top: 20px;
+    margin-top: calc(20px * var(--s, 1));
     display: flex;
     align-items: center;
-    gap: 12px;
-    padding: 10px 14px;
+    gap: calc(12px * var(--s, 1));
+    padding: calc(10px * var(--s, 1)) calc(14px * var(--s, 1));
     border-radius: 3px;
-    border-left: 3px solid;
-    max-width: min(640px, 65vw);
+    border-left: calc(3px * var(--s, 1)) solid;
+    max-width: calc(640px * var(--s, 1));
   }
   .cloud-label {
     font-family: "JetBrains Mono", ui-monospace, monospace;
-    font-size: 10px;
+    font-size: calc(10px * var(--s, 1));
     letter-spacing: 0.14em;
   }
   .cloud-note {
-    margin-top: 2px;
-    font-size: 12px;
+    margin-top: calc(2px * var(--s, 1));
+    font-size: calc(12px * var(--s, 1));
     color: rgba(244,244,245,0.56);
     line-height: 1.35;
   }
 
   /* ── Footer ── */
   .footer {
-    margin-top: 28px;
+    margin-top: calc(28px * var(--s, 1));
     display: flex;
     align-items: center;
-    gap: 22px;
+    gap: calc(22px * var(--s, 1));
   }
   .tape-wrap {
     flex: 1;
   }
   .tape-track {
     position: relative;
-    height: 5px;
+    height: calc(5px * var(--s, 1));
     border-radius: 1px;
     background: #0b0c0e;
     overflow: hidden;
@@ -708,29 +772,29 @@
     transition: width 90ms linear;
   }
   .tape-ticks {
-    height: 2px;
-    margin-top: 3px;
+    height: calc(2px * var(--s, 1));
+    margin-top: calc(3px * var(--s, 1));
     background-image: repeating-linear-gradient(to right, rgba(255,255,255,0.10) 0 1px, transparent 1px 12.5%);
   }
   .foot-meta {
     display: flex;
-    gap: 28px;
+    gap: calc(28px * var(--s, 1));
   }
   .meta-cell {
     display: flex;
     flex-direction: column;
-    gap: 4px;
+    gap: calc(4px * var(--s, 1));
   }
   .meta-label {
     font-family: "JetBrains Mono", ui-monospace, monospace;
-    font-size: 9.5px;
+    font-size: calc(9.5px * var(--s, 1));
     letter-spacing: 0.14em;
     text-transform: uppercase;
     color: rgba(244,244,245,0.36);
   }
   .meta-value {
     font-family: "Geist", system-ui, sans-serif;
-    font-size: 14px;
+    font-size: calc(14px * var(--s, 1));
     font-weight: 500;
     color: #f4f4f5;
     white-space: nowrap;
