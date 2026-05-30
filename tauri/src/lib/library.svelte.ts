@@ -107,7 +107,12 @@ export function createLibrary() {
   );
   const liveUploads = $derived(activeUploads.filter((u) => !u.cancelled));
   const uploadCount = $derived(liveUploads.length);
-  const uploadPercent = $derived(uploadCount > 0 ? 60 : 0);
+  const uploadPercent = $derived.by(() => {
+    if (uploadCount === 0) return 0;
+    const total = liveUploads.reduce((s, u) => s + u.bytes_total, 0);
+    const sent = liveUploads.reduce((s, u) => s + u.bytes_sent, 0);
+    return total > 0 ? Math.round((sent / total) * 100) : 0;
+  });
 
   // Methods
   async function refresh() {

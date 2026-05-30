@@ -47,7 +47,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 /// Snapshot of one upload session — i.e., a peer currently downloading
 /// from us. Surfaced to the host UI so they can see and (optionally)
@@ -68,6 +68,12 @@ pub struct UploadSnapshot {
     /// Set when the host has hit cancel; the next `cancel-check` poll
     /// from the receiver will see this and propagate.
     pub cancelled: bool,
+    /// Total bytes in the transfer (from the manifest). Zero until the
+    /// manifest has been fetched.
+    pub bytes_total: u64,
+    /// Bytes served to the peer so far (optimistic — credited at request
+    /// time). Used by the host UI's progress bar.
+    pub bytes_sent: u64,
 }
 
 struct UploadSession {
@@ -77,6 +83,15 @@ struct UploadSession {
     peer_addr: String,
     last_active: Instant,
     cancelled: bool,
+    /// Total bytes in the transfer, populated when the receiver fetches
+    /// the manifest. Zero until the manifest request arrives (i.e., while
+    /// the sender is still hashing the game folder).
+    bytes_total: u64,
+    /// Bytes served so far (optimistic — credited at request time, not
+    /// on TCP ACK). Good enough for a progress indicator.
+    bytes_sent: u64,
+    /// Wall-clock anchor for throttling `lan:uploads-changed` emissions.
+    last_progress_emit: Instant,
 }
 
 /// Shared state for the active-uploads ledger. Same lock discipline as
@@ -101,6 +116,8 @@ impl LanUploadsState {
                 peer_addr: s.peer_addr.clone(),
                 last_seen_ago_secs: now.saturating_duration_since(s.last_active).as_secs(),
                 cancelled: s.cancelled,
+                bytes_total: s.bytes_total,
+                bytes_sent: s.bytes_sent,
             })
             .collect()
     }
@@ -111,6 +128,11 @@ impl LanUploadsState {
             Err(_) => return false,
         };
         let now = Instant::now();
+        // Seed emit timer in the past so the very first add_bytes_sent call
+        // is never dropped by the throttle.
+        let emit_base = now
+            .checked_sub(Duration::from_millis(200))
+            .unwrap_or(now);
         let is_new = !g.contains_key(session_id);
         let entry = g
             .entry(session_id.to_string())
@@ -121,9 +143,74 @@ impl LanUploadsState {
                 peer_addr: peer_addr.to_string(),
                 last_active: now,
                 cancelled: false,
+                bytes_total: 0,
+                bytes_sent: 0,
+                last_progress_emit: emit_base,
             });
         entry.last_active = now;
         is_new
+    }
+
+    /// Called when the receiver fetches the manifest. Registers the session
+    /// (or updates an existing one) with the game's total byte count so the
+    /// host UI can show a progress percentage from the very first request.
+    /// Returns `true` if this is the first time we've seen this session_id
+    /// (caller should emit `lan:uploads-changed`).
+    fn register_manifest(
+        &self,
+        session_id: &str,
+        game_id: &str,
+        game_name: &str,
+        peer_addr: &str,
+        bytes_total: u64,
+    ) -> bool {
+        let mut g = match self.sessions.lock() {
+            Ok(g) => g,
+            Err(_) => return false,
+        };
+        let now = Instant::now();
+        let emit_base = now
+            .checked_sub(Duration::from_millis(200))
+            .unwrap_or(now);
+        let is_new = !g.contains_key(session_id);
+        let entry = g
+            .entry(session_id.to_string())
+            .or_insert_with(|| UploadSession {
+                session_id: session_id.to_string(),
+                game_id: game_id.to_string(),
+                game_name: game_name.to_string(),
+                peer_addr: peer_addr.to_string(),
+                last_active: now,
+                cancelled: false,
+                bytes_total: 0,
+                bytes_sent: 0,
+                last_progress_emit: emit_base,
+            });
+        entry.last_active = now;
+        entry.bytes_total = bytes_total;
+        is_new
+    }
+
+    /// Credits `bytes` to the session's `bytes_sent` counter. Returns
+    /// `true` when enough time has passed since the last progress emit
+    /// to warrant a new `lan:uploads-changed` event (throttled to ~5 Hz).
+    fn add_bytes_sent(&self, session_id: &str, bytes: u64) -> bool {
+        let mut g = match self.sessions.lock() {
+            Ok(g) => g,
+            Err(_) => return false,
+        };
+        match g.get_mut(session_id) {
+            Some(s) => {
+                s.bytes_sent = s.bytes_sent.saturating_add(bytes);
+                s.last_active = Instant::now();
+                let should_emit = s.last_progress_emit.elapsed() >= Duration::from_millis(200);
+                if should_emit {
+                    s.last_progress_emit = Instant::now();
+                }
+                should_emit
+            }
+            None => false,
+        }
     }
 
     fn is_cancelled(&self, session_id: &str) -> bool {

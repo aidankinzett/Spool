@@ -197,6 +197,16 @@
       {#each uploads as upload, i (upload.session_id)}
         {@const fresh = upload.last_seen_ago_secs < 2}
         {@const cover = coverFor?.(upload.game_id) ?? null}
+        {@const ulPercent = upload.bytes_total > 0
+          ? Math.round((upload.bytes_sent / upload.bytes_total) * 100)
+          : 0}
+        {@const ulLabel = upload.cancelled
+          ? 'Cancelled — waiting for peer to notice'
+          : upload.bytes_total === 0
+            ? 'Fetching manifest…'
+            : fresh
+              ? `Streaming · ${ulPercent}%`
+              : `Idle · ${ulPercent}% · ${upload.last_seen_ago_secs}s ago`}
         <div
           class="grid items-center gap-3 px-3.5 py-3"
           class:border-b={i !== uploads.length - 1}
@@ -233,17 +243,13 @@
               {/if}
             </div>
             <CassetteProgress
-              percent={upload.cancelled ? 100 : fresh ? 100 : 50}
+              percent={upload.cancelled ? 100 : ulPercent}
               accent={upload.cancelled
                 ? 'var(--color-line-3)'
-                : fresh
+                : fresh || upload.bytes_total === 0
                   ? 'var(--color-ok)'
                   : 'var(--color-ink-3)'}
-              label={upload.cancelled
-                ? 'Cancelled — waiting for peer to notice'
-                : fresh
-                  ? `Streaming · seen ${upload.last_seen_ago_secs}s ago`
-                  : `Idle · ${upload.last_seen_ago_secs}s ago`}
+              label={ulLabel}
               source={upload.peer_addr}
               sourceKind="lan"
               dir="up"

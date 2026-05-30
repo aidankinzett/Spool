@@ -40,6 +40,13 @@ const LAN_PARALLEL_FILES: usize = 4;
 /// loop fires every chunk; without throttling that's hundreds of
 /// events per second on a fast transfer.
 const PROGRESS_EMIT_INTERVAL: Duration = Duration::from_millis(200);
+/// Maximum number of times a single file download is retried on
+/// transient network errors (connection drop, timeout, body read
+/// failure). Each retry uses the existing partial file as a resume
+/// point and waits 2^(attempt-1) seconds before re-connecting.
+const MAX_DOWNLOAD_RETRIES: u32 = 5;
+/// Base delay for retry backoff: attempt 1 → 2 s, 2 → 4 s, 3 → 8 s …
+const RETRY_BASE_DELAY: Duration = Duration::from_secs(2);
 
 /// Snapshot of an in-flight (or just-finished) peer install. Emitted as
 /// `lan:download` events and also held in `LanDownloadState` so the UI
@@ -447,7 +454,15 @@ pub async fn start_peer_install(
     // PEER_FETCH_TIMEOUT) because the host blake3-hashes the folder
     // on first request. On any failure here we clear the slot so the
     // placeholder row goes away before the error toast fires.
-    let manifest_url = format!("http://{peer_addr}:{peer_port}/games/{game_id}/manifest");
+    //
+    // Pass our session token so the sender can register the upload
+    // session immediately — before any file fetches arrive — and show
+    // the game name + a progress bar in their Transfers panel while
+    // we're still in the "Fetching manifest…" phase.
+    let manifest_url = format!(
+        "http://{peer_addr}:{peer_port}/games/{game_id}/manifest?session={}",
+        urlencoding::encode(&install_token),
+    );
     let manifest_result: AppResult<PeerGameManifest> = async {
         let resp = app
             .state::<reqwest::Client>()
@@ -470,7 +485,16 @@ pub async fn start_peer_install(
     let manifest = match manifest_result {
         Ok(m) => m,
         Err(e) => {
-            app.state::<LanDownloadState>().clear_if_token(&install_token);
+            // Emit a terminal error snapshot so the frontend stops showing
+            // "Fetching manifest…" before the slot is cleared.
+            if let Some(snap) = app.state::<LanDownloadState>().update(|p| {
+                p.status = "error".into();
+                p.message = Some(format!("{e}"));
+            }) {
+                emit_progress(&app, &snap);
+            }
+            app.state::<LanDownloadState>()
+                .clear_if_token(&install_token);
             return Err(e);
         }
     };
@@ -546,8 +570,13 @@ pub async fn start_peer_install(
     let _ = state_handle;
 
     tauri::async_runtime::spawn(async move {
-        let result =
-            run_install(app_clone.clone(), peer_addr.clone(), peer_port, manifest.clone()).await;
+        let result = run_install(
+            app_clone.clone(),
+            peer_addr.clone(),
+            peer_port,
+            manifest.clone(),
+        )
+        .await;
         // Preserve the prefetched cover across the terminal event so
         // the panel row keeps its thumbnail during the 2 s grace
         // window before the slot clears.
@@ -638,11 +667,26 @@ pub async fn start_peer_install(
     Ok(return_token)
 }
 
+/// Returns true when a reqwest error is transient enough to retry —
+/// i.e., it's a network-level failure rather than a protocol error.
+/// Connection drops, timeouts, and body read failures on a network
+/// switch all qualify; 4xx/5xx responses and decode errors do not.
+fn is_retryable_network_error(e: &reqwest::Error) -> bool {
+    e.is_connect() || e.is_timeout() || e.is_body()
+}
+
 /// Streams one file from the peer. Honours resume (probes the on-disk
 /// remnant and sends a Range header if needed), polls the cancel flag
 /// between chunks, and bumps the shared `bytes_done` counter as bytes
 /// land. Progress event emission is throttled by `last_emit` so
 /// thousands of tiny chunks don't drown the IPC channel.
+///
+/// Retries up to `MAX_DOWNLOAD_RETRIES` times on transient network errors
+/// (connection drop, timeout, mid-stream body failure) with exponential
+/// backoff. On each retry the partial file is used as a resume point and
+/// any bytes we already credited to `bytes_done` are rolled back before
+/// re-crediting from the new partial size, keeping the progress counter
+/// accurate.
 ///
 /// `max_bps` is the configured bandwidth cap in bytes/s (0 = unlimited).
 #[allow(clippy::too_many_arguments)]
@@ -656,13 +700,6 @@ async fn download_one_file(
     last_emit: Arc<Mutex<Instant>>,
     max_bps: f64,
 ) -> AppResult<()> {
-    {
-        let state = app.state::<LanDownloadState>();
-        if state.is_canceled() {
-            return Err(state.cancel_error());
-        }
-    }
-
     let target = partial_dir.join(file.path.replace('/', std::path::MAIN_SEPARATOR_STR));
     if let Some(parent) = target.parent() {
         tokio::fs::create_dir_all(parent)
@@ -670,187 +707,304 @@ async fn download_one_file(
             .map_err(|e| AppError::Other(format!("mkdir {parent:?}: {e}")))?;
     }
 
-    // Resume support: if a leftover from a previous run sits at
-    // `target`, ask the server for just the tail. Three branches:
-    //   - already complete (size == expected): skip the GET entirely
-    //   - partial (0 < existing < expected): Range request, append
-    //   - oversized: corrupt remnant, truncate and re-fetch
-    let existing_size = match tokio::fs::metadata(&target).await {
-        Ok(m) if m.is_file() => m.len(),
-        _ => 0,
-    };
-    if existing_size == file.size {
-        bytes_done.fetch_add(file.size, Ordering::Relaxed);
-        maybe_emit_progress(&app, &bytes_done, &last_emit, &file.path);
-        return Ok(());
-    }
-    let resume_from = if existing_size < file.size {
-        existing_size
-    } else {
-        0
-    };
+    // Tracks how many bytes this invocation has added to the shared
+    // `bytes_done` counter. On retry we roll back this amount and
+    // re-credit from the new partial file size, keeping the aggregate
+    // progress counter accurate across retries.
+    let mut bytes_added: u64 = 0;
 
-    let mut request = client.get(&url);
-    if resume_from > 0 {
-        request = request.header(header::RANGE, format!("bytes={resume_from}-"));
-    }
-    let resp = request
-        .send()
-        .await
-        .map_err(|e| AppError::Other(format!("GET {url}: {e}")))?;
-    let status = resp.status();
-    if !status.is_success() {
-        return Err(AppError::Other(format!(
-            "peer returned {} for {}",
-            status, file.path
-        )));
-    }
-    let server_served_range = status == reqwest::StatusCode::PARTIAL_CONTENT;
-    let appending = resume_from > 0 && server_served_range;
-
-    let mut out = if appending {
-        tokio::fs::OpenOptions::new()
-            .append(true)
-            .open(&target)
-            .await
-            .map_err(|e| AppError::Other(format!("open append {target:?}: {e}")))?
-    } else {
-        tokio::fs::File::create(&target)
-            .await
-            .map_err(|e| AppError::Other(format!("create {target:?}: {e}")))?
-    };
-    if appending {
-        bytes_done.fetch_add(resume_from, Ordering::Relaxed);
-    }
-
-    // Hasher running in parallel with disk writes. When the source
-    // didn't include a hash (older peer, empty file), `expected` stays
-    // empty and we skip verification on the way out.
-    let expected = file.hash.clone();
-    let verify = !expected.is_empty();
-    let mut hasher = blake3::Hasher::new();
-    if verify && appending && resume_from > 0 {
-        // Pre-seed the hasher with the already-on-disk prefix so the
-        // final digest covers the whole file (not just the tail we
-        // just downloaded). One sequential read; modest cost vs. the
-        // alternative of re-downloading everything from byte 0.
-        let mut existing = tokio::fs::File::open(&target)
-            .await
-            .map_err(|e| AppError::Other(format!("open existing {target:?}: {e}")))?;
-        let mut buf = vec![0u8; 64 * 1024];
-        loop {
-            let n = existing
-                .read(&mut buf)
-                .await
-                .map_err(|e| AppError::Other(format!("read existing {target:?}: {e}")))?;
-            if n == 0 {
-                break;
-            }
-            hasher.update(&buf[..n]);
-        }
-    }
-
-    // Surface "now starting this file" — racy with sibling tasks; that's
-    // fine, the UI just shows one representative file name.
-    if let Some(snap) = app.state::<LanDownloadState>().update(|p| {
-        p.status = "transferring".into();
-        p.current_file = file.path.clone();
-        p.bytes_done = bytes_done.load(Ordering::Relaxed);
-    }) {
-        emit_progress(&app, &snap);
-    }
-
-    let mut stream = resp.bytes_stream();
-    while let Some(chunk) = stream.next().await {
+    for attempt in 0..=MAX_DOWNLOAD_RETRIES {
+        // Cancel check at the top of every attempt.
         {
             let state = app.state::<LanDownloadState>();
             if state.is_canceled() {
-                // Drop the file before any directory cleanup — Windows
-                // refuses to remove a dir that still has open handles.
-                drop(out);
                 return Err(state.cancel_error());
             }
         }
-        let chunk = chunk.map_err(|e| AppError::Other(format!("recv chunk: {e}")))?;
-        if verify {
-            hasher.update(&chunk);
-        }
-        out.write_all(&chunk)
-            .await
-            .map_err(|e| AppError::Other(format!("write {target:?}: {e}")))?;
-        let bd_after =
-            bytes_done.fetch_add(chunk.len() as u64, Ordering::Relaxed) + chunk.len() as u64;
-        maybe_emit_progress(&app, &bytes_done, &last_emit, &file.path);
 
-        // Bandwidth throttle. Each parallel task consults the same
-        // shared `bytes_done` + start_instant, so they collectively
-        // drag the aggregate rate under the cap rather than each
-        // policing themselves into a too-low rate. No-op when the
-        // user hasn't configured a cap (max_bps == 0).
-        if let Some(sleep) = app.state::<LanDownloadState>().throttle_required(bd_after, max_bps) {
-            tokio::time::sleep(sleep).await;
-        }
-    }
-    out.flush()
-        .await
-        .map_err(|e| AppError::Other(format!("flush {target:?}: {e}")))?;
-    drop(out);
+        if attempt > 0 {
+            // Roll back the bytes we credited in the previous failed
+            // attempt so the progress bar doesn't overcount. The retry
+            // will re-credit from the updated partial file size.
+            bytes_done.fetch_sub(bytes_added, Ordering::Relaxed);
+            bytes_added = 0;
+            let rolled_back = bytes_done.load(Ordering::Relaxed);
 
-    // Verify the digest. On mismatch we move the corrupt file aside as
-    // `<name>.bad` (instead of deleting it) so it can be inspected —
-    // size, content, hash with an external tool — to figure out where
-    // the bytes diverged. The next attempt still re-fetches from
-    // scratch because the renamed file no longer occupies the target
-    // path. Also log the on-disk size so a wire-level truncation shows
-    // up immediately without needing the inspection step.
-    if verify {
-        let actual = hasher.finalize().to_hex().to_string();
-        if actual != expected {
-            let on_disk_size = tokio::fs::metadata(&target)
-                .await
-                .map(|m| m.len())
-                .unwrap_or(0);
-            tracing::warn!(
+            let delay = RETRY_BASE_DELAY.saturating_mul(2u32.pow(attempt - 1));
+            tracing::info!(
                 path = %file.path,
-                expected_size = file.size,
-                on_disk_size,
-                expected_hash = %expected,
-                actual_hash = %actual,
-                "LAN install: checksum mismatch (preserving as .bad)"
+                attempt,
+                max = MAX_DOWNLOAD_RETRIES,
+                delay_ms = delay.as_millis(),
+                "LAN install: retrying after network error"
             );
-            let bad_path = target.with_extension(
-                target
-                    .extension()
-                    .and_then(|e| e.to_str())
-                    .map(|e| format!("{e}.bad"))
-                    .unwrap_or_else(|| "bad".to_string()),
-            );
-            let _ = tokio::fs::remove_file(&bad_path).await;
-            let _ = tokio::fs::rename(&target, &bad_path).await;
-            return Err(AppError::ChecksumMismatch {
-                path: file.path.clone(),
-                expected,
-                actual,
-            });
+            let msg = format!("Reconnecting… (attempt {attempt}/{MAX_DOWNLOAD_RETRIES})");
+            if let Some(snap) = app.state::<LanDownloadState>().update(|p| {
+                p.current_file = msg.clone();
+                p.bytes_done = rolled_back;
+            }) {
+                emit_progress(&app, &snap);
+            }
+
+            // Interruptible sleep — cancel still works during backoff.
+            tokio::time::sleep(delay).await;
+            {
+                let state = app.state::<LanDownloadState>();
+                if state.is_canceled() {
+                    return Err(state.cancel_error());
+                }
+            }
         }
+
+        // Re-read the partial file size on every attempt — it may have
+        // grown from bytes written during the previous (failed) attempt.
+        // Three branches:
+        //   - already complete (size == expected): skip the GET entirely
+        //   - partial (0 < existing < expected): Range request, append
+        //   - oversized: corrupt remnant, truncate and re-fetch
+        let existing_size = match tokio::fs::metadata(&target).await {
+            Ok(m) if m.is_file() => m.len(),
+            _ => 0,
+        };
+        if existing_size == file.size {
+            // If the manifest includes a hash, verify the on-disk file before
+            // accepting it — a previous interrupted write can leave a
+            // full-length but corrupt file.
+            if !file.hash.is_empty() {
+                let mut f = tokio::fs::File::open(&target)
+                    .await
+                    .map_err(|e| AppError::Other(format!("open {target:?}: {e}")))?;
+                let mut hasher = blake3::Hasher::new();
+                let mut buf = vec![0u8; 64 * 1024];
+                loop {
+                    let n = f
+                        .read(&mut buf)
+                        .await
+                        .map_err(|e| AppError::Other(format!("read {target:?}: {e}")))?;
+                    if n == 0 {
+                        break;
+                    }
+                    hasher.update(&buf[..n]);
+                }
+                drop(f);
+                let actual = hasher.finalize().to_hex().to_string();
+                if actual == file.hash {
+                    bytes_done.fetch_add(file.size, Ordering::Relaxed);
+                    maybe_emit_progress(&app, &bytes_done, &last_emit, &file.path);
+                    return Ok(());
+                }
+                // Hash mismatch — truncate so the normal download path
+                // re-fetches from scratch on this same attempt.
+                tracing::warn!(
+                    path = %file.path,
+                    expected = %file.hash,
+                    actual = %actual,
+                    "LAN install: full-size partial hash mismatch, re-fetching"
+                );
+                let _ = tokio::fs::File::create(&target).await;
+                // Fall through to the normal GET path with resume_from = 0.
+            } else {
+                bytes_done.fetch_add(file.size, Ordering::Relaxed);
+                maybe_emit_progress(&app, &bytes_done, &last_emit, &file.path);
+                return Ok(());
+            }
+        }
+        let resume_from = if existing_size < file.size {
+            existing_size
+        } else {
+            0
+        };
+
+        let mut request = client.get(&url);
+        if resume_from > 0 {
+            request = request.header(header::RANGE, format!("bytes={resume_from}-"));
+        }
+        let resp = match request.send().await {
+            Ok(r) => r,
+            Err(e) if is_retryable_network_error(&e) && attempt < MAX_DOWNLOAD_RETRIES => {
+                tracing::warn!(path = %file.path, attempt, error = %e, "LAN download: network error on send");
+                continue;
+            }
+            Err(e) => return Err(AppError::Other(format!("GET {url}: {e}"))),
+        };
+        let status = resp.status();
+        if !status.is_success() {
+            return Err(AppError::Other(format!(
+                "peer returned {} for {}",
+                status, file.path
+            )));
+        }
+        let server_served_range = status == reqwest::StatusCode::PARTIAL_CONTENT;
+        let appending = resume_from > 0 && server_served_range;
+
+        let mut out = if appending {
+            tokio::fs::OpenOptions::new()
+                .append(true)
+                .open(&target)
+                .await
+                .map_err(|e| AppError::Other(format!("open append {target:?}: {e}")))?
+        } else {
+            tokio::fs::File::create(&target)
+                .await
+                .map_err(|e| AppError::Other(format!("create {target:?}: {e}")))?
+        };
+        if appending {
+            bytes_done.fetch_add(resume_from, Ordering::Relaxed);
+            bytes_added += resume_from;
+        }
+
+        // Hasher running in parallel with disk writes. When the source
+        // didn't include a hash (older peer, empty file), `expected`
+        // stays empty and we skip verification on the way out.
+        let expected = file.hash.clone();
+        let verify = !expected.is_empty();
+        let mut hasher = blake3::Hasher::new();
+        if verify && appending && resume_from > 0 {
+            // Pre-seed the hasher with the already-on-disk prefix so the
+            // final digest covers the whole file (not just the tail we
+            // just downloaded). On retry, `resume_from` reflects all
+            // bytes written so far (including prior failed attempts),
+            // so this correctly seeds from the whole partial.
+            let mut existing = tokio::fs::File::open(&target)
+                .await
+                .map_err(|e| AppError::Other(format!("open existing {target:?}: {e}")))?;
+            let mut buf = vec![0u8; 64 * 1024];
+            loop {
+                let n = existing
+                    .read(&mut buf)
+                    .await
+                    .map_err(|e| AppError::Other(format!("read existing {target:?}: {e}")))?;
+                if n == 0 {
+                    break;
+                }
+                hasher.update(&buf[..n]);
+            }
+        }
+
+        // Surface "now starting this file" — racy with sibling tasks;
+        // fine, the UI just shows one representative file name.
+        if let Some(snap) = app.state::<LanDownloadState>().update(|p| {
+            p.status = "transferring".into();
+            p.current_file = file.path.clone();
+            p.bytes_done = bytes_done.load(Ordering::Relaxed);
+        }) {
+            emit_progress(&app, &snap);
+        }
+
+        let mut stream = resp.bytes_stream();
+        let mut stream_error: Option<reqwest::Error> = None;
+        'chunks: while let Some(chunk_result) = stream.next().await {
+            {
+                let state = app.state::<LanDownloadState>();
+                if state.is_canceled() {
+                    // Drop the file before any directory cleanup —
+                    // Windows refuses to remove a dir with open handles.
+                    drop(out);
+                    return Err(state.cancel_error());
+                }
+            }
+            let chunk = match chunk_result {
+                Ok(c) => c,
+                Err(e) if is_retryable_network_error(&e) && attempt < MAX_DOWNLOAD_RETRIES => {
+                    tracing::warn!(path = %file.path, attempt, error = %e, "LAN download: stream error");
+                    stream_error = Some(e);
+                    break 'chunks;
+                }
+                Err(e) => {
+                    drop(out);
+                    return Err(AppError::Other(format!("recv chunk: {e}")));
+                }
+            };
+            if verify {
+                hasher.update(&chunk);
+            }
+            out.write_all(&chunk)
+                .await
+                .map_err(|e| AppError::Other(format!("write {target:?}: {e}")))?;
+            let chunk_len = chunk.len() as u64;
+            let bd_after = bytes_done.fetch_add(chunk_len, Ordering::Relaxed) + chunk_len;
+            bytes_added += chunk_len;
+            maybe_emit_progress(&app, &bytes_done, &last_emit, &file.path);
+
+            // Bandwidth throttle — shared counter keeps all parallel
+            // tasks collectively under the cap.
+            if let Some(sleep) = app
+                .state::<LanDownloadState>()
+                .throttle_required(bd_after, max_bps)
+            {
+                tokio::time::sleep(sleep).await;
+            }
+        }
+        drop(stream);
+
+        if let Some(_e) = stream_error {
+            // Flush what we have, close the handle, then loop for retry.
+            let _ = out.flush().await;
+            drop(out);
+            continue;
+        }
+
+        out.flush()
+            .await
+            .map_err(|e| AppError::Other(format!("flush {target:?}: {e}")))?;
+        drop(out);
+
+        // Verify the digest. On mismatch we move the corrupt file aside
+        // as `<name>.bad` so it can be inspected without losing the
+        // evidence. The next attempt re-fetches from scratch because the
+        // renamed file no longer occupies the target path.
+        if verify {
+            let actual = hasher.finalize().to_hex().to_string();
+            if actual != expected {
+                let on_disk_size = tokio::fs::metadata(&target)
+                    .await
+                    .map(|m| m.len())
+                    .unwrap_or(0);
+                tracing::warn!(
+                    path = %file.path,
+                    expected_size = file.size,
+                    on_disk_size,
+                    expected_hash = %expected,
+                    actual_hash = %actual,
+                    "LAN install: checksum mismatch (preserving as .bad)"
+                );
+                let bad_path = target.with_extension(
+                    target
+                        .extension()
+                        .and_then(|e| e.to_str())
+                        .map(|e| format!("{e}.bad"))
+                        .unwrap_or_else(|| "bad".to_string()),
+                );
+                let _ = tokio::fs::remove_file(&bad_path).await;
+                let _ = tokio::fs::rename(&target, &bad_path).await;
+                return Err(AppError::ChecksumMismatch {
+                    path: file.path.clone(),
+                    expected,
+                    actual,
+                });
+            }
+        }
+
+        // Restamp mtime so the destination matches the source.
+        if file.mtime_unix_ms > 0 {
+            let mtime = filetime::FileTime::from_unix_time(
+                (file.mtime_unix_ms / 1000) as i64,
+                ((file.mtime_unix_ms % 1000) * 1_000_000) as u32,
+            );
+            let target_for_blocking = target.clone();
+            let _ = tokio::task::spawn_blocking(move || {
+                filetime::set_file_mtime(&target_for_blocking, mtime)
+            })
+            .await;
+        }
+
+        return Ok(());
     }
 
-    // Restamp mtime so the destination matches the source. Best-effort:
-    // a failure here is cosmetic (the file is fine), don't fail the
-    // install over it.
-    if file.mtime_unix_ms > 0 {
-        let mtime = filetime::FileTime::from_unix_time(
-            (file.mtime_unix_ms / 1000) as i64,
-            ((file.mtime_unix_ms % 1000) * 1_000_000) as u32,
-        );
-        let target_for_blocking = target.clone();
-        let _ = tokio::task::spawn_blocking(move || {
-            filetime::set_file_mtime(&target_for_blocking, mtime)
-        })
-        .await;
-    }
-
-    Ok(())
+    Err(AppError::Other(format!(
+        "download of '{}' failed after {} retries",
+        file.path, MAX_DOWNLOAD_RETRIES
+    )))
 }
 
 /// Throttled progress emit. Multiple parallel tasks race for the lock;
@@ -1168,7 +1322,8 @@ async fn run_install(
         )
         .await;
         if !got_cover {
-            if let Err(e) = crate::steamgriddb::fetch_and_save_cover(&app_for_art, &id_for_art).await
+            if let Err(e) =
+                crate::steamgriddb::fetch_and_save_cover(&app_for_art, &id_for_art).await
             {
                 tracing::warn!(
                     game_id = %id_for_art,
@@ -1344,7 +1499,10 @@ mod tests {
         let (final_dir, partial, resuming) = resolve_install_dirs(root.path(), "Hades");
         assert_eq!(final_dir, root.path().join("Hades"));
         assert_eq!(partial, root.path().join("Hades.partial"));
-        assert!(resuming, "a leftover .partial with a free final dir resumes");
+        assert!(
+            resuming,
+            "a leftover .partial with a free final dir resumes"
+        );
     }
 
     #[test]

@@ -15,6 +15,7 @@ use axum::{
     routing::get,
     Router,
 };
+use futures_util::StreamExt as _;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::io::SeekFrom;
@@ -183,6 +184,16 @@ async fn get_games_handler(
     Ok(Json(games))
 }
 
+/// Query string accepted by `/games/:id/manifest`. The receiver passes
+/// its session UUID so we can register the upload session immediately —
+/// before any file fetches arrive — letting the host UI show "fetching
+/// manifest" with the game's name and total size.
+#[derive(Debug, Deserialize, Default)]
+struct ManifestQuery {
+    #[serde(default)]
+    session: String,
+}
+
 /// `GET /games/:id/manifest` — builds a transfer manifest by walking
 /// the game's install folder. Returns 404 if the id isn't in our
 /// library, 403 if LAN sharing is disabled, 410 if the game has no
@@ -190,6 +201,8 @@ async fn get_games_handler(
 async fn get_manifest_handler(
     AxState(state): AxState<ServerState>,
     AxPath(id): AxPath<String>,
+    AxQuery(query): AxQuery<ManifestQuery>,
+    ConnectInfo(peer_addr): ConnectInfo<SocketAddr>,
 ) -> Result<Json<PeerGameManifest>, StatusCode> {
     let config = state.app.state::<SharedConfig>();
     let library = state.app.state::<SharedLibrary>();
@@ -235,17 +248,36 @@ async fn get_manifest_handler(
     // modern hardware); subsequent requests hit the in-memory cache.
     let cache = state.hash_cache.clone();
     let walk_folder = folder.clone();
-    let files = tokio::task::spawn_blocking(move || walk_game_files_with_hashes(&walk_folder, cache))
-        .await
-        .map_err(|e| {
-            tracing::warn!(game_id = %id, error = %e, "manifest walk task join failed");
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?
-        .map_err(|e| {
-            tracing::warn!(game_id = %id, error = %e, "manifest walk failed");
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
+    let files =
+        tokio::task::spawn_blocking(move || walk_game_files_with_hashes(&walk_folder, cache))
+            .await
+            .map_err(|e| {
+                tracing::warn!(game_id = %id, error = %e, "manifest walk task join failed");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?
+            .map_err(|e| {
+                tracing::warn!(game_id = %id, error = %e, "manifest walk failed");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
     let total_bytes: u64 = files.iter().map(|f| f.size).sum();
+
+    // Register the upload session now that we know the total byte count.
+    // This fires before any `/files/*path` requests arrive, so the host
+    // UI can show the game name + a progress bar from the very first
+    // moment the receiver starts pulling.
+    if !query.session.is_empty() {
+        let uploads = state.app.state::<LanUploadsState>();
+        let is_new = uploads.register_manifest(
+            &query.session,
+            &entry.id,
+            &entry.game_name,
+            &peer_addr.ip().to_string(),
+            total_bytes,
+        );
+        if is_new {
+            let _ = state.app.emit("lan:uploads-changed", &());
+        }
+    }
 
     // Compute exe_relative_path if exe lives inside the folder.
     let exe_relative_path = (!entry.exe_path.is_empty())
@@ -389,13 +421,37 @@ async fn get_file_handler(
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
         let body_len = total_len - start;
         let end = total_len - 1;
-        let stream = ReaderStream::new(file);
-        let body = Body::from_stream(stream);
+        let raw_stream = ReaderStream::new(file);
+        let body = if !query.session.is_empty() {
+            // Credit bytes as they are actually yielded to the socket so
+            // a mid-stream disconnect or range-request retry never
+            // over-counts.
+            let app_h = state.app.clone();
+            let session_id = query.session.clone();
+            let accounting_stream = raw_stream.map(move |result| {
+                if let Ok(ref chunk) = result {
+                    let uploads = app_h.state::<LanUploadsState>();
+                    if uploads.add_bytes_sent(&session_id, chunk.len() as u64) {
+                        let _ = app_h.emit("lan:uploads-changed", &());
+                    }
+                }
+                result
+            });
+            Body::from_stream(accounting_stream)
+        } else {
+            Body::from_stream(raw_stream)
+        };
         let mut resp = Response::new(body);
         *resp.status_mut() = StatusCode::PARTIAL_CONTENT;
         let h = resp.headers_mut();
-        h.insert(header::CONTENT_TYPE, "application/octet-stream".parse().unwrap());
-        h.insert(header::CONTENT_LENGTH, body_len.to_string().parse().unwrap());
+        h.insert(
+            header::CONTENT_TYPE,
+            "application/octet-stream".parse().unwrap(),
+        );
+        h.insert(
+            header::CONTENT_LENGTH,
+            body_len.to_string().parse().unwrap(),
+        );
         h.insert(
             header::CONTENT_RANGE,
             format!("bytes {start}-{end}/{total_len}").parse().unwrap(),
@@ -404,12 +460,33 @@ async fn get_file_handler(
         return Ok(resp);
     }
 
-    let stream = ReaderStream::new(file);
-    let body = Body::from_stream(stream);
+    let raw_stream = ReaderStream::new(file);
+    let body = if !query.session.is_empty() {
+        let app_h = state.app.clone();
+        let session_id = query.session.clone();
+        let accounting_stream = raw_stream.map(move |result| {
+            if let Ok(ref chunk) = result {
+                let uploads = app_h.state::<LanUploadsState>();
+                if uploads.add_bytes_sent(&session_id, chunk.len() as u64) {
+                    let _ = app_h.emit("lan:uploads-changed", &());
+                }
+            }
+            result
+        });
+        Body::from_stream(accounting_stream)
+    } else {
+        Body::from_stream(raw_stream)
+    };
     let mut resp = Response::new(body);
     let h = resp.headers_mut();
-    h.insert(header::CONTENT_TYPE, "application/octet-stream".parse().unwrap());
-    h.insert(header::CONTENT_LENGTH, total_len.to_string().parse().unwrap());
+    h.insert(
+        header::CONTENT_TYPE,
+        "application/octet-stream".parse().unwrap(),
+    );
+    h.insert(
+        header::CONTENT_LENGTH,
+        total_len.to_string().parse().unwrap(),
+    );
     h.insert(header::ACCEPT_RANGES, "bytes".parse().unwrap());
     Ok(resp)
 }
