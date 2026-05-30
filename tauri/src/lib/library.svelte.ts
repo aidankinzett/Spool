@@ -279,7 +279,7 @@ export function createLibrary() {
       .catch((e) => console.error('[library] listener failed:', e));
 
     listen<RunPhaseEvent>('run:phase', (event) => {
-      const { game_id, phase, message } = event.payload;
+      const { game_id, phase, message, cloud_used } = event.payload;
       if (phase === 'done' || phase === 'error') {
         runningId = null;
         runningPhase = null;
@@ -292,7 +292,7 @@ export function createLibrary() {
       } else if (phase === 'done') {
         const game = games.find((g) => g.id === game_id);
         if (message) {
-          // A message on `done` means local backup succeeded but cloud upload failed.
+          // A message on `done` means backup succeeded but cloud upload failed.
           toasts.show({
             kind: 'warn',
             label: 'LUDUSAVI',
@@ -300,11 +300,22 @@ export function createLibrary() {
             sub: game ? `${game.game_name} · ${message}` : message,
             catalog: game ? fmtCatalog(game.catalog_number) : undefined,
           });
+        } else if (!cloud_used) {
+          // No cloud remote configured — saves are safe locally but weren't synced.
+          toasts.show({
+            kind: 'info',
+            label: 'LUDUSAVI',
+            title: 'Saves backed up locally',
+            sub: game
+              ? `${game.game_name} · no cloud remote configured`
+              : 'No cloud remote configured',
+            catalog: game ? fmtCatalog(game.catalog_number) : undefined,
+          });
         } else if (game) {
           toasts.show({
             kind: 'ok',
             label: 'LUDUSAVI',
-            title: 'Saves backed up',
+            title: 'Saves backed up + synced',
             sub: `${game.game_name} · session complete`,
             catalog: fmtCatalog(game.catalog_number),
           });

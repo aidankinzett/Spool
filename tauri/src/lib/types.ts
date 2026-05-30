@@ -340,6 +340,8 @@ export type RunPhaseEvent = {
   game_id: string;
   phase: RunPhase;
   message: string | null;
+  /** True when a cloud remote is configured for this session. */
+  cloud_used: boolean;
 };
 
 /**

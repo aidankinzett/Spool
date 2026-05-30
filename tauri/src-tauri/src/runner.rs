@@ -74,13 +74,17 @@ struct RunPhaseEvent {
     game_id: String,
     phase: String,
     message: Option<String>,
+    /// True when a cloud remote is configured and this session synced
+    /// (or attempted to sync) with it. False for local-only sessions.
+    cloud_used: bool,
 }
 
-fn emit_phase(app: &AppHandle, game_id: &str, phase: &str, message: Option<&str>) {
+fn emit_phase(app: &AppHandle, game_id: &str, phase: &str, message: Option<&str>, cloud_used: bool) {
     let payload = RunPhaseEvent {
         game_id: game_id.to_string(),
         phase: phase.to_string(),
         message: message.map(String::from),
+        cloud_used,
     };
     if let Err(e) = app.emit("run:phase", &payload) {
         tracing::warn!(phase = phase, error = %e, "failed to emit run:phase");
@@ -415,7 +419,7 @@ pub async fn launch_game_inner(app: &AppHandle, game_id: &str) -> AppResult<()> 
     .await;
 
     if let Err(e) = &result {
-        emit_phase(app, game_id, "error", Some(&e.to_string()));
+        emit_phase(app, game_id, "error", Some(&e.to_string()), false);
         // Surface the failure via the OS notification centre too —
         // most workflow errors happen while the user is mid-launch
         // with Spool tucked into the tray.
@@ -595,8 +599,17 @@ async fn run_workflow(
         None
     };
 
+    // Check once whether a cloud remote is configured so phase messages
+    // can tell the user whether saves are cloud-synced or local-only.
+    let cloud_configured = ludusavi_config::cloud_remote_is_configured();
+
     // ── Phase 1: restore ──────────────────────────────────────────────
-    emit_phase(app, game_id, "restoring", Some("Restoring saves…"));
+    let restore_msg = if cloud_configured {
+        "Syncing + restoring saves…"
+    } else {
+        "Restoring local saves…"
+    };
+    emit_phase(app, game_id, "restoring", Some(restore_msg), cloud_configured);
     os_toast_if_hidden(
         app,
         "Restoring saves",
@@ -660,7 +673,7 @@ async fn run_workflow(
     }
 
     // ── Phase 2: launch + wait ───────────────────────────────────────
-    emit_phase(app, game_id, "launching", Some("Launching game…"));
+    emit_phase(app, game_id, "launching", Some("Launching game…"), cloud_configured);
     let exe_pathbuf = PathBuf::from(exe_path);
     if !exe_pathbuf.is_file() {
         return Err(AppError::Other(format!(
@@ -668,7 +681,7 @@ async fn run_workflow(
         )));
     }
 
-    emit_phase(app, game_id, "playing", None);
+    emit_phase(app, game_id, "playing", None, cloud_configured);
     tracing::info!(exe_path, use_proton = launch.use_proton, "launching game process");
     let session_start = Utc::now();
 
@@ -755,7 +768,12 @@ async fn run_workflow(
     // safe on disk) but warn the user rather than claiming a clean sync.
     let mut cloud_upload_failed = false;
     if !no_saves {
-        emit_phase(app, game_id, "backing-up", Some("Backing up saves…"));
+        let backup_msg = if cloud_configured {
+            "Backing up + syncing saves…"
+        } else {
+            "Backing up locally…"
+        };
+        emit_phase(app, game_id, "backing-up", Some(backup_msg), cloud_configured);
         os_toast_if_hidden(
             app,
             "Backing up saves",
@@ -889,14 +907,14 @@ async fn run_workflow(
     // frontend shows a sticky warning toast instead of a clean "synced".
     if cloud_upload_failed {
         let warning = "Saves backed up locally, but cloud upload failed. Check your cloud save settings.";
-        emit_phase(app, game_id, "done", Some(warning));
+        emit_phase(app, game_id, "done", Some(warning), cloud_configured);
         os_toast_if_hidden(
             app,
             "Cloud upload failed",
             &format!("{game_name} — saves are safe locally but didn't reach the cloud"),
         );
     } else {
-        emit_phase(app, game_id, "done", None);
+        emit_phase(app, game_id, "done", None, cloud_configured);
         os_toast_if_hidden(
             app,
             "Saves backed up",

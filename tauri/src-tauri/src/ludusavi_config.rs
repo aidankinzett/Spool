@@ -122,6 +122,10 @@ fn apply_cloud(
                 "ftp" => { set_path(v, &["cloud", "remote"], Value::String("Ftp".into())); }
                 "smb" => { set_path(v, &["cloud", "remote"], Value::String("Smb".into())); }
                 "webdav" => { set_path(v, &["cloud", "remote"], Value::String("WebDav".into())); }
+                "spool-server" => {
+                    // Remote was configured by `ludusavi cloud set webdav` as a
+                    // named rclone remote — leave it untouched.
+                }
                 _ => {
                     set_path(v, &["cloud", "remote"], Value::Null);
                 }
@@ -163,6 +167,19 @@ pub fn set_redirects(redirects: &[Redirect]) -> AppResult<()> {
     );
     set_path(&mut v, &["redirects"], list);
     write_value(&v)
+}
+
+/// Returns true if `cloud.remote` in the owned config.yaml is set to a
+/// non-null value. Used by the runner to decide whether to label a session
+/// as cloud-synced or local-only.
+pub fn cloud_remote_is_configured() -> bool {
+    let Ok(v) = read_value() else { return false };
+    let remote = v
+        .as_mapping()
+        .and_then(|m| m.get(Value::String("cloud".into())))
+        .and_then(|cloud| cloud.as_mapping())
+        .and_then(|m| m.get(Value::String("remote".into())));
+    matches!(remote, Some(Value::Mapping(_)) | Some(Value::String(_)))
 }
 
 /// The absolute path used for `backup.path` / `restore.path` in the owned
