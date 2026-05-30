@@ -132,18 +132,18 @@ pub async fn backup_game_core(
     library: &SharedLibrary,
     game_id: &str,
 ) -> AppResult<ManualBackupResult> {
-    let (game_name, use_proton, prefix_override) = {
+    let (game_name, uses_proton, prefix_override) = {
         let lib = library.lock().map_err(|_| AppError::LockPoisoned)?;
         let entry = lib
             .find(game_id)
             .ok_or_else(|| AppError::Other(format!("game not found: {game_id}")))?;
         (
             entry.game_name.clone(),
-            entry.use_proton,
+            entry.uses_proton(),
             entry.wine_prefix_path.clone(),
         )
     };
-    let wine_prefix: Option<PathBuf> = if cfg!(not(windows)) && use_proton {
+    let wine_prefix: Option<PathBuf> = if uses_proton {
         Some(
             prefix_override
                 .filter(|p| !p.trim().is_empty())
@@ -289,12 +289,12 @@ pub struct ManualRestoreResult {
 /// Snapshot for the manual backup/restore commands. Returns:
 ///   (game_name, ludusavi_exe, config_dir, wine_prefix)
 ///
-/// `wine_prefix` is `Some` only on non-Windows when the game has `use_proton`
-/// set; it is the prefix ROOT (not drive_c) passed as `--wine-prefix` to
-/// backup. Restore never takes a prefix — cross-device remapping is handled
-/// by redirects (Phase 3).
+/// `wine_prefix` is `Some` only when the game launches through Proton (Windows
+/// `.exe` on Linux — see [`GameEntry::uses_proton`]); it is the prefix ROOT
+/// (not drive_c) passed as `--wine-prefix` to backup. Restore never takes a
+/// prefix — cross-device remapping is handled by redirects (Phase 3).
 fn manual_prep(app: &AppHandle, game_id: &str) -> AppResult<(String, PathBuf, PathBuf, Option<PathBuf>)> {
-    let (game_name, use_proton, prefix_override) = {
+    let (game_name, uses_proton, prefix_override) = {
         let library = app.state::<SharedLibrary>();
         let lib = library.lock().map_err(|_| AppError::LockPoisoned)?;
         let entry = lib
@@ -302,7 +302,7 @@ fn manual_prep(app: &AppHandle, game_id: &str) -> AppResult<(String, PathBuf, Pa
             .ok_or_else(|| AppError::Other(format!("game not found: {game_id}")))?;
         (
             entry.game_name.clone(),
-            entry.use_proton,
+            entry.uses_proton(),
             entry.wine_prefix_path.clone(),
         )
     };
@@ -316,7 +316,7 @@ fn manual_prep(app: &AppHandle, game_id: &str) -> AppResult<(String, PathBuf, Pa
         })?
     };
     let config_dir = crate::paths::ludusavi_config_dir();
-    let wine_prefix = if cfg!(not(windows)) && use_proton {
+    let wine_prefix = if uses_proton {
         Some(
             prefix_override
                 .filter(|p| !p.trim().is_empty())
@@ -347,7 +347,7 @@ pub async fn launch_game_inner(app: &AppHandle, game_id: &str) -> AppResult<()> 
     // the registry-level Run-As-Admin compat flag into the effective
     // `needs_admin` here so the launch path doesn't have to know
     // about the registry concept.
-    let (game_name, exe_path, needs_admin, use_proton, proton_version_path, wine_prefix_path, launch_args) = {
+    let (game_name, exe_path, needs_admin, proton_version_path, wine_prefix_path, launch_args) = {
         let library = app.state::<SharedLibrary>();
         let lib = library.lock().map_err(|_| AppError::LockPoisoned)?;
         let entry = lib
@@ -362,7 +362,6 @@ pub async fn launch_game_inner(app: &AppHandle, game_id: &str) -> AppResult<()> 
             entry.game_name.clone(),
             entry.exe_path.clone(),
             needs_admin,
-            entry.use_proton,
             entry.proton_version_path.clone(),
             entry.wine_prefix_path.clone(),
             entry.launch_args.clone(),
@@ -392,7 +391,6 @@ pub async fn launch_game_inner(app: &AppHandle, game_id: &str) -> AppResult<()> 
     // awaits below so a misconfiguration surfaces as a clean launch error.
     let launch_plan = build_launch_plan(
         game_id,
-        use_proton,
         proton_version_path,
         wine_prefix_path,
         launch_args,
@@ -439,13 +437,14 @@ struct LaunchPlan {
     run_as_admin: bool,
 }
 
-/// Resolves a [`LaunchPlan`] from the game's settings + app config. On
-/// non-Windows, a `.exe` without Proton enabled is a hard error (we won't
-/// try to exec a Windows binary natively). On Windows, Proton is ignored.
+/// Resolves a [`LaunchPlan`] from the game's settings + app config. Whether
+/// Proton is used is derived from the platform + executable type
+/// ([`crate::proton::exe_needs_proton`]): on Linux a Windows `.exe` always
+/// launches through Proton, native binaries run directly, and on Windows Proton
+/// is never used. There is no on/off toggle (issue #80).
 #[allow(clippy::too_many_arguments)]
 fn build_launch_plan(
     game_id: &str,
-    use_proton: bool,
     proton_version_path: Option<String>,
     wine_prefix_path: Option<String>,
     launch_args: Option<String>,
@@ -465,7 +464,7 @@ fn build_launch_plan(
         .map(String::from)
         .collect();
 
-    let effective_proton = use_proton && cfg!(not(windows));
+    let effective_proton = crate::proton::exe_needs_proton(exe_path);
 
     if effective_proton {
         let umu_run = crate::proton::resolve_umu_run(Some(umu_run_path))?;
@@ -483,13 +482,9 @@ fn build_launch_plan(
         });
     }
 
-    // Native path. Guard against trying to run a Windows exe natively on Linux.
-    if cfg!(not(windows)) && exe_path.to_ascii_lowercase().ends_with(".exe") {
-        return Err(AppError::Other(
-            "This is a Windows game — enable 'Run with Proton' in the game's Launch settings.".into(),
-        ));
-    }
-
+    // Native path. On Linux, `exe_needs_proton` has already routed every `.exe`
+    // through the Proton branch above, so anything reaching here is a native
+    // binary (or we're on Windows, where games run natively).
     Ok(LaunchPlan {
         use_proton: false,
         umu_run: None,

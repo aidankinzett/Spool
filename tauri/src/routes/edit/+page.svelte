@@ -58,7 +58,6 @@
       (form.game_folder_path ?? '') !== (original.game_folder_path ?? '') ||
       form.run_as_admin !== original.run_as_admin ||
       form.lan_shared !== original.lan_shared ||
-      form.use_proton !== original.use_proton ||
       (form.proton_version_path ?? '') !== (original.proton_version_path ?? '') ||
       (form.wine_prefix_path ?? '') !== (original.wine_prefix_path ?? '') ||
       (form.launch_args ?? '') !== (original.launch_args ?? '')
@@ -69,6 +68,13 @@
   // has a real install folder for the server to stream from.
   const hasFolder = $derived(
     !!form && (form.game_folder_path ?? '').length > 0,
+  );
+
+  // Whether the configured executable is a Windows `.exe`. On Linux these
+  // launch through Proton automatically (no toggle — issue #80); the Proton
+  // version / prefix / deps controls only make sense for such games.
+  const exeIsWindows = $derived(
+    (form?.exe_path ?? '').toLowerCase().endsWith('.exe'),
   );
 
   // Tracks whether Windows itself has the exe flagged for elevation via
@@ -410,29 +416,22 @@
               : 'Required by some games (mostly older / DRM-laden). Off by default. Triggers a UAC prompt at launch.',
             launchRunAs,
           )}
-          {#if isLinux}
+          {#if isLinux && exeIsWindows}
             {@render field(
-              'Run with Proton',
-              'Launch this Windows game through Proton (umu-run) on Linux. Required to run .exe games here.',
-              protonToggle,
+              'Proton version',
+              'This Windows game launches through Proton automatically on Linux. Choose which Proton build to use; Auto picks the newest installed.',
+              protonSelect,
             )}
-            {#if form!.use_proton}
-              {@render field(
-                'Proton version',
-                'Which Proton build to launch with. Auto picks the newest installed.',
-                protonSelect,
-              )}
-              {@render field(
-                'Wine prefix',
-                'Override the per-game prefix folder. Leave blank for the Spool default.',
-                prefixField,
-              )}
-              {@render field(
-                'Install dependencies',
-                'Install Windows runtimes into this prefix via winetricks (space-separated, e.g. vcrun2022 dotnet48). Needs UMU/GE Proton.',
-                depsRow,
-              )}
-            {/if}
+            {@render field(
+              'Wine prefix',
+              'Override the per-game prefix folder. Leave blank for the Spool default.',
+              prefixField,
+            )}
+            {@render field(
+              'Install dependencies',
+              'Install Windows runtimes into this prefix via winetricks (space-separated, e.g. vcrun2022 dotnet48). Needs UMU/GE Proton.',
+              depsRow,
+            )}
           {/if}
           {@render field(
             'Launch arguments',
@@ -454,9 +453,6 @@
                 </span>
               {/if}
             </div>
-          {/snippet}
-          {#snippet protonToggle()}
-            <Toggle bind:checked={form!.use_proton} aria-label="Run with Proton" />
           {/snippet}
           {#snippet protonSelect()}
             <select

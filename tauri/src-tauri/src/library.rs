@@ -40,7 +40,10 @@ pub struct GameEntry {
     pub run_as_admin: bool,
 
     // ── Proton / Linux launch (inert on Windows) ────────────────────────────
-    /// Launch this game's Windows exe through Proton (umu-run) on Linux.
+    /// Legacy on/off toggle for launching through Proton. **No longer read** —
+    /// Proton is now used automatically for Windows `.exe` games on Linux (see
+    /// [`GameEntry::uses_proton`] / issue #80). Kept only so existing
+    /// `library.json` files round-trip unchanged; nothing sets or consults it.
     pub use_proton: bool,
     /// Override the Proton build directory. `None` = use the global default
     /// (`ConfigData.default_proton_path`) or auto-pick the newest.
@@ -154,6 +157,15 @@ impl Default for GameEntry {
             accent_color: None,
             sync_badge: None,
         }
+    }
+}
+
+impl GameEntry {
+    /// Whether this entry launches through Proton. Derived from the platform +
+    /// executable type rather than a stored flag — see
+    /// [`crate::proton::exe_needs_proton`] (issue #80).
+    pub fn uses_proton(&self) -> bool {
+        crate::proton::exe_needs_proton(&self.exe_path)
     }
 }
 

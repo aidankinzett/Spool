@@ -252,6 +252,17 @@ pub fn game_prefix_path(game_id: &str) -> PathBuf {
     paths::proton_prefixes_dir().join(game_id)
 }
 
+/// Whether a game's executable should launch through Proton.
+///
+/// On Windows, games always run natively, so this is always `false`. On Linux,
+/// Proton is used *automatically* for any Windows `.exe` target — there is no
+/// user-facing on/off toggle (issue #80); only the Proton *version* is
+/// selectable. Native Linux executables (anything not ending in `.exe`) run
+/// directly. This is the single source of truth for the Proton launch decision.
+pub fn exe_needs_proton(exe_path: &str) -> bool {
+    cfg!(not(windows)) && exe_path.trim().to_ascii_lowercase().ends_with(".exe")
+}
+
 /// A fully-resolved umu-run invocation: program, args, and environment.
 pub struct UmuLaunch {
     pub program: PathBuf,
