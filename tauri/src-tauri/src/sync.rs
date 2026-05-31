@@ -28,6 +28,7 @@ const ENDPOINT_TIMEOUT: Duration = Duration::from_secs(8);
 // InhibitDelayMaxSec is 5 s. Use a shorter deadline so the request either
 // completes or fails cleanly before logind force-releases the inhibitor and
 // freezes the process mid-flight.
+#[cfg(target_os = "linux")]
 const SUSPEND_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Reachability state. The frontend renders the chrome cloud icon
