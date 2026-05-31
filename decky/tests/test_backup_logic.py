@@ -125,6 +125,12 @@ class Paths(unittest.TestCase):
             ["/usr/bin/spool", "--backup", "Hades"],
         )
 
+    def test_build_release_lock_argv(self):
+        self.assertEqual(
+            logic.build_release_lock_argv("/usr/bin/spool", "Hades"),
+            ["/usr/bin/spool", "--release-lock", "Hades"],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
