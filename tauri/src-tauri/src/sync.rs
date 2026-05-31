@@ -584,6 +584,11 @@ pub fn start_heartbeat(app: AppHandle, game_name: String) -> tokio::task::JoinHa
 /// device sleeps. Best-effort; like the heartbeat it requires the
 /// `X-Device-Id` header. Called from the logind suspend watcher just
 /// before the system freezes. Returns `true` if the server accepted it.
+///
+/// Linux-only: the only caller is the logind-based suspend watcher
+/// (`suspend.rs`), so gating it here keeps the Windows build free of a
+/// dead-code warning (CI builds with `-D warnings`).
+#[cfg(target_os = "linux")]
 pub async fn suspend_lock(app: &AppHandle, game_name: &str) -> bool {
     let Ok((url, key)) = config_snapshot(app) else {
         return false;
