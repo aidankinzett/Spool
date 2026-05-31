@@ -562,6 +562,7 @@ fn run_backup_headless(game_name: &str) -> i32 {
     let result = rt.block_on(async {
         runner::backup_game_core(&client, &ludusavi_exe, &config_dir, &lib_state, &game_id).await
     });
+    let cfg_data = config::Config::load().map(|c| c.data).unwrap_or_default();
 
     match result {
         Ok(r) => {
@@ -571,7 +572,7 @@ fn run_backup_headless(game_name: &str) -> i32 {
             // clear the unsynced-session marker and record this device as the
             // latest backer so peers stop warning. Best-effort.
             rt.block_on(async {
-                rclone::complete_session_backup_from_config(&config.data, game_name).await;
+                rclone::complete_session_backup_from_config(&cfg_data, game_name).await;
             });
             0
         }

@@ -189,18 +189,18 @@ pub fn remote_name_from_yaml(config: &serde_yaml::Value) -> Option<String> {
 /// Resolve the remote from app state. `None` when cloud isn't configured (no
 /// `cloud.remote` in ludusavi's config) or the rclone binary can't be found.
 pub fn resolve_remote(app: &AppHandle) -> Option<RcloneRemote> {
-    let (rclone_path, base) = {
+    let base = {
         let cfg = app.state::<SharedConfig>();
         let g = cfg.lock().ok()?;
-        (g.data.rclone_path.clone(), base_path(&g.data))
+        base_path(&g.data)
     };
-    resolve_remote_inner(&rclone_path, base)
+    resolve_remote_inner(base)
 }
 
 /// Resolve the remote from a plain [`ConfigData`] — for headless paths that
 /// have no Tauri-managed state (`spool --backup` / `--release-lock`).
 pub fn resolve_remote_from_config(cfg: &ConfigData) -> Option<RcloneRemote> {
-    resolve_remote_inner(&cfg.rclone_path, base_path(cfg))
+    resolve_remote_inner(base_path(cfg))
 }
 
 /// The configured base folder, defaulting to `Spool` if the user cleared it.
@@ -209,11 +209,11 @@ fn base_path(cfg: &ConfigData) -> String {
     if b.is_empty() { "Spool".to_string() } else { b.to_string() }
 }
 
-fn resolve_remote_inner(rclone_path: &str, base: String) -> Option<RcloneRemote> {
+fn resolve_remote_inner(base: String) -> Option<RcloneRemote> {
     let raw = std::fs::read_to_string(crate::paths::ludusavi_config_file()).ok()?;
     let yaml: serde_yaml::Value = serde_yaml::from_str(&raw).ok()?;
     let remote = remote_name_from_yaml(&yaml)?;
-    let exe = crate::paths::resolve_rclone_path(rclone_path)?;
+    let exe = crate::paths::resolve_rclone_path()?;
     Some(RcloneRemote { exe, remote, base })
 }
 
@@ -221,10 +221,11 @@ fn resolve_remote_inner(rclone_path: &str, base: String) -> Option<RcloneRemote>
 /// lock is poisoned — callers treat that as "skip the control-plane op".
 fn device_identity(app: &AppHandle) -> (String, String) {
     let cfg = app.state::<SharedConfig>();
-    match cfg.lock() {
+    let result = match cfg.lock() {
         Ok(g) => (g.data.device_id.clone(), g.data.device_name.clone()),
         Err(_) => (String::new(), String::new()),
-    }
+    };
+    result
 }
 
 // ── Low-level rclone helpers ────────────────────────────────────────────────
