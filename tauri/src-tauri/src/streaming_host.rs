@@ -202,6 +202,125 @@ fn write_apps(path: &Path, root: &Value) -> AppResult<()> {
     Ok(())
 }
 
+/// On Windows, if the target `apps.json` lives under Program Files (or another
+/// ACL-protected directory), the plain write fails with `PermissionDenied`.
+/// This function retries by writing the JSON to a user-writable temp file and
+/// then running an elevated `powershell.exe` via `ShellExecuteExW` + `runas`
+/// to move it into the protected destination. The UAC prompt appears for the
+/// PowerShell invocation, not for Spool itself, so Spool stays non-elevated.
+#[cfg(windows)]
+async fn write_apps_elevated(path: &Path, root: &Value) -> AppResult<()> {
+    use std::ffi::OsStr;
+    use std::iter::once;
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, ERROR_CANCELLED};
+    use windows_sys::Win32::System::Threading::{
+        GetExitCodeProcess, WaitForSingleObject, INFINITE,
+    };
+    use windows_sys::Win32::UI::Shell::{
+        ShellExecuteExW, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW,
+    };
+    use windows_sys::Win32::UI::WindowsAndMessaging::SW_HIDE;
+
+    let bytes = serde_json::to_vec_pretty(root)?;
+
+    // Write the JSON to a user-writable staging file in %TEMP%.
+    let tmp_src = std::env::temp_dir().join("spool_streaming_apps_tmp.json");
+    std::fs::write(&tmp_src, &bytes)
+        .map_err(|e| AppError::Other(format!("failed to write staging file: {e}")))?;
+
+    let dest = path.to_string_lossy().into_owned();
+    let parent = path
+        .parent()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let src = tmp_src.to_string_lossy().into_owned();
+
+    // PowerShell script: ensure the parent dir exists, back up the existing
+    // file if present, then move the staging file into place.
+    let script = format!(
+        "$dest = '{dest}'\n\
+         $tmp  = '{src}'\n\
+         $dir  = '{parent}'\n\
+         if (-not (Test-Path $dir)) {{\n  \
+             New-Item -Path $dir -ItemType Directory -Force | Out-Null\n}}\n\
+         if (Test-Path $dest) {{\n  \
+             Copy-Item $dest ($dest + '.bak') -Force\n}}\n\
+         Move-Item $tmp $dest -Force\n",
+        dest = dest.replace('\'', "''"),
+        src = src.replace('\'', "''"),
+        parent = parent.replace('\'', "''"),
+    );
+
+    // Write the script to a temp .ps1 file so we don't have to deal with
+    // quoting a multi-statement command in lpParameters.
+    let script_path = std::env::temp_dir().join("spool_streaming_write.ps1");
+    std::fs::write(&script_path, script.as_bytes())
+        .map_err(|e| AppError::Other(format!("failed to write elevation script: {e}")))?;
+
+    let params = format!(
+        "-NoProfile -ExecutionPolicy Bypass -File \"{}\"",
+        script_path.to_string_lossy()
+    );
+
+    // Pre-compute wide strings before entering spawn_blocking.
+    let verb_w: Vec<u16> = OsStr::new("runas").encode_wide().chain(once(0)).collect();
+    let file_w: Vec<u16> =
+        OsStr::new("powershell.exe").encode_wide().chain(once(0)).collect();
+    let params_w: Vec<u16> = OsStr::new(&params).encode_wide().chain(once(0)).collect();
+
+    let code = tokio::task::spawn_blocking(move || -> std::io::Result<i32> {
+        let mut info: SHELLEXECUTEINFOW = unsafe { std::mem::zeroed() };
+        info.cbSize = std::mem::size_of::<SHELLEXECUTEINFOW>() as u32;
+        info.fMask = SEE_MASK_NOCLOSEPROCESS;
+        info.lpVerb = verb_w.as_ptr();
+        info.lpFile = file_w.as_ptr();
+        info.lpParameters = params_w.as_ptr();
+        info.nShow = SW_HIDE;
+
+        // SAFETY: every pointer field references a buffer alive for this scope.
+        if unsafe { ShellExecuteExW(&mut info) } == 0 {
+            let err = unsafe { GetLastError() };
+            if err == ERROR_CANCELLED {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "UAC prompt was cancelled",
+                ));
+            }
+            return Err(std::io::Error::from_raw_os_error(err as i32));
+        }
+
+        if info.hProcess.is_null() {
+            return Ok(0);
+        }
+
+        // SAFETY: hProcess is a valid handle owned by us until CloseHandle.
+        let exit_code = unsafe {
+            WaitForSingleObject(info.hProcess, INFINITE);
+            let mut exit_code: u32 = 0;
+            GetExitCodeProcess(info.hProcess, &mut exit_code);
+            CloseHandle(info.hProcess);
+            exit_code
+        };
+        Ok(exit_code as i32)
+    })
+    .await
+    .map_err(|e| AppError::Other(format!("elevated write join: {e}")))?
+    .map_err(|e| AppError::Other(format!("elevated write: {e}")))?;
+
+    // Clean up temp files regardless of outcome.
+    let _ = std::fs::remove_file(&tmp_src);
+    let _ = std::fs::remove_file(&script_path);
+
+    if code != 0 {
+        return Err(AppError::Other(format!(
+            "elevated write failed (PowerShell exit code {code})"
+        )));
+    }
+
+    Ok(())
+}
+
 // ── Tauri commands ──────────────────────────────────────────────────────────
 
 /// Reports whether an Apollo/Sunshine host config is present (for UI gating).
@@ -251,6 +370,21 @@ pub async fn add_to_streaming_host(
     let cmd = build_cmd(&spool_exe_str, &app_name, &exe_path);
     let mut root = read_apps(&apps_path)?;
     upsert_app(&mut root, &app_name, &cmd, image);
+
+    // On Windows, Apollo/Sunshine are typically installed under Program Files,
+    // which requires administrator access to write. If the plain write fails
+    // with PermissionDenied, retry via an elevated PowerShell call that shows
+    // a UAC prompt and moves the file into place as administrator.
+    #[cfg(windows)]
+    {
+        match write_apps(&apps_path, &root) {
+            Err(AppError::Io(ref e)) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+                write_apps_elevated(&apps_path, &root).await?;
+            }
+            other => other?,
+        }
+    }
+    #[cfg(not(windows))]
     write_apps(&apps_path, &root)?;
 
     Ok(AddToStreamingHostResult {
