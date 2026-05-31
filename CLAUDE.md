@@ -46,7 +46,7 @@ bun run test:e2e  # builds the app then runs the WebDriver suite
 # once. Windows uses msedgedriver. Specs live in tauri/e2e/specs/.
 
 # Compile the embedded C# launcher stub (only when launcher_stub.cs changes)
-# From the repo root, using the framework csc.exe shipped with Windows:
+# From tauri/src-tauri/, using the framework csc.exe shipped with Windows:
 & "C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe" `
     /target:winexe /win32icon:launcher_stub.ico `
     /out:launcher_stub.exe launcher_stub.cs
