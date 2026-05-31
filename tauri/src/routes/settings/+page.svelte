@@ -17,6 +17,7 @@
     Wifi,
   } from '@lucide/svelte';
   import { goto } from '$app/navigation';
+  import { getVersion } from '@tauri-apps/api/app';
   import { appLocalDataDir } from '@tauri-apps/api/path';
   import { open as openDialog } from '@tauri-apps/plugin-dialog';
   import { getCurrentWindow } from '@tauri-apps/api/window';
@@ -39,6 +40,7 @@
   let error = $state<string | null>(null);
   let activeGroup = $state('general');
   let peers = $state<LanPeer[]>([]);
+  let appVersion = $state<string | null>(null);
 
   let webdavPassword = $state('');
   let webdavConnecting = $state(false);
@@ -56,6 +58,7 @@
     try {
       config = await api.getConfig();
       peers = await api.listLanPeers();
+      appVersion = await getVersion();
       isLinux = (await api.appPlatform()) === 'linux';
       if (isLinux) {
         protonVersions = await api.listProtonVersions();
@@ -324,7 +327,7 @@
         <div class="flex-1"></div>
 
         <div class="flex flex-col gap-[3px] border-t border-dashed border-line-1 pt-[12px] pb-1 px-2">
-          <MonoLabel size={9}>Changes save as you go</MonoLabel>
+          <MonoLabel size={9}>{appVersion ? `v${appVersion}` : '—'}</MonoLabel>
         </div>
       </nav>
 
