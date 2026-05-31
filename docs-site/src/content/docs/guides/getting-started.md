@@ -5,8 +5,8 @@ description: Clone Spool, install dependencies, and run it in development.
 
 Spool is a [Tauri 2](https://v2.tauri.app/) desktop app: a **Rust** backend
 (`tauri/src-tauri/`) paired with a **SvelteKit 5** frontend (`tauri/src/`).
-Windows is the primary target, with a first-class Linux build (notably the
-gaming-handheld distros — Bazzite, CachyOS, SteamOS).
+Windows and Linux are both primary targets (notably the gaming-handheld
+distros — Bazzite, CachyOS, SteamOS).
 
 ## Prerequisites
 
