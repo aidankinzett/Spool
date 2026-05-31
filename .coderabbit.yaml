@@ -1,4 +1,3 @@
-version: 1
 reviews:
   auto_review:
     enabled: false
