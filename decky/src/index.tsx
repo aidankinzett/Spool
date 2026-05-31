@@ -15,9 +15,20 @@ import {
   TextField,
   ToggleField,
   staticClasses,
+  afterPatch,
+  findInReactTree,
+  appDetailsClasses,
+  createReactTreePatcher,
+  ReactRouter,
 } from "@decky/ui";
-import { useEffect, useState, createElement, type ReactNode } from "react";
+import { useEffect, useRef, useState, createElement, type ReactElement } from "react";
 import { FaFloppyDisk } from "react-icons/fa6";
+
+// Extracts params from Steam's internal React Router (memory-based, not
+// window.location). Same pattern as OMGDuke/protondb-decky.
+const useParams = Object.values(ReactRouter).find((val) =>
+  /return (\w)\?\1\.params:{}/.test(`${val}`)
+) as <T>() => T;
 
 // Full-screen library route registered via routerHook. The QAM "Browse
 // Library" button navigates here.
@@ -327,6 +338,20 @@ interface PeerGame {
   game_name: string;
 }
 
+// Mirror of the Rust `DownloadProgress` (lan/install.rs).
+interface DownloadProgress {
+  install_token: string;
+  source_device_name: string;
+  game_name: string;
+  bytes_done: number;
+  bytes_total: number;
+  current_file: string;
+  status: "starting" | "transferring" | "done" | "error" | "canceled";
+  message?: string;
+  new_game_id?: string;
+  bytes_per_second: number;
+}
+
 // Resolve the headless server base URL once. The whole full-screen UI talks
 // to the server over loopback HTTP directly (not the Decky callable bridge):
 // `http://127.0.0.1` is a secure origin, so `<img>` covers aren't blocked as
@@ -532,7 +557,17 @@ function LanView({ base }: { base: string }) {
   );
 }
 
-// A selected peer's shared games, fetched through the server-side proxy.
+// Formats bytes to a human-readable string (e.g. "1.2 GB", "450 MB").
+function fmtBytes(n: number): string {
+  if (n >= 1_073_741_824) return `${(n / 1_073_741_824).toFixed(1)} GB`;
+  if (n >= 1_048_576) return `${(n / 1_048_576).toFixed(0)} MB`;
+  if (n >= 1_024) return `${(n / 1_024).toFixed(0)} KB`;
+  return `${n} B`;
+}
+
+// A selected peer’s shared games, fetched through the server-side proxy.
+// Activating a tile kicks off a download; a progress row appears above the
+// grid while the install is in flight.
 function PeerGames({
   base,
   peer,
@@ -544,8 +579,11 @@ function PeerGames({
 }) {
   const [games, setGames] = useState<PeerGame[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [download, setDownload] = useState<DownloadProgress | null>(null);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const peerBase = `${base}/lan/peers/${peer.addr}/${peer.file_server_port}`;
 
+  // Fetch the game list once on mount.
   useEffect(() => {
     let cancelled = false;
     void (async () => {
@@ -563,6 +601,87 @@ function PeerGames({
     };
   }, [peerBase]);
 
+  // On mount, pick up any in-flight download (e.g. navigated away and back).
+  useEffect(() => {
+    void fetch(`${base}/lan/download`)
+      .then((r) => r.json() as Promise<DownloadProgress | null>)
+      .then((p) => {
+        if (p && p.status !== "done" && p.status !== "error" && p.status !== "canceled") {
+          setDownload(p);
+          startPolling();
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      if (pollRef.current) {
+        clearInterval(pollRef.current);
+        pollRef.current = null;
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  function startPolling() {
+    if (pollRef.current) return;
+    pollRef.current = setInterval(() => {
+      void fetch(`${base}/lan/download`)
+        .then((r) => r.json() as Promise<DownloadProgress | null>)
+        .then((p) => {
+          setDownload(p);
+          if (!p || p.status === "done" || p.status === "error" || p.status === "canceled") {
+            if (pollRef.current) clearInterval(pollRef.current);
+            pollRef.current = null;
+            if (p?.status === "done") {
+              toaster.toast({ title: "Install complete", body: p.game_name });
+            } else if (p?.status === "error") {
+              toaster.toast({ title: "Install failed", body: p.message ?? p.game_name });
+            }
+            // Clear the terminal state row after 3 s.
+            setTimeout(() => setDownload(null), 3000);
+          }
+        })
+        .catch(() => undefined);
+    }, 500);
+  }
+
+  async function startDownload(gameId: string) {
+    if (download && (download.status === "starting" || download.status === "transferring")) {
+      return; // already in flight
+    }
+    try {
+      const res = await fetch(`${base}/lan/install`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          peer_addr: peer.addr,
+          peer_port: peer.file_server_port,
+          game_id: gameId,
+        }),
+      });
+      if (!res.ok) throw new Error("Server error");
+      startPolling();
+    } catch {
+      toaster.toast({ title: "Install failed", body: "Couldn’t start download." });
+    }
+  }
+
+  async function cancelDownload() {
+    if (!download) return;
+    await fetch(`${base}/lan/download`, {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ install_token: download.install_token }),
+    }).catch(() => undefined);
+  }
+
+  const isActive =
+    download !== null &&
+    (download.status === "starting" || download.status === "transferring");
+  const pct =
+    download && download.bytes_total > 0
+      ? Math.round((download.bytes_done / download.bytes_total) * 100)
+      : 0;
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
       <Focusable>
@@ -572,6 +691,79 @@ function PeerGames({
       </Focusable>
       <h2 style={{ margin: 0 }}>{peer.device_name || peer.addr}</h2>
 
+      {/* Download progress row */}
+      {download !== null && (
+        <div
+          style={{
+            background: "#1a2330",
+            borderRadius: "8px",
+            padding: "0.75rem 1rem",
+            display: "flex",
+            flexDirection: "column",
+            gap: "0.5rem",
+          }}
+        >
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+            }}
+          >
+            <span style={{ fontWeight: 600 }}>
+              {download.game_name || "Fetching manifest…"}
+            </span>
+            {isActive && (
+              <Focusable>
+                <ButtonItem layout="below" onClick={() => void cancelDownload()}>
+                  Cancel
+                </ButtonItem>
+              </Focusable>
+            )}
+            {download.status === "done" && (
+              <span style={{ color: "#4caf50" }}>Installed</span>
+            )}
+            {download.status === "canceled" && (
+              <span style={{ opacity: 0.7 }}>Cancelled</span>
+            )}
+            {download.status === "error" && (
+              <span style={{ color: "#f44336" }}>Failed</span>
+            )}
+          </div>
+
+          {download.status === "error" && download.message && (
+            <div style={{ fontSize: "0.8rem", opacity: 0.8 }}>{download.message}</div>
+          )}
+
+          {(download.status === "starting" || download.status === "transferring") && (
+            <>
+              <div
+                style={{
+                  height: "4px",
+                  borderRadius: "2px",
+                  background: "#2a3a52",
+                  overflow: "hidden",
+                }}
+              >
+                <div
+                  style={{
+                    height: "100%",
+                    width: `${pct}%`,
+                    background: "#4a90d9",
+                    transition: "width 0.3s",
+                  }}
+                />
+              </div>
+              <div style={{ fontSize: "0.8rem", opacity: 0.7 }}>
+                {download.bytes_total > 0
+                  ? `${fmtBytes(download.bytes_done)} / ${fmtBytes(download.bytes_total)}  (${fmtBytes(Math.round(download.bytes_per_second))}/s)`
+                  : download.current_file || "Starting…"}
+              </div>
+            </>
+          )}
+        </div>
+      )}
+
       {error && <div style={{ opacity: 0.8 }}>{error}</div>}
       {!error && !games && <div style={{ opacity: 0.7 }}>Loading…</div>}
       {games && games.length === 0 && (
@@ -579,6 +771,7 @@ function PeerGames({
       )}
       {games && games.length > 0 && (
         <CoverGrid
+          onActivate={(id) => void startDownload(id)}
           tiles={games.map((g) => ({
             key: g.id,
             name: g.game_name,
@@ -740,23 +933,19 @@ function Content() {
   );
 }
 
-// Wrapper rendered by the route patch. Reads the appid from the URL, fetches
-// the server base URL, and prepends the Spool playtime badge above the page
-// content. Mounting inside the patched tree means the badge appears on every
-// visit to /library/app/:appid without needing to find a specific child node.
-function PlaytimePatchWrapper({ children }: { children?: ReactNode }) {
+// Badge wrapper injected into the game detail page's InnerContainer via
+// afterPatch. Uses useParams to read appid from Steam's internal router —
+// window.location.pathname is always '/index.html' in Steam's CEF context.
+function PlaytimePatchWrapper() {
   const { base } = useServerBase();
-  const appid = parseInt(
-    window.location.pathname.split("/").filter(Boolean).pop() ?? "0",
-    10,
-  );
+  const { appid: appidStr } = useParams<{ appid: string }>();
+  const appid = parseInt(appidStr ?? "0", 10);
+
+  if (!appid) return null;
 
   return (
-    <div style={{ display: "contents" }}>
-      <div style={{ padding: "1rem 1rem 0" }}>
-        <SpoolPlaytimeBadge appid={appid} base={base} />
-      </div>
-      {children}
+    <div style={{ padding: "0.5rem 0" }}>
+      <SpoolPlaytimeBadge appid={appid} base={base} />
     </div>
   );
 }
@@ -768,23 +957,39 @@ export default definePlugin(() => {
   routerHook.addRoute(SPOOL_ROUTE, SpoolPage);
 
   // Patch the Steam game-detail page to inject Spool's cross-device playtime
-  // badge above the page content when Spool has a matching game.
-  // The patch wraps the page's children in a fragment that prepends our badge.
-  // `display: contents` on the outer div keeps the layout unaffected.
-  //
-  // NOTE: the exact shape of `props` varies across Steam versions. If the badge
-  // doesn't appear, inspect the React tree on /library/app/:appid via Chrome
-  // DevTools (enable with STEAM_CEF_DEVTOOLS_PORT=8080) to find the right node.
+  // badge. Uses afterPatch + findInReactTree to splice into the InnerContainer
+  // of the rendered tree — same approach as OMGDuke/protondb-decky. Wrapping
+  // props.children doesn't work because the game detail component ignores it.
   const playtimePatch = routerHook.addPatch(
     "/library/app/:appid",
-    (props: any) => {
-      const original = props.children;
-      props.children = createElement(
-        PlaytimePatchWrapper,
-        null,
-        ...(Array.isArray(original) ? original : [original]),
-      );
-      return props;
+    (tree: any) => {
+      const routeProps = findInReactTree(tree, (x: any) => x?.renderFunc);
+      if (routeProps) {
+        const patchHandler = createReactTreePatcher(
+          [
+            (t: any) =>
+              findInReactTree(t, (x: any) => x?.props?.children?.props?.overview)
+                ?.props?.children,
+          ],
+          (_: Array<Record<string, unknown>>, ret?: ReactElement) => {
+            const container = findInReactTree(
+              ret,
+              (x: any) =>
+                Array.isArray(x?.props?.children) &&
+                x?.props?.className?.includes(appDetailsClasses.InnerContainer),
+            );
+            if (typeof container !== "object") return ret;
+            container.props.children.splice(
+              1,
+              0,
+              createElement(PlaytimePatchWrapper, null),
+            );
+            return ret;
+          },
+        );
+        afterPatch(routeProps, "renderFunc", patchHandler);
+      }
+      return tree;
     },
   );
 
