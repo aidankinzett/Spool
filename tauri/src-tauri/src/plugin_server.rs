@@ -82,6 +82,10 @@ pub async fn serve() -> AppResult<()> {
         .route("/session/game-stopped", post(post_game_stopped))
         .route("/session/backup-now", post(post_backup_now))
         .route("/library", get(get_library))
+        // Steam-shortcut launch info: the UI uses this to create a non-Steam
+        // shortcut live (via SteamClient.Apps) and launch it, reusing the
+        // exact exe/launch-options the desktop "Add to Steam" would write.
+        .route("/games/:id/steam-launch-info", get(get_steam_launch_info))
         // LAN browsing: list discovered peers, and proxy a peer's game list /
         // covers server-side (the UI can't reach a peer's non-loopback http
         // directly — mixed content). See `lan/server.rs` for the peer API.
@@ -211,6 +215,34 @@ async fn post_backup_now(AxState(state): AxState<PluginState>) -> Json<Value> {
 async fn get_library() -> Json<Value> {
     let library = Library::load().unwrap_or_default();
     Json(serde_json::to_value(&library.entries).unwrap_or(json!([])))
+}
+
+/// Fields the UI needs to create a non-Steam shortcut (live, via
+/// `SteamClient.Apps.AddShortcut`) and launch it. Mirrors what the desktop
+/// `steam::add_to_steam` writes: the shortcut's exe is the stable Spool
+/// binary (`spool_executable`, the `$APPIMAGE` path so it survives restarts)
+/// and its launch options are `--run "<name>" "<game exe>"`, which the
+/// Game-Mode attached `--run` flow consumes. The UI owns the actual shortcut
+/// creation so it can use the live API (no Steam restart) and the appid Steam
+/// returns.
+async fn get_steam_launch_info(
+    AxPath(id): AxPath<String>,
+) -> Result<Json<Value>, StatusCode> {
+    let library = Library::load().unwrap_or_default();
+    let entry = library.find(&id).ok_or(StatusCode::NOT_FOUND)?;
+
+    let spool_exe = crate::paths::spool_executable().ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+    let start_dir = spool_exe
+        .parent()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|| ".".to_string());
+
+    Ok(Json(json!({
+        "appName": entry.game_name,
+        "exe": spool_exe.to_string_lossy(),
+        "startDir": start_dir,
+        "launchOptions": crate::steam::build_launch_options(&entry.game_name, &entry.exe_path),
+    })))
 }
 
 // ── LAN browsing ───────────────────────────────────────────────────────────
