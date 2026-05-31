@@ -16,7 +16,7 @@ import {
   ToggleField,
   staticClasses,
 } from "@decky/ui";
-import { useEffect, useState } from "react";
+import { useEffect, useState, createElement, type ReactNode } from "react";
 import { FaFloppyDisk } from "react-icons/fa6";
 
 // Full-screen library route registered via routerHook. The QAM "Browse
@@ -64,6 +64,8 @@ interface LibraryGame {
   game_name: string;
   cover_image_path: string | null;
   accent_color: string | null;
+  steam_id: number | null;
+  playtime_minutes: number;
 }
 
 // Shortcut fields from the backend (mirrors what desktop "Add to Steam" writes).
@@ -141,6 +143,101 @@ function rememberAppid(gameId: string, appid: number) {
   const map = loadAppidMap();
   map[gameId] = appid;
   localStorage.setItem(APPID_MAP_KEY, JSON.stringify(map));
+}
+
+// Reverse of loadAppidMap: maps steam_appid (non-Steam shortcut CRC id) -> spool game_id.
+function buildInverseAppidMap(): Record<number, string> {
+  const map = loadAppidMap();
+  return Object.fromEntries(
+    Object.entries(map).map(([gameId, appid]) => [appid, gameId])
+  );
+}
+
+function formatPlaytime(minutes: number): string {
+  if (minutes < 60) return `${minutes}m`;
+  const h = Math.floor(minutes / 60);
+  const m = minutes % 60;
+  return m > 0 ? `${h}h ${m}m` : `${h}h`;
+}
+
+// Returns the Spool game matching a Steam appid, or null if not found.
+// Checks two sources:
+//   1. game.steam_id matches — native Steam game Spool also tracks
+//   2. localStorage inverse map — non-Steam shortcut created via Spool
+function findSpoolGame(games: LibraryGame[], appid: number): LibraryGame | null {
+  const direct = games.find((g) => g.steam_id != null && g.steam_id === appid);
+  if (direct) return direct;
+  const inverseMap = buildInverseAppidMap();
+  const gameId = inverseMap[appid];
+  if (gameId) return games.find((g) => g.id === gameId) ?? null;
+  return null;
+}
+
+// Hook: fetch the library once and return the Spool playtime for the given Steam appid.
+function useSpoolPlaytime(
+  appid: number,
+  base: string | null,
+): { game: LibraryGame | null; loading: boolean } {
+  const [game, setGame] = useState<LibraryGame | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (!base || !appid) {
+      setLoading(false);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await fetch(`${base}/library`);
+        if (!res.ok) throw new Error("bad status");
+        const data = (await res.json()) as LibraryGame[];
+        if (!cancelled) {
+          setGame(findSpoolGame(data, appid));
+          setLoading(false);
+        }
+      } catch {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [appid, base]);
+
+  return { game, loading };
+}
+
+// Badge injected on the Steam /library/app/:appid page when Spool has a match.
+function SpoolPlaytimeBadge({
+  appid,
+  base,
+}: {
+  appid: number;
+  base: string | null;
+}) {
+  const { game, loading } = useSpoolPlaytime(appid, base);
+
+  if (loading || !game || game.playtime_minutes <= 0) return null;
+
+  return (
+    <div
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: "0.4rem",
+        padding: "0.3rem 0.75rem",
+        borderRadius: "4px",
+        background: "rgba(255,255,255,0.08)",
+        fontSize: "0.8rem",
+        fontWeight: 600,
+        marginBottom: "0.5rem",
+      }}
+    >
+      <span style={{ opacity: 0.6 }}>💾</span>
+      Spool: {formatPlaytime(game.playtime_minutes)} played (cross-device)
+    </div>
+  );
 }
 
 // Best-effort: does Steam still know this appid? (The user may have removed the
@@ -643,11 +740,53 @@ function Content() {
   );
 }
 
+// Wrapper rendered by the route patch. Reads the appid from the URL, fetches
+// the server base URL, and prepends the Spool playtime badge above the page
+// content. Mounting inside the patched tree means the badge appears on every
+// visit to /library/app/:appid without needing to find a specific child node.
+function PlaytimePatchWrapper({ children }: { children?: ReactNode }) {
+  const { base } = useServerBase();
+  const appid = parseInt(
+    window.location.pathname.split("/").filter(Boolean).pop() ?? "0",
+    10,
+  );
+
+  return (
+    <div style={{ display: "contents" }}>
+      <div style={{ padding: "1rem 1rem 0" }}>
+        <SpoolPlaytimeBadge appid={appid} base={base} />
+      </div>
+      {children}
+    </div>
+  );
+}
+
 export default definePlugin(() => {
   // Register the full-screen route (Library | LAN). The QAM "Browse Library"
   // button navigates to it; we remove it on dismount to avoid duplicate
   // patches across hot-reloads.
   routerHook.addRoute(SPOOL_ROUTE, SpoolPage);
+
+  // Patch the Steam game-detail page to inject Spool's cross-device playtime
+  // badge above the page content when Spool has a matching game.
+  // The patch wraps the page's children in a fragment that prepends our badge.
+  // `display: contents` on the outer div keeps the layout unaffected.
+  //
+  // NOTE: the exact shape of `props` varies across Steam versions. If the badge
+  // doesn't appear, inspect the React tree on /library/app/:appid via Chrome
+  // DevTools (enable with STEAM_CEF_DEVTOOLS_PORT=8080) to find the right node.
+  const playtimePatch = routerHook.addPatch(
+    "/library/app/:appid",
+    (props: any) => {
+      const original = props.children;
+      props.children = createElement(
+        PlaytimePatchWrapper,
+        null,
+        ...(Array.isArray(original) ? original : [original]),
+      );
+      return props;
+    },
+  );
 
   // Register the game-stop listener ONCE at plugin load (not inside the panel,
   // which unmounts when the QAM closes). On a stop, let the backend decide
@@ -682,6 +821,7 @@ export default definePlugin(() => {
       sub.unregister();
       removeEventListener("spool_backup_finished", onBackupFinished);
       routerHook.removeRoute(SPOOL_ROUTE);
+      routerHook.removePatch("/library/app/:appid", playtimePatch);
     },
   };
 });
