@@ -50,6 +50,7 @@ mod session;
 mod size_backfill;
 mod steam;
 mod steamgriddb;
+mod streaming_host;
 mod sync;
 mod suspend;
 mod system_open;
@@ -180,14 +181,16 @@ pub fn run() {
         Config::default()
     });
 
-    // Decide whether this is an attached Game-Mode launch: `spool --run`
-    // inside a SteamOS gamescope session. If so, we skip the tray,
-    // single-instance plugin, and background pollers, run the game, then
-    // exit — so Steam sees the game stop when Spool does.
+    // Decide whether this is an attached launch: `spool --run` inside a SteamOS
+    // gamescope session, OR a `--run … --attached` shortcut (Apollo/Sunshine
+    // streaming host). If so, we skip the tray, single-instance plugin, and
+    // background pollers, run the game, then exit — so the host sees the game
+    // stop when Spool does.
     let cli_mode = cli::parse_args(&initial_args);
-    let attached = matches!(cli_mode, CliMode::Run { .. }) && gamemode::is_steam_game_mode();
+    let attached = matches!(cli_mode, CliMode::Run { attached: true, .. })
+        || (matches!(cli_mode, CliMode::Run { .. }) && gamemode::is_steam_game_mode());
     if attached {
-        tracing::info!("attached launch mode (SteamOS Game Mode) — no tray, exit on game close");
+        tracing::info!("attached launch mode — no tray, exit on game close");
     }
 
     let mut builder = tauri::Builder::default()
@@ -289,6 +292,9 @@ pub fn run() {
             // steam shortcut
             steam::add_spool_to_steam,
             steam::add_to_steam,
+            // apollo / sunshine streaming host
+            streaming_host::detect_streaming_host,
+            streaming_host::add_to_streaming_host,
             // armoury crate launcher
             launcher::generate_armoury_launcher,
             // registry compat-flag probe

@@ -10,6 +10,12 @@
 //! Format:
 //!   spool                              → normal library launch
 //!   spool --run "Game Name" "ExePath"  → launch this game's workflow
+//!   spool --run "Game Name" "ExePath" --attached
+//!                                      → as above, but force attached-launch
+//!                                        (fullscreen splash + exit on close),
+//!                                        used by Apollo/Sunshine streaming-host
+//!                                        shortcuts so the stream sees the same
+//!                                        flow as SteamOS Game Mode
 //!   spool --backup "Game Name"         → headless one-shot backup, then exit
 //!   spool --release-lock "Game Name"   → headless one-shot lock release, then exit
 //!   spool --headless-server            → start the plugin Unix socket server, run forever
@@ -21,8 +27,14 @@
 pub enum CliMode {
     /// Open / focus the library window.
     Normal,
-    /// Find a game by name and run its launch workflow.
-    Run { game_name: String, exe_path: String },
+    /// Find a game by name and run its launch workflow. `attached` is set by a
+    /// trailing `--attached` flag (Apollo/Sunshine shortcuts) to force the
+    /// fullscreen-splash, exit-on-close behavior regardless of gamescope.
+    Run {
+        game_name: String,
+        exe_path: String,
+        attached: bool,
+    },
     /// Headless one-shot: back up a single game's saves, then exit. Used by
     /// the Decky plugin's forced-close fallback. No GUI, no tray.
     ///
@@ -50,6 +62,7 @@ pub fn parse_args<S: AsRef<str>>(args: &[S]) -> CliMode {
         return CliMode::Run {
             game_name: rest[1].to_string(),
             exe_path: rest[2].to_string(),
+            attached: rest[3..].contains(&"--attached"),
         };
     }
     if rest.len() >= 2 && rest[0] == "--backup" {
@@ -86,6 +99,26 @@ mod tests {
             CliMode::Run {
                 game_name: "Hades".to_string(),
                 exe_path: "C:/Games/Hades/Hades.exe".to_string(),
+                attached: false,
+            }
+        );
+    }
+
+    #[test]
+    fn run_with_attached_flag_sets_attached() {
+        let argv = [
+            "spool.exe",
+            "--run",
+            "Hades",
+            "C:/Games/Hades/Hades.exe",
+            "--attached",
+        ];
+        assert_eq!(
+            parse_args(&argv),
+            CliMode::Run {
+                game_name: "Hades".to_string(),
+                exe_path: "C:/Games/Hades/Hades.exe".to_string(),
+                attached: true,
             }
         );
     }
