@@ -396,7 +396,8 @@
           {/if}
         {:else}
           <p class="m-0 text-[12.5px] text-ink-3">
-            No description on file. Spool will populate this when metadata fetching ships.
+            No description on file. Spool fills this in from the Steam store when a game is
+            identified.
           </p>
         {/if}
       </DetailCard>
