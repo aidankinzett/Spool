@@ -58,6 +58,8 @@ struct Candidate {
 /// Sunshine is preferred over Apollo when both exist (most installs are
 /// Sunshine, and Apollo reads the same schema).
 fn candidates() -> Vec<Candidate> {
+    // `mut` is needed on Windows and Linux where the cfg blocks push items.
+    #[allow(unused_mut)]
     let mut out = Vec::new();
 
     #[cfg(windows)]

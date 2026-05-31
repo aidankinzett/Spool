@@ -18,7 +18,7 @@
 
 use base64::Engine as _;
 use crate::error::{AppError, AppResult};
-use crate::lan::LanState;
+use crate::lan::{install::LanDownloadState, LanState};
 use crate::library::Library;
 use crate::ludusavi::LudusaviClient;
 use axum::{
@@ -26,7 +26,7 @@ use axum::{
     extract::{Path as AxPath, State as AxState},
     http::{header, StatusCode},
     response::{Json, Response},
-    routing::{get, post},
+    routing::{delete, get, post},
     Router,
 };
 use serde::Deserialize;
@@ -51,6 +51,9 @@ struct PluginState {
     lan: Arc<LanState>,
     /// Shared HTTP client for proxying requests to peer file servers.
     http: reqwest::Client,
+    /// Single-slot in-flight LAN install state. The Decky UI polls
+    /// `GET /lan/download` instead of receiving Tauri events.
+    download: Arc<LanDownloadState>,
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
@@ -62,6 +65,7 @@ pub async fn serve() -> AppResult<()> {
         ludusavi: Arc::new(LudusaviClient::new()),
         lan: Arc::new(LanState::new()),
         http: reqwest::Client::new(),
+        download: Arc::new(LanDownloadState::default()),
     };
 
     // Spawn the LAN discovery listener so `/lan/peers` has data. The Deck is a
@@ -99,6 +103,12 @@ pub async fn serve() -> AppResult<()> {
             "/lan/peers/:addr/:port/games/:id/cover",
             get(get_lan_peer_cover),
         )
+        // LAN download: start an install, poll progress, and cancel.
+        // The Decky UI polls GET /lan/download instead of subscribing to
+        // Tauri events (which don't exist in the headless server).
+        .route("/lan/install", post(post_lan_install))
+        .route("/lan/download", get(get_lan_download))
+        .route("/lan/download", delete(delete_lan_download))
         // Static cover art straight off disk — no per-cover handler. The UI
         // `<img>`-loads `/covers/<safe_name>.<ext>`.
         .nest_service("/covers", ServeDir::new(crate::paths::covers_dir()))
@@ -397,6 +407,89 @@ async fn get_lan_peer_cover(
     Ok(response)
 }
 
+// ── LAN download ──────────────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct LanInstallRequest {
+    peer_addr: String,
+    peer_port: u16,
+    game_id: String,
+}
+
+/// Start a LAN install. The Decky UI posts here when the user taps a game
+/// tile; the heavy work runs in a spawned task. Returns the install_token
+/// so the UI can correlate subsequent GET /lan/download polls.
+async fn post_lan_install(
+    AxState(state): AxState<PluginState>,
+    Json(body): Json<LanInstallRequest>,
+) -> Result<Json<Value>, StatusCode> {
+    let config = crate::config::Config::load()
+        .map(|c| c.data)
+        .unwrap_or_default();
+
+    let install_root = {
+        let dir = &config.lan_install_dir;
+        if dir.is_empty() {
+            crate::paths::app_data_dir().join("lan-games")
+        } else {
+            std::path::PathBuf::from(dir)
+        }
+    };
+    let max_bps = config.lan_download_max_mbps * 1_000_000.0 / 8.0;
+
+    // Load the library fresh for this install; the install task writes back
+    // via its own Arc<Mutex<Library>> clone and saves atomically.
+    let library: crate::library::SharedLibrary =
+        Arc::new(Mutex::new(Library::load().unwrap_or_default()));
+
+    let token = crate::lan::install::begin_install(
+        body.peer_addr,
+        body.peer_port,
+        body.game_id,
+        state.http.clone(),
+        state.download.clone(),
+        // No-op: the Decky UI polls GET /lan/download instead of events.
+        Arc::new(|_| {}),
+        max_bps,
+        install_root,
+        library,
+        // No library:changed Tauri event in the headless server.
+        Arc::new(|_| {}),
+        None,
+    )
+    .await
+    .map_err(|e| {
+        tracing::warn!(error = %e, "post_lan_install: begin_install failed");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    Ok(Json(json!({ "install_token": token })))
+}
+
+/// Current download progress snapshot. Returns `null` when no install is
+/// in flight. The Decky UI polls this at ~500 ms while a download is active.
+async fn get_lan_download(AxState(state): AxState<PluginState>) -> Json<Value> {
+    match state.download.snapshot() {
+        Some(p) => Json(serde_json::to_value(&p).unwrap_or(Value::Null)),
+        None => Json(Value::Null),
+    }
+}
+
+#[derive(Deserialize)]
+struct LanCancelRequest {
+    install_token: String,
+}
+
+/// Cancel an in-flight install by token. Returns `{ cancelled: true }` if
+/// the token matched an active install, `{ cancelled: false }` otherwise.
+async fn delete_lan_download(
+    AxState(state): AxState<PluginState>,
+    Json(body): Json<LanCancelRequest>,
+) -> Json<Value> {
+    let cancelled = state.download.request_cancel(&body.install_token);
+    Json(json!({ "cancelled": cancelled }))
+}
+
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
 async fn run_backup(state: &PluginState, game_name: &str, session_id: &str) -> Json<Value> {
@@ -414,7 +507,7 @@ async fn run_backup(state: &PluginState, game_name: &str, session_id: &str) -> J
     let config_dir = crate::paths::ludusavi_config_dir();
 
     let library = Library::load().unwrap_or_default();
-    let library = Mutex::new(library);
+    let library = Arc::new(Mutex::new(library));
 
     let game_id = library
         .lock()

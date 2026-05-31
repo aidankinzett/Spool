@@ -62,7 +62,7 @@ use sync::SyncStatusState;
 use library::{Library, SharedLibrary};
 use ludusavi::LudusaviClient;
 use runner::RunState;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use steamgriddb::SteamGridDbClient;
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem},
@@ -239,7 +239,7 @@ pub fn run() {
         }));
     }
     let app = builder
-        .manage::<SharedLibrary>(Mutex::new(library))
+        .manage::<SharedLibrary>(Arc::new(Mutex::new(library)))
         .manage::<SharedConfig>(Mutex::new(config))
         .manage::<LudusaviClient>(LudusaviClient::new())
         .manage::<SteamGridDbClient>(SteamGridDbClient::new())
@@ -259,7 +259,7 @@ pub fn run() {
                 .build()
                 .expect("reqwest client build"),
         )
-        .manage::<LanDownloadState>(LanDownloadState::default())
+        .manage::<Arc<LanDownloadState>>(Arc::new(LanDownloadState::default()))
         .manage::<LanUploadsState>(LanUploadsState::default())
         .manage::<LanServerShutdown>(LanServerShutdown::default())
         .manage::<SyncStatusState>(SyncStatusState::default())
@@ -577,7 +577,7 @@ fn run_backup_headless(game_name: &str) -> i32 {
     }
 
     let config_dir = paths::ludusavi_config_dir();
-    let lib_state: SharedLibrary = Mutex::new(library);
+    let lib_state: SharedLibrary = Arc::new(Mutex::new(library));
     let client = LudusaviClient::new();
 
     let rt = match tokio::runtime::Runtime::new() {
