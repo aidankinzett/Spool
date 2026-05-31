@@ -22,7 +22,7 @@ use crate::library::SharedLibrary;
 use crate::ludusavi::LudusaviClient;
 use crate::ludusavi_config;
 use crate::redirects;
-use crate::sync::{self, AcquireOutcome};
+use crate::rclone::{self, MarkerClass};
 use crate::{process, paths, registry};
 use chrono::Utc;
 use serde::Serialize;
@@ -301,9 +301,9 @@ pub async fn manual_backup(app: AppHandle, game_id: String) -> AppResult<ManualB
             let lib = library.lock().map_err(|_| AppError::LockPoisoned)?;
             lib.find(&game_id).map(|e| e.game_name.clone())
         };
-        if let Some(name) = game_name {
-            // Record on the sync server so peers see the new event.
-            sync::record_backup_event(&app, &name).await;
+        if let Some(_name) = game_name {
+            // Backup event is recorded in run_workflow's post-backup block
+            // when cloud upload succeeds. Manual backups are local-only.
         }
     }
     Ok(result)
@@ -410,11 +410,8 @@ pub async fn manual_restore(app: AppHandle, game_id: String) -> AppResult<Manual
         .map(|o| o.total_games)
         .unwrap_or(0);
 
-    // Record the restore on the sync server so peers know we just
-    // pulled the latest. Best-effort.
-    if game_count > 0 {
-        sync::record_restore_event(&app, &game_name).await;
-    }
+    // Restore events are no longer recorded — the rclone control plane
+    // uses session markers instead.
 
     Ok(ManualRestoreResult { game_count })
 }
@@ -506,9 +503,7 @@ pub async fn restore_save_revision(
         let _ = set_cloud_baseline(&app, &game_id, &tip.name);
     }
 
-    // Let peers know we just changed the save, and repaint the library
-    // (backup count / last-backed-up just changed).
-    sync::record_restore_event(&app, &game_name).await;
+    // Repaint the library (backup count / last-backed-up just changed).
     if let Err(e) = app.emit("library:changed", &game_id) {
         tracing::warn!(error = %e, "failed to emit library:changed after rollback");
     }
@@ -582,9 +577,7 @@ pub async fn resolve_cloud_conflict(
     }
 
     let game_count = out.overall.as_ref().map(|o| o.total_games).unwrap_or(0);
-    if game_count > 0 {
-        sync::record_restore_event(&app, &game_name).await;
-    }
+    // Restore events are no longer sent to a sync server.
 
     // The user just reconciled a real divergence: both sides now mirror the
     // chosen copy. Record the resulting tip as the baseline so the very next
@@ -784,7 +777,7 @@ async fn get_local_active_save_details(
 fn resolve_rclone_remote() -> Option<(PathBuf, String, String)> {
     let raw = std::fs::read_to_string(crate::paths::ludusavi_config_file()).ok()?;
     let config: serde_yaml::Value = serde_yaml::from_str(&raw).ok()?;
-    let remote_name = get_rclone_remote_name(&config)?;
+    let remote_name = rclone::get_rclone_remote_name_from_yaml(&config)?;
     let remote_path = config
         .get("cloud")
         .and_then(|c| c.get("path"))
@@ -798,35 +791,8 @@ fn resolve_rclone_remote() -> Option<(PathBuf, String, String)> {
 /// `rclone cat <target>` and parse the streamed `mapping.yaml` into its tip.
 /// `None` on any failure (missing file, network error, parse error).
 async fn rclone_cat_tip(rclone_exe: &Path, target: &str) -> Option<redirects::BackupTip> {
-    let mut cmd = tokio::process::Command::new(rclone_exe);
-    cmd.arg("cat").arg(target);
-    cmd.stdin(std::process::Stdio::null());
-    cmd.stdout(std::process::Stdio::piped());
-    cmd.stderr(std::process::Stdio::piped());
-    cmd.kill_on_drop(true);
-    #[cfg(windows)]
-    {
-        #[allow(unused_imports)]
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-    }
-    let child = cmd.spawn().ok()?;
-    let output = tokio::time::timeout(
-        std::time::Duration::from_secs(6),
-        child.wait_with_output(),
-    )
-    .await
-    .ok()? // timeout
-    .ok()?; // process run error
-    if !output.status.success() {
-        tracing::info!(
-            target,
-            "rclone_cat_tip: cat failed (likely no cloud mapping.yaml yet)"
-        );
-        return None;
-    }
-    let body = String::from_utf8_lossy(&output.stdout);
-    redirects::read_backup_tip_from_str(&body)
+    let raw = rclone::cat(rclone_exe, target, std::time::Duration::from_secs(6)).await?;
+    redirects::read_backup_tip_from_str(&raw)
 }
 
 /// Fetch the cloud copy of a game's `mapping.yaml` tip. Tries the exact game
@@ -921,28 +887,6 @@ fn set_cloud_baseline(app: &AppHandle, game_id: &str, tip_name: &str) -> AppResu
         }
     }
     Ok(())
-}
-
-fn get_rclone_remote_name(config: &serde_yaml::Value) -> Option<String> {
-    let cloud = config.get("cloud")?;
-    let remote = cloud.get("remote")?;
-    match remote {
-        serde_yaml::Value::String(s) => Some(s.clone()),
-        serde_yaml::Value::Mapping(m) => {
-            if let Some(custom) = m.get(serde_yaml::Value::String("Custom".into())) {
-                if let Some(id) = custom.get(serde_yaml::Value::String("id".into())) {
-                    return id.as_str().map(String::from);
-                }
-            }
-            if let Some(webdav) = m.get(serde_yaml::Value::String("WebDav".into())) {
-                if let Some(id) = webdav.get(serde_yaml::Value::String("id".into())) {
-                    return id.as_str().map(String::from);
-                }
-            }
-            None
-        }
-        _ => None,
-    }
 }
 
 async fn query_rclone_details(
@@ -1087,7 +1031,7 @@ pub async fn get_cloud_conflict_details(
     let config: serde_yaml::Value = serde_yaml::from_str(&raw)
         .map_err(|e| AppError::Other(format!("failed to parse config.yaml: {e}")))?;
         
-    let Some(remote_name) = get_rclone_remote_name(&config) else {
+    let Some(remote_name) = rclone::get_rclone_remote_name_from_yaml(&config) else {
         tracing::warn!("get_cloud_conflict_details: cloud remote is not configured in config.yaml");
         return Ok(RawConflictDetails { local, cloud: None });
     };
@@ -1586,34 +1530,43 @@ async fn run_workflow(
             .map(|o| o.total_games == 0)
             .unwrap_or(false);
 
-    // Record the restore event on the sync server (best-effort, fires
-    // only when sync is configured + reachable). The server uses these
-    // events to power the cross-device save sync status badges.
-    sync::record_restore_event(app, game_name).await;
-
-    // ── Phase 1.5: acquire play-state lock ────────────────────────────
-    // Asks the sync server to lock this game to this device so a
-    // second device can't simultaneously launch and trample the
-    // save. No-op when sync is disabled / unreachable; only blocks on
-    // a real 409 conflict.
-    match sync::acquire_lock(app, game_name, steal_lock).await {
-        AcquireOutcome::Acquired => {}
-        // A suspended holder (e.g. a Steam Deck asleep mid-session) can be
-        // overridden. Surface a distinct, machine-recognisable message so the
-        // frontend can offer the "Play here instead" override (which re-runs
-        // with `steal_lock = true`) after warning that the sleeping device's
-        // unsaved progress may be lost. The `\u{1}`-free marker phrase
-        // "suspended session" is what the frontend regexes on.
-        AcquireOutcome::Conflict { device_name, suspended: true } => {
-            return Err(AppError::Other(format!(
-                "Suspended session on {device_name}. That device is asleep mid-session — \
-                 playing here may lose its unsaved progress."
-            )));
-        }
-        AcquireOutcome::Conflict { device_name, suspended: false } => {
-            return Err(AppError::Other(format!(
-                "Already playing on {device_name}. Close it there before launching here."
-            )));
+    // ── Phase 1.5: session-marker check and write ─────────────────────
+    // Read the remote session marker (if any) and classify it. If another
+    // device is actively playing or has an unsynced session, block the
+    // launch with an appropriate error so the user can decide whether to
+    // override. No-op when cloud isn't configured.
+    let maybe_remote = rclone::resolve_remote(app);
+    let (our_device_id, our_device_name) = rclone::device_identity(app);
+    if let Some(ref remote) = maybe_remote {
+        if !our_device_id.is_empty() {
+            let existing = rclone::read_session_marker(remote, game_name).await;
+            match rclone::classify_marker(
+                existing.as_ref(),
+                &our_device_id,
+                steal_lock,
+                chrono::Utc::now(),
+            ) {
+                MarkerClass::Absent => {
+                    // No conflicting session — write our Active marker and proceed.
+                    let _ = rclone::write_active_marker(
+                        remote,
+                        game_name,
+                        &our_device_id,
+                        &our_device_name,
+                    ).await;
+                }
+                MarkerClass::ActivePlaying { device_name } => {
+                    return Err(AppError::Other(format!(
+                        "Already playing on {device_name}. Close it there before launching here."
+                    )));
+                }
+                MarkerClass::Unsynced { device_name } => {
+                    return Err(AppError::Other(format!(
+                        "Suspended session on {device_name}. That device is asleep mid-session — \
+                         playing here may lose its unsaved progress."
+                    )));
+                }
+            }
         }
     }
 
@@ -1657,11 +1610,24 @@ async fn run_workflow(
         }
     };
 
-    // Spawn the lock-heartbeat task. Pings /heartbeat every 30s so
-    // the sync server doesn't mark our lock stale during long
-    // sessions. Aborted unconditionally on exit so it doesn't
-    // outlive the game.
-    let heartbeat = sync::start_heartbeat(app.clone(), game_name.to_string());
+    // Spawn the session heartbeat task. Bumps the marker's `updated_at`
+    // every 60s so peers don't reclassify our session as stale mid-game.
+    // Aborted unconditionally when the session ends.
+    let heartbeat = if let Some(ref remote) = maybe_remote {
+        if !our_device_id.is_empty() {
+            rclone::spawn_session_heartbeat(
+                app.clone(),
+                game_name.to_string(),
+                remote.clone(),
+                our_device_id.clone(),
+                our_device_name.clone(),
+            )
+        } else {
+            rclone::spawn_noop_heartbeat()
+        }
+    } else {
+        rclone::spawn_noop_heartbeat()
+    };
 
     // On Linux, watch for system suspend (logind PrepareForSleep) for the
     // life of the session. When the device sleeps mid-session (Steam Deck
@@ -1673,13 +1639,22 @@ async fn run_workflow(
     let spawn_result = process::run_game(&exe_pathbuf, spec).await;
     let session_end = Utc::now();
 
-    // Always abort the heartbeat + suspend watcher + release the lock —
-    // even if launch failed mid-spawn. Lock release is fire-and-forget;
-    // the server stale-detection would eventually reclaim a missed release
-    // but we want the next device to be able to launch immediately.
+    // Always abort the heartbeat + suspend watcher — even if launch
+    // failed mid-spawn. Then rewrite the marker to PendingBackup so
+    // peers know saves haven't been uploaded yet.
     heartbeat.abort();
     suspend_watcher.abort();
-    sync::release_lock(app, game_name).await;
+    // Rewrite marker to PendingBackup (saves not yet uploaded).
+    if let Some(ref remote) = maybe_remote {
+        if !our_device_id.is_empty() {
+            rclone::write_pending_backup_marker(
+                remote,
+                game_name,
+                &our_device_id,
+                &our_device_name,
+            ).await;
+        }
+    }
 
     tracing::info!(
         game_name,
@@ -1704,13 +1679,20 @@ async fn run_workflow(
     }
     let _ = app.emit("library:changed", &game_id.to_string());
 
-    // Cross-device sync — push the session timestamps to the server
-    // so other devices pick them up on their next startup_sync. The
-    // timestamp is RFC 3339 / ISO 8601; the server requires the
-    // playtime delta to be a positive integer, which `push_playtime_delta`
-    // already enforces.
-    sync::push_last_played(app, game_name, &session_end.to_rfc3339()).await;
-    sync::push_playtime_delta(app, game_name, session_minutes).await;
+    // Update the device blob on the remote: playtime delta + last-played.
+    // The startup fold on the next boot will propagate this across devices.
+    if let Some(ref remote) = maybe_remote {
+        if !our_device_id.is_empty() && session_minutes > 0 {
+            rclone::update_device_blob(
+                remote,
+                game_name,
+                session_minutes,
+                &session_end.to_rfc3339(),
+                &our_device_id,
+                &our_device_name,
+            ).await;
+        }
+    }
 
     // ── Phase 3: backup (skip if ludusavi didn't recognise the game) ──
     // Tracks whether the local backup succeeded but the cloud upload
@@ -1828,9 +1810,32 @@ async fn run_workflow(
                         let _ = app.emit("library:changed", &game_id.to_string());
                     }
                 }
-                // Tell the sync server we backed up — peers can use
-                // this to know they're behind on saves. Best-effort.
-                sync::record_backup_event(app, game_name).await;
+                // After a successful cloud upload: delete the session marker
+                // (saves are on the remote → peers won't warn) and stamp the
+                // backup time in this device's blob. Best-effort.
+                if cloud_configured && !cloud_upload_failed {
+                    if let Some(ref remote) = maybe_remote {
+                        if !our_device_id.is_empty() {
+                            let backed_up_at = chrono::Utc::now().to_rfc3339();
+                            let remote_c = remote.clone();
+                            let game_n = game_name.to_string();
+                            let dev_id = our_device_id.clone();
+                            let dev_name = our_device_name.clone();
+                            let backed_at = backed_up_at.clone();
+                            // Spawn off the hot path — these are extra network calls.
+                            tauri::async_runtime::spawn(async move {
+                                rclone::delete_session_marker(&remote_c, &game_n).await;
+                                rclone::record_backup_in_blob(
+                                    &remote_c,
+                                    &game_n,
+                                    &backed_at,
+                                    &dev_id,
+                                    &dev_name,
+                                ).await;
+                            });
+                        }
+                    }
+                }
 
                 // Advance the cloud-sync baseline to the freshly-written tip,
                 // but only when the upload actually reached the cloud — otherwise
@@ -1844,10 +1849,8 @@ async fn run_workflow(
                 }
 
                 // Mark the entry as synced. After a successful backup
-                // we ARE the most recent device on the server (assuming
-                // the event recorded). If the event recording failed
-                // silently (offline), the badge will flip to
-                // local-newer on the next startup_sync.
+                // we are the most recent backer. The startup fold will
+                // keep it accurate across devices.
                 let library = app.state::<SharedLibrary>();
                 let badge_changed = if let Ok(mut lib) = library.lock() {
                     let mut changed = false;
@@ -1912,6 +1915,8 @@ mod tests {
 
     #[test]
     fn test_get_rclone_remote_name() {
+        // Moved to rclone.rs as test_get_rclone_remote_name_from_yaml.
+        // Kept here as a integration-level smoke test.
         let yaml_str = r#"
 cloud:
   remote:
@@ -1924,7 +1929,7 @@ cloud:
   synchronize: true
         "#;
         let val: serde_yaml::Value = serde_yaml::from_str(yaml_str).unwrap();
-        let remote = get_rclone_remote_name(&val);
+        let remote = rclone::get_rclone_remote_name_from_yaml(&val);
         assert_eq!(remote, Some("ludusavi-1780143898".to_string()));
     }
 

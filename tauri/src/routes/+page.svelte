@@ -106,8 +106,8 @@
   {/if}
 {/if}
 
-{#if lib.suspendedConflict}
-  {@const sc = lib.suspendedConflict}
+{#if lib.unsyncedConflict}
+  {@const sc = lib.unsyncedConflict}
   {@const suspendedGame = lib.games.find((g) => g.id === sc.gameId)}
   {#if suspendedGame}
     <SuspendedLockModal
@@ -119,7 +119,7 @@
       context={uiMode.resolved === 'touch' ? 'gamemode' : 'desktop'}
       onConfirm={async () => {
         const id = sc.gameId;
-        lib.suspendedConflict = null;
+        lib.unsyncedConflict = null;
         try {
           await api.launchGame(id, true);
         } catch (e) {
@@ -127,7 +127,7 @@
         }
       }}
       onCancel={() => {
-        lib.suspendedConflict = null;
+        lib.unsyncedConflict = null;
       }}
     />
   {/if}

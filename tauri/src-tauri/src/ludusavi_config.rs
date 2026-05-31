@@ -157,10 +157,6 @@ fn apply_cloud(
                 "ftp" => { set_path(v, &["cloud", "remote"], Value::String("Ftp".into())); }
                 "smb" => { set_path(v, &["cloud", "remote"], Value::String("Smb".into())); }
                 "webdav" => { set_path(v, &["cloud", "remote"], Value::String("WebDav".into())); }
-                "spool-server" => {
-                    // Remote was configured by `ludusavi cloud set webdav` as a
-                    // named rclone remote — leave it untouched.
-                }
                 _ => {
                     set_path(v, &["cloud", "remote"], Value::Null);
                 }

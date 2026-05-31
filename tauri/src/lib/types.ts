@@ -12,9 +12,19 @@ export type ConfigData = {
   device_id: string;
   device_name: string;
 
+  /** Kept for JSON round-trip with old configs; no longer active. */
   sync_server_enabled: boolean;
+  /** @deprecated Kept for round-trip compat; ignored by the backend. */
   sync_server_url: string;
+  /** @deprecated Kept for round-trip compat; ignored by the backend. */
   sync_server_api_key: string;
+
+  /**
+   * Top-level folder on the cloud remote. Saves go to
+   * `<cloud_base_path>/ludusavi-backup`; Spool's control-plane metadata to
+   * `<cloud_base_path>/_spool`. Default `"Spool"`.
+   */
+  cloud_base_path: string;
 
   lan_share_enabled: boolean;
   lan_share_port: number;

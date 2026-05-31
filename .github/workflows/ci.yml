@@ -10,7 +10,6 @@ on:
       - master
     paths:
       - 'tauri/**'
-      - 'server/**'
       - 'decky/**'
       - '.github/workflows/ci.yml'
   pull_request:
@@ -18,7 +17,6 @@ on:
       - master
     paths:
       - 'tauri/**'
-      - 'server/**'
       - 'decky/**'
       - '.github/workflows/ci.yml'
 
@@ -180,26 +178,6 @@ jobs:
 
       - name: Frontend tests
         working-directory: tauri
-        run: bun run test
-
-  # Sync-server unit tests. Lightweight and platform-independent, so it
-  # runs on Ubuntu in its own job rather than bloating the Windows build.
-  server:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: "1.x"
-
-      - name: Install server dependencies
-        working-directory: server
-        run: bun install --frozen-lockfile
-
-      - name: Server tests
-        working-directory: server
         run: bun run test
 
   # Backend lint + unit tests on a fast Ubuntu runner. Dev-profile clippy
