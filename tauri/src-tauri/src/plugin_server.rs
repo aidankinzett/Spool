@@ -90,10 +90,13 @@ pub async fn serve() -> AppResult<()> {
             .await
             .map_err(|e| AppError::Other(format!("plugin socket accept: {e}")))?;
         let io = TokioIo::new(stream);
-        let mut svc = router.clone();
+        // Clone once per connection so the spawn closure owns its own handle.
+        // service_fn requires Fn (not FnMut), so we clone again per request
+        // and call on the temporary — Router::call returns an owned future.
+        let router = router.clone();
         tokio::spawn(async move {
             let service = hyper::service::service_fn(move |req: hyper::Request<Incoming>| {
-                svc.call(req)
+                router.clone().call(req)
             });
             if let Err(e) = http1::Builder::new().serve_connection(io, service).await {
                 tracing::debug!(error = %e, "plugin socket connection closed");
