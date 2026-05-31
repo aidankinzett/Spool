@@ -568,12 +568,16 @@ fn run_backup_headless(game_name: &str) -> i32 {
         Ok(r) => {
             tracing::info!(game_name, games = r.game_count, "--backup complete");
             session::mark_backed_up();
-            // The saves are now in the cloud (backup_game_core cloud-syncs):
-            // clear the unsynced-session marker and record this device as the
-            // latest backer so peers stop warning. Best-effort.
-            rt.block_on(async {
-                rclone::complete_session_backup_from_config(&cfg_data, game_name).await;
-            });
+            // Only clear the unsynced-session marker when the cloud upload
+            // actually succeeded. If it failed, the marker must stay so peers
+            // keep warning until the saves genuinely reach the cloud.
+            if r.cloud_synced {
+                rt.block_on(async {
+                    rclone::complete_session_backup_from_config(&cfg_data, game_name).await;
+                });
+            } else {
+                tracing::warn!(game_name, "--backup: cloud upload failed — leaving session marker in place");
+            }
             0
         }
         Err(e) => {

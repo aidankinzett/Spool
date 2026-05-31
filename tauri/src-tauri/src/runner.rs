@@ -241,6 +241,12 @@ pub async fn backup_game_core(
         .await
         .map_err(|e| AppError::Other(format!("ludusavi backup: {e}")))?;
 
+    let cloud_synced = out
+        .errors
+        .as_ref()
+        .and_then(|e| e.cloud_sync_failed.as_ref())
+        .is_none();
+
     let (game_count, bytes_total) = out
         .overall
         .as_ref()
@@ -270,6 +276,7 @@ pub async fn backup_game_core(
     Ok(ManualBackupResult {
         game_count,
         bytes_total,
+        cloud_synced,
     })
 }
 
@@ -789,37 +796,11 @@ fn resolve_rclone_remote() -> Option<(PathBuf, String, String)> {
     Some((rclone_exe, remote_name, remote_path))
 }
 
-/// `rclone cat <target>` and parse the streamed `mapping.yaml` into its tip.
-/// `None` on any failure (missing file, network error, parse error).
+/// Fetch and parse a remote `mapping.yaml` as a backup tip.
+/// Uses `rclone::cat` (which applies FAST_FLAGS) so unreachable remotes
+/// fail quickly rather than blocking for rclone's full default timeout.
 async fn rclone_cat_tip(rclone_exe: &Path, target: &str) -> Option<redirects::BackupTip> {
-    let mut cmd = tokio::process::Command::new(rclone_exe);
-    cmd.arg("cat").arg(target);
-    cmd.stdin(std::process::Stdio::null());
-    cmd.stdout(std::process::Stdio::piped());
-    cmd.stderr(std::process::Stdio::piped());
-    cmd.kill_on_drop(true);
-    #[cfg(windows)]
-    {
-        #[allow(unused_imports)]
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-    }
-    let child = cmd.spawn().ok()?;
-    let output = tokio::time::timeout(
-        std::time::Duration::from_secs(6),
-        child.wait_with_output(),
-    )
-    .await
-    .ok()? // timeout
-    .ok()?; // process run error
-    if !output.status.success() {
-        tracing::info!(
-            target,
-            "rclone_cat_tip: cat failed (likely no cloud mapping.yaml yet)"
-        );
-        return None;
-    }
-    let body = String::from_utf8_lossy(&output.stdout);
+    let body = crate::rclone::cat(rclone_exe, target).await?;
     redirects::read_backup_tip_from_str(&body)
 }
 
@@ -925,8 +906,9 @@ async fn query_rclone_details(
 ) -> Option<RawSaveDetails> {
     let target = format!("{}:{}/{}", remote_name, remote_path, game_folder_name);
     tracing::info!("query_rclone_details: target={}", target);
-    
+
     let mut cmd = tokio::process::Command::new(rclone_exe);
+    cmd.args(crate::rclone::FAST_FLAGS);
     cmd.arg("lsjson")
         .arg("--no-mimetype")
         .arg("--recursive")
@@ -1102,6 +1084,9 @@ pub async fn get_cloud_conflict_details(
 pub struct ManualBackupResult {
     pub game_count: i32,
     pub bytes_total: u64,
+    /// False when the local backup succeeded but the cloud upload leg failed.
+    /// Callers that clear the unsynced-session marker must check this first.
+    pub cloud_synced: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -1622,9 +1607,9 @@ async fn run_workflow(
     };
 
     // Spawn the session heartbeat: rewrites our marker's `updated_at` every
-    // 60s so peers see the session as live. Aborted unconditionally on exit
-    // so it doesn't outlive the game.
-    let heartbeat = rclone::start_heartbeat(app.clone(), game_name.to_string());
+    // 60s so peers see the session as live. Pass session_start so the heartbeat
+    // preserves the real started_at on each tick. Aborted on exit.
+    let heartbeat = rclone::start_heartbeat(app.clone(), game_name.to_string(), session_start.to_rfc3339());
 
     // On Linux, watch for system suspend (logind PrepareForSleep) for the
     // life of the session. When the device sleeps mid-session (Steam Deck
@@ -1642,11 +1627,11 @@ async fn run_workflow(
     // a peer keeps warning until then.
     heartbeat.abort();
     suspend_watcher.abort();
-    // Await the heartbeat so its tokio task is dropped (triggering kill_on_drop
-    // on the rclone child) before we write PendingBackup. Without this, an
-    // in-flight Active rcat whose stdin was already closed could complete on the
-    // remote after our PendingBackup write, briefly reverting the marker.
+    // Await both tasks so their rclone children are fully dropped (kill_on_drop)
+    // before we write PendingBackup. Without this, an in-flight Active rcat
+    // could complete on the remote after our PendingBackup write, reverting it.
     let _ = heartbeat.await;
+    let _ = suspend_watcher.await;
     rclone::mark_session_pending_backup(app, game_name).await;
 
     tracing::info!(
@@ -1674,11 +1659,6 @@ async fn run_workflow(
         lib.save()?;
     }
     let _ = app.emit("library:changed", &game_id.to_string());
-
-    // Cross-device state — record this session in our per-device blob in the
-    // remote (playtime delta + last-played). Other devices fold it in on their
-    // next startup. Best-effort; no-op when cloud isn't configured.
-    rclone::record_session(app, game_name, session_minutes, &session_end.to_rfc3339()).await;
 
     // ── Phase 3: backup (skip if ludusavi didn't recognise the game) ──
     // Tracks whether the local backup succeeded but the cloud upload
@@ -1796,13 +1776,17 @@ async fn run_workflow(
                         let _ = app.emit("library:changed", &game_id.to_string());
                     }
                 }
-                // Saves are now in the cloud (unless the upload failed): clear
-                // the unsynced-session marker and record this device as the
-                // latest backer for the badge. When the cloud upload failed we
-                // deliberately leave the `pending-backup` marker in place so
-                // peers keep warning until the saves actually land. Best-effort.
+                // Record this session in the cross-device blob and, when the
+                // upload succeeded, clear the session marker and stamp this
+                // device as the latest backer — all in one roundtrip. When the
+                // upload failed we only record playtime/last-played and leave
+                // the PendingBackup marker so peers keep warning.
                 if !cloud_upload_failed {
-                    rclone::complete_session_backup(app, game_name).await;
+                    rclone::record_session_and_complete_backup(
+                        app, game_name, session_minutes, &session_end.to_rfc3339(),
+                    ).await;
+                } else {
+                    rclone::record_session(app, game_name, session_minutes, &session_end.to_rfc3339()).await;
                 }
 
                 // Advance the cloud-sync baseline to the freshly-written tip,
@@ -1846,8 +1830,17 @@ async fn run_workflow(
                 // successfully and getting a red toast for a flaky network
                 // call would be misleading. Surface it in the log instead.
                 tracing::warn!(game_id = %game_id, error = %e, "post-session backup failed");
+                // Still record playtime even when backup failed.
+                rclone::record_session(app, game_name, session_minutes, &session_end.to_rfc3339()).await;
             }
         }
+    } else {
+        // Ludusavi doesn't recognise this game — no backup will ever clear the
+        // PendingBackup marker. Delete it now so other devices aren't
+        // permanently blocked from launching this game.
+        rclone::delete_session_marker(app, game_name).await;
+        // Still record playtime/last-played for the session.
+        rclone::record_session(app, game_name, session_minutes, &session_end.to_rfc3339()).await;
     }
 
     // Game Mode: flag the active-session record so the Decky plugin's
