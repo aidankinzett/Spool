@@ -13,9 +13,7 @@
     MonitorSmartphone,
     Plus,
     RefreshCcw,
-    Server,
     Sparkles,
-    Trash2,
     Wifi,
   } from '@lucide/svelte';
   import { goto } from '$app/navigation';
@@ -25,7 +23,7 @@
   import { emit } from '@tauri-apps/api/event';
   import { api, type DeckyPluginInfo } from '$lib/api';
   import { toasts } from '$lib/toasts.svelte';
-  import type { ConfigData, DepStatus, LanPeer, ProtonVersion, SyncStatus } from '$lib/types';
+  import type { ConfigData, DepStatus, LanPeer, ProtonVersion } from '$lib/types';
   import AppChrome from '$lib/components/AppChrome.svelte';
   import MonoLabel from '$lib/components/MonoLabel.svelte';
   import Btn from '$lib/components/Btn.svelte';
@@ -42,20 +40,8 @@
   let activeGroup = $state('general');
   let peers = $state<LanPeer[]>([]);
 
-  let syncStatus = $state<SyncStatus>({
-    reachability: 'unconfigured',
-    server_version: null,
-    error: null,
-    last_ok_ago_secs: null,
-  });
-  let registerOpen = $state(false);
-  let registerAdminSecret = $state('');
-  let registerUsername = $state('');
-  let registerSubmitting = $state(false);
-
   let webdavPassword = $state('');
   let webdavConnecting = $state(false);
-  let serverStorageConnecting = $state(false);
 
   let isLinux = $state(false);
   let protonVersions = $state<ProtonVersion[]>([]);
@@ -69,7 +55,6 @@
   onMount(async () => {
     try {
       config = await api.getConfig();
-      syncStatus = await api.currentSyncStatus();
       peers = await api.listLanPeers();
       isLinux = (await api.appPlatform()) === 'linux';
       if (isLinux) {
@@ -85,43 +70,6 @@
       error = String(e);
     }
   });
-
-  async function refreshSync() {
-    try { syncStatus = await api.refreshSyncStatus(); } catch (e) { console.error(e); }
-  }
-
-  async function persistAndRefresh() {
-    await persist();
-    await refreshSync();
-  }
-
-  async function submitRegister() {
-    if (!config) return;
-    const url = config.sync_server_url.trim();
-    if (!url) {
-      toasts.show({ kind: 'warn', label: 'SYNC', title: 'Server URL required', sub: 'Set the URL above before registering.' });
-      return;
-    }
-    if (!registerAdminSecret.trim() || !registerUsername.trim()) {
-      toasts.show({ kind: 'warn', label: 'SYNC', title: 'Missing fields', sub: 'Admin secret and username are both required.' });
-      return;
-    }
-    registerSubmitting = true;
-    try {
-      const apiKey = await api.syncRegisterAccount(url, registerAdminSecret.trim(), registerUsername.trim());
-      config.sync_server_api_key = apiKey;
-      config.sync_server_enabled = true;
-      await persistAndRefresh();
-      registerAdminSecret = '';
-      registerUsername = '';
-      registerOpen = false;
-      toasts.show({ kind: 'ok', label: 'SYNC', title: 'Registered', sub: 'API key filled in. Sync server is now configured.' });
-    } catch (e) {
-      toasts.show({ kind: 'bad', label: 'SYNC · REGISTER', title: "Couldn't register", sub: String(e) });
-    } finally {
-      registerSubmitting = false;
-    }
-  }
 
   async function persist(): Promise<boolean> {
     if (!config) return false;
@@ -213,35 +161,6 @@
     }
   }
 
-  async function useServerStorage() {
-    serverStorageConnecting = true;
-    try {
-      await api.useServerSaveStorage();
-      config = await api.getConfig();
-      toasts.show({ kind: 'ok', label: 'CLOUD', title: 'Save storage connected', sub: 'Saves will sync to your Spool server.' });
-    } catch (e) {
-      toasts.show({ kind: 'bad', label: 'CLOUD · SERVER', title: "Couldn't connect storage", sub: String(e) });
-    } finally {
-      serverStorageConnecting = false;
-    }
-  }
-
-  async function disconnectServerStorage() {
-    if (!config) return;
-    serverStorageConnecting = true;
-    try {
-      config.cloud_provider = '';
-      config.cloud_webdav_url = '';
-      config.cloud_webdav_username = '';
-      await persist();
-      toasts.show({ kind: 'ok', label: 'CLOUD', title: 'Disconnected', sub: 'Save storage turned off.' });
-    } catch (e) {
-      toasts.show({ kind: 'bad', label: 'CLOUD · SERVER', title: "Couldn't disconnect", sub: String(e) });
-    } finally {
-      serverStorageConnecting = false;
-    }
-  }
-
   async function browseLanInstallDir() {
     const picked = await openDialog({ title: 'Pick the LAN install folder', directory: true, multiple: false });
     if (typeof picked === 'string' && config) {
@@ -270,9 +189,6 @@
   );
   const deckOk = $derived(
     !isLinux || (!!deckyPlugin?.installed && deps.every(d => d.found))
-  );
-  const syncOk = $derived(
-    config?.sync_server_enabled && syncStatus.reachability === 'online'
   );
   const lanOk = $derived(config?.lan_share_enabled);
 
@@ -309,8 +225,8 @@
     {
       id: 'network',
       title: 'Network',
-      sub: 'LAN sharing · sync server',
-      status: (lanOk || syncOk) ? 'ok' : 'off',
+      sub: 'LAN sharing · device',
+      status: lanOk ? 'ok' : 'off',
     },
     {
       id: 'advanced',
@@ -543,130 +459,101 @@
                   <Pill kind={cloudConfigured ? 'ok' : 'off'}>{cloudConfigured ? 'Syncing' : 'Local only'}</Pill>
                 {/snippet}
 
-                {#if config.cloud_provider === 'spool-server'}
-                  <SettingsRow label="Save storage" status="ok" helper="Saves sync to your Spool server's built-in storage.">
-                    {#snippet extras()}
-                      <Btn variant="ghost" onclick={disconnectServerStorage} disabled={serverStorageConnecting}>
-                        {#snippet icon()}<Trash2 size={14} />{/snippet}
-                        {serverStorageConnecting ? 'Working…' : 'Disconnect'}
-                      </Btn>
-                    {/snippet}
-                  </SettingsRow>
-                  <SettingsRow label="Server" helper="WebDAV endpoint provided by your Spool server">
-                    {#snippet control()}
-                      <TextField value={config!.cloud_webdav_url} mono full readonly />
-                    {/snippet}
-                  </SettingsRow>
-                  <SettingsRow label="Account">
-                    {#snippet control()}
-                      <TextField value={config!.cloud_webdav_username} mono readonly />
-                    {/snippet}
-                  </SettingsRow>
-                {:else}
-                  <!-- Cloud disabled notice -->
-                  <div class="border-b border-dashed border-line-1">
-                    <div class="flex items-center gap-[14px] px-[18px] py-[14px]">
-                      <div class="flex-1">
-                        <div class="text-[13px] font-medium text-ink-0">Sync saves to the cloud</div>
-                        <div class="mt-[3px] text-[11.5px] text-ink-2">
-                          {cloudConfigured
-                            ? `Provider: ${config.cloud_provider}.`
-                            : 'Off — saves are backed up locally only.'}
-                        </div>
+                <!-- Cloud toggle + sub-fields -->
+                <div class="border-b border-dashed border-line-1">
+                  <div class="flex items-center gap-[14px] px-[18px] py-[14px]">
+                    <div class="flex-1">
+                      <div class="text-[13px] font-medium text-ink-0">Sync saves to the cloud</div>
+                      <div class="mt-[3px] text-[11.5px] text-ink-2">
+                        {cloudConfigured
+                          ? `Provider: ${config.cloud_provider}.`
+                          : 'Off — saves are backed up locally only.'}
                       </div>
-                      <Toggle
-                        checked={cloudConfigured}
-                        onchange={(v) => {
-                          if (!config) return;
-                          config.cloud_provider = v ? 'webdav' : '';
-                          persist();
-                        }}
-                      />
                     </div>
-
-                    {#if cloudConfigured || config.cloud_provider}
-                      <div class="bg-bg-0 pb-1">
-                        {#if config.sync_server_enabled && config.sync_server_url && config.sync_server_api_key}
-                          <SettingsRow label="Self-hosted storage" helper="Sync saves to your Spool server's built-in WebDAV store — no extra setup.">
-                            {#snippet extras()}
-                              <Btn variant="primary" onclick={useServerStorage} disabled={serverStorageConnecting}>
-                                {#snippet icon()}<Sparkles size={14} />{/snippet}
-                                {serverStorageConnecting ? 'Connecting…' : 'Use my Spool server'}
-                              </Btn>
-                            {/snippet}
-                          </SettingsRow>
-                        {/if}
-
-                        <SettingsRow label="Provider" helper="Choose a cloud storage provider or Custom for a custom rclone remote name.">
-                          {#snippet extras()}
-                            <select
-                              bind:value={config!.cloud_provider}
-                              onchange={persist}
-                              style="color-scheme: dark"
-                              class="rounded-[4px] border border-line-1 bg-bg-2 px-2 py-1 text-[11.5px] text-ink-0"
-                            >
-                              <option style="background: var(--color-bg-2); color: var(--color-ink-0)" value="">Disabled</option>
-                              <option style="background: var(--color-bg-2); color: var(--color-ink-0)" value="custom">Custom (rclone remote)</option>
-                              <option style="background: var(--color-bg-2); color: var(--color-ink-0)" value="google-drive">Google Drive</option>
-                              <option style="background: var(--color-bg-2); color: var(--color-ink-0)" value="onedrive">OneDrive</option>
-                              <option style="background: var(--color-bg-2); color: var(--color-ink-0)" value="dropbox">Dropbox</option>
-                              <option style="background: var(--color-bg-2); color: var(--color-ink-0)" value="box">Box</option>
-                              <option style="background: var(--color-bg-2); color: var(--color-ink-0)" value="ftp">FTP</option>
-                              <option style="background: var(--color-bg-2); color: var(--color-ink-0)" value="smb">SMB</option>
-                              <option style="background: var(--color-bg-2); color: var(--color-ink-0)" value="webdav">WebDAV</option>
-                            </select>
-                          {/snippet}
-                        </SettingsRow>
-
-                        {#if config.cloud_provider === 'custom'}
-                          <SettingsRow label="Remote" helper="rclone remote name (e.g. bazzite, gdrive, b2)">
-                            {#snippet control()}
-                              <TextField bind:value={config!.cloud_remote} placeholder="bazzite" mono oncommit={persist} />
-                            {/snippet}
-                          </SettingsRow>
-                        {/if}
-
-                        {#if config.cloud_provider === 'webdav'}
-                          <SettingsRow label="WebDAV URL" helper="e.g. https://nextcloud.example.com/remote.php/dav/files/me">
-                            {#snippet control()}
-                              <TextField bind:value={config!.cloud_webdav_url} placeholder="https://host/webdav" mono full />
-                            {/snippet}
-                          </SettingsRow>
-                          <SettingsRow label="Username">
-                            {#snippet control()}
-                              <TextField bind:value={config!.cloud_webdav_username} placeholder="username" mono />
-                            {/snippet}
-                          </SettingsRow>
-                          <SettingsRow label="Password" helper="Stored obscured by rclone, never saved in Spool's config.">
-                            {#snippet extras()}
-                              <TextField bind:value={webdavPassword} masked placeholder="password" mono full />
-                              <Btn
-                                variant="primary"
-                                onclick={connectWebdav}
-                                disabled={webdavConnecting || !config!.cloud_webdav_url || !config!.cloud_webdav_username}
-                              >
-                                {#snippet icon()}<Check size={14} />{/snippet}
-                                {webdavConnecting ? 'Connecting…' : 'Connect'}
-                              </Btn>
-                            {/snippet}
-                          </SettingsRow>
-                        {/if}
-
-                        <SettingsRow label="Remote path" helper="Subpath on the remote where saves will be synced.">
-                          {#snippet control()}
-                            <TextField bind:value={config!.cloud_path} placeholder="Spool/ludusavi-backup" mono oncommit={persist} />
-                          {/snippet}
-                        </SettingsRow>
-
-                        <SettingsRow label="rclone arguments" helper="Additional arguments passed to rclone calls.">
-                          {#snippet control()}
-                            <TextField bind:value={config!.rclone_args} placeholder="--fast-list --ignore-checksum" mono oncommit={persist} />
-                          {/snippet}
-                        </SettingsRow>
-                      </div>
-                    {/if}
+                    <Toggle
+                      checked={cloudConfigured}
+                      onchange={(v) => {
+                        if (!config) return;
+                        config.cloud_provider = v ? 'webdav' : '';
+                        persist();
+                      }}
+                    />
                   </div>
-                {/if}
+
+                  {#if cloudConfigured || config.cloud_provider}
+                    <div class="bg-bg-0 pb-1">
+                      <SettingsRow label="Provider" helper="Choose a cloud storage provider or Custom for a custom rclone remote name.">
+                        {#snippet extras()}
+                          <select
+                            bind:value={config!.cloud_provider}
+                            onchange={persist}
+                            style="color-scheme: dark"
+                            class="rounded-[4px] border border-line-1 bg-bg-2 px-2 py-1 text-[11.5px] text-ink-0"
+                          >
+                            <option style="background: var(--color-bg-2); color: var(--color-ink-0)" value="">Disabled</option>
+                            <option style="background: var(--color-bg-2); color: var(--color-ink-0)" value="custom">Custom (rclone remote)</option>
+                            <option style="background: var(--color-bg-2); color: var(--color-ink-0)" value="google-drive">Google Drive</option>
+                            <option style="background: var(--color-bg-2); color: var(--color-ink-0)" value="onedrive">OneDrive</option>
+                            <option style="background: var(--color-bg-2); color: var(--color-ink-0)" value="dropbox">Dropbox</option>
+                            <option style="background: var(--color-bg-2); color: var(--color-ink-0)" value="box">Box</option>
+                            <option style="background: var(--color-bg-2); color: var(--color-ink-0)" value="ftp">FTP</option>
+                            <option style="background: var(--color-bg-2); color: var(--color-ink-0)" value="smb">SMB</option>
+                            <option style="background: var(--color-bg-2); color: var(--color-ink-0)" value="webdav">WebDAV</option>
+                          </select>
+                        {/snippet}
+                      </SettingsRow>
+
+                      {#if config.cloud_provider === 'custom'}
+                        <SettingsRow label="Remote" helper="rclone remote name (e.g. bazzite, gdrive, b2)">
+                          {#snippet control()}
+                            <TextField bind:value={config!.cloud_remote} placeholder="bazzite" mono oncommit={persist} />
+                          {/snippet}
+                        </SettingsRow>
+                      {/if}
+
+                      {#if config.cloud_provider === 'webdav'}
+                        <SettingsRow label="WebDAV URL" helper="e.g. https://nextcloud.example.com/remote.php/dav/files/me">
+                          {#snippet control()}
+                            <TextField bind:value={config!.cloud_webdav_url} placeholder="https://host/webdav" mono full />
+                          {/snippet}
+                        </SettingsRow>
+                        <SettingsRow label="Username">
+                          {#snippet control()}
+                            <TextField bind:value={config!.cloud_webdav_username} placeholder="username" mono />
+                          {/snippet}
+                        </SettingsRow>
+                        <SettingsRow label="Password" helper="Stored obscured by rclone, never saved in Spool's config.">
+                          {#snippet extras()}
+                            <TextField bind:value={webdavPassword} masked placeholder="password" mono full />
+                            <Btn
+                              variant="primary"
+                              onclick={connectWebdav}
+                              disabled={webdavConnecting || !config!.cloud_webdav_url || !config!.cloud_webdav_username}
+                            >
+                              {#snippet icon()}<Check size={14} />{/snippet}
+                              {webdavConnecting ? 'Connecting…' : 'Connect'}
+                            </Btn>
+                          {/snippet}
+                        </SettingsRow>
+                      {/if}
+
+                      <SettingsRow
+                        label="Remote folder"
+                        helper="Base folder on the remote. Saves go to &lt;folder&gt;/ludusavi-backup; Spool's cross-device session state to &lt;folder&gt;/_spool."
+                      >
+                        {#snippet control()}
+                          <TextField bind:value={config!.cloud_base_path} placeholder="Spool" mono oncommit={persist} />
+                        {/snippet}
+                      </SettingsRow>
+
+                      <SettingsRow label="rclone arguments" helper="Additional arguments passed to rclone calls.">
+                        {#snippet control()}
+                          <TextField bind:value={config!.rclone_args} placeholder="--fast-list --ignore-checksum" mono oncommit={persist} />
+                        {/snippet}
+                      </SettingsRow>
+                    </div>
+                  {/if}
+                </div>
               </SettingsCard>
 
             </div>
@@ -717,7 +604,7 @@
                   title="Steam"
                   helper="Add Spool to your Steam library so you can launch it from Gaming Mode on SteamOS and Steam Deck."
                 >
-                  {#snippet icon()}<Server size={14} />{/snippet}
+                  {#snippet icon()}<Plus size={14} />{/snippet}
                   <SettingsRow label="Add Spool to Steam" helper="Creates a non-Steam shortcut in your Steam library. Restart Steam after adding.">
                     {#snippet extras()}
                       <Btn variant="primary" onclick={addSpoolToSteam} disabled={addingSpoolToSteam}>
@@ -936,100 +823,10 @@
                 </div>
               </SettingsCard>
 
-              <!-- Sync server -->
-              <SettingsCard
-                title="Sync server"
-                helper="A small self-hosted HTTP service that holds a per-game lock so two devices can't fight over the same save at once."
-              >
-                {#snippet icon()}<Server size={14} />{/snippet}
-                {#snippet right()}
-                  <Pill kind={config!.sync_server_enabled ? (syncStatus.reachability === 'online' ? 'ok' : 'warn') : 'off'}>
-                    {config!.sync_server_enabled ? (syncStatus.reachability === 'online' ? 'Online' : 'Offline') : 'Off'}
-                  </Pill>
-                {/snippet}
-
-                <div class="border-b border-dashed border-line-1">
-                  <div class="flex items-center gap-[14px] px-[18px] py-[14px]">
-                    <div class="flex-1">
-                      <div class="text-[13px] font-medium text-ink-0">Use a sync server</div>
-                      <div class="mt-[3px] text-[11.5px] text-ink-2">
-                        {#if config.sync_server_enabled && syncStatus.reachability === 'online'}
-                          {config.sync_server_url}{syncStatus.server_version ? ` · v${syncStatus.server_version}` : ''}
-                        {:else if config.sync_server_enabled && syncStatus.reachability === 'offline'}
-                          Unreachable · {syncStatus.error ?? 'no response'}
-                        {:else if config.sync_server_enabled}
-                          Configure a server URL below.
-                        {:else}
-                          Off — you'll only get local backups.
-                        {/if}
-                      </div>
-                    </div>
-                    <Toggle bind:checked={config!.sync_server_enabled} onchange={persistAndRefresh} />
-                  </div>
-
-                  {#if config.sync_server_enabled}
-                    <div class="bg-bg-0 pb-1">
-                      <SettingsRow
-                        label="Server URL"
-                        helper={syncStatus.reachability === 'online'
-                          ? `Online${syncStatus.server_version ? ` · v${syncStatus.server_version}` : ''}`
-                          : syncStatus.reachability === 'offline'
-                            ? `Unreachable · ${syncStatus.error ?? 'no response'}`
-                            : 'Not yet configured.'}
-                        status={syncStatus.reachability === 'online' ? 'ok' : syncStatus.reachability === 'offline' ? 'warn' : undefined}
-                      >
-                        {#snippet extras()}
-                          <TextField bind:value={config!.sync_server_url} placeholder="http://raspberrypi.local:47633" mono full oncommit={persistAndRefresh} />
-                          <Btn variant="ghost" onclick={refreshSync}>
-                            {#snippet icon()}<RefreshCcw size={14} />{/snippet}
-                            Check
-                          </Btn>
-                        {/snippet}
-                      </SettingsRow>
-
-                      <SettingsRow label="API key" helper="Generated once when you register. On your other devices, paste this same key.">
-                        {#snippet extras()}
-                          <TextField bind:value={config!.sync_server_api_key} placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" mono masked full oncommit={persistAndRefresh} />
-                          <Btn variant="ghost" onclick={() => (registerOpen = !registerOpen)}>
-                            {#snippet icon()}<KeyRound size={14} />{/snippet}
-                            {registerOpen ? 'Cancel' : 'Register…'}
-                          </Btn>
-                        {/snippet}
-                      </SettingsRow>
-
-                      {#if registerOpen}
-                        <div class="border-l-2 border-spool/40 bg-bg-2/40 mx-[18px] mb-3 px-4 py-3">
-                          <div class="font-mono mb-2 text-[10px] uppercase tracking-[0.1em] text-spool">Register new account</div>
-                          <div class="mb-3 rounded-sm border border-dashed border-spool/40 bg-spool/5 p-2.5 text-[11px] leading-[1.45] text-ink-2">
-                            <span class="font-medium text-ink-1">Do this once.</span> Your account is shared across all your devices. On your other PCs, paste this same API key — don't register again.
-                          </div>
-                          <div class="flex flex-col gap-2">
-                            <div class="flex items-center gap-2">
-                              <span class="font-mono w-[120px] shrink-0 text-[10.5px] uppercase tracking-[0.08em] text-ink-2">Admin secret</span>
-                              <TextField bind:value={registerAdminSecret} placeholder="ADMIN_SECRET from docker-compose.yml" mono masked full />
-                            </div>
-                            <div class="flex items-center gap-2">
-                              <span class="font-mono w-[120px] shrink-0 text-[10.5px] uppercase tracking-[0.08em] text-ink-2">Account name</span>
-                              <TextField bind:value={registerUsername} placeholder="me" mono full />
-                            </div>
-                            <div class="mt-1 flex justify-end">
-                              <Btn onclick={submitRegister} disabled={registerSubmitting}>
-                                {#snippet icon()}<KeyRound size={14} />{/snippet}
-                                {registerSubmitting ? 'Registering…' : 'Register'}
-                              </Btn>
-                            </div>
-                          </div>
-                        </div>
-                      {/if}
-                    </div>
-                  {/if}
-                </div>
-              </SettingsCard>
-
               <!-- This device -->
               <SettingsCard
                 title="This device"
-                helper="The label other Spool devices see in their LAN peer list and sync server."
+                helper="The label other Spool devices see in their LAN peer list."
               >
                 {#snippet icon()}<MonitorSmartphone size={14} />{/snippet}
                 <SettingsRow label="Device name">

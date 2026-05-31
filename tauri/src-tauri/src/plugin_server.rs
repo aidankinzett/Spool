@@ -200,9 +200,10 @@ async fn post_game_stopped(
     // Reload config fresh so any path/server changes made in the GUI are seen.
     let config = crate::config::Config::load().unwrap_or_default();
 
-    // Release the sync-server play lock first — independent of backup result
-    // so the game stops showing as "playing on <device>" immediately.
-    crate::sync::release_lock_headless(&config.data, &rec.game).await;
+    // Flag this device's session as unsynced first — independent of the backup
+    // result, so peers immediately see that this device has saves not yet in
+    // the cloud. The backup below clears the marker once the upload lands.
+    crate::rclone::mark_session_pending_backup_from_config(&config.data, &rec.game).await;
 
     run_backup(&state, &rec.game, &rec.session_id).await
 }
@@ -445,6 +446,9 @@ async fn run_backup(state: &PluginState, game_name: &str, session_id: &str) -> J
             // backup is still the active one — guards against a new game
             // starting while the async backup was in-flight.
             crate::session::mark_backed_up_if(session_id);
+            // Saves are now in the cloud: clear the unsynced-session marker and
+            // record this device as the latest backer for the badge. Best-effort.
+            crate::rclone::complete_session_backup_from_config(&config.data, game_name).await;
             tracing::info!(game = %game_name, "plugin backup: complete");
             Json(json!({ "acted": true, "ok": true, "game": game_name }))
         }

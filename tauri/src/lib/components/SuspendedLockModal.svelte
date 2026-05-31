@@ -1,14 +1,13 @@
 <script lang="ts">
   /**
-   * Suspended-session override — "Play here instead".
+   * Unsynced-session override — "Play here instead".
    *
-   * Shown when a launch is blocked because another device holds the play-state
-   * lock but is *suspended* mid-session (e.g. a Steam Deck went to sleep). The
-   * server keeps such a lock alive for a bounded grace window, so it can't be
-   * acquired normally — but the user can knowingly override it. This is a
-   * destructive confirm: stealing the lock and playing here means the sleeping
-   * device's unsaved (un-backed-up) progress can be overwritten on its next
-   * backup. The copy makes that explicit.
+   * Shown when a launch is blocked because another device has a session for this
+   * game whose saves aren't in the cloud yet — it's actively playing, asleep
+   * mid-session, or exited but hasn't finished uploading. The user can knowingly
+   * override it. This is a destructive confirm: playing here overwrites that
+   * device's session marker, and if its latest progress never reached the cloud
+   * it can be lost. The copy makes that explicit.
    *
    * On confirm we re-launch with `steal = true`; the run:phase events then
    * drive the rest of the UI as usual.
@@ -32,7 +31,7 @@
   }: {
     /** Display name of the game being launched. */
     gameName: string;
-    /** Name of the sleeping device currently holding the lock. */
+    /** Name of the other device with the unsynced session. */
     deviceName: string;
     /** Pre-formatted catalog id ("SPL-0028"). Hidden when omitted. */
     catalogId?: string;
@@ -98,7 +97,7 @@
         class="font-mono whitespace-nowrap uppercase"
         style:font-size="10.5px"
         style:letter-spacing="0.12em"
-        style:color="var(--color-warn)">LOCK · SUSPENDED</span
+        style:color="var(--color-warn)">SESSION · UNSYNCED</span
       >
       <div class="flex-1"></div>
       <button
@@ -130,7 +129,7 @@
             style:color="var(--color-warn)"
           >
             <MoonStar size={12} />
-            DEVICE ASLEEP
+            SAVES NOT IN CLOUD
           </span>
         </div>
         <h1
@@ -154,8 +153,8 @@
           style:line-height="1.5"
           style:max-width="400px"
         >
-          <strong class="font-semibold text-ink-1">{deviceName}</strong> is asleep partway through a
-          session and still holds the save lock.
+          <strong class="font-semibold text-ink-1">{deviceName}</strong> has a session for this game
+          whose latest saves haven’t reached the cloud yet.
         </p>
       </div>
       <div
@@ -181,9 +180,9 @@
       >
         <span class="mt-0.5 flex shrink-0" style:color="var(--color-warn)"><AlertTriangle size={15} /></span>
         <span class="flex-1" style:font-size="12.5px" style:color="var(--color-ink-1)" style:line-height="1.5">
-          Playing here takes over the lock. If {deviceName} hadn’t backed up its latest progress before
-          sleeping, <strong class="font-semibold" style:color="var(--color-warn)">that progress can be
-          overwritten</strong> when it wakes and syncs. Only continue if you’re sure it’s done with.
+          The safe move is to open {deviceName}, close the game, and let it sync first. Playing here
+          instead restores the older cloud save, so <strong class="font-semibold" style:color="var(--color-warn)">that
+          device’s unsynced progress can be lost</strong>. Only continue if you’re sure it’s done with.
         </span>
       </div>
     </div>

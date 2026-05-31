@@ -17,7 +17,8 @@
 //!                                        shortcuts so the stream sees the same
 //!                                        flow as SteamOS Game Mode
 //!   spool --backup "Game Name"         → headless one-shot backup, then exit
-//!   spool --release-lock "Game Name"   → headless one-shot lock release, then exit
+//!   spool --release-lock "Game Name"   → headless: flag this device's session
+//!                                        as unsynced (pending-backup), then exit
 //!   spool --headless-server            → start the plugin Unix socket server, run forever
 //!
 //! Anything else is treated as `Normal`. We can extend with more
@@ -35,17 +36,20 @@ pub enum CliMode {
         exe_path: String,
         attached: bool,
     },
-    /// Headless one-shot: back up a single game's saves, then exit. Used by
-    /// the Decky plugin's forced-close fallback. No GUI, no tray.
+    /// Headless one-shot: back up a single game's saves (cloud-synced), then
+    /// exit. Used by the Decky plugin's forced-close fallback. On success it
+    /// also clears this game's unsynced-session marker in the remote (the saves
+    /// are now in the cloud). No GUI, no tray.
     ///
-    /// Deliberately does NOT release the sync-server play lock — that's a
-    /// separate concern (`ReleaseLock`) so a plain backup never has the hidden
-    /// side effect of dropping a lock. The Decky fallback invokes both.
+    /// Deliberately does NOT, on its own, flag the session as unsynced — that's
+    /// a separate concern (`ReleaseLock`) the Decky fallback invokes first.
     Backup { game_name: String },
-    /// Headless one-shot: release a single game's sync-server play lock, then
-    /// exit. Used by the Decky plugin's forced-close fallback alongside
-    /// `--backup` — Steam SIGKILLs Spool before its run workflow can release the
-    /// lock, so this drops it directly. No GUI, no tray.
+    /// Headless one-shot: flag this device's session for a game as unsynced
+    /// (pending-backup) in the cloud remote, then exit. Used by the Decky
+    /// plugin's forced-close fallback *before* `--backup` — Steam SIGKILLs
+    /// Spool before its run workflow can do this, so peers would otherwise not
+    /// know this device has saves that haven't reached the cloud yet. The
+    /// follow-up `--backup` clears the marker once the upload lands. No GUI.
     ReleaseLock { game_name: String },
     /// Start the plugin Unix socket server and run until killed. No tray, no
     /// window, no single-instance registration. Used by the Decky plugin
