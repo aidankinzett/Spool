@@ -50,6 +50,7 @@ mod size_backfill;
 mod steam;
 mod steamgriddb;
 mod sync;
+mod suspend;
 mod system_open;
 
 use cli::CliMode;

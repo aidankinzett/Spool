@@ -138,7 +138,7 @@ fn emit_cloud_notice(app: &AppHandle, _game_id: &str, message: &str) {
 ///
 /// Best-effort: a notification failure is logged and otherwise
 /// ignored — never blocks the workflow.
-fn os_toast_if_hidden(app: &AppHandle, title: &str, body: &str) {
+pub(crate) fn os_toast_if_hidden(app: &AppHandle, title: &str, body: &str) {
     use tauri_plugin_notification::NotificationExt;
 
     let visible = app
@@ -1101,8 +1101,8 @@ fn manual_prep(app: &AppHandle, game_id: &str) -> AppResult<(String, PathBuf, Pa
 }
 
 #[tauri::command]
-pub async fn launch_game(app: AppHandle, game_id: String) -> AppResult<()> {
-    launch_game_inner(&app, &game_id).await
+pub async fn launch_game(app: AppHandle, game_id: String, steal: Option<bool>) -> AppResult<()> {
+    launch_game_inner_steal(&app, &game_id, steal.unwrap_or(false)).await
 }
 
 /// Inner launch function callable from non-command contexts (e.g. the
@@ -1110,6 +1110,17 @@ pub async fn launch_game(app: AppHandle, game_id: String) -> AppResult<()> {
 /// Same behaviour as the `launch_game` command — single-launch guard +
 /// full workflow + phase emission.
 pub async fn launch_game_inner(app: &AppHandle, game_id: &str) -> AppResult<()> {
+    launch_game_inner_steal(app, game_id, false).await
+}
+
+/// Like [`launch_game_inner`] but with control over whether the play-state
+/// lock acquire may steal a *suspended* lock from another device. Only the
+/// user's explicit "Play here instead" override passes `steal = true`.
+pub async fn launch_game_inner_steal(
+    app: &AppHandle,
+    game_id: &str,
+    steal: bool,
+) -> AppResult<()> {
     let run_state = app.state::<RunState>();
     let _guard = run_state.try_acquire(game_id)?;
 
@@ -1180,6 +1191,7 @@ pub async fn launch_game_inner(app: &AppHandle, game_id: &str) -> AppResult<()> 
         &launch_plan,
         &ludusavi_exe,
         &ludusavi_client,
+        steal,
     )
     .await;
 
@@ -1344,6 +1356,7 @@ async fn restore_with_redirects(
     Ok(second)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_workflow(
     app: &AppHandle,
     game_id: &str,
@@ -1352,6 +1365,7 @@ async fn run_workflow(
     launch: &LaunchPlan,
     ludusavi_exe: &Path,
     ludusavi_client: &LudusaviClient,
+    steal_lock: bool,
 ) -> AppResult<()> {
     tracing::info!(game_id, game_name, "starting run workflow");
 
@@ -1494,9 +1508,21 @@ async fn run_workflow(
     // second device can't simultaneously launch and trample the
     // save. No-op when sync is disabled / unreachable; only blocks on
     // a real 409 conflict.
-    match sync::acquire_lock(app, game_name).await {
+    match sync::acquire_lock(app, game_name, steal_lock).await {
         AcquireOutcome::Acquired => {}
-        AcquireOutcome::Conflict { device_name } => {
+        // A suspended holder (e.g. a Steam Deck asleep mid-session) can be
+        // overridden. Surface a distinct, machine-recognisable message so the
+        // frontend can offer the "Play here instead" override (which re-runs
+        // with `steal_lock = true`) after warning that the sleeping device's
+        // unsaved progress may be lost. The `\u{1}`-free marker phrase
+        // "suspended session" is what the frontend regexes on.
+        AcquireOutcome::Conflict { device_name, suspended: true } => {
+            return Err(AppError::Other(format!(
+                "Suspended session on {device_name}. That device is asleep mid-session — \
+                 playing here may lose its unsaved progress."
+            )));
+        }
+        AcquireOutcome::Conflict { device_name, suspended: false } => {
             return Err(AppError::Other(format!(
                 "Already playing on {device_name}. Close it there before launching here."
             )));
@@ -1549,14 +1575,22 @@ async fn run_workflow(
     // outlive the game.
     let heartbeat = sync::start_heartbeat(app.clone(), game_name.to_string());
 
+    // On Linux, watch for system suspend (logind PrepareForSleep) for the
+    // life of the session. When the device sleeps mid-session (Steam Deck
+    // suspend), it marks the lock suspended so it survives the heartbeat
+    // freeze instead of going stale and being grabbed by another device.
+    // No-op on other platforms.
+    let suspend_watcher = crate::suspend::start_suspend_watcher(app.clone(), game_name.to_string());
+
     let spawn_result = process::run_game(&exe_pathbuf, spec).await;
     let session_end = Utc::now();
 
-    // Always abort the heartbeat + release the lock — even if launch
-    // failed mid-spawn. Lock release is fire-and-forget; the server
-    // stale-detection would eventually reclaim a missed release but
-    // we want the next device to be able to launch immediately.
+    // Always abort the heartbeat + suspend watcher + release the lock —
+    // even if launch failed mid-spawn. Lock release is fire-and-forget;
+    // the server stale-detection would eventually reclaim a missed release
+    // but we want the next device to be able to launch immediately.
     heartbeat.abort();
+    suspend_watcher.abort();
     sync::release_lock(app, game_name).await;
 
     tracing::info!(

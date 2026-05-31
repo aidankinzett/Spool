@@ -50,6 +50,11 @@ blake3 = "1"
 filetime = "0.2"
 serde_yaml = "0.9"
 
+# Linux-only: systemd-logind D-Bus client (zbus) for the suspend watcher
+# that keeps the play-state lock alive across a Steam Deck sleep.
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus = { version = "5", default-features = false, features = ["tokio"] }
+
 # Windows-only: registry probe for the per-exe Run-As-Admin
 # compatibility flag, and ShellExecuteExW-based elevated launch.
 [target.'cfg(windows)'.dependencies]
