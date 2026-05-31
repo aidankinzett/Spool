@@ -23,10 +23,14 @@ use axum::{
     routing::{get, post},
     Router,
 };
+use hyper::body::Incoming;
+use hyper::server::conn::http1;
+use hyper_util::rt::TokioIo;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
 use tokio::net::UnixListener;
+use tower_service::Service;
 
 // ── Server state ─────────────────────────────────────────────────────────────
 
@@ -79,12 +83,23 @@ pub async fn serve() -> AppResult<()> {
         .route("/library", get(get_library))
         .with_state(state);
 
-    axum::serve(listener, router.into_make_service())
-        .await
-        .map_err(|e| AppError::Other(format!("plugin socket serve: {e}")))?;
-
-    let _ = std::fs::remove_file(&socket_path);
-    Ok(())
+    // axum 0.7's `serve` only accepts TcpListener; drive hyper directly.
+    loop {
+        let (stream, _) = listener
+            .accept()
+            .await
+            .map_err(|e| AppError::Other(format!("plugin socket accept: {e}")))?;
+        let io = TokioIo::new(stream);
+        let mut svc = router.clone();
+        tokio::spawn(async move {
+            let service = hyper::service::service_fn(move |req: hyper::Request<Incoming>| {
+                svc.call(req)
+            });
+            if let Err(e) = http1::Builder::new().serve_connection(io, service).await {
+                tracing::debug!(error = %e, "plugin socket connection closed");
+            }
+        });
+    }
 }
 
 // ── Handlers ──────────────────────────────────────────────────────────────────
