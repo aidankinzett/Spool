@@ -39,6 +39,12 @@ locksRouter.post("/:gameName/acquire", async (c) => {
     return c.json({ error: "Invalid JSON body" }, 400);
   }
 
+  // c.req.json() happily returns `null` / a non-object for bodies like `null`
+  // or `42`; guard so the property access below can't throw a 500.
+  if (typeof body !== "object" || body === null || Array.isArray(body)) {
+    return c.json({ error: "Invalid JSON body" }, 400);
+  }
+
   const deviceId = body.device_id?.trim();
   const deviceName = body.device_name?.trim();
   if (!deviceId || !deviceName) {

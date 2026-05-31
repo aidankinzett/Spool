@@ -298,7 +298,17 @@ export function createLibrary() {
         runningPhase = phase;
       }
       if (phase === 'error') {
-        const suspendedMatch = message?.match(/^Suspended session on (.+?)\. /);
+        // Only one launch-blocking modal is valid at a time. Clear both first
+        // so a stale overlay from an earlier launch can't linger or stack with
+        // a newly-set one; then set whichever (if any) this error maps to.
+        conflictGameId = null;
+        suspendedConflict = null;
+        // Capture the full device name by anchoring to the fixed suffix the
+        // Rust side emits (runner.rs), rather than stopping at the first ". "
+        // — device names can legitimately contain a dot.
+        const suspendedMatch = message?.match(
+          /^Suspended session on (.+?)(?=\. That device is asleep mid-session)/,
+        );
         if (message && /cloud sync conflict/i.test(message)) {
           conflictGameId = game_id;
         } else if (suspendedMatch) {

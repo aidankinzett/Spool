@@ -82,6 +82,12 @@ describe("POST /locks/:game/acquire", () => {
     expect(res.status).toBe(400);
   });
 
+  it("rejects a non-object JSON body without crashing", async () => {
+    expect((await acquire("Hades", "null")).status).toBe(400);
+    expect((await acquire("Hades", "42")).status).toBe(400);
+    expect((await acquire("Hades", "[]")).status).toBe(400);
+  });
+
   it("requires device_id and device_name", async () => {
     expect((await acquire("Hades", { device_id: "deck" })).status).toBe(400);
     expect((await acquire("Hades", { device_name: "Deck" })).status).toBe(400);
