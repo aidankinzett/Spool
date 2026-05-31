@@ -18,7 +18,7 @@ Built with [Tauri 2](https://v2.tauri.app/) (Rust backend) and [SvelteKit 5](htt
 
 ### Platform support
 
-Spool runs on **Windows** and **Linux**, including the gaming-handheld distros — **Bazzite**, **CachyOS**, and **SteamOS** (Steam Deck). Windows is the primary target, but the Linux build is a first-class citizen: it adds a Proton runner for Windows games, SteamOS Game-Mode integration, and a Steam Deck backup plugin. A couple of OS-integration extras are platform-specific and simply don't appear where they don't apply:
+Spool runs on **Windows** and **Linux**, including the gaming-handheld distros — **Bazzite**, **CachyOS**, and **SteamOS** (Steam Deck). Both are primary targets: the Linux build adds a Proton runner for Windows games, SteamOS Game-Mode integration, and a Steam Deck backup plugin. A couple of OS-integration extras are platform-specific and simply don't appear where they don't apply:
 
 | | Windows | Linux |
 |---|:---:|:---:|
