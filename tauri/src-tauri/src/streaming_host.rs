@@ -77,7 +77,7 @@ fn candidates() -> Vec<Candidate> {
         }
     }
 
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
     {
         if let Some(cfg) = dirs::config_dir() {
             out.push(Candidate {
