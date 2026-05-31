@@ -6,9 +6,8 @@ sidebar:
 ---
 
 Two machines on the same network running Spool can see each other's libraries and copy installed
-games directly between them — no internet, no re-download from the store. One Steam Deck pulls
-*ULTRAKILL* off another in a few minutes over Wi-Fi, and it lands in the receiver's library ready to
-launch.
+games directly between them — no internet, no re-download from the store. One Steam Deck pulls a game
+off another in a few minutes over Wi-Fi, and it lands in the receiver's library ready to launch.
 
 The subsystem lives in [`lan/`](https://github.com/aidankinzett/Spool/tree/master/tauri/src-tauri/src/lan),
 split into three parts:
