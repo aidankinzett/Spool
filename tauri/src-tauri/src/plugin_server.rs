@@ -200,9 +200,10 @@ async fn post_game_stopped(
     // Reload config fresh so any path/server changes made in the GUI are seen.
     let config = crate::config::Config::load().unwrap_or_default();
 
-    // Release the sync-server play lock first — independent of backup result
-    // so the game stops showing as "playing on <device>" immediately.
-    crate::sync::release_lock_headless(&config.data, &rec.game).await;
+    // Flag this device's session as unsynced first — independent of the backup
+    // result, so peers immediately see that this device has saves not yet in
+    // the cloud. The backup below clears the marker once the upload lands.
+    crate::rclone::mark_session_pending_backup_from_config(&config.data, &rec.game).await;
 
     run_backup(&state, &rec.game, &rec.session_id).await
 }
@@ -411,6 +412,7 @@ async fn run_backup(state: &PluginState, game_name: &str, session_id: &str) -> J
         tracing::warn!(error = %e, "plugin backup: ensure_config warning");
     }
 
+    let config = crate::config::Config::load().unwrap_or_default();
     let config_dir = crate::paths::ludusavi_config_dir();
 
     let library = Library::load().unwrap_or_default();
@@ -440,13 +442,23 @@ async fn run_backup(state: &PluginState, game_name: &str, session_id: &str) -> J
     )
     .await
     {
-        Ok(_) => {
+        Ok(r) => {
             // Only mark backed-up when the session that triggered this
             // backup is still the active one — guards against a new game
             // starting while the async backup was in-flight.
             crate::session::mark_backed_up_if(session_id);
-            tracing::info!(game = %game_name, "plugin backup: complete");
-            Json(json!({ "acted": true, "ok": true, "game": game_name }))
+            // Only clear the unsynced-session marker when the saves actually
+            // reached the cloud. If the upload failed or hit a conflict, leave
+            // the marker so peers keep warning until a real sync happens — this
+            // is the forced-close fallback, so a flaky Deck Wi-Fi must not
+            // silently drop the "unsynced session" signal. Best-effort.
+            if r.cloud_synced {
+                crate::rclone::complete_session_backup_from_config(&config.data, game_name).await;
+                tracing::info!(game = %game_name, "plugin backup: complete");
+            } else {
+                tracing::warn!(game = %game_name, "plugin backup: cloud upload failed — leaving session marker in place");
+            }
+            Json(json!({ "acted": true, "ok": true, "game": game_name, "cloud_synced": r.cloud_synced }))
         }
         Err(e) => {
             tracing::error!(error = %e, game = %game_name, "plugin backup: failed");

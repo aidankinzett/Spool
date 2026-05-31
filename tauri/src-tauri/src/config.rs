@@ -2,7 +2,7 @@
 //!
 //! The on-disk format mirrors the C# `ConfigData` exactly so an existing
 //! Spool installation's config loads without migration. Fields that aren't
-//! yet exposed in the new UI (LAN share, sync server) are still modelled so
+//! yet exposed in the new UI (LAN share) are still modelled so
 //! the file round-trips cleanly with the C# app — they're just inert until
 //! v2.
 
@@ -43,11 +43,6 @@ pub struct ConfigData {
     pub device_id: String,
     pub device_name: String,
 
-    // ── v2 — deferred but modelled for JSON round-trip compat ─────────────
-    pub sync_server_enabled: bool,
-    pub sync_server_url: String,
-    pub sync_server_api_key: String,
-
     pub lan_share_enabled: bool,
     pub lan_share_port: u16,
     pub lan_install_dir: String,
@@ -78,6 +73,13 @@ pub struct ConfigData {
     // ── Cloud / rclone settings ──────────────────────────────────────────
     pub cloud_provider: String,
     pub cloud_remote: String,
+    /// Base folder on the remote. Ludusavi saves go to
+    /// `<cloud_base_path>/ludusavi-backup`; Spool's cross-device control plane
+    /// (session markers, per-device blobs) lives under `<cloud_base_path>/_spool`.
+    pub cloud_base_path: String,
+    /// Legacy: the exact ludusavi remote subpath. Superseded by
+    /// `cloud_base_path` (the ludusavi path is now derived). Kept for JSON
+    /// round-trip with older config files; no longer read.
     pub cloud_path: String,
     pub rclone_args: String,
     /// WebDAV connection details for the `webdav` provider. Written when the
@@ -105,9 +107,6 @@ impl Default for ConfigData {
             theme: "system".to_string(),
             device_id: String::new(),
             device_name: String::new(),
-            sync_server_enabled: false,
-            sync_server_url: String::new(),
-            sync_server_api_key: String::new(),
             lan_share_enabled: true,
             lan_share_port: 47632,
             lan_install_dir: String::new(),
@@ -118,6 +117,7 @@ impl Default for ConfigData {
             tray_intro_seen: false,
             cloud_provider: String::new(),
             cloud_remote: String::new(),
+            cloud_base_path: "Spool".to_string(),
             cloud_path: "Spool/ludusavi-backup".to_string(),
             rclone_args: "--fast-list --ignore-checksum".to_string(),
             cloud_webdav_url: String::new(),
@@ -172,6 +172,7 @@ impl Config {
         changed |= ensure_device_identity(&mut data);
         changed |= auto_detect_umu_run(&mut data);
         changed |= stamp_current_exe(&mut data);
+        changed |= migrate_cloud_base_path(&mut data);
 
         let cfg = Self { data };
         if changed {
@@ -251,6 +252,45 @@ fn stamp_current_exe(data: &mut ConfigData) -> bool {
     false
 }
 
+/// Migrates pre-rclone-control-plane configs onto `cloud_base_path`.
+///
+/// Older versions stored the exact ludusavi remote subpath in `cloud_path`
+/// (a user-editable Settings field) and had no `cloud_base_path`. With the
+/// container-level `#[serde(default)]`, such a config loads with
+/// `cloud_base_path` at its default `"Spool"` — so a user who'd customized
+/// `cloud_path` would silently have their remote folder switched to
+/// `Spool/ludusavi-backup`, hiding their existing saves. When the default
+/// base no longer matches a non-default `cloud_path`, derive the base from
+/// `cloud_path` (stripping the conventional `/ludusavi-backup` leaf) and
+/// normalize `cloud_path` to the canonical derived value so this never fires
+/// again. Idempotent and inert for new installs (base already non-default, or
+/// `cloud_path` already canonical). Returns true if anything changed.
+fn migrate_cloud_base_path(data: &mut ConfigData) -> bool {
+    const DEFAULT_BASE: &str = "Spool";
+    let old_path = data.cloud_path.trim().trim_end_matches('/').to_string();
+    if old_path.is_empty() || data.cloud_base_path.trim() != DEFAULT_BASE {
+        // No legacy path to migrate, or the base was already set explicitly
+        // (new-scheme config) — leave it alone.
+        return false;
+    }
+    let canonical = format!("{DEFAULT_BASE}/ludusavi-backup");
+    if old_path == canonical {
+        // The default path — nothing to preserve.
+        return false;
+    }
+    let base = old_path
+        .strip_suffix("/ludusavi-backup")
+        .unwrap_or(&old_path)
+        .trim_end_matches('/');
+    if base.is_empty() || base == DEFAULT_BASE {
+        return false;
+    }
+    data.cloud_base_path = base.to_string();
+    data.cloud_path = format!("{base}/ludusavi-backup");
+    tracing::info!(base, "migrated legacy cloud_path to cloud_base_path");
+    true
+}
+
 fn hostname() -> String {
     // %COMPUTERNAME% on Windows, $HOSTNAME / $HOST elsewhere — fall back
     // to "Spool device" if nothing's set.
@@ -284,11 +324,16 @@ pub fn update_config(
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_default();
 
-    // Sync cloud/rclone settings to Spool-owned ludusavi config.yaml
+    // Sync cloud/rclone settings to Spool-owned ludusavi config.yaml. The
+    // ludusavi remote subpath is derived from the base folder so it always sits
+    // beside Spool's `_spool` control-plane dir. Use the same normalizer the
+    // control plane uses so a blank base folder can't put saves under
+    // `/ludusavi-backup` while `_spool` falls back to `Spool/_spool`.
+    let ludusavi_remote_path = format!("{}/ludusavi-backup", crate::rclone::base_path(&cfg.data));
     let _ = crate::ludusavi_config::set_cloud(
         Some(&cfg.data.cloud_provider),
         Some(&cfg.data.cloud_remote),
-        Some(&cfg.data.cloud_path),
+        Some(&ludusavi_remote_path),
         Some(&rclone_val),
         Some(&cfg.data.rclone_args),
     );

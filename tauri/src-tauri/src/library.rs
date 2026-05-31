@@ -97,19 +97,18 @@ pub struct GameEntry {
     /// view; falls back to the brand `spool` colour when None.
     pub accent_color: Option<String>,
 
-    /// Cross-device save-sync status, set by the sync server's
-    /// `/events/:game/latest-backup` probe. One of:
+    /// Cross-device save-sync status, derived from the rclone device blobs
+    /// at startup and updated after each backup. One of:
     ///
-    ///   "synced"        latest server event came from this device
-    ///                   and our local mtime matches
-    ///   "local-newer"   we backed up more recently than the server
-    ///                   knows (offline backup or sync was disabled)
+    ///   "synced"        this device holds the most recent backup
+    ///   "local-newer"   we backed up locally but the cloud hasn't
+    ///                   confirmed it yet (offline / sync disabled)
     ///   "cloud-newer"   another device backed up after us — our
     ///                   local saves are behind
     ///
-    /// `None` means we don't have enough info to badge (sync off,
-    /// no backup history, or never queried). The library sidebar
-    /// renders a small coloured dot on the cover when this is set.
+    /// `None` means not enough info to badge (cloud not configured,
+    /// no backup history). The library sidebar renders a small
+    /// coloured dot on the cover when this is set.
     pub sync_badge: Option<String>,
 
     /// Latest ludusavi backup name (the `mapping.yaml` tip) that was last

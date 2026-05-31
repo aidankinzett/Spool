@@ -185,7 +185,7 @@ fn apply_cloud(
 /// Connection / IO timeout + retry caps we always fold into rclone's arguments.
 ///
 /// `ludusavi {restore,backup} --cloud-sync` shells out to rclone. With rclone's
-/// defaults, an unreachable remote (e.g. the save-sync server at SteamOS
+/// defaults, an unreachable remote (e.g. the cloud remote at SteamOS
 /// Game-Mode boot, before Wi-Fi is up) blocks for *minutes* (long connect
 /// timeout × retries × low-level-retries) — which wedges the run workflow on
 /// the "restoring" phase and the game never launches. Capping these makes

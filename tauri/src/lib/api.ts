@@ -105,16 +105,16 @@ export const api = {
   getRunAsAdminInRegistry: (exePath: string): Promise<boolean> =>
     invoke('get_run_as_admin_in_registry', { exePath }),
 
-  // Sync server
+  // Cloud control-plane reachability (rclone remote probe)
   currentSyncStatus: (): Promise<SyncStatus> => invoke('current_sync_status'),
   refreshSyncStatus: (): Promise<SyncStatus> => invoke('refresh_sync_status'),
-  syncRegisterAccount: (
-    serverUrl: string,
-    adminSecret: string,
-    username: string,
-  ): Promise<string> =>
-    invoke('sync_register_account', { serverUrl, adminSecret, username }),
-  useServerSaveStorage: (): Promise<void> => invoke('use_server_save_storage'),
+
+  // Cloud OAuth authentication
+  checkCloudRemoteExists: (provider: string): Promise<boolean> =>
+    invoke('check_cloud_remote_exists', { provider }),
+  connectCloudOAuth: (provider: string): Promise<void> =>
+    invoke('connect_cloud_oauth', { provider }),
+  cancelCloudOAuth: (): Promise<void> => invoke('cancel_cloud_oauth'),
 
   // LAN
   listLanPeers: (): Promise<LanPeer[]> => invoke('list_lan_peers'),

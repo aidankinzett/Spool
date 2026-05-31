@@ -22,7 +22,7 @@ use crate::library::SharedLibrary;
 use crate::ludusavi::LudusaviClient;
 use crate::ludusavi_config;
 use crate::redirects;
-use crate::sync::{self, AcquireOutcome};
+use crate::rclone::{self, SessionClass};
 use crate::{process, paths, registry};
 use chrono::Utc;
 use serde::Serialize;
@@ -206,7 +206,7 @@ async fn persist_backup_stats(
 /// AppHandle-free backup core. Resolves the game's name + wine prefix from the
 /// library, runs `ludusavi backup`, and persists the entry's backup stats.
 /// Returns the bundle count + total bytes. Callers handle event emission and
-/// sync-server recording (best-effort) themselves.
+/// rclone recording (best-effort) themselves.
 pub async fn backup_game_core(
     ludusavi_client: &LudusaviClient,
     ludusavi_exe: &Path,
@@ -241,6 +241,18 @@ pub async fn backup_game_core(
         .await
         .map_err(|e| AppError::Other(format!("ludusavi backup: {e}")))?;
 
+    // A backup only counts as "in the cloud" when ludusavi reported neither a
+    // failed cloud sync NOR a cloud conflict. A conflict means the upload was
+    // skipped (local and cloud genuinely diverged), so the saves did NOT reach
+    // the remote — treat it the same as an outright failure here. The full play
+    // workflow force-resolves conflicts (local is authoritative post-play); the
+    // headless/manual callers of this core instead leave the unsynced-session
+    // marker in place so the next real launch resolves the divergence.
+    let cloud_synced = out
+        .errors
+        .as_ref()
+        .is_none_or(|e| e.cloud_sync_failed.is_none() && e.cloud_conflict.is_none());
+
     let (game_count, bytes_total) = out
         .overall
         .as_ref()
@@ -258,11 +270,13 @@ pub async fn backup_game_core(
             bytes_total,
         )
         .await?;
-        // Manual backups also flip the sync badge to "synced" — the run
-        // workflow handles its own badge elsewhere.
+        // Reflect the real cloud state in the badge: "synced" only when the
+        // upload actually reached the remote, otherwise "local-newer" so the
+        // user sees the local save hasn't been backed up to the cloud yet.
+        let badge = if cloud_synced { "synced" } else { "local-newer" };
         let mut lib = library.lock().map_err(|_| AppError::LockPoisoned)?;
         if let Some(entry) = lib.entries.iter_mut().find(|e| e.id == game_id) {
-            entry.sync_badge = Some("synced".to_string());
+            entry.sync_badge = Some(badge.to_string());
         }
         lib.save()?;
     }
@@ -270,6 +284,7 @@ pub async fn backup_game_core(
     Ok(ManualBackupResult {
         game_count,
         bytes_total,
+        cloud_synced,
     })
 }
 
@@ -297,13 +312,17 @@ pub async fn manual_backup(app: AppHandle, game_id: String) -> AppResult<ManualB
 
     if result.game_count > 0 {
         let _ = app.emit("library:changed", &game_id);
-        let game_name = {
-            let lib = library.lock().map_err(|_| AppError::LockPoisoned)?;
-            lib.find(&game_id).map(|e| e.game_name.clone())
-        };
-        if let Some(name) = game_name {
-            // Record on the sync server so peers see the new event.
-            sync::record_backup_event(&app, &name).await;
+        // Only clear the unsynced-session marker when the saves actually reached
+        // the cloud. On a failed or conflicted upload the marker must stay so
+        // peers keep warning until a real sync happens. Best-effort.
+        if result.cloud_synced {
+            let game_name = {
+                let lib = library.lock().map_err(|_| AppError::LockPoisoned)?;
+                lib.find(&game_id).map(|e| e.game_name.clone())
+            };
+            if let Some(name) = game_name {
+                rclone::complete_session_backup(&app, &name).await;
+            }
         }
     }
     Ok(result)
@@ -410,12 +429,6 @@ pub async fn manual_restore(app: AppHandle, game_id: String) -> AppResult<Manual
         .map(|o| o.total_games)
         .unwrap_or(0);
 
-    // Record the restore on the sync server so peers know we just
-    // pulled the latest. Best-effort.
-    if game_count > 0 {
-        sync::record_restore_event(&app, &game_name).await;
-    }
-
     Ok(ManualRestoreResult { game_count })
 }
 
@@ -487,9 +500,9 @@ pub async fn restore_save_revision(
         .map(|o| o.total_games)
         .unwrap_or(0);
 
-    // ── Step 2: pin the rolled-back state as the new tip (cloud-synced) ───
+    // ── Step 2: pin the rolled-back state as the new tip ──────────────────
     let library = app.state::<SharedLibrary>();
-    backup_game_core(
+    let pin = backup_game_core(
         &ludusavi_client,
         &ludusavi_exe,
         &config_dir,
@@ -499,16 +512,25 @@ pub async fn restore_save_revision(
     .await
     .map_err(|e| AppError::Other(format!("failed to pin rolled-back save: {e}")))?;
 
-    // Advance the cloud-sync baseline to the freshly-written tip so the next
-    // launch's conflict check is exact rather than falling back to timestamps.
-    let backup_dir = ludusavi_config::backup_dir();
-    if let Some(tip) = redirects::read_local_backup_tip(&backup_dir, &game_name) {
-        let _ = set_cloud_baseline(&app, &game_id, &tip.name);
+    // Only treat the rollback as propagated to the cloud when the pin's upload
+    // actually succeeded. If the cloud leg failed/conflicted, the rolled-back
+    // tip exists locally but not in the remote — leave the baseline and the
+    // unsynced-session marker as-is so the next launch reconciles rather than
+    // assuming every device already has this revision.
+    if pin.cloud_synced {
+        // Advance the cloud-sync baseline to the freshly-written tip so the next
+        // launch's conflict check is exact rather than falling back to timestamps.
+        let backup_dir = ludusavi_config::backup_dir();
+        if let Some(tip) = redirects::read_local_backup_tip(&backup_dir, &game_name) {
+            let _ = set_cloud_baseline(&app, &game_id, &tip.name);
+        }
+        // We're the latest backer: clear any marker + record the backer.
+        rclone::complete_session_backup(&app, &game_name).await;
+    } else {
+        tracing::warn!(game_name, "rollback pin: cloud upload failed — leaving baseline/marker for next launch to reconcile");
     }
 
-    // Let peers know we just changed the save, and repaint the library
-    // (backup count / last-backed-up just changed).
-    sync::record_restore_event(&app, &game_name).await;
+    // Repaint the library either way (backup count / last-backed-up changed).
     if let Err(e) = app.emit("library:changed", &game_id) {
         tracing::warn!(error = %e, "failed to emit library:changed after rollback");
     }
@@ -582,9 +604,6 @@ pub async fn resolve_cloud_conflict(
     }
 
     let game_count = out.overall.as_ref().map(|o| o.total_games).unwrap_or(0);
-    if game_count > 0 {
-        sync::record_restore_event(&app, &game_name).await;
-    }
 
     // The user just reconciled a real divergence: both sides now mirror the
     // chosen copy. Record the resulting tip as the baseline so the very next
@@ -784,7 +803,7 @@ async fn get_local_active_save_details(
 fn resolve_rclone_remote() -> Option<(PathBuf, String, String)> {
     let raw = std::fs::read_to_string(crate::paths::ludusavi_config_file()).ok()?;
     let config: serde_yaml::Value = serde_yaml::from_str(&raw).ok()?;
-    let remote_name = get_rclone_remote_name(&config)?;
+    let remote_name = crate::rclone::remote_name_from_yaml(&config)?;
     let remote_path = config
         .get("cloud")
         .and_then(|c| c.get("path"))
@@ -795,37 +814,11 @@ fn resolve_rclone_remote() -> Option<(PathBuf, String, String)> {
     Some((rclone_exe, remote_name, remote_path))
 }
 
-/// `rclone cat <target>` and parse the streamed `mapping.yaml` into its tip.
-/// `None` on any failure (missing file, network error, parse error).
+/// Fetch and parse a remote `mapping.yaml` as a backup tip.
+/// Uses `rclone::cat` (which applies FAST_FLAGS) so unreachable remotes
+/// fail quickly rather than blocking for rclone's full default timeout.
 async fn rclone_cat_tip(rclone_exe: &Path, target: &str) -> Option<redirects::BackupTip> {
-    let mut cmd = tokio::process::Command::new(rclone_exe);
-    cmd.arg("cat").arg(target);
-    cmd.stdin(std::process::Stdio::null());
-    cmd.stdout(std::process::Stdio::piped());
-    cmd.stderr(std::process::Stdio::piped());
-    cmd.kill_on_drop(true);
-    #[cfg(windows)]
-    {
-        #[allow(unused_imports)]
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-    }
-    let child = cmd.spawn().ok()?;
-    let output = tokio::time::timeout(
-        std::time::Duration::from_secs(6),
-        child.wait_with_output(),
-    )
-    .await
-    .ok()? // timeout
-    .ok()?; // process run error
-    if !output.status.success() {
-        tracing::info!(
-            target,
-            "rclone_cat_tip: cat failed (likely no cloud mapping.yaml yet)"
-        );
-        return None;
-    }
-    let body = String::from_utf8_lossy(&output.stdout);
+    let body = crate::rclone::cat(rclone_exe, target).await?;
     redirects::read_backup_tip_from_str(&body)
 }
 
@@ -923,28 +916,6 @@ fn set_cloud_baseline(app: &AppHandle, game_id: &str, tip_name: &str) -> AppResu
     Ok(())
 }
 
-fn get_rclone_remote_name(config: &serde_yaml::Value) -> Option<String> {
-    let cloud = config.get("cloud")?;
-    let remote = cloud.get("remote")?;
-    match remote {
-        serde_yaml::Value::String(s) => Some(s.clone()),
-        serde_yaml::Value::Mapping(m) => {
-            if let Some(custom) = m.get(serde_yaml::Value::String("Custom".into())) {
-                if let Some(id) = custom.get(serde_yaml::Value::String("id".into())) {
-                    return id.as_str().map(String::from);
-                }
-            }
-            if let Some(webdav) = m.get(serde_yaml::Value::String("WebDav".into())) {
-                if let Some(id) = webdav.get(serde_yaml::Value::String("id".into())) {
-                    return id.as_str().map(String::from);
-                }
-            }
-            None
-        }
-        _ => None,
-    }
-}
-
 async fn query_rclone_details(
     rclone_exe: &Path,
     remote_name: &str,
@@ -953,8 +924,9 @@ async fn query_rclone_details(
 ) -> Option<RawSaveDetails> {
     let target = format!("{}:{}/{}", remote_name, remote_path, game_folder_name);
     tracing::info!("query_rclone_details: target={}", target);
-    
+
     let mut cmd = tokio::process::Command::new(rclone_exe);
+    cmd.args(crate::rclone::FAST_FLAGS);
     cmd.arg("lsjson")
         .arg("--no-mimetype")
         .arg("--recursive")
@@ -1087,7 +1059,7 @@ pub async fn get_cloud_conflict_details(
     let config: serde_yaml::Value = serde_yaml::from_str(&raw)
         .map_err(|e| AppError::Other(format!("failed to parse config.yaml: {e}")))?;
         
-    let Some(remote_name) = get_rclone_remote_name(&config) else {
+    let Some(remote_name) = crate::rclone::remote_name_from_yaml(&config) else {
         tracing::warn!("get_cloud_conflict_details: cloud remote is not configured in config.yaml");
         return Ok(RawConflictDetails { local, cloud: None });
     };
@@ -1130,6 +1102,9 @@ pub async fn get_cloud_conflict_details(
 pub struct ManualBackupResult {
     pub game_count: i32,
     pub bytes_total: u64,
+    /// False when the local backup succeeded but the cloud upload leg failed.
+    /// Callers that clear the unsynced-session marker must check this first.
+    pub cloud_synced: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -1467,169 +1442,22 @@ async fn run_workflow(
     // can tell the user whether saves are cloud-synced or local-only.
     let cloud_configured = ludusavi_config::cloud_remote_is_configured();
 
-    // ── Phase 1: restore ──────────────────────────────────────────────
-    let restore_msg = if cloud_configured {
-        "Syncing + restoring saves…"
-    } else {
-        "Restoring local saves…"
-    };
-    emit_phase(app, game_id, "restoring", Some(restore_msg), cloud_configured, None, false);
-    os_toast_if_hidden(
-        app,
-        "Restoring saves",
-        &format!("{game_name} — restoring before launch"),
-    );
-    tracing::info!(game_name, "ludusavi restore");
-    let game_folder = {
-        // Snapshot the install folder path for install-dir save redirect (Phase 3).
-        let library = app.state::<SharedLibrary>();
-        let lib = library.lock().map_err(|_| AppError::LockPoisoned)?;
-        lib.find(game_id)
-            .and_then(|e| e.game_folder_path.as_ref().map(PathBuf::from))
-    };
-    let restore = restore_with_redirects(
-        ludusavi_client,
-        ludusavi_exe,
-        &config_dir,
-        game_name,
-        wine_prefix.as_deref(),
-        game_folder.as_deref(),
-        None,
-    ).await?;
-    if restore
-        .errors
-        .as_ref()
-        .and_then(|e| e.cloud_conflict.as_ref())
-        .is_some()
-    {
-        // ludusavi saw local ≠ cloud and refused to sync. Decide whether one
-        // side is cleanly ahead (auto-resolve = fast-forward) or both changed
-        // since our last sync (true divergence → prompt the user). The
-        // baseline (last-synced tip) is what makes this distinction possible.
-        let backup_dir = ludusavi_config::backup_dir();
-        let local_tip = redirects::read_local_backup_tip(&backup_dir, game_name);
-        let cloud_tip = fetch_cloud_backup_tip(game_name).await;
-        let base = {
-            let library = app.state::<SharedLibrary>();
-            let lib = library.lock().map_err(|_| AppError::LockPoisoned)?;
-            lib.find(game_id).and_then(|e| e.cloud_sync_baseline.clone())
-        };
-        let decision = decide_cloud_sync(base.as_deref(), local_tip.as_ref(), cloud_tip.as_ref());
-        tracing::info!(
-            game_name,
-            ?decision,
-            base = ?base,
-            local = ?local_tip.as_ref().map(|t| t.name.as_str()),
-            cloud = ?cloud_tip.as_ref().map(|t| t.name.as_str()),
-            "cloud conflict reconciliation"
-        );
-        match decision {
-            CloudSyncDecision::Diverged => {
-                return Err(AppError::Other(
-                    "Cloud sync conflict — open Ludusavi to resolve before launching.".into(),
-                ));
-            }
-            CloudSyncDecision::FastForwardDownload => {
-                // Cloud is cleanly ahead — pull it down and re-restore.
-                ludusavi_client
-                    .cloud_resolve(ludusavi_exe, &config_dir, crate::ludusavi::CloudOp::Download, game_name)
-                    .await?;
-                let out = restore_with_redirects(
-                    ludusavi_client,
-                    ludusavi_exe,
-                    &config_dir,
-                    game_name,
-                    wine_prefix.as_deref(),
-                    game_folder.as_deref(),
-                    None,
-                )
-                .await?;
-                if out.errors.as_ref().and_then(|e| e.cloud_conflict.as_ref()).is_some() {
-                    return Err(AppError::Other(
-                        "Cloud sync conflict — open Ludusavi to resolve before launching.".into(),
-                    ));
-                }
-                if let Some(tip) = cloud_tip.as_ref() {
-                    let _ = set_cloud_baseline(app, game_id, &tip.name);
-                }
-                emit_cloud_notice(app, game_id, "Restored newer saves from the cloud");
-            }
-            CloudSyncDecision::FastForwardUpload => {
-                // Local is cleanly ahead — push it up. Pass-1 restore already
-                // landed the local saves, so no re-restore is needed.
-                ludusavi_client
-                    .cloud_resolve(ludusavi_exe, &config_dir, crate::ludusavi::CloudOp::Upload, game_name)
-                    .await?;
-                if let Some(tip) = local_tip.as_ref() {
-                    let _ = set_cloud_baseline(app, game_id, &tip.name);
-                }
-            }
-            CloudSyncDecision::InSync => {}
-        }
-    } else if cloud_configured {
-        // Clean restore with cloud configured — record the current local tip as
-        // the synced baseline so the next conflict check is exact.
-        let backup_dir = ludusavi_config::backup_dir();
-        if let Some(tip) = redirects::read_local_backup_tip(&backup_dir, game_name) {
-            let _ = set_cloud_baseline(app, game_id, &tip.name);
-        }
-    }
-    // "No saves to restore" is fine — game just hasn't been played yet.
-    let no_saves = restore
-        .errors
-        .as_ref()
-        .map(|e| !e.unknown_games.is_empty())
-        .unwrap_or(false)
-        || restore
-            .overall
-            .as_ref()
-            .map(|o| o.total_games == 0)
-            .unwrap_or(false);
-
-    // Record the restore event on the sync server (best-effort, fires
-    // only when sync is configured + reachable). The server uses these
-    // events to power the cross-device save sync status badges.
-    sync::record_restore_event(app, game_name).await;
-
-    // ── Phase 1.5: acquire play-state lock ────────────────────────────
-    // Asks the sync server to lock this game to this device so a
-    // second device can't simultaneously launch and trample the
-    // save. No-op when sync is disabled / unreachable; only blocks on
-    // a real 409 conflict.
-    match sync::acquire_lock(app, game_name, steal_lock).await {
-        AcquireOutcome::Acquired => {}
-        // A suspended holder (e.g. a Steam Deck asleep mid-session) can be
-        // overridden. Surface a distinct, machine-recognisable message so the
-        // frontend can offer the "Play here instead" override (which re-runs
-        // with `steal_lock = true`) after warning that the sleeping device's
-        // unsaved progress may be lost. The `\u{1}`-free marker phrase
-        // "suspended session" is what the frontend regexes on.
-        AcquireOutcome::Conflict { device_name, suspended: true } => {
-            return Err(AppError::Other(format!(
-                "Suspended session on {device_name}. That device is asleep mid-session — \
-                 playing here may lose its unsaved progress."
-            )));
-        }
-        AcquireOutcome::Conflict { device_name, suspended: false } => {
-            return Err(AppError::Other(format!(
-                "Already playing on {device_name}. Close it there before launching here."
-            )));
-        }
-    }
-
-    // ── Phase 2: launch + wait ───────────────────────────────────────
-    emit_phase(app, game_id, "launching", Some("Launching game…"), cloud_configured, None, false);
+    // ── Launch preflight ──────────────────────────────────────────────
+    // Validate the launch target and claim the cross-device session marker
+    // BEFORE Phase 1 touches any saves. Two reasons:
+    //   * A missing exe / un-creatable Proton prefix should fail fast, without
+    //     restoring saves or writing a marker (a marker written then abandoned
+    //     would block every peer until it ages out, ACTIVE_STALE_SECS).
+    //   * claim_session must run before restore_with_redirects, which mutates
+    //     the live save dir — otherwise a launch blocked by another device's
+    //     active/unsynced session would surface the modal only AFTER we'd
+    //     already overwritten local saves with the cloud copy.
     let exe_pathbuf = PathBuf::from(exe_path);
     if !exe_pathbuf.is_file() {
         return Err(AppError::Other(format!(
             "Game executable not found at {exe_path}"
         )));
     }
-
-    emit_phase(app, game_id, "playing", None, cloud_configured, None, false);
-    tracing::info!(exe_path, use_proton = launch.use_proton, "launching game process");
-    let session_start = Utc::now();
-
     // For Proton launches, make sure the prefix root exists; umu/Proton
     // populates it (drive_c, registry) on first run.
     if launch.use_proton {
@@ -1640,6 +1468,174 @@ async fn run_workflow(
             )));
         }
     }
+
+    // ── Phase 1.5 (runs first): claim the unsynced-session marker ─────
+    // Reads the per-game session marker in the cloud remote. If another
+    // device is actively playing, or has a session whose saves aren't in
+    // the cloud yet, warn (the frontend turns these into a blocking modal
+    // with a "Play here instead" override that re-runs with `steal_lock`).
+    // Otherwise we write our own marker and proceed. No-op when cloud
+    // saves aren't configured — the launch always proceeds. The message
+    // suffixes below are what the frontend regexes on for the override.
+    match rclone::claim_session(app, game_name, steal_lock).await {
+        SessionClass::Free => {}
+        SessionClass::ActiveElsewhere { device_name } => {
+            return Err(AppError::Other(format!(
+                "Already playing on {device_name}. Close it there, or play here anyway."
+            )));
+        }
+        SessionClass::UnsyncedElsewhere { device_name } => {
+            return Err(AppError::Other(format!(
+                "Unsynced session on {device_name}. Its latest saves aren't in the cloud yet — \
+                 close it there and let it sync, or play here anyway."
+            )));
+        }
+    }
+
+    // ── Phase 1: restore ──────────────────────────────────────────────
+    let game_folder = {
+        // Snapshot the install folder path for install-dir save redirect (Phase 3).
+        let library = app.state::<SharedLibrary>();
+        let lib = library.lock().map_err(|_| AppError::LockPoisoned)?;
+        lib.find(game_id)
+            .and_then(|e| e.game_folder_path.as_ref().map(PathBuf::from))
+    };
+    // Run the restore in an inner block so any failure after the session claim
+    // releases our marker — claim_session already wrote our Active marker, so a
+    // restore error here would otherwise leave peers blocked by a session that
+    // never actually started. Returns `no_saves`.
+    let restore_phase: AppResult<bool> = async {
+        let restore_msg = if cloud_configured {
+            "Syncing + restoring saves…"
+        } else {
+            "Restoring local saves…"
+        };
+        emit_phase(app, game_id, "restoring", Some(restore_msg), cloud_configured, None, false);
+        os_toast_if_hidden(
+            app,
+            "Restoring saves",
+            &format!("{game_name} — restoring before launch"),
+        );
+        tracing::info!(game_name, "ludusavi restore");
+        let restore = restore_with_redirects(
+            ludusavi_client,
+            ludusavi_exe,
+            &config_dir,
+            game_name,
+            wine_prefix.as_deref(),
+            game_folder.as_deref(),
+            None,
+        ).await?;
+        if restore
+            .errors
+            .as_ref()
+            .and_then(|e| e.cloud_conflict.as_ref())
+            .is_some()
+        {
+            // ludusavi saw local ≠ cloud and refused to sync. Decide whether one
+            // side is cleanly ahead (auto-resolve = fast-forward) or both changed
+            // since our last sync (true divergence → prompt the user). The
+            // baseline (last-synced tip) is what makes this distinction possible.
+            let backup_dir = ludusavi_config::backup_dir();
+            let local_tip = redirects::read_local_backup_tip(&backup_dir, game_name);
+            let cloud_tip = fetch_cloud_backup_tip(game_name).await;
+            let base = {
+                let library = app.state::<SharedLibrary>();
+                let lib = library.lock().map_err(|_| AppError::LockPoisoned)?;
+                lib.find(game_id).and_then(|e| e.cloud_sync_baseline.clone())
+            };
+            let decision = decide_cloud_sync(base.as_deref(), local_tip.as_ref(), cloud_tip.as_ref());
+            tracing::info!(
+                game_name,
+                ?decision,
+                base = ?base,
+                local = ?local_tip.as_ref().map(|t| t.name.as_str()),
+                cloud = ?cloud_tip.as_ref().map(|t| t.name.as_str()),
+                "cloud conflict reconciliation"
+            );
+            match decision {
+                CloudSyncDecision::Diverged => {
+                    return Err(AppError::Other(
+                        "Cloud sync conflict — open Ludusavi to resolve before launching.".into(),
+                    ));
+                }
+                CloudSyncDecision::FastForwardDownload => {
+                    // Cloud is cleanly ahead — pull it down and re-restore.
+                    ludusavi_client
+                        .cloud_resolve(ludusavi_exe, &config_dir, crate::ludusavi::CloudOp::Download, game_name)
+                        .await?;
+                    let out = restore_with_redirects(
+                        ludusavi_client,
+                        ludusavi_exe,
+                        &config_dir,
+                        game_name,
+                        wine_prefix.as_deref(),
+                        game_folder.as_deref(),
+                        None,
+                    )
+                    .await?;
+                    if out.errors.as_ref().and_then(|e| e.cloud_conflict.as_ref()).is_some() {
+                        return Err(AppError::Other(
+                            "Cloud sync conflict — open Ludusavi to resolve before launching.".into(),
+                        ));
+                    }
+                    if let Some(tip) = cloud_tip.as_ref() {
+                        let _ = set_cloud_baseline(app, game_id, &tip.name);
+                    }
+                    emit_cloud_notice(app, game_id, "Restored newer saves from the cloud");
+                }
+                CloudSyncDecision::FastForwardUpload => {
+                    // Local is cleanly ahead — push it up. Pass-1 restore already
+                    // landed the local saves, so no re-restore is needed.
+                    ludusavi_client
+                        .cloud_resolve(ludusavi_exe, &config_dir, crate::ludusavi::CloudOp::Upload, game_name)
+                        .await?;
+                    if let Some(tip) = local_tip.as_ref() {
+                        let _ = set_cloud_baseline(app, game_id, &tip.name);
+                    }
+                }
+                CloudSyncDecision::InSync => {}
+            }
+        } else if cloud_configured {
+            // Clean restore with cloud configured — record the current local tip as
+            // the synced baseline so the next conflict check is exact.
+            let backup_dir = ludusavi_config::backup_dir();
+            if let Some(tip) = redirects::read_local_backup_tip(&backup_dir, game_name) {
+                let _ = set_cloud_baseline(app, game_id, &tip.name);
+            }
+        }
+        // "No saves to restore" is fine — game just hasn't been played yet.
+        let no_saves = restore
+            .errors
+            .as_ref()
+            .map(|e| !e.unknown_games.is_empty())
+            .unwrap_or(false)
+            || restore
+                .overall
+                .as_ref()
+                .map(|o| o.total_games == 0)
+                .unwrap_or(false);
+        Ok(no_saves)
+    }
+    .await;
+    let no_saves = match restore_phase {
+        Ok(v) => v,
+        Err(e) => {
+            // Restore failed after we claimed the session — release our marker so
+            // peers aren't blocked by a session that never started.
+            rclone::delete_session_marker(app, game_name).await;
+            return Err(e);
+        }
+    };
+
+    // ── Phase 2: launch + wait ───────────────────────────────────────
+    // Target validation + session claim already happened in the preflight
+    // above; saves are restored. Spawn the game.
+    emit_phase(app, game_id, "launching", Some("Launching game…"), cloud_configured, None, false);
+    emit_phase(app, game_id, "playing", None, cloud_configured, None, false);
+    tracing::info!(exe_path, use_proton = launch.use_proton, "launching game process");
+    let session_start = Utc::now();
+
     let spec = if launch.use_proton {
         process::LaunchSpec::Proton {
             umu_run: launch
@@ -1657,29 +1653,33 @@ async fn run_workflow(
         }
     };
 
-    // Spawn the lock-heartbeat task. Pings /heartbeat every 30s so
-    // the sync server doesn't mark our lock stale during long
-    // sessions. Aborted unconditionally on exit so it doesn't
-    // outlive the game.
-    let heartbeat = sync::start_heartbeat(app.clone(), game_name.to_string());
+    // Spawn the session heartbeat: rewrites our marker's `updated_at` every
+    // 60s so peers see the session as live. Pass session_start so the heartbeat
+    // preserves the real started_at on each tick. Aborted on exit.
+    let heartbeat = rclone::start_heartbeat(app.clone(), game_name.to_string(), session_start.to_rfc3339());
 
     // On Linux, watch for system suspend (logind PrepareForSleep) for the
     // life of the session. When the device sleeps mid-session (Steam Deck
-    // suspend), it marks the lock suspended so it survives the heartbeat
-    // freeze instead of going stale and being grabbed by another device.
+    // suspend), it marks the session marker suspended so a peer sees an
+    // unsynced session rather than the marker silently going stale.
     // No-op on other platforms.
     let suspend_watcher = crate::suspend::start_suspend_watcher(app.clone(), game_name.to_string());
 
     let spawn_result = process::run_game(&exe_pathbuf, spec).await;
     let session_end = Utc::now();
 
-    // Always abort the heartbeat + suspend watcher + release the lock —
-    // even if launch failed mid-spawn. Lock release is fire-and-forget;
-    // the server stale-detection would eventually reclaim a missed release
-    // but we want the next device to be able to launch immediately.
+    // Always abort the heartbeat + suspend watcher, then flip our marker to
+    // `pending-backup` — even if launch failed mid-spawn. The marker stays
+    // until the post-session backup confirms the saves reached the cloud, so
+    // a peer keeps warning until then.
     heartbeat.abort();
     suspend_watcher.abort();
-    sync::release_lock(app, game_name).await;
+    // Await both tasks so their rclone children are fully dropped (kill_on_drop)
+    // before we write PendingBackup. Without this, an in-flight Active rcat
+    // could complete on the remote after our PendingBackup write, reverting it.
+    let _ = heartbeat.await;
+    let _ = suspend_watcher.await;
+    rclone::mark_session_pending_backup(app, game_name).await;
 
     tracing::info!(
         game_name,
@@ -1688,6 +1688,9 @@ async fn run_workflow(
     );
 
     if let Err(e) = spawn_result {
+        // No game session occurred — delete the marker so other devices aren't
+        // permanently blocked by a PendingBackup state that will never resolve.
+        rclone::delete_session_marker(app, game_name).await;
         return Err(AppError::Other(format!("Game failed to launch: {e}")));
     }
 
@@ -1703,14 +1706,6 @@ async fn run_workflow(
         lib.save()?;
     }
     let _ = app.emit("library:changed", &game_id.to_string());
-
-    // Cross-device sync — push the session timestamps to the server
-    // so other devices pick them up on their next startup_sync. The
-    // timestamp is RFC 3339 / ISO 8601; the server requires the
-    // playtime delta to be a positive integer, which `push_playtime_delta`
-    // already enforces.
-    sync::push_last_played(app, game_name, &session_end.to_rfc3339()).await;
-    sync::push_playtime_delta(app, game_name, session_minutes).await;
 
     // ── Phase 3: backup (skip if ludusavi didn't recognise the game) ──
     // Tracks whether the local backup succeeded but the cloud upload
@@ -1794,7 +1789,7 @@ async fn run_workflow(
                 }
                 // A cloud conflict on the *post-play* backup means the cloud
                 // advanced while we held the play-state lock (lock unavailable
-                // or sync server down). We just played, so local is
+                // or cloud remote unreachable). We just played, so local is
                 // authoritative — force an upload so the next device sees a
                 // clean fast-forward instead of a phantom conflict.
                 if out
@@ -1828,9 +1823,18 @@ async fn run_workflow(
                         let _ = app.emit("library:changed", &game_id.to_string());
                     }
                 }
-                // Tell the sync server we backed up — peers can use
-                // this to know they're behind on saves. Best-effort.
-                sync::record_backup_event(app, game_name).await;
+                // Record this session in the cross-device blob and, when the
+                // upload succeeded, clear the session marker and stamp this
+                // device as the latest backer — all in one roundtrip. When the
+                // upload failed we only record playtime/last-played and leave
+                // the PendingBackup marker so peers keep warning.
+                if !cloud_upload_failed {
+                    rclone::record_session_and_complete_backup(
+                        app, game_name, session_minutes, &session_end.to_rfc3339(),
+                    ).await;
+                } else {
+                    rclone::record_session(app, game_name, session_minutes, &session_end.to_rfc3339()).await;
+                }
 
                 // Advance the cloud-sync baseline to the freshly-written tip,
                 // but only when the upload actually reached the cloud — otherwise
@@ -1843,17 +1847,17 @@ async fn run_workflow(
                     }
                 }
 
-                // Mark the entry as synced. After a successful backup
-                // we ARE the most recent device on the server (assuming
-                // the event recorded). If the event recording failed
-                // silently (offline), the badge will flip to
-                // local-newer on the next startup_sync.
+                // Set the badge to match the real cloud state: "synced" only
+                // when the upload reached the remote, otherwise "local-newer"
+                // so the user sees the local save hasn't been backed up to the
+                // cloud yet (a flaky network / unreachable remote).
+                let target_badge = if cloud_upload_failed { "local-newer" } else { "synced" };
                 let library = app.state::<SharedLibrary>();
                 let badge_changed = if let Ok(mut lib) = library.lock() {
                     let mut changed = false;
                     if let Some(entry) = lib.entries.iter_mut().find(|e| e.id == game_id) {
-                        if entry.sync_badge.as_deref() != Some("synced") {
-                            entry.sync_badge = Some("synced".to_string());
+                        if entry.sync_badge.as_deref() != Some(target_badge) {
+                            entry.sync_badge = Some(target_badge.to_string());
                             changed = true;
                         }
                     }
@@ -1873,8 +1877,17 @@ async fn run_workflow(
                 // successfully and getting a red toast for a flaky network
                 // call would be misleading. Surface it in the log instead.
                 tracing::warn!(game_id = %game_id, error = %e, "post-session backup failed");
+                // Still record playtime even when backup failed.
+                rclone::record_session(app, game_name, session_minutes, &session_end.to_rfc3339()).await;
             }
         }
+    } else {
+        // Ludusavi doesn't recognise this game — no backup will ever clear the
+        // PendingBackup marker. Delete it now so other devices aren't
+        // permanently blocked from launching this game.
+        rclone::delete_session_marker(app, game_name).await;
+        // Still record playtime/last-played for the session.
+        rclone::record_session(app, game_name, session_minutes, &session_end.to_rfc3339()).await;
     }
 
     // Game Mode: flag the active-session record so the Decky plugin's
@@ -1909,24 +1922,6 @@ async fn run_workflow(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_get_rclone_remote_name() {
-        let yaml_str = r#"
-cloud:
-  remote:
-    WebDav:
-      id: ludusavi-1780143898
-      url: http://192.168.86.34:47634
-      username: DESKTOP-OAA3RS6
-      provider: Other
-  path: ludusavi-backup
-  synchronize: true
-        "#;
-        let val: serde_yaml::Value = serde_yaml::from_str(yaml_str).unwrap();
-        let remote = get_rclone_remote_name(&val);
-        assert_eq!(remote, Some("ludusavi-1780143898".to_string()));
-    }
 
     fn tip(name: &str, secs: i64) -> redirects::BackupTip {
         redirects::BackupTip {
