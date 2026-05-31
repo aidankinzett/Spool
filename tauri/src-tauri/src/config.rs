@@ -172,6 +172,7 @@ impl Config {
         changed |= ensure_device_identity(&mut data);
         changed |= auto_detect_umu_run(&mut data);
         changed |= stamp_current_exe(&mut data);
+        changed |= migrate_cloud_base_path(&mut data);
 
         let cfg = Self { data };
         if changed {
@@ -249,6 +250,45 @@ fn stamp_current_exe(data: &mut ConfigData) -> bool {
         }
     }
     false
+}
+
+/// Migrates pre-rclone-control-plane configs onto `cloud_base_path`.
+///
+/// Older versions stored the exact ludusavi remote subpath in `cloud_path`
+/// (a user-editable Settings field) and had no `cloud_base_path`. With the
+/// container-level `#[serde(default)]`, such a config loads with
+/// `cloud_base_path` at its default `"Spool"` — so a user who'd customized
+/// `cloud_path` would silently have their remote folder switched to
+/// `Spool/ludusavi-backup`, hiding their existing saves. When the default
+/// base no longer matches a non-default `cloud_path`, derive the base from
+/// `cloud_path` (stripping the conventional `/ludusavi-backup` leaf) and
+/// normalize `cloud_path` to the canonical derived value so this never fires
+/// again. Idempotent and inert for new installs (base already non-default, or
+/// `cloud_path` already canonical). Returns true if anything changed.
+fn migrate_cloud_base_path(data: &mut ConfigData) -> bool {
+    const DEFAULT_BASE: &str = "Spool";
+    let old_path = data.cloud_path.trim().trim_end_matches('/').to_string();
+    if old_path.is_empty() || data.cloud_base_path.trim() != DEFAULT_BASE {
+        // No legacy path to migrate, or the base was already set explicitly
+        // (new-scheme config) — leave it alone.
+        return false;
+    }
+    let canonical = format!("{DEFAULT_BASE}/ludusavi-backup");
+    if old_path == canonical {
+        // The default path — nothing to preserve.
+        return false;
+    }
+    let base = old_path
+        .strip_suffix("/ludusavi-backup")
+        .unwrap_or(&old_path)
+        .trim_end_matches('/');
+    if base.is_empty() || base == DEFAULT_BASE {
+        return false;
+    }
+    data.cloud_base_path = base.to_string();
+    data.cloud_path = format!("{base}/ludusavi-backup");
+    tracing::info!(base, "migrated legacy cloud_path to cloud_base_path");
+    true
 }
 
 fn hostname() -> String {

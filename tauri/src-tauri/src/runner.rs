@@ -241,11 +241,17 @@ pub async fn backup_game_core(
         .await
         .map_err(|e| AppError::Other(format!("ludusavi backup: {e}")))?;
 
+    // A backup only counts as "in the cloud" when ludusavi reported neither a
+    // failed cloud sync NOR a cloud conflict. A conflict means the upload was
+    // skipped (local and cloud genuinely diverged), so the saves did NOT reach
+    // the remote — treat it the same as an outright failure here. The full play
+    // workflow force-resolves conflicts (local is authoritative post-play); the
+    // headless/manual callers of this core instead leave the unsynced-session
+    // marker in place so the next real launch resolves the divergence.
     let cloud_synced = out
         .errors
         .as_ref()
-        .and_then(|e| e.cloud_sync_failed.as_ref())
-        .is_none();
+        .is_none_or(|e| e.cloud_sync_failed.is_none() && e.cloud_conflict.is_none());
 
     let (game_count, bytes_total) = out
         .overall
@@ -264,11 +270,13 @@ pub async fn backup_game_core(
             bytes_total,
         )
         .await?;
-        // Manual backups also flip the sync badge to "synced" — the run
-        // workflow handles its own badge elsewhere.
+        // Reflect the real cloud state in the badge: "synced" only when the
+        // upload actually reached the remote, otherwise "local-newer" so the
+        // user sees the local save hasn't been backed up to the cloud yet.
+        let badge = if cloud_synced { "synced" } else { "local-newer" };
         let mut lib = library.lock().map_err(|_| AppError::LockPoisoned)?;
         if let Some(entry) = lib.entries.iter_mut().find(|e| e.id == game_id) {
-            entry.sync_badge = Some("synced".to_string());
+            entry.sync_badge = Some(badge.to_string());
         }
         lib.save()?;
     }
@@ -304,15 +312,17 @@ pub async fn manual_backup(app: AppHandle, game_id: String) -> AppResult<ManualB
 
     if result.game_count > 0 {
         let _ = app.emit("library:changed", &game_id);
-        let game_name = {
-            let lib = library.lock().map_err(|_| AppError::LockPoisoned)?;
-            lib.find(&game_id).map(|e| e.game_name.clone())
-        };
-        if let Some(name) = game_name {
-            // The manual backup cloud-syncs, so the saves are now in the
-            // cloud: clear any unsynced-session marker and record this device
-            // as the latest backer for the badge. Best-effort.
-            rclone::complete_session_backup(&app, &name).await;
+        // Only clear the unsynced-session marker when the saves actually reached
+        // the cloud. On a failed or conflicted upload the marker must stay so
+        // peers keep warning until a real sync happens. Best-effort.
+        if result.cloud_synced {
+            let game_name = {
+                let lib = library.lock().map_err(|_| AppError::LockPoisoned)?;
+                lib.find(&game_id).map(|e| e.game_name.clone())
+            };
+            if let Some(name) = game_name {
+                rclone::complete_session_backup(&app, &name).await;
+            }
         }
     }
     Ok(result)
@@ -1543,6 +1553,31 @@ async fn run_workflow(
             .map(|o| o.total_games == 0)
             .unwrap_or(false);
 
+    // ── Launch preflight ─────────────────────────────────────────────
+    // Validate the launch target BEFORE claiming the session marker. Writing a
+    // marker and then bailing out on a missing exe or a failed prefix-dir
+    // create would leave an orphaned Active marker in the remote, blocking
+    // every other device from launching this game until it ages out
+    // (ACTIVE_STALE_SECS). Doing these checks first means a failed launch never
+    // touches the cross-device control plane.
+    emit_phase(app, game_id, "launching", Some("Launching game…"), cloud_configured, None, false);
+    let exe_pathbuf = PathBuf::from(exe_path);
+    if !exe_pathbuf.is_file() {
+        return Err(AppError::Other(format!(
+            "Game executable not found at {exe_path}"
+        )));
+    }
+    // For Proton launches, make sure the prefix root exists; umu/Proton
+    // populates it (drive_c, registry) on first run.
+    if launch.use_proton {
+        if let Err(e) = std::fs::create_dir_all(&launch.prefix_root) {
+            return Err(AppError::Other(format!(
+                "failed to create Proton prefix dir {:?}: {e}",
+                launch.prefix_root
+            )));
+        }
+    }
+
     // ── Phase 1.5: claim the unsynced-session marker ──────────────────
     // Reads the per-game session marker in the cloud remote. If another
     // device is actively playing, or has a session whose saves aren't in
@@ -1567,28 +1602,10 @@ async fn run_workflow(
     }
 
     // ── Phase 2: launch + wait ───────────────────────────────────────
-    emit_phase(app, game_id, "launching", Some("Launching game…"), cloud_configured, None, false);
-    let exe_pathbuf = PathBuf::from(exe_path);
-    if !exe_pathbuf.is_file() {
-        return Err(AppError::Other(format!(
-            "Game executable not found at {exe_path}"
-        )));
-    }
-
     emit_phase(app, game_id, "playing", None, cloud_configured, None, false);
     tracing::info!(exe_path, use_proton = launch.use_proton, "launching game process");
     let session_start = Utc::now();
 
-    // For Proton launches, make sure the prefix root exists; umu/Proton
-    // populates it (drive_c, registry) on first run.
-    if launch.use_proton {
-        if let Err(e) = std::fs::create_dir_all(&launch.prefix_root) {
-            return Err(AppError::Other(format!(
-                "failed to create Proton prefix dir {:?}: {e}",
-                launch.prefix_root
-            )));
-        }
-    }
     let spec = if launch.use_proton {
         process::LaunchSpec::Proton {
             umu_run: launch
@@ -1800,17 +1817,17 @@ async fn run_workflow(
                     }
                 }
 
-                // Mark the entry as synced. After a successful backup
-                // we ARE the most recent device on the server (assuming
-                // the event recorded). If the event recording failed
-                // silently (offline), the badge will flip to
-                // local-newer on the next startup_sync.
+                // Set the badge to match the real cloud state: "synced" only
+                // when the upload reached the remote, otherwise "local-newer"
+                // so the user sees the local save hasn't been backed up to the
+                // cloud yet (a flaky network / unreachable remote).
+                let target_badge = if cloud_upload_failed { "local-newer" } else { "synced" };
                 let library = app.state::<SharedLibrary>();
                 let badge_changed = if let Ok(mut lib) = library.lock() {
                     let mut changed = false;
                     if let Some(entry) = lib.entries.iter_mut().find(|e| e.id == game_id) {
-                        if entry.sync_badge.as_deref() != Some("synced") {
-                            entry.sync_badge = Some("synced".to_string());
+                        if entry.sync_badge.as_deref() != Some(target_badge) {
+                            entry.sync_badge = Some(target_badge.to_string());
                             changed = true;
                         }
                     }

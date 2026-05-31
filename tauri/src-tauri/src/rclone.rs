@@ -472,6 +472,25 @@ async fn write_marker(remote: &RcloneRemote, marker: &SessionMarker) -> bool {
     rcat(&remote.exe, &remote.session_target(&marker.game_name), &body).await
 }
 
+/// Deletes the session marker for `game_name`, but only when it belongs to
+/// `device_id` (or no longer exists). Once another device steals/takes over a
+/// session it owns the marker; deleting it by name regardless — e.g. on this
+/// device's own normal session finish — would erase the peer's live record and
+/// silence the cross-device "unsynced session" warning. Best-effort.
+async fn delete_marker_if_ours(remote: &RcloneRemote, game_name: &str, device_id: &str) {
+    if let Some(m) = read_session_marker(remote, game_name).await {
+        if m.device_id != device_id {
+            tracing::info!(
+                game_name,
+                owner = %m.device_id,
+                "skipping session-marker delete — owned by another device"
+            );
+            return;
+        }
+    }
+    deletefile(&remote.exe, &remote.session_target(game_name)).await;
+}
+
 /// Phase 1.5: classify any existing marker and, when clear to proceed, claim
 /// the session by writing our own `Active` marker. `steal` overrides a peer's
 /// marker (the user's explicit "Play here instead"). No-op → `Free` when cloud
@@ -518,6 +537,21 @@ pub fn start_heartbeat(app: AppHandle, game_name: String, started_at: String) ->
             if device_id.is_empty() {
                 continue;
             }
+            // If a peer has taken over the session (the user hit "Play here
+            // instead" on another device), stop re-asserting our marker —
+            // otherwise the two devices' heartbeats fight and the steal never
+            // sticks. The local game is still running, but the cross-device
+            // record now belongs to the peer.
+            if let Some(m) = read_session_marker(&remote, &game_name).await {
+                if m.device_id != device_id {
+                    tracing::info!(
+                        game_name,
+                        owner = %m.device_id,
+                        "heartbeat: session taken over by another device — stopping"
+                    );
+                    return;
+                }
+            }
             let marker = SessionMarker {
                 game_name: game_name.clone(),
                 device_id,
@@ -541,6 +575,19 @@ pub async fn mark_session_pending_backup(app: &AppHandle, game_name: &str) {
     let (device_id, device_name) = device_identity(app);
     if device_id.is_empty() {
         return;
+    }
+    // If a peer took over during our session, the marker is now theirs — don't
+    // clobber their live record with our PendingBackup. Our own post-session
+    // backup still runs; we just don't reclaim the cross-device marker.
+    if let Some(m) = read_session_marker(&remote, game_name).await {
+        if m.device_id != device_id {
+            tracing::info!(
+                game_name,
+                owner = %m.device_id,
+                "skipping pending-backup marker write — owned by another device"
+            );
+            return;
+        }
     }
     let marker = build_marker(game_name, &device_id, &device_name, SessionState::PendingBackup, false);
     write_marker(&remote, &marker).await;
@@ -566,11 +613,11 @@ pub async fn complete_session_backup(app: &AppHandle, game_name: &str) {
     let Some(remote) = resolve_remote(app) else {
         return;
     };
-    deletefile(&remote.exe, &remote.session_target(game_name)).await;
     let (device_id, device_name) = device_identity(app);
     if device_id.is_empty() {
         return;
     }
+    delete_marker_if_ours(&remote, game_name, &device_id).await;
     update_device_blob(&remote, &device_id, |b| {
         b.device_name = device_name.clone();
         b.backups.insert(game_name.to_string(), Utc::now().to_rfc3339());
@@ -585,7 +632,11 @@ pub async fn delete_session_marker(app: &AppHandle, game_name: &str) {
     let Some(remote) = resolve_remote(app) else {
         return;
     };
-    deletefile(&remote.exe, &remote.session_target(game_name)).await;
+    let (device_id, _) = device_identity(app);
+    if device_id.is_empty() {
+        return;
+    }
+    delete_marker_if_ours(&remote, game_name, &device_id).await;
 }
 
 /// AppHandle-free marker deletion for `spool --backup` after a successful cloud
@@ -594,11 +645,11 @@ pub async fn complete_session_backup_from_config(cfg: &ConfigData, game_name: &s
     let Some(remote) = resolve_remote_from_config(cfg) else {
         return;
     };
-    deletefile(&remote.exe, &remote.session_target(game_name)).await;
     let device_id = cfg.device_id.trim();
     if device_id.is_empty() {
         return;
     }
+    delete_marker_if_ours(&remote, game_name, device_id).await;
     let device_name = cfg.device_name.trim().to_string();
     update_device_blob(&remote, device_id, |b| {
         b.device_name = device_name.clone();
@@ -641,8 +692,10 @@ pub async fn resume_session(app: &AppHandle, game_name: &str) -> Option<String> 
     }
     let existing = read_session_marker(&remote, game_name).await;
     if let Some(m) = &existing {
-        if m.device_id != device_id && !m.suspended {
-            // Someone took over while we slept.
+        if m.device_id != device_id {
+            // Someone took over while we slept — whether their marker is
+            // active or itself suspended. Don't overwrite it (that would erase
+            // their unsynced-session record); just report the takeover.
             return Some(m.device_name.clone());
         }
     }
@@ -709,7 +762,7 @@ pub async fn record_session_and_complete_backup(
     if device_id.is_empty() {
         return;
     }
-    deletefile(&remote.exe, &remote.session_target(game_name)).await;
+    delete_marker_if_ours(&remote, game_name, &device_id).await;
     let delta = session_minutes.max(0) as i64;
     update_device_blob(&remote, &device_id, |b| {
         b.device_name = device_name.clone();
