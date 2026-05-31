@@ -17,17 +17,21 @@
 #![cfg(unix)]
 
 use crate::error::{AppError, AppResult};
+use crate::lan::LanState;
 use crate::library::Library;
 use crate::ludusavi::LudusaviClient;
 use axum::{
-    extract::State as AxState,
-    response::Json,
+    body::Body,
+    extract::{Path as AxPath, State as AxState},
+    http::{header, StatusCode},
+    response::{Json, Response},
     routing::{get, post},
     Router,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tokio::net::TcpListener;
 use tower_http::{cors::CorsLayer, services::ServeDir};
 
@@ -41,16 +45,36 @@ use tower_http::{cors::CorsLayer, services::ServeDir};
 #[derive(Clone)]
 struct PluginState {
     ludusavi: Arc<LudusaviClient>,
+    /// Discovered LAN peers, kept fresh by a background listener spawned in
+    /// `serve`. The Decky UI reads it via `GET /lan/peers`.
+    lan: Arc<LanState>,
+    /// Shared HTTP client for proxying requests to peer file servers.
+    http: reqwest::Client,
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
 
-/// Start the plugin Unix socket server and run until killed.
+/// Start the plugin loopback HTTP server and run until killed.
 /// Called from `lib.rs::run_headless_server`.
 pub async fn serve() -> AppResult<()> {
     let state = PluginState {
         ludusavi: Arc::new(LudusaviClient::new()),
+        lan: Arc::new(LanState::new()),
+        http: reqwest::Client::new(),
     };
+
+    // Spawn the LAN discovery listener so `/lan/peers` has data. The Deck is a
+    // pure consumer here — no announce, no file server. Read our own device id
+    // from config so we self-filter the local machine's announces when the GUI
+    // also runs on the same box. Non-fatal: a bind failure just means no peers.
+    {
+        let device_id = crate::config::Config::load()
+            .map(|c| c.data.device_id)
+            .unwrap_or_default();
+        if let Err(e) = crate::lan::discovery::spawn_peer_listener(state.lan.clone(), device_id) {
+            tracing::warn!(error = %e, "LAN peer listener failed to start; /lan/peers will be empty");
+        }
+    }
 
     let router = Router::new()
         .route("/status", get(get_status))
@@ -58,11 +82,20 @@ pub async fn serve() -> AppResult<()> {
         .route("/session/game-stopped", post(post_game_stopped))
         .route("/session/backup-now", post(post_backup_now))
         .route("/library", get(get_library))
+        // LAN browsing: list discovered peers, and proxy a peer's game list /
+        // covers server-side (the UI can't reach a peer's non-loopback http
+        // directly — mixed content). See `lan/server.rs` for the peer API.
+        .route("/lan/peers", get(get_lan_peers))
+        .route("/lan/peers/:addr/:port/games", get(get_lan_peer_games))
+        .route(
+            "/lan/peers/:addr/:port/games/:id/cover",
+            get(get_lan_peer_cover),
+        )
         // Static cover art straight off disk — no per-cover handler. The UI
         // `<img>`-loads `/covers/<safe_name>.<ext>`.
         .nest_service("/covers", ServeDir::new(crate::paths::covers_dir()))
-        // The Decky UI runs under https://steamloopback.host, so its `/library`
-        // fetch is cross-origin and needs CORS. `<img>` covers are not
+        // The Decky UI runs under https://steamloopback.host, so its JSON
+        // fetches are cross-origin and need CORS. `<img>` covers are not
         // CORS-gated and load without this.
         .layer(CorsLayer::permissive())
         .with_state(state);
@@ -178,6 +211,71 @@ async fn post_backup_now(AxState(state): AxState<PluginState>) -> Json<Value> {
 async fn get_library() -> Json<Value> {
     let library = Library::load().unwrap_or_default();
     Json(serde_json::to_value(&library.entries).unwrap_or(json!([])))
+}
+
+// ── LAN browsing ───────────────────────────────────────────────────────────
+
+const PEER_PROXY_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Currently-discovered LAN peers (snapshot of the background listener).
+async fn get_lan_peers(AxState(state): AxState<PluginState>) -> Json<Value> {
+    Json(serde_json::to_value(state.lan.snapshot()).unwrap_or(json!([])))
+}
+
+/// Proxy a peer's `GET /games` (server-side so the UI dodges mixed content).
+async fn get_lan_peer_games(
+    AxState(state): AxState<PluginState>,
+    AxPath((addr, port)): AxPath<(String, u16)>,
+) -> Result<Json<Value>, StatusCode> {
+    if port == 0 {
+        return Err(StatusCode::BAD_REQUEST); // discovery-only peer, no file server
+    }
+    let url = format!("http://{addr}:{port}/games");
+    let resp = state
+        .http
+        .get(&url)
+        .timeout(PEER_PROXY_TIMEOUT)
+        .send()
+        .await
+        .map_err(|_| StatusCode::BAD_GATEWAY)?;
+    if !resp.status().is_success() {
+        return Err(StatusCode::BAD_GATEWAY);
+    }
+    let games: Value = resp.json().await.map_err(|_| StatusCode::BAD_GATEWAY)?;
+    Ok(Json(games))
+}
+
+/// Proxy a peer's cover image so the LAN grid can `<img>`-load it by URL.
+async fn get_lan_peer_cover(
+    AxState(state): AxState<PluginState>,
+    AxPath((addr, port, id)): AxPath<(String, u16, String)>,
+) -> Result<Response, StatusCode> {
+    if port == 0 {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    let url = format!("http://{addr}:{port}/games/{id}/cover");
+    let resp = state
+        .http
+        .get(&url)
+        .timeout(PEER_PROXY_TIMEOUT)
+        .send()
+        .await
+        .map_err(|_| StatusCode::BAD_GATEWAY)?;
+    if !resp.status().is_success() {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    let content_type = resp
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("image/jpeg")
+        .to_string();
+    let bytes = resp.bytes().await.map_err(|_| StatusCode::BAD_GATEWAY)?;
+    let mut response = Response::new(Body::from(bytes));
+    if let Ok(value) = content_type.parse() {
+        response.headers_mut().insert(header::CONTENT_TYPE, value);
+    }
+    Ok(response)
 }
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
