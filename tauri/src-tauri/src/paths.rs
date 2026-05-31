@@ -31,15 +31,15 @@ pub fn active_session_file() -> PathBuf {
     app_data_dir().join("active-session.json")
 }
 
-/// Unix socket path for the companion Decky plugin server
-/// (`spool --headless-server`). The plugin connects here instead of
-/// spawning `spool --backup` / `spool --release-lock` subprocesses.
+/// File holding the loopback TCP port of the companion Decky plugin server
+/// (`spool --headless-server`). The server writes its resolved port here on
+/// startup; the Decky plugin (both the Python backend and the React UI, via a
+/// `callable`) reads it to build the `http://127.0.0.1:<port>` base URL.
 #[cfg(unix)]
-pub fn plugin_socket_path() -> PathBuf {
-    app_data_dir().join("plugin.sock")
+pub fn plugin_http_port_path() -> PathBuf {
+    app_data_dir().join("plugin-http-port")
 }
 
-#[allow(dead_code)]
 pub fn covers_dir() -> PathBuf {
     app_data_dir().join("covers")
 }

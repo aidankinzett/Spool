@@ -1,6 +1,6 @@
 """Spool — Decky Loader plugin backend.
 
-Communicates with `spool --headless-server` over a Unix socket using plain
+Communicates with `spool --headless-server` over loopback TCP using plain
 HTTP. The headless server owns all backup logic, session state, and library
 access; this plugin is a thin adapter that:
 
@@ -8,19 +8,25 @@ access; this plugin is a thin adapter that:
     unload).
   * Forwards game-stop events to POST /session/game-stopped so the server can
     decide whether a forced-close fallback backup is needed.
-  * Exposes the server's endpoints to the QAM frontend.
+  * Exposes the server's endpoints to the QAM frontend, and hands the React UI
+    the server's base URL so it can fetch `/library` and `<img>`-load
+    `/covers/*` directly.
 
-Why a socket instead of subprocesses: a persistent server avoids the cold-
+Why a server instead of subprocesses: a persistent server avoids the cold-
 start cost of a fresh Spool process on every operation, gives the plugin
 access to live in-process state (library, LAN peers), and returns richer
-structured responses — including eventual SSE progress streams.
+structured responses. Loopback TCP (rather than a Unix socket) lets the React
+UI talk to it directly — `<img>` can't load from a socket, but it can from
+`http://127.0.0.1:<port>`.
+
+The server publishes its resolved port to `~/.local/share/Spool/plugin-http-port`
+on startup; an absent file means the server is not running.
 """
 
 import asyncio
 import http.client
 import json
 import os
-import socket
 import subprocess
 import sys
 from functools import partial
@@ -28,11 +34,21 @@ from typing import Optional
 
 import decky
 
-# ── Socket path (mirrors paths::plugin_socket_path in Rust) ──────────────────
+# ── Server address (mirrors paths::plugin_http_port_path in Rust) ────────────
 
-def _socket_path() -> str:
+def _http_port_path() -> str:
     home = os.environ.get("HOME") or getattr(decky, "HOME", "") or os.path.expanduser("~")
-    return os.path.join(home, ".local", "share", "Spool", "plugin.sock")
+    return os.path.join(home, ".local", "share", "Spool", "plugin-http-port")
+
+
+def _read_port() -> Optional[int]:
+    """Read the loopback port the headless server published, or None if the
+    server isn't running (file absent or unreadable)."""
+    try:
+        with open(_http_port_path(), "r", encoding="utf-8") as f:
+            return int(f.read().strip())
+    except (OSError, ValueError):
+        return None
 
 
 def _launcher_path() -> str:
@@ -61,30 +77,7 @@ def _save_settings(settings: dict) -> None:
         json.dump(settings, f, indent=2)
 
 
-# ── HTTP-over-Unix-socket client ──────────────────────────────────────────────
-
-class _UnixSocketHTTPConnection(http.client.HTTPConnection):
-    """HTTPConnection that connects over a Unix domain socket.
-
-    Standard library only — no extra packages required in the Decky
-    environment. The `host` value is arbitrary (not used for routing) since
-    everything goes through the socket file.
-    """
-
-    def __init__(self, sock_path: str, timeout: float = 5.0):
-        super().__init__("spool", timeout=timeout)
-        self._sock_path = sock_path
-
-    def connect(self):
-        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        try:
-            s.settimeout(self.timeout)
-            s.connect(self._sock_path)
-        except Exception:
-            s.close()
-            raise
-        self.sock = s
-
+# ── HTTP-over-loopback-TCP client ─────────────────────────────────────────────
 
 def _request_sync(
     method: str,
@@ -92,17 +85,17 @@ def _request_sync(
     body: Optional[dict] = None,
     timeout: float = 30.0,
 ) -> Optional[dict]:
-    """Synchronous HTTP request over the plugin Unix socket.
+    """Synchronous HTTP request to the plugin's loopback TCP server.
 
-    Returns the parsed JSON response dict, or None if the socket is
-    unavailable or the response cannot be parsed. Intended to be called
-    via `run_in_executor` from async handlers.
+    Returns the parsed JSON response dict, or None if the server is
+    unavailable (no published port) or the response cannot be parsed.
+    Intended to be called via `run_in_executor` from async handlers.
     """
-    sock = _socket_path()
-    if not os.path.exists(sock):
+    port = _read_port()
+    if port is None:
         return None
     try:
-        conn = _UnixSocketHTTPConnection(sock, timeout=timeout)
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=timeout)
         headers: dict = {}
         data: Optional[bytes] = None
         if body is not None:
@@ -215,10 +208,9 @@ def _stop_server() -> None:
         _server_proc.kill()
     finally:
         _server_proc = None
-    # Clean up the socket file if the server left it.
-    sock = _socket_path()
+    # Clean up the published port file if the server left it.
     try:
-        os.remove(sock)
+        os.remove(_http_port_path())
     except OSError:
         pass
 
@@ -251,9 +243,9 @@ class Plugin:
         result = await _spool("POST", "/session/game-stopped", {"appid": appid}, timeout=120.0)
         if result is None:
             decky.logger.warning(
-                "Spool: socket unavailable for game-stopped (appid %s)", appid
+                "Spool: server unavailable for game-stopped (appid %s)", appid
             )
-            return {"acted": False, "reason": "socket unavailable"}
+            return {"acted": False, "reason": "server unavailable"}
 
         notify = _load_settings().get("notify", True)
         if notify and result.get("acted"):
@@ -271,7 +263,7 @@ class Plugin:
     async def backup_now(self) -> dict:
         result = await _spool("POST", "/session/backup-now", timeout=120.0)
         if result is None:
-            return {"acted": False, "ok": False, "reason": "socket unavailable"}
+            return {"acted": False, "ok": False, "reason": "server unavailable"}
         return result
 
     async def get_status(self) -> dict:
@@ -279,6 +271,13 @@ class Plugin:
         if result is None:
             return {"hasSession": False}
         return result
+
+    async def get_server_base(self) -> dict:
+        """Hand the React UI the loopback base URL so it can fetch `/library`
+        and `<img>`-load `/covers/*` directly. `baseUrl` is None when the
+        headless server isn't running yet."""
+        port = _read_port()
+        return {"baseUrl": f"http://127.0.0.1:{port}" if port else None}
 
     async def get_settings(self) -> dict:
         s = _load_settings()
