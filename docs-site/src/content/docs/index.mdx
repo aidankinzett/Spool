@@ -1,0 +1,42 @@
+---
+title: Spool
+description: Cross-platform game library + save-management wrapper built with Tauri 2 and SvelteKit.
+template: splash
+hero:
+  tagline: A cross-platform game library and save-management wrapper for Windows and Linux gaming handhelds.
+  actions:
+    - text: Getting Started
+      link: /Spool/guides/getting-started/
+      icon: right-arrow
+      variant: primary
+    - text: View on GitHub
+      link: https://github.com/aidankinzett/Spool
+      icon: external
+      variant: minimal
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+## Developer documentation
+
+This site is for people **working on** Spool. For the user-facing feature
+tour, see the [`README`](https://github.com/aidankinzett/Spool#readme).
+
+<CardGrid>
+	<Card title="Getting Started" icon="rocket">
+		Clone, install dependencies, and run the app in development mode.
+		[Read the guide →](/Spool/guides/getting-started/)
+	</Card>
+	<Card title="Architecture" icon="setting">
+		How the long-lived Tauri process owns state and the SvelteKit frontend
+		renders it. [Explore →](/Spool/architecture/overview/)
+	</Card>
+	<Card title="Contributing" icon="pencil">
+		Branching, checks, and what CI expects before you open a PR.
+		[Read the guide →](/Spool/guides/contributing/)
+	</Card>
+	<Card title="Built with Astro Starlight" icon="open-book">
+		These docs live in `docs-site/` and deploy to GitHub Pages on every push to
+		`master`.
+	</Card>
+</CardGrid>
