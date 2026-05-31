@@ -4,6 +4,7 @@
     Check,
     Cloud,
     Cpu,
+    Download,
     Folder,
     Gamepad2,
     Grid2x2,
@@ -11,8 +12,8 @@
     KeyRound,
     Layers,
     MonitorSmartphone,
-    Plus,
     RefreshCcw,
+    Shield,
     Sparkles,
     Wifi,
   } from '@lucide/svelte';
@@ -52,7 +53,6 @@
 
   let deckyPlugin = $state<DeckyPluginInfo | null>(null);
   let deckyInstalling = $state(false);
-  let addingSpoolToSteam = $state(false);
 
   onMount(async () => {
     try {
@@ -118,34 +118,6 @@
       toasts.show({ kind: 'bad', label: 'DECKY', title: "Couldn't install plugin", sub: String(e) });
     } finally {
       deckyInstalling = false;
-    }
-  }
-
-  async function addSpoolToSteam() {
-    addingSpoolToSteam = true;
-    try {
-      await api.addSpoolToSteam();
-      toasts.show({ kind: 'ok', label: 'STEAM', title: 'Spool added to Steam', sub: 'Restart Steam to see the Spool shortcut in your library.' });
-    } catch (e) {
-      toasts.show({ kind: 'bad', label: 'STEAM', title: "Couldn't add to Steam", sub: String(e) });
-    } finally {
-      addingSpoolToSteam = false;
-    }
-  }
-
-  async function autoDetectUmu() {
-    if (!config) return;
-    const found = await api.detectUmuRun();
-    if (found) config.umu_run_path = found;
-    config = await api.getConfig();
-    await refreshDeps();
-  }
-
-  async function browseUmu() {
-    const picked = await openDialog({ title: 'Locate umu-run', multiple: false });
-    if (typeof picked === 'string' && config) {
-      config.umu_run_path = picked;
-      await persist();
     }
   }
 
@@ -569,7 +541,7 @@
                   {/snippet}
 
                   <SettingsRow
-                    label="Spool Backup plugin"
+                    label="Plugin"
                     status={dp?.installed ? (needsUpdate ? 'warn' : 'ok') : 'warn'}
                     helper={!dp
                       ? 'Checking…'
@@ -588,22 +560,41 @@
                       </Btn>
                     {/snippet}
                   </SettingsRow>
-                </SettingsCard>
 
-                <!-- Add to Steam -->
-                <SettingsCard
-                  title="Steam"
-                  helper="Add Spool to your Steam library so you can launch it from Gaming Mode on SteamOS and Steam Deck."
-                >
-                  {#snippet icon()}<Plus size={14} />{/snippet}
-                  <SettingsRow label="Add Spool to Steam" helper="Creates a non-Steam shortcut in your Steam library. Restart Steam after adding.">
-                    {#snippet extras()}
-                      <Btn variant="primary" onclick={addSpoolToSteam} disabled={addingSpoolToSteam}>
-                        {#snippet icon()}<Plus size={14} />{/snippet}
-                        {addingSpoolToSteam ? 'Adding…' : 'Add to Steam'}
-                      </Btn>
-                    {/snippet}
-                  </SettingsRow>
+                  {#if dp?.installed}
+                    <div class="border-t border-dashed border-line-1 bg-bg-0">
+                      <div class="px-[18px] pt-[11px] pb-1">
+                        <MonoLabel size={9.5}>In Game Mode, this plugin can</MonoLabel>
+                      </div>
+                      <div class="flex items-start gap-3 px-[18px] py-3">
+                        <span class="flex mt-[1px] shrink-0 w-6 h-6 rounded-[5px] bg-white/[0.04] items-center justify-center text-spool">
+                          <Shield size={13} />
+                        </span>
+                        <div class="flex-1 min-w-0">
+                          <div class="text-[12.5px] font-medium text-ink-0">Backup on forced quit</div>
+                          <div class="mt-[2px] text-[11px] leading-[1.5] text-ink-2 max-w-[480px]">Quick Access → Exit Game can kill Spool before it saves. The plugin runs the backup from outside the game's process tree as a safety net.</div>
+                        </div>
+                      </div>
+                      <div class="flex items-start gap-3 px-[18px] py-3">
+                        <span class="flex mt-[1px] shrink-0 w-6 h-6 rounded-[5px] bg-white/[0.04] items-center justify-center text-spool">
+                          <Grid2x2 size={13} />
+                        </span>
+                        <div class="flex-1 min-w-0">
+                          <div class="text-[12.5px] font-medium text-ink-0">Browse library in Game Mode</div>
+                          <div class="mt-[2px] text-[11px] leading-[1.5] text-ink-2 max-w-[480px]">See your cover-art shelf and launch games from the Quick Access panel — no Desktop Mode round-trip.</div>
+                        </div>
+                      </div>
+                      <div class="flex items-start gap-3 px-[18px] py-3">
+                        <span class="flex mt-[1px] shrink-0 w-6 h-6 rounded-[5px] bg-white/[0.04] items-center justify-center text-spool">
+                          <Download size={13} />
+                        </span>
+                        <div class="flex-1 min-w-0">
+                          <div class="text-[12.5px] font-medium text-ink-0">LAN downloads in Game Mode</div>
+                          <div class="mt-[2px] text-[11px] leading-[1.5] text-ink-2 max-w-[480px]">Discover peers and pull game installs over your local network straight from the panel.</div>
+                        </div>
+                      </div>
+                    </div>
+                  {/if}
                 </SettingsCard>
 
                 <!-- Compatibility -->
@@ -631,24 +622,6 @@
                           <option style="background: var(--color-bg-2); color: var(--color-ink-0)" value={p.path}>{p.name}</option>
                         {/each}
                       </select>
-                    {/snippet}
-                  </SettingsRow>
-
-                  <SettingsRow
-                    label="umu-run"
-                    helper={config.umu_run_path ? 'Detected — launcher reachable.' : 'Install umu-launcher or browse to umu-run.'}
-                    status={config.umu_run_path ? 'ok' : 'warn'}
-                  >
-                    {#snippet extras()}
-                      <TextField bind:value={config!.umu_run_path} placeholder="/usr/bin/umu-run" mono full oncommit={persist} />
-                      <Btn variant="ghost" onclick={autoDetectUmu}>
-                        {#snippet icon()}<Sparkles size={14} />{/snippet}
-                        Auto-detect
-                      </Btn>
-                      <Btn variant="ghost" onclick={browseUmu}>
-                        {#snippet icon()}<Folder size={14} />{/snippet}
-                        Browse
-                      </Btn>
                     {/snippet}
                   </SettingsRow>
 
