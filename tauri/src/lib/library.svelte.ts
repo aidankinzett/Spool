@@ -93,10 +93,10 @@ export function createLibrary() {
   const syncOff = $derived(syncStatus.reachability === 'offline');
   const syncTitle = $derived(
     syncStatus.reachability === 'unconfigured'
-      ? 'Sync server not configured — open Settings to set it up'
+      ? 'Cloud remote not configured — open Settings to set it up'
       : syncOk
-        ? `Sync server online${syncStatus.server_version ? ` · v${syncStatus.server_version}` : ''}`
-        : `Sync server unreachable${syncStatus.error ? ` · ${syncStatus.error}` : ''}`,
+        ? 'Cloud remote reachable'
+        : `Cloud remote unreachable${syncStatus.error ? ` · ${syncStatus.error}` : ''}`,
   );
   const downloadActive = $derived(
     activeDownload != null &&

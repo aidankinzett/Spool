@@ -119,11 +119,11 @@
             </span>
           {/if}
         </button>
-        <!-- Sync server status — cloud icon, tinted by reachability.
+        <!-- Cloud remote status — cloud icon, tinted by reachability.
              Clicking opens Settings → Sync Server. -->
         <button
           onclick={() => openView('settings')}
-          aria-label="Sync server status"
+          aria-label="Cloud remote status"
           title={lib.syncTitle}
           class="inline-flex cursor-pointer items-center justify-center rounded-sm border-none bg-transparent transition-colors hover:bg-white/10"
           style:height="var(--control-h-icon)"
