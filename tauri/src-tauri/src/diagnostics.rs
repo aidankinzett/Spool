@@ -13,11 +13,9 @@ use tauri::State;
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum DepSource {
-    /// Explicit path set by the user in Settings.
-    Config,
     /// Bundled sidecar shipped with Spool (next to the executable).
     Bundled,
-    /// Found on the system PATH.
+    /// Found on the system PATH or a well-known path.
     System,
     /// Not found anywhere.
     Missing,
@@ -63,7 +61,7 @@ fn check_umu_run(configured: &str, distro: &Distro) -> DepStatus {
     if !configured.is_empty() {
         let p = std::path::PathBuf::from(configured);
         if p.is_file() {
-            return found("umu-run", configured, DepSource::Config);
+            return found("umu-run", configured, DepSource::System);
         }
     }
     let well_known = std::path::Path::new("/usr/bin/umu-run");

@@ -988,6 +988,161 @@ async fn poll_once(app: &AppHandle) {
     }
 }
 
+// ── OAuth remote authentication ─────────────────────────────────────────────
+
+/// Maps a UI provider string to `(rclone_type, remote_name)`.
+///
+/// `remote_name` must match the bare-string name that `apply_cloud` in
+/// `ludusavi_config.rs` writes into ludusavi's `config.yaml` — that is what
+/// `rclone lsd <remote>:` (the reachability probe) will look up.
+fn oauth_remote(provider: &str) -> Option<(&'static str, &'static str)> {
+    match provider {
+        "google-drive" => Some(("drive",     "GoogleDrive")),
+        "dropbox"      => Some(("dropbox",   "Dropbox")),
+        "onedrive"     => Some(("onedrive",  "OneDrive")),
+        "box"          => Some(("box",       "Box")),
+        _              => None,
+    }
+}
+
+/// Holds the child process of an in-flight `rclone authorize` so that
+/// `cancel_cloud_oauth` can kill it while `connect_cloud_oauth` is waiting.
+#[derive(Default)]
+pub struct OAuthState {
+    child: tokio::sync::Mutex<Option<tokio::process::Child>>,
+}
+
+/// Returns `true` when an rclone remote with the name matching `provider` already
+/// exists in rclone.conf (i.e. OAuth was previously completed). Fast check via
+/// `rclone config show <name>` — non-empty stdout = exists.
+#[tauri::command]
+pub async fn check_cloud_remote_exists(provider: String) -> bool {
+    let Some((_, remote_name)) = oauth_remote(&provider) else {
+        return false;
+    };
+    let Some(exe) = crate::paths::resolve_rclone_path() else {
+        return false;
+    };
+    let mut cmd = tokio::process::Command::new(&exe);
+    cmd.args(["config", "show", remote_name]);
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::null());
+    cmd.stdin(std::process::Stdio::null());
+    cmd.kill_on_drop(true);
+    let Ok(child) = cmd.spawn() else {
+        return false;
+    };
+    match tokio::time::timeout(Duration::from_secs(3), child.wait_with_output()).await {
+        Ok(Ok(out)) => out.status.success() && !out.stdout.trim_ascii().is_empty(),
+        _ => false,
+    }
+}
+
+/// Run the rclone OAuth browser flow for `provider` and register the resulting
+/// remote in rclone.conf so that ludusavi can use it for cloud sync.
+///
+/// This command blocks until the user completes the browser auth flow (up to 5
+/// minutes). The frontend keeps a spinner visible during this time. Call
+/// `cancel_cloud_oauth` to abort.
+#[tauri::command]
+pub async fn connect_cloud_oauth(
+    provider: String,
+    app: AppHandle,
+    state: State<'_, OAuthState>,
+) -> crate::error::AppResult<()> {
+    use crate::error::AppError;
+    use tokio::io::AsyncBufReadExt;
+
+    let (rclone_type, remote_name) = oauth_remote(&provider)
+        .ok_or_else(|| AppError::Other(format!("'{provider}' does not use OAuth (use WebDAV form or configure rclone manually)")))?;
+
+    let exe = crate::paths::resolve_rclone_path()
+        .ok_or_else(|| AppError::Other("rclone binary not found".into()))?;
+
+    // Build the authorize command WITHOUT base_command — base_command sets
+    // CREATE_NO_WINDOW on Windows which would silently suppress the browser launch.
+    let mut cmd = tokio::process::Command::new(&exe);
+    cmd.arg("authorize").arg(rclone_type);
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::null());
+    cmd.stdin(std::process::Stdio::null());
+    cmd.kill_on_drop(true);
+
+    let mut child = cmd.spawn()
+        .map_err(|e| AppError::Other(format!("failed to start rclone authorize: {e}")))?;
+
+    let stdout = child.stdout.take()
+        .ok_or_else(|| AppError::Other("could not open rclone stdout".into()))?;
+
+    // Park the child so cancel_cloud_oauth can kill it.
+    *state.child.lock().await = Some(child);
+
+    // Scan stdout line-by-line for the JSON token between the arrow markers.
+    let mut reader = tokio::io::BufReader::new(stdout).lines();
+    let mut in_token = false;
+    let mut token_json: Option<String> = None;
+
+    // Five-minute wall-clock budget for the user to complete browser auth.
+    // EOF or broken pipe (child killed by cancel_cloud_oauth) exits the while let.
+    let _ = tokio::time::timeout(Duration::from_secs(300), async {
+        while let Ok(Some(line)) = reader.next_line().await {
+            if line.contains("--->") {
+                in_token = true;
+                continue;
+            }
+            if in_token && line.trim_start().starts_with('{') {
+                token_json = Some(line.trim().to_string());
+            }
+            if line.contains("<---End paste") {
+                break;
+            }
+        }
+    })
+    .await;
+
+    // Release the child slot regardless of outcome.
+    *state.child.lock().await = None;
+
+    let token = token_json
+        .ok_or_else(|| AppError::Other("OAuth flow was cancelled or did not complete".into()))?;
+
+    // Register the remote in rclone.conf.
+    let token_arg = format!("token={token}");
+    let mut create_cmd = base_command(&exe);
+    create_cmd.args(["config", "create", remote_name, rclone_type, &token_arg]);
+    let create_child = create_cmd.spawn()
+        .map_err(|e| AppError::Other(format!("rclone config create spawn failed: {e}")))?;
+    let create_out = tokio::time::timeout(
+        Duration::from_secs(15),
+        create_child.wait_with_output(),
+    )
+    .await
+    .map_err(|_| AppError::Other("rclone config create timed out".into()))?
+    .map_err(|e| AppError::Other(format!("rclone config create error: {e}")))?;
+
+    if !create_out.status.success() {
+        let stderr = String::from_utf8_lossy(&create_out.stderr).trim().to_string();
+        return Err(AppError::Other(format!("rclone config create failed: {stderr}")));
+    }
+
+    // Immediately probe the new remote so the frontend badge updates.
+    poll_once(&app).await;
+
+    Ok(())
+}
+
+/// Abort an in-flight `connect_cloud_oauth` call by killing the `rclone authorize`
+/// child process. The blocked `connect_cloud_oauth` will then see EOF on its
+/// stdout reader and return an error to the frontend.
+#[tauri::command]
+pub async fn cancel_cloud_oauth(state: State<'_, OAuthState>) -> crate::error::AppResult<()> {
+    let mut slot = state.child.lock().await;
+    if let Some(mut child) = slot.take() {
+        let _ = child.kill().await;
+    }
+    Ok(())
+}
+
 // ── Tauri commands ──────────────────────────────────────────────────────────
 
 #[tauri::command]

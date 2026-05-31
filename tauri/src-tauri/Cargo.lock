@@ -4058,6 +4058,7 @@ name = "spool"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "base64 0.22.1",
  "blake3",
  "chrono",
  "dirs 5.0.1",

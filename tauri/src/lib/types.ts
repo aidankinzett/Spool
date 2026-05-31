@@ -346,12 +346,11 @@ export type RunPhaseEvent = {
  */
 /**
  * Resolution source for a dependency, from `check_dependencies`.
- *   config   — path set explicitly by the user in Settings
  *   bundled  — sidecar shipped alongside the Spool executable
- *   system   — found on the system PATH
+ *   system   — found on the system PATH or a well-known path
  *   missing  — not found anywhere
  */
-export type DepSource = 'config' | 'bundled' | 'system' | 'missing';
+export type DepSource = 'bundled' | 'system' | 'missing';
 
 /**
  * Status of a single runtime dependency (umu-run, ludusavi, rclone).

@@ -66,6 +66,154 @@ interface LibraryGame {
   accent_color: string | null;
 }
 
+// Shortcut fields from the backend (mirrors what desktop "Add to Steam" writes).
+interface LaunchInfo {
+  appName: string;
+  exe: string;
+  startDir: string;
+  launchOptions: string;
+}
+
+// The subset of the live `SteamClient.Apps` API we use to create + launch a
+// non-Steam shortcut without restarting Steam. AddShortcut returns the new
+// appid; the setters are defensive (some Steam builds ignore AddShortcut's
+// extra args).
+interface SteamApps {
+  AddShortcut(appName: string, exe: string, dir: string, opts: string): Promise<number>;
+  SetShortcutName?(appId: number, name: string): void;
+  SetShortcutExe?(appId: number, path: string): void;
+  SetShortcutStartDir?(appId: number, dir: string): void;
+  SetShortcutLaunchOptions?(appId: number, opts: string): void;
+  // SetCustomArtworkForApp(appId, base64, 'png'|'jpg', assetType): the live,
+  // no-restart way to set Steam library art. assetType is ELibraryAssetType.
+  SetCustomArtworkForApp?(
+    appId: number,
+    base64: string,
+    imageType: string,
+    assetType: number,
+  ): Promise<void>;
+}
+function steamApps(): SteamApps | undefined {
+  return (SteamClient as unknown as { Apps?: SteamApps }).Apps;
+}
+
+// Steam's ELibraryAssetType. We set the four that matter for a polished tile
+// (icon is noisy/optional for non-Steam shortcuts, so we skip it).
+const STEAM_ASSET: Record<string, number> = {
+  capsule: 0, // portrait tile
+  hero: 1, // banner behind the page
+  logo: 2, // transparent title logo
+  header: 3, // wide capsule
+};
+
+// Pull each art kind from the backend (base64) and apply it live. Best-effort:
+// any kind the backend 404s (no SteamGridDB art, etc.) is silently skipped, and
+// art failures never block the launch.
+async function applyArtwork(base: string, gameId: string, appid: number, apps: SteamApps) {
+  if (!apps.SetCustomArtworkForApp) return;
+  for (const [kind, assetType] of Object.entries(STEAM_ASSET)) {
+    try {
+      const res = await fetch(`${base}/games/${gameId}/steam-art/${kind}`);
+      if (!res.ok) continue;
+      const { imageType, base64 } = (await res.json()) as {
+        imageType: string;
+        base64: string;
+      };
+      await apps.SetCustomArtworkForApp(appid, base64, imageType, assetType);
+    } catch {
+      /* best-effort per asset */
+    }
+  }
+}
+
+// Persist game_id -> Steam appid so a game added to Steam once isn't re-added
+// (which would duplicate the shortcut) on later launches. Lives in the CEF
+// web-context localStorage (steamloopback.host origin).
+const APPID_MAP_KEY = "spool:steamAppids";
+function loadAppidMap(): Record<string, number> {
+  try {
+    return JSON.parse(localStorage.getItem(APPID_MAP_KEY) || "{}");
+  } catch {
+    return {};
+  }
+}
+function rememberAppid(gameId: string, appid: number) {
+  const map = loadAppidMap();
+  map[gameId] = appid;
+  localStorage.setItem(APPID_MAP_KEY, JSON.stringify(map));
+}
+
+// Best-effort: does Steam still know this appid? (The user may have removed the
+// shortcut.) If we can't tell, assume yes and let the launch attempt proceed.
+function appStillExists(appid: number): boolean {
+  try {
+    const store = (
+      window as unknown as { appStore?: { GetAppOverviewByAppID?: (id: number) => unknown } }
+    ).appStore;
+    return !store?.GetAppOverviewByAppID ? true : !!store.GetAppOverviewByAppID(appid);
+  } catch {
+    return true;
+  }
+}
+
+// Steam's gameid for a non-Steam shortcut: (appid << 32) | 0x02000000.
+function shortcutGameId(appid: number): string {
+  return ((BigInt(appid) << 32n) | 0x02000000n).toString();
+}
+
+// Launch a local-library game in Game Mode: ensure it's a non-Steam shortcut
+// (created live via SteamClient.Apps — no Steam restart needed) then ask Steam
+// to run it. Steam runs `spool --run "Name" "Exe"`, which triggers the existing
+// attached-launch workflow (restore -> play -> backup).
+async function launchLibraryGame(base: string, gameId: string) {
+  const apps = steamApps();
+  if (!apps?.AddShortcut) {
+    toaster.toast({ title: "Spool", body: "Launching needs Steam Game Mode." });
+    return;
+  }
+
+  let info: LaunchInfo;
+  try {
+    const res = await fetch(`${base}/games/${gameId}/steam-launch-info`);
+    if (!res.ok) throw new Error("bad status");
+    info = (await res.json()) as LaunchInfo;
+  } catch {
+    toaster.toast({ title: "Spool", body: "Couldn't prepare launch." });
+    return;
+  }
+
+  let appid: number | undefined = loadAppidMap()[gameId];
+  if (appid == null || !appStillExists(appid)) {
+    toaster.toast({ title: "Spool", body: `Adding ${info.appName} to Steam…` });
+    try {
+      appid = await apps.AddShortcut(info.appName, info.exe, info.startDir, info.launchOptions);
+    } catch {
+      toaster.toast({ title: "Spool", body: "Couldn't add to Steam." });
+      return;
+    }
+    // Defensive: some Steam builds ignore AddShortcut's extra args.
+    try { apps.SetShortcutName?.(appid, info.appName); } catch { /* best-effort */ }
+    try { apps.SetShortcutExe?.(appid, info.exe); } catch { /* best-effort */ }
+    try { apps.SetShortcutStartDir?.(appid, info.startDir); } catch { /* best-effort */ }
+    try { apps.SetShortcutLaunchOptions?.(appid, info.launchOptions); } catch { /* best-effort */ }
+    rememberAppid(gameId, appid);
+    // Set library artwork live (portrait/hero/logo/wide). Best-effort — never
+    // blocks the launch.
+    await applyArtwork(base, gameId, appid, apps);
+    // Give Steam a moment to register the new shortcut before launching it.
+    await new Promise((r) => setTimeout(r, 500));
+  }
+
+  if (appid == null) {
+    toaster.toast({ title: "Spool", body: "Couldn't resolve Steam shortcut." });
+    return;
+  }
+
+  toaster.toast({ title: "Spool", body: `Launching ${info.appName}…` });
+  Navigation.Navigate(`steam://rungameid/${shortcutGameId(appid)}`);
+  Navigation.CloseSideMenus();
+}
+
 // Mirror of the Rust `LanPeer` (lan/discovery.rs).
 interface LanPeer {
   device_id: string;
@@ -206,6 +354,7 @@ function LibraryGrid({ base }: { base: string }) {
 
   return (
     <CoverGrid
+      onActivate={(id) => void launchLibraryGame(base, id)}
       tiles={games.map((g) => ({
         key: g.id,
         name: g.game_name,

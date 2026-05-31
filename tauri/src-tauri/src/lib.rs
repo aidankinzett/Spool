@@ -263,6 +263,7 @@ pub fn run() {
         .manage::<LanUploadsState>(LanUploadsState::default())
         .manage::<LanServerShutdown>(LanServerShutdown::default())
         .manage::<SyncStatusState>(SyncStatusState::default())
+        .manage::<rclone::OAuthState>(rclone::OAuthState::default())
         .invoke_handler(tauri::generate_handler![
             take_pending_run,
             notify_splash_ready,
@@ -301,6 +302,9 @@ pub fn run() {
             // cloud control-plane status (rclone reachability)
             rclone::current_sync_status,
             rclone::refresh_sync_status,
+            rclone::check_cloud_remote_exists,
+            rclone::connect_cloud_oauth,
+            rclone::cancel_cloud_oauth,
             // lan discovery
             lan::discovery::list_lan_peers,
             lan::install::fetch_peer_games,
