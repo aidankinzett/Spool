@@ -151,7 +151,7 @@ async fn post_game_stopped(
     // so the game stops showing as "playing on <device>" immediately.
     crate::sync::release_lock_headless(&config.data, &rec.game).await;
 
-    run_backup(&state, &rec.game).await
+    run_backup(&state, &rec.game, &rec.session_id).await
 }
 
 /// Manual backup from the QAM "Back up now" button. No appid check; no lock
@@ -160,7 +160,7 @@ async fn post_backup_now(AxState(state): AxState<PluginState>) -> Json<Value> {
     let Some(rec) = crate::session::read() else {
         return Json(json!({ "acted": false, "ok": false, "reason": "no active session" }));
     };
-    run_backup(&state, &rec.game).await
+    run_backup(&state, &rec.game, &rec.session_id).await
 }
 
 async fn get_library() -> Json<Value> {
@@ -170,7 +170,7 @@ async fn get_library() -> Json<Value> {
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
-async fn run_backup(state: &PluginState, game_name: &str) -> Json<Value> {
+async fn run_backup(state: &PluginState, game_name: &str, session_id: &str) -> Json<Value> {
     // Reload config and library from disk on every backup so changes made in
     // the running GUI (new games, updated ludusavi path) are always honoured.
     let config = crate::config::Config::load().unwrap_or_default();
@@ -218,7 +218,10 @@ async fn run_backup(state: &PluginState, game_name: &str) -> Json<Value> {
     .await
     {
         Ok(_) => {
-            crate::session::mark_backed_up();
+            // Only mark backed-up when the session that triggered this
+            // backup is still the active one — guards against a new game
+            // starting while the async backup was in-flight.
+            crate::session::mark_backed_up_if(session_id);
             tracing::info!(game = %game_name, "plugin backup: complete");
             Json(json!({ "acted": true, "ok": true, "game": game_name }))
         }
