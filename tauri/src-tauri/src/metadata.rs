@@ -21,7 +21,7 @@
 
 use crate::error::{AppError, AppResult};
 use crate::library::{GameEntry, SharedLibrary};
-use chrono::{NaiveDate, TimeZone, Utc};
+use chrono::{NaiveDate, Utc};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::time::Duration;
@@ -307,17 +307,13 @@ fn parse_release_date(s: &str) -> Option<chrono::DateTime<Utc>> {
     ];
     for fmt in FORMATS {
         if let Ok(d) = NaiveDate::parse_from_str(s, fmt) {
-            return d
-                .and_hms_opt(0, 0, 0)
-                .map(|dt| Utc.from_utc_datetime(&dt));
+            return d.and_hms_opt(0, 0, 0).map(|dt| dt.and_utc());
         }
     }
     // Month-year only, e.g. "Feb 2022" — pin to the first of the month.
     for fmt in &["%b %Y", "%B %Y"] {
         if let Ok(d) = NaiveDate::parse_from_str(&format!("1 {s}"), &format!("%d {fmt}")) {
-            return d
-                .and_hms_opt(0, 0, 0)
-                .map(|dt| Utc.from_utc_datetime(&dt));
+            return d.and_hms_opt(0, 0, 0).map(|dt| dt.and_utc());
         }
     }
     None
