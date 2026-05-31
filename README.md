@@ -119,7 +119,7 @@ Spool is built to live in SteamOS **Game Mode**:
 * **Add Spool to Steam** — Settings → **Steam** creates a non-Steam shortcut so you can launch Spool from the Steam library (restart Steam to see it).
 * **Big-target touch UI** — Spool auto-switches to a [touch layout](#touch--desktop-layouts) on handhelds.
 * **Game-Mode splash** — launching a game shows a clean full-screen splash with restore/backup progress, and Spool exits when the game closes so Steam correctly registers the game as stopped.
-* **Decky backup plugin** — Game Mode force-kills external apps when you exit a game via Quick Access, which can cut off the post-session backup. Settings → **Steam Deck Backup Plugin** installs a small companion [Decky Loader](https://github.com/SteamDeckHomebrew/decky-loader) plugin (one click, from Desktop Mode) that runs `spool --backup` as a safety net so your saves always get backed up.
+* **Decky backup plugin** — Game Mode force-kills external apps when you exit a game via Quick Access, which can cut off the post-session backup *and* leave the multi-device play lock dangling. Settings → **Steam Deck Backup Plugin** installs a small companion [Decky Loader](https://github.com/SteamDeckHomebrew/decky-loader) plugin (one click, from Desktop Mode) that runs `spool --release-lock` + `spool --backup` as a safety net so your saves always get backed up and the lock is released for your other devices.
 
 ### Generating shortcuts
 

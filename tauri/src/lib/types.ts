@@ -40,6 +40,25 @@ export type ConfigData = {
   rclone_args: string;
   cloud_webdav_url: string;
   cloud_webdav_username: string;
+
+  /**
+   * Number of full save revisions ludusavi keeps per game
+   * (`backup.retention.full`). More = more rollback points, more disk +
+   * cloud upload. Clamped to 1–10 by the backend. Default 3.
+   */
+  save_retention_full: number;
+};
+
+// Mirror of the Rust `SaveRevision` struct in src-tauri/src/ludusavi.rs.
+// A single restorable save backup, surfaced by the "restore an earlier save"
+// picker.
+export type SaveRevision = {
+  /** ludusavi's backup id (the token passed to `restore --backup`). */
+  name: string;
+  /** RFC3339 timestamp of when the backup was taken. */
+  when: string;
+  /** True for the tip — the revision a normal pre-launch restore lands. */
+  is_current: boolean;
 };
 
 // Mirror of the Rust `GameEntry` struct in src-tauri/src/library.rs.

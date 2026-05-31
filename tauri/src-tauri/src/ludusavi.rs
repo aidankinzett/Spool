@@ -133,6 +133,11 @@ struct GameBackups {
 
 #[derive(Debug, Deserialize)]
 struct ApiBackup {
+    /// ludusavi's unique id for the backup — this is exactly the token
+    /// `restore --backup <name>` accepts. The most-recent full is reported
+    /// as `"."`; older fulls carry a folder-derived name.
+    #[serde(default)]
+    name: String,
     when: DateTime<Utc>,
 }
 
@@ -155,6 +160,41 @@ pub struct BackupStats {
     pub count: i32,
     /// Timestamp of the most recent backup, if any.
     pub last_backed_up_at: Option<DateTime<Utc>>,
+}
+
+/// A single restorable save revision, surfaced to the UI so the user can roll
+/// back to an earlier save. `name` is ludusavi's backup id (the token passed to
+/// `restore --backup`); `is_current` marks the tip (the revision a normal
+/// pre-launch restore would land).
+#[derive(Debug, Clone, Serialize)]
+pub struct SaveRevision {
+    pub name: String,
+    pub when: DateTime<Utc>,
+    pub is_current: bool,
+}
+
+/// Flatten a `ludusavi backups` response into a newest-first revision list.
+/// The single newest entry (by `when`) is flagged `is_current` — that's the
+/// tip a normal restore would land, so the UI can mark it and disable rollback
+/// to it. Since retention runs with `differential: 0`, every entry is a full,
+/// independently-restorable backup.
+fn revisions_from(out: BackupsOutput) -> Vec<SaveRevision> {
+    let mut revs: Vec<SaveRevision> = out
+        .games
+        .into_values()
+        .flat_map(|g| g.backups)
+        .map(|b| SaveRevision {
+            name: b.name,
+            when: b.when,
+            is_current: false,
+        })
+        .collect();
+    // Newest first.
+    revs.sort_by_key(|r| std::cmp::Reverse(r.when));
+    if let Some(tip) = revs.first_mut() {
+        tip.is_current = true;
+    }
+    revs
 }
 
 // ── DTOs: `ludusavi manifest show --api` output ─────────────────────────────
@@ -281,6 +321,27 @@ impl LudusaviClient {
         run_api(ludusavi_exe, config_dir, &["restore", "--api", "--cloud-sync", "--force", game_name]).await
     }
 
+    /// Runs `ludusavi restore --api --backup <id> --force <name>` — a restore
+    /// of a *specific* revision. Deliberately omits `--cloud-sync`: this is a
+    /// local rollback, and the caller pins the result by following up with a
+    /// (cloud-syncing) backup so the rolled-back state becomes the new tip.
+    /// Pulling the cloud here would re-land the newest revision and defeat the
+    /// rollback.
+    pub async fn restore_backup(
+        &self,
+        ludusavi_exe: &Path,
+        config_dir: &Path,
+        game_name: &str,
+        backup_name: &str,
+    ) -> AppResult<ApiOutput> {
+        run_api(
+            ludusavi_exe,
+            config_dir,
+            &["restore", "--api", "--backup", backup_name, "--force", game_name],
+        )
+        .await
+    }
+
     /// Runs `ludusavi backup --api --cloud-sync --force <name>` and optionally
     /// passes `--wine-prefix <prefix>` for Proton games so ludusavi finds saves
     /// inside the prefix's drive_c tree.
@@ -343,6 +404,20 @@ impl LudusaviClient {
     ) -> AppResult<BackupStats> {
         let out = run_backups(ludusavi_exe, config_dir, game_name).await?;
         Ok(reduce_backups(out))
+    }
+
+    /// Runs `ludusavi backups --api <name>` and returns the full, newest-first
+    /// revision list (rather than reducing to a count). Backs the in-app
+    /// "restore an earlier save" picker. Reflects ludusavi's local backup
+    /// store, so cloud-only revisions this device hasn't pulled aren't listed.
+    pub async fn list_revisions(
+        &self,
+        ludusavi_exe: &Path,
+        config_dir: &Path,
+        game_name: &str,
+    ) -> AppResult<Vec<SaveRevision>> {
+        let out = run_backups(ludusavi_exe, config_dir, game_name).await?;
+        Ok(revisions_from(out))
     }
 
     async fn manifest_or_load(
@@ -878,6 +953,38 @@ mod tests {
         let stats = reduce_backups(out);
         assert_eq!(stats.count, 0);
         assert!(stats.last_backed_up_at.is_none());
+    }
+
+    #[test]
+    fn revisions_are_newest_first_with_tip_flagged() {
+        // Names survive parsing; the newest `when` is flagged is_current.
+        let json = r#"{
+            "games": {
+                "Hades": {
+                    "backups": [
+                        { "name": "backup-1", "when": "2024-01-02T10:00:00Z", "locked": false },
+                        { "name": ".", "when": "2024-03-15T18:30:00Z", "locked": false },
+                        { "name": "backup-2", "when": "2024-02-01T09:00:00Z", "locked": false }
+                    ]
+                }
+            }
+        }"#;
+        let out: BackupsOutput = serde_json::from_str(json).unwrap();
+        let revs = revisions_from(out);
+        assert_eq!(revs.len(), 3);
+        // Newest first.
+        assert_eq!(revs[0].name, ".");
+        assert!(revs[0].is_current);
+        assert_eq!(revs[1].name, "backup-2");
+        assert!(!revs[1].is_current);
+        assert_eq!(revs[2].name, "backup-1");
+        assert!(!revs[2].is_current);
+    }
+
+    #[test]
+    fn revisions_empty_is_empty() {
+        let out: BackupsOutput = serde_json::from_str(r#"{"games":{}}"#).unwrap();
+        assert!(revisions_from(out).is_empty());
     }
 
     #[test]
