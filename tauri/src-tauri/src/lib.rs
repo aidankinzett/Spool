@@ -139,10 +139,19 @@ pub fn run() {
     let _log_guard = init_tracing();
     tracing::info!("spool starting up");
 
-    // Headless one-shot backup (Decky plugin forced-close fallback). No GUI.
+    // Headless one-shot subcommands (Decky plugin forced-close fallback). No
+    // GUI. `--backup` and `--release-lock` are deliberately separate so a plain
+    // backup never has the hidden side effect of dropping a play lock; the Decky
+    // fallback invokes both (release first, then backup).
     let initial_args: Vec<String> = std::env::args().collect();
-    if let CliMode::Backup { ref game_name } = cli::parse_args(&initial_args) {
-        std::process::exit(run_backup_headless(game_name));
+    match cli::parse_args(&initial_args) {
+        CliMode::Backup { ref game_name } => {
+            std::process::exit(run_backup_headless(game_name));
+        }
+        CliMode::ReleaseLock { ref game_name } => {
+            std::process::exit(run_release_lock_headless(game_name));
+        }
+        _ => {}
     }
 
     // One-shot migration: pull `%LOCALAPPDATA%\ludusavi-wrap\` data
@@ -566,14 +575,7 @@ fn run_backup_headless(game_name: &str) -> i32 {
         }
     };
     let result = rt.block_on(async {
-        let r =
-            runner::backup_game_core(&client, &ludusavi_exe, &config_dir, &lib_state, &game_id).await;
-        // Release the play-state lock too. Game Mode SIGKILLs the primary Spool
-        // before its run workflow can release the lock, so this fallback process
-        // does it directly — otherwise the game shows as "playing on <device>"
-        // until the server's stale window elapses. Best-effort, like the backup.
-        sync::release_lock_headless(&config.data, game_name).await;
-        r
+        runner::backup_game_core(&client, &ludusavi_exe, &config_dir, &lib_state, &game_id).await
     });
 
     match result {
@@ -587,6 +589,42 @@ fn run_backup_headless(game_name: &str) -> i32 {
             1
         }
     }
+}
+
+/// Headless one-shot lock release: load config, release the named game's
+/// sync-server play lock, then return a process exit code. No GUI / tray.
+///
+/// Used by `spool --release-lock "Name"` — the Decky plugin's forced-close
+/// fallback runs this *before* `--backup` so the game stops showing as "playing
+/// on <device>" the moment Steam kills Spool, independent of whether the
+/// subsequent backup succeeds. The release is scoped by device id on the server,
+/// so it only ever drops this device's own lock and is a harmless no-op
+/// otherwise. No-op (success) when sync is disabled / unconfigured.
+fn run_release_lock_headless(game_name: &str) -> i32 {
+    let config = match Config::load() {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::error!(error = %e, "--release-lock: failed to load config");
+            return 1;
+        }
+    };
+    if !config.data.sync_server_enabled {
+        // Nothing to release — sync isn't in play. Success, not an error.
+        return 0;
+    }
+
+    let rt = match tokio::runtime::Runtime::new() {
+        Ok(rt) => rt,
+        Err(e) => {
+            tracing::error!(error = %e, "--release-lock: failed to start tokio runtime");
+            return 1;
+        }
+    };
+    rt.block_on(async {
+        sync::release_lock_headless(&config.data, game_name).await;
+    });
+    tracing::info!(game_name, "--release-lock complete");
+    0
 }
 
 /// Builds the tray icon + context menu and registers click handlers.
@@ -801,6 +839,9 @@ fn handle_forwarded_launch(app: &AppHandle, argv: &[String]) {
         CliMode::Normal => show_library(app),
         CliMode::Backup { game_name } => {
             tracing::warn!(name = %game_name, "forwarded --backup: headless backup not yet implemented in forwarded-launch path");
+        }
+        CliMode::ReleaseLock { game_name } => {
+            tracing::warn!(name = %game_name, "forwarded --release-lock: headless release not handled in forwarded-launch path");
         }
     }
 }
