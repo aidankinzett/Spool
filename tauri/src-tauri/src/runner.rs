@@ -285,15 +285,9 @@ pub async fn backup_game_core(
 /// sync event so peers can see the new save.
 #[tauri::command]
 pub async fn manual_backup(app: AppHandle, game_id: String) -> AppResult<ManualBackupResult> {
-    let ludusavi_exe = {
-        let config = app.state::<SharedConfig>();
-        let cfg = config.lock().map_err(|_| AppError::LockPoisoned)?;
-        crate::paths::resolve_ludusavi_path(&cfg.data.ludusavi_path).ok_or_else(|| {
-            AppError::Other(
-                "Ludusavi is not configured. Place ludusavi in your PATH or configure it in Settings.".into(),
-            )
-        })?
-    };
+    let ludusavi_exe = crate::paths::resolve_ludusavi_path().ok_or_else(|| {
+        AppError::Other("Ludusavi sidecar not found — reinstall Spool.".into())
+    })?;
     let config_dir = crate::paths::ludusavi_config_dir();
     let ludusavi_client = app.state::<LudusaviClient>();
     let library = app.state::<SharedLibrary>();
@@ -325,13 +319,8 @@ pub async fn manual_backup(app: AppHandle, game_id: String) -> AppResult<ManualB
 /// only when a value actually changed, to avoid pointless UI churn.
 #[tauri::command]
 pub async fn refresh_save_metadata(app: AppHandle, game_id: String) -> AppResult<()> {
-    let ludusavi_exe = {
-        let config = app.state::<SharedConfig>();
-        let cfg = config.lock().map_err(|_| AppError::LockPoisoned)?;
-        match crate::paths::resolve_ludusavi_path(&cfg.data.ludusavi_path) {
-            Some(p) => p,
-            None => return Ok(()),
-        }
+    let Some(ludusavi_exe) = crate::paths::resolve_ludusavi_path() else {
+        return Ok(());
     };
     let config_dir = crate::paths::ludusavi_config_dir();
     let game_name = {
@@ -1176,15 +1165,9 @@ fn manual_prep(app: &AppHandle, game_id: &str) -> AppResult<(String, PathBuf, Pa
             entry.wine_prefix_path.clone(),
         )
     };
-    let ludusavi_exe = {
-        let config = app.state::<SharedConfig>();
-        let cfg = config.lock().map_err(|_| AppError::LockPoisoned)?;
-        crate::paths::resolve_ludusavi_path(&cfg.data.ludusavi_path).ok_or_else(|| {
-            AppError::Other(
-                "Ludusavi is not configured. Place ludusavi in your PATH or configure it in Settings.".into(),
-            )
-        })?
-    };
+    let ludusavi_exe = crate::paths::resolve_ludusavi_path().ok_or_else(|| {
+        AppError::Other("Ludusavi sidecar not found — reinstall Spool.".into())
+    })?;
     let config_dir = crate::paths::ludusavi_config_dir();
     let wine_prefix = if uses_proton {
         Some(
@@ -1249,15 +1232,9 @@ pub async fn launch_game_inner_steal(
         )
     };
 
-    let ludusavi_exe = {
-        let config = app.state::<SharedConfig>();
-        let cfg = config.lock().map_err(|_| AppError::LockPoisoned)?;
-        crate::paths::resolve_ludusavi_path(&cfg.data.ludusavi_path).ok_or_else(|| {
-            AppError::Other(
-                "Ludusavi is not configured. Place ludusavi in your PATH or configure it in Settings.".into(),
-            )
-        })?
-    };
+    let ludusavi_exe = crate::paths::resolve_ludusavi_path().ok_or_else(|| {
+        AppError::Other("Ludusavi sidecar not found — reinstall Spool.".into())
+    })?;
 
     let (umu_run_path, default_proton_path) = {
         let config = app.state::<SharedConfig>();

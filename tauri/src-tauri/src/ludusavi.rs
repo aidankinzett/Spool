@@ -258,8 +258,7 @@ pub struct SearchCandidate {
 // ── Client ──────────────────────────────────────────────────────────────────
 
 /// Ludusavi integration handle. Stateless apart from the lazy manifest
-/// cache — methods take the ludusavi exe path as a parameter so changes to
-/// `Config.ludusavi_path` are picked up immediately on the next call.
+/// cache — methods take the resolved sidecar path as a parameter.
 type ManifestCache = Arc<RwLock<Option<Arc<HashMap<String, ManifestEntry>>>>>;
 
 pub struct LudusaviClient {
@@ -792,15 +791,13 @@ pub async fn apply_webdav_remote(
     provider: &str,
     obscure_password: bool,
 ) -> AppResult<()> {
-    // Snapshot the configured ludusavi + rclone paths under one lock, then drop
-    // it before any await (lock discipline).
-    let (ludusavi_cfg, rclone_cfg) = {
+    let rclone_cfg = {
         let cfg = config.lock().map_err(|_| AppError::LockPoisoned)?;
-        (cfg.data.ludusavi_path.clone(), cfg.data.rclone_path.clone())
+        cfg.data.rclone_path.clone()
     };
 
-    let ludusavi_exe = crate::paths::resolve_ludusavi_path(&ludusavi_cfg).ok_or_else(|| {
-        AppError::Other("Ludusavi is not configured. Place ludusavi in your PATH or configure it in Settings.".to_string())
+    let ludusavi_exe = crate::paths::resolve_ludusavi_path().ok_or_else(|| {
+        AppError::Other("Ludusavi sidecar not found — reinstall Spool.".to_string())
     })?;
 
     // ludusavi shells out to rclone to obscure the password, so the owned config
@@ -896,12 +893,9 @@ pub async fn search_by_exe(
     ludusavi.search(&ludusavi_exe, &config_dir, &query).await
 }
 
-fn ludusavi_path_or_err(config: &State<'_, SharedConfig>) -> AppResult<PathBuf> {
-    let cfg = config.lock().map_err(|_| AppError::LockPoisoned)?;
-    let path = cfg.data.ludusavi_path.clone();
-    drop(cfg);
-    crate::paths::resolve_ludusavi_path(&path).ok_or_else(|| {
-        AppError::Other("Ludusavi is not configured. Place ludusavi in your PATH or configure it in Settings.".to_string())
+fn ludusavi_path_or_err(_config: &State<'_, SharedConfig>) -> AppResult<PathBuf> {
+    crate::paths::resolve_ludusavi_path().ok_or_else(|| {
+        AppError::Other("Ludusavi sidecar not found — reinstall Spool.".to_string())
     })
 }
 

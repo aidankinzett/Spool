@@ -32,7 +32,6 @@ pub enum UiMode {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ConfigData {
-    pub ludusavi_path: String,
     pub steamgriddb_enabled: bool,
     pub steamgriddb_api_key: String,
     pub spool_exe: String,
@@ -101,7 +100,6 @@ pub struct ConfigData {
 impl Default for ConfigData {
     fn default() -> Self {
         Self {
-            ludusavi_path: String::new(),
             steamgriddb_enabled: false,
             steamgriddb_api_key: String::new(),
             spool_exe: String::new(),
@@ -140,7 +138,7 @@ pub struct Config {
 
 impl Config {
     /// Loads from disk, then runs first-time setup if needed (device ID,
-    /// ludusavi auto-detection, current exe path). Saves if any of those
+    /// umu-run auto-detection, current exe path). Saves if any of those
     /// touched the data so the on-disk file matches in-memory state.
     pub fn load() -> AppResult<Self> {
         let path = paths::config_file();
@@ -174,7 +172,6 @@ impl Config {
 
         let mut changed = false;
         changed |= ensure_device_identity(&mut data);
-        changed |= auto_detect_ludusavi(&mut data);
         changed |= auto_detect_umu_run(&mut data);
         changed |= stamp_current_exe(&mut data);
 
@@ -223,40 +220,6 @@ fn ensure_device_identity(data: &mut ConfigData) -> bool {
         changed = true;
     }
     changed
-}
-
-/// Walks the current-exe directory and the system PATH looking for
-/// `ludusavi(.exe)`. Returns true if a path was set.
-fn auto_detect_ludusavi(data: &mut ConfigData) -> bool {
-    if !data.ludusavi_path.is_empty() && PathBuf::from(&data.ludusavi_path).is_file() {
-        return false;
-    }
-
-    let exe_name = if cfg!(windows) { "ludusavi.exe" } else { "ludusavi" };
-
-    // 1. Beside our own executable
-    if let Ok(self_exe) = env::current_exe() {
-        if let Some(dir) = self_exe.parent() {
-            let candidate = dir.join(exe_name);
-            if candidate.is_file() {
-                data.ludusavi_path = candidate.to_string_lossy().to_string();
-                return true;
-            }
-        }
-    }
-
-    // 2. PATH
-    if let Some(path_env) = env::var_os("PATH") {
-        for dir in env::split_paths(&path_env) {
-            let candidate = dir.join(exe_name);
-            if candidate.is_file() {
-                data.ludusavi_path = candidate.to_string_lossy().to_string();
-                return true;
-            }
-        }
-    }
-
-    false
 }
 
 /// Locates `umu-run` (`/usr/bin/umu-run` then PATH) on non-Windows. Returns
@@ -336,17 +299,6 @@ pub fn update_config(
     let _ = crate::ludusavi_config::set_retention(cfg.data.save_retention_full);
 
     Ok(cfg.data.clone())
-}
-
-/// Runs the ludusavi auto-detection routine on demand. Returns the
-/// resulting path (empty string if nothing was found). Persists if found.
-#[tauri::command]
-pub fn detect_ludusavi(state: State<'_, SharedConfig>) -> AppResult<String> {
-    let mut cfg = state.lock().map_err(|_| AppError::LockPoisoned)?;
-    if auto_detect_ludusavi(&mut cfg.data) {
-        cfg.save()?;
-    }
-    Ok(cfg.data.ludusavi_path.clone())
 }
 
 /// The host OS, so the frontend can gate Linux-only UI (Proton settings).

@@ -43,20 +43,16 @@ pub struct DepStatus {
 /// Called from Settings → Compatibility on mount and after autodetect.
 #[tauri::command]
 pub fn check_dependencies(config: State<'_, crate::config::SharedConfig>) -> Vec<DepStatus> {
-    let (ludusavi_cfg, umu_run_cfg, rclone_cfg) = {
+    let (umu_run_cfg, rclone_cfg) = {
         let cfg = config.lock().unwrap_or_else(|e| e.into_inner());
-        (
-            cfg.data.ludusavi_path.clone(),
-            cfg.data.umu_run_path.clone(),
-            cfg.data.rclone_path.clone(),
-        )
+        (cfg.data.umu_run_path.clone(), cfg.data.rclone_path.clone())
     };
 
     let distro = detect_distro();
 
     vec![
         check_umu_run(&umu_run_cfg, &distro),
-        check_ludusavi(&ludusavi_cfg, &distro),
+        check_ludusavi(&distro),
         check_rclone(&rclone_cfg, &distro),
     ]
 }
@@ -80,20 +76,11 @@ fn check_umu_run(configured: &str, distro: &Distro) -> DepStatus {
     missing("umu-run", install_hint_umu(distro))
 }
 
-fn check_ludusavi(configured: &str, distro: &Distro) -> DepStatus {
-    if !configured.is_empty() {
-        let p = std::path::PathBuf::from(configured);
-        if p.is_file() {
-            return found("ludusavi", configured, DepSource::Config);
-        }
-    }
+fn check_ludusavi(_distro: &Distro) -> DepStatus {
     if let Some(p) = paths::resolve_sidecar_path("ludusavi") {
         return found("ludusavi", &p.to_string_lossy(), DepSource::Bundled);
     }
-    if let Some(p) = paths::find_system_binary("ludusavi") {
-        return found("ludusavi", &p.to_string_lossy(), DepSource::System);
-    }
-    missing("ludusavi", install_hint_ludusavi(distro))
+    missing("ludusavi", String::new())
 }
 
 fn check_rclone(configured: &str, distro: &Distro) -> DepStatus {
@@ -184,16 +171,6 @@ fn install_hint_umu(distro: &Distro) -> String {
         Distro::Debian => "# Not in apt yet — see https://github.com/Open-Wine-Components/umu-launcher/releases".to_string(),
         Distro::Suse => "sudo zypper install umu-launcher".to_string(),
         Distro::Other => "See https://github.com/Open-Wine-Components/umu-launcher".to_string(),
-    }
-}
-
-fn install_hint_ludusavi(distro: &Distro) -> String {
-    match distro {
-        Distro::Arch => "paru -S ludusavi-bin".to_string(),
-        Distro::Fedora => "sudo dnf install ludusavi".to_string(),
-        Distro::Debian => "sudo apt install ludusavi".to_string(),
-        Distro::Suse => "sudo zypper install ludusavi".to_string(),
-        Distro::Other => "See https://github.com/mtkennerly/ludusavi/releases".to_string(),
     }
 }
 

@@ -274,7 +274,6 @@ pub fn run() {
             // config
             config::get_config,
             config::update_config,
-            config::detect_ludusavi,
             config::detect_umu_run,
             config::app_platform,
             diagnostics::check_dependencies,
@@ -574,8 +573,8 @@ fn run_backup_headless(game_name: &str) -> i32 {
         tracing::error!(name = %game_name, "--backup: no library entry matches");
         return 1;
     };
-    let Some(ludusavi_exe) = paths::resolve_ludusavi_path(&config.data.ludusavi_path) else {
-        tracing::error!("--backup: ludusavi not configured");
+    let Some(ludusavi_exe) = paths::resolve_ludusavi_path() else {
+        tracing::error!("--backup: ludusavi sidecar not found");
         return 1;
     };
 
