@@ -84,9 +84,46 @@ interface SteamApps {
   SetShortcutExe?(appId: number, path: string): void;
   SetShortcutStartDir?(appId: number, dir: string): void;
   SetShortcutLaunchOptions?(appId: number, opts: string): void;
+  // SetCustomArtworkForApp(appId, base64, 'png'|'jpg', assetType): the live,
+  // no-restart way to set Steam library art. assetType is ELibraryAssetType.
+  SetCustomArtworkForApp?(
+    appId: number,
+    base64: string,
+    imageType: string,
+    assetType: number,
+  ): Promise<void>;
 }
 function steamApps(): SteamApps | undefined {
   return (SteamClient as unknown as { Apps?: SteamApps }).Apps;
+}
+
+// Steam's ELibraryAssetType. We set the four that matter for a polished tile
+// (icon is noisy/optional for non-Steam shortcuts, so we skip it).
+const STEAM_ASSET: Record<string, number> = {
+  capsule: 0, // portrait tile
+  hero: 1, // banner behind the page
+  logo: 2, // transparent title logo
+  header: 3, // wide capsule
+};
+
+// Pull each art kind from the backend (base64) and apply it live. Best-effort:
+// any kind the backend 404s (no SteamGridDB art, etc.) is silently skipped, and
+// art failures never block the launch.
+async function applyArtwork(base: string, gameId: string, appid: number, apps: SteamApps) {
+  if (!apps.SetCustomArtworkForApp) return;
+  for (const [kind, assetType] of Object.entries(STEAM_ASSET)) {
+    try {
+      const res = await fetch(`${base}/games/${gameId}/steam-art/${kind}`);
+      if (!res.ok) continue;
+      const { imageType, base64 } = (await res.json()) as {
+        imageType: string;
+        base64: string;
+      };
+      await apps.SetCustomArtworkForApp(appid, base64, imageType, assetType);
+    } catch {
+      /* best-effort per asset */
+    }
+  }
 }
 
 // Persist game_id -> Steam appid so a game added to Steam once isn't re-added
@@ -160,6 +197,9 @@ async function launchLibraryGame(base: string, gameId: string) {
     try { apps.SetShortcutStartDir?.(appid, info.startDir); } catch { /* best-effort */ }
     try { apps.SetShortcutLaunchOptions?.(appid, info.launchOptions); } catch { /* best-effort */ }
     rememberAppid(gameId, appid);
+    // Set library artwork live (portrait/hero/logo/wide). Best-effort — never
+    // blocks the launch.
+    await applyArtwork(base, gameId, appid, apps);
     // Give Steam a moment to register the new shortcut before launching it.
     await new Promise((r) => setTimeout(r, 500));
   }

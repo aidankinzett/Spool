@@ -337,6 +337,43 @@ pub async fn fetch_steam_grid_bundle(
     Ok(placed)
 }
 
+/// One downloaded art asset: raw bytes plus its mime (for the caller to set a
+/// content-type / pick a Steam image type).
+pub struct ArtBytes {
+    pub bytes: Vec<u8>,
+    pub mime: String,
+}
+
+/// Tauri-free variant of the wide-art fetch used by the headless plugin
+/// server: resolves the SteamGridDB id then downloads a single `kind`
+/// ("hero" / "grid" / "logo" / "icon") and returns the bytes in memory rather
+/// than writing them into Steam's grid dir. The desktop path
+/// ([`fetch_steam_grid_bundle`]) still writes files; this one hands bytes to
+/// the Decky UI which applies them live via `SetCustomArtworkForApp`.
+///
+/// `Ok(None)` means SteamGridDB is disabled/unconfigured, the game didn't
+/// resolve, or that kind has no art — all non-errors the caller treats as
+/// "skip this asset".
+pub async fn fetch_art_bytes(
+    http: &reqwest::Client,
+    api_key: &str,
+    steam_id: Option<u64>,
+    game_name: &str,
+    kind: &str,
+) -> AppResult<Option<ArtBytes>> {
+    if api_key.is_empty() {
+        return Ok(None);
+    }
+    let Some(sgdb_id) = resolve_game_id(http, api_key, steam_id, game_name).await? else {
+        return Ok(None);
+    };
+    let Some(asset) = fetch_first_art(http, api_key, sgdb_id, kind).await? else {
+        return Ok(None);
+    };
+    let bytes = download_bytes(http, &asset.url).await?;
+    Ok(Some(ArtBytes { bytes, mime: asset.mime }))
+}
+
 /// Fetches the first asset of `kind` (hero / grid / logo) for a game.
 /// `kind` is one of "heroes", "grids", "logos" — actually we accept the
 /// short forms "hero" / "grid" / "logo" and map.
