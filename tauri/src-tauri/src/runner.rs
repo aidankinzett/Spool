@@ -781,7 +781,7 @@ async fn get_local_active_save_details(
 /// Resolve `(rclone_exe, remote_name, remote_path)` from the ludusavi
 /// `config.yaml` + app config. `None` when cloud isn't configured or the
 /// rclone binary can't be found.
-fn resolve_rclone_remote(app: &AppHandle) -> Option<(PathBuf, String, String)> {
+fn resolve_rclone_remote() -> Option<(PathBuf, String, String)> {
     let raw = std::fs::read_to_string(crate::paths::ludusavi_config_file()).ok()?;
     let config: serde_yaml::Value = serde_yaml::from_str(&raw).ok()?;
     let remote_name = get_rclone_remote_name(&config)?;
@@ -832,8 +832,8 @@ async fn rclone_cat_tip(rclone_exe: &Path, target: &str) -> Option<redirects::Ba
 /// Fetch the cloud copy of a game's `mapping.yaml` tip. Tries the exact game
 /// folder name then the Windows-safe variant (mirrors the local lookup and
 /// `query_rclone_details`). `None` when cloud isn't configured or absent.
-async fn fetch_cloud_backup_tip(app: &AppHandle, game_name: &str) -> Option<redirects::BackupTip> {
-    let (rclone_exe, remote_name, remote_path) = resolve_rclone_remote(app)?;
+async fn fetch_cloud_backup_tip(game_name: &str) -> Option<redirects::BackupTip> {
+    let (rclone_exe, remote_name, remote_path) = resolve_rclone_remote()?;
     let mut folders = vec![game_name.to_string()];
     let safe = redirects::windows_safe_name(game_name);
     if safe != game_name {
@@ -1508,7 +1508,7 @@ async fn run_workflow(
         // baseline (last-synced tip) is what makes this distinction possible.
         let backup_dir = ludusavi_config::backup_dir();
         let local_tip = redirects::read_local_backup_tip(&backup_dir, game_name);
-        let cloud_tip = fetch_cloud_backup_tip(app, game_name).await;
+        let cloud_tip = fetch_cloud_backup_tip(game_name).await;
         let base = {
             let library = app.state::<SharedLibrary>();
             let lib = library.lock().map_err(|_| AppError::LockPoisoned)?;
