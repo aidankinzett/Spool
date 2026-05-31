@@ -1017,23 +1017,18 @@ pub async fn connect_cloud_oauth(
     let mut token_json: Option<String> = None;
 
     // Five-minute wall-clock budget for the user to complete browser auth.
+    // EOF or broken pipe (child killed by cancel_cloud_oauth) exits the while let.
     let _ = tokio::time::timeout(Duration::from_secs(300), async {
-        loop {
-            match reader.next_line().await {
-                Ok(Some(line)) => {
-                    if line.contains("--->") {
-                        in_token = true;
-                        continue;
-                    }
-                    if in_token && line.trim_start().starts_with('{') {
-                        token_json = Some(line.trim().to_string());
-                    }
-                    if line.contains("<---End paste") {
-                        break;
-                    }
-                }
-                // EOF or broken pipe (child killed by cancel_cloud_oauth).
-                _ => break,
+        while let Ok(Some(line)) = reader.next_line().await {
+            if line.contains("--->") {
+                in_token = true;
+                continue;
+            }
+            if in_token && line.trim_start().starts_with('{') {
+                token_json = Some(line.trim().to_string());
+            }
+            if line.contains("<---End paste") {
+                break;
             }
         }
     })
