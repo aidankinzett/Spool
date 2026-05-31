@@ -8,6 +8,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 For the user-facing feature tour see [`README.md`](README.md); the self-hosted sync server is documented in [`server/README.md`](server/README.md).
 
+## Writing style (docs, comments, commit messages)
+
+Explain how things work, plainly. Don't editorialise about the design being good. Avoid self-congratulatory framing — phrases like "the key insight", "the clever/elegant/brilliant part", "the magic is", "the trick here" — and don't praise the project's own choices. State what the code does and why; let the reader judge whether it's smart. Likewise, don't disparage the tools Spool depends on (e.g. ludusavi, rclone, Proton) — describe their behaviour neutrally rather than framing it as a flaw Spool works around.
+
 ## Commands
 
 All commands run from `tauri/` unless noted.
