@@ -89,11 +89,6 @@
     }
   }
 
-  async function persistAndRefresh() {
-    await persist();
-    await refreshSync();
-  }
-
   async function persist(): Promise<boolean> {
     if (!config) return false;
     try {
