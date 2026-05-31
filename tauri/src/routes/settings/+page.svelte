@@ -243,7 +243,7 @@
     general: 'Display behaviour and the look of your cover-art shelf.',
     saves: 'How saves are backed up locally and mirrored to the cloud.',
     deck: 'Bring Spool into SteamOS Game Mode, and run Windows games via Proton.',
-    network: 'Share game installs across your home network and lock sessions across devices.',
+    network: 'Share game installs across your home network.',
     advanced: 'Diagnostics and escape hatches.',
   };
 
@@ -337,8 +337,7 @@
 
           <!-- Pane header -->
           <div class="mb-[22px]">
-            <MonoLabel size={10}>{GROUP_TITLE[activeGroup] ?? activeGroup}</MonoLabel>
-            <h1 class="font-display text-[27px] font-bold tracking-[-0.02em] mt-[6px] mb-[5px]">
+            <h1 class="font-display text-[27px] font-bold tracking-[-0.02em] mb-[5px]">
               {GROUP_TITLE[activeGroup] ?? activeGroup}
             </h1>
             <p class="text-[13px] leading-[1.55] text-ink-2 max-w-[520px]">
@@ -444,12 +443,6 @@
                   {/snippet}
                 </SettingsRow>
 
-                <div class="flex justify-end px-[18px] py-[10px]">
-                  <Btn variant="ghost" onclick={() => api.openLudusaviGui().catch(err => toasts.show({ kind: 'bad', label: 'LUDUSAVI', title: 'Could not open settings', sub: String(err) }))}>
-                    {#snippet icon()}<Layers size={14} />{/snippet}
-                    Open Ludusavi settings
-                  </Btn>
-                </div>
               </SettingsCard>
 
               <!-- Cloud sync -->
@@ -549,11 +542,6 @@
                         {/snippet}
                       </SettingsRow>
 
-                      <SettingsRow label="rclone arguments" helper="Additional arguments passed to rclone calls.">
-                        {#snippet control()}
-                          <TextField bind:value={config!.rclone_args} placeholder="--fast-list --ignore-checksum" mono oncommit={persist} />
-                        {/snippet}
-                      </SettingsRow>
                     </div>
                   {/if}
                 </div>
@@ -757,12 +745,14 @@
                       </SettingsRow>
 
                       <SettingsRow label="Default install dir" helper="Where downloads from peers land.">
-                        {#snippet extras()}
-                          <TextField bind:value={config!.lan_install_dir} placeholder="(default · lan-games inside Spool app data)" mono full oncommit={persist} />
-                          <Btn variant="ghost" onclick={browseLanInstallDir}>
-                            {#snippet icon()}<Folder size={14} />{/snippet}
-                            Browse
-                          </Btn>
+                        {#snippet control()}
+                          <div class="flex items-center gap-2 min-w-0">
+                            <TextField bind:value={config!.lan_install_dir} placeholder="(default · lan-games inside Spool app data)" mono full oncommit={persist} />
+                            <Btn variant="ghost" onclick={browseLanInstallDir}>
+                              {#snippet icon()}<Folder size={14} />{/snippet}
+                              Browse
+                            </Btn>
+                          </div>
                         {/snippet}
                       </SettingsRow>
 
