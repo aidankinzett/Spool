@@ -293,6 +293,7 @@ async fn run_backup(state: &PluginState, game_name: &str, session_id: &str) -> J
         tracing::warn!(error = %e, "plugin backup: ensure_config warning");
     }
 
+    let config = crate::config::Config::load().unwrap_or_default();
     let config_dir = crate::paths::ludusavi_config_dir();
 
     let library = Library::load().unwrap_or_default();
