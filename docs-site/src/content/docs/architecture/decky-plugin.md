@@ -2,7 +2,7 @@
 title: Decky Backup Plugin
 description: The Spool Backup Decky Loader plugin — forced-close save backup safety net for SteamOS Game Mode.
 sidebar:
-  order: 6
+  order: 7
 ---
 
 The Spool Backup Decky Loader plugin provides a forced-close backup safety net for SteamOS / Steam Deck Game Mode. It lives in `decky/` in the repo and is a separate sub-project from the Tauri app.
