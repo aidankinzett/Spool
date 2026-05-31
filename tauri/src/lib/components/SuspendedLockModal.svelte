@@ -191,7 +191,7 @@
     <!-- footer -->
     <div class="flex items-center gap-2.5" style:padding="14px 24px 20px">
       <div class="flex-1"></div>
-      <Btn variant="ghost" onclick={onCancel}>Cancel</Btn>
+      <Btn variant="ghost" onclick={onCancel} disabled={confirming}>Cancel</Btn>
       <Btn variant="danger" onclick={confirm}>
         {confirming ? 'Starting…' : 'Play here anyway'}
       </Btn>

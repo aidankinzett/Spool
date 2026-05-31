@@ -76,9 +76,14 @@ class _UnixSocketHTTPConnection(http.client.HTTPConnection):
         self._sock_path = sock_path
 
     def connect(self):
-        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        self.sock.settimeout(self.timeout)
-        self.sock.connect(self._sock_path)
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            s.settimeout(self.timeout)
+            s.connect(self._sock_path)
+        except Exception:
+            s.close()
+            raise
+        self.sock = s
 
 
 def _request_sync(
@@ -104,11 +109,13 @@ def _request_sync(
             data = json.dumps(body).encode()
             headers["Content-Type"] = "application/json"
             headers["Content-Length"] = str(len(data))
-        conn.request(method, path, body=data, headers=headers)
-        resp = conn.getresponse()
-        raw = resp.read()
-        conn.close()
-        return json.loads(raw) if raw else None
+        try:
+            conn.request(method, path, body=data, headers=headers)
+            resp = conn.getresponse()
+            raw = resp.read()
+            return json.loads(raw) if raw else None
+        finally:
+            conn.close()
     except (OSError, ConnectionRefusedError, http.client.HTTPException,
             json.JSONDecodeError, ValueError):
         return None
