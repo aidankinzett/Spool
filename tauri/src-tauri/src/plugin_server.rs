@@ -16,6 +16,7 @@
 
 #![cfg(unix)]
 
+use base64::Engine as _;
 use crate::error::{AppError, AppResult};
 use crate::lan::LanState;
 use crate::library::Library;
@@ -82,6 +83,13 @@ pub async fn serve() -> AppResult<()> {
         .route("/session/game-stopped", post(post_game_stopped))
         .route("/session/backup-now", post(post_backup_now))
         .route("/library", get(get_library))
+        // Steam-shortcut launch info: the UI uses this to create a non-Steam
+        // shortcut live (via SteamClient.Apps) and launch it, reusing the
+        // exact exe/launch-options the desktop "Add to Steam" would write.
+        .route("/games/:id/steam-launch-info", get(get_steam_launch_info))
+        // SteamGridDB art for a library game, transcoded to PNG/JPEG for the
+        // live `SteamClient.Apps.SetCustomArtworkForApp` call.
+        .route("/games/:id/steam-art/:kind", get(get_steam_art))
         // LAN browsing: list discovered peers, and proxy a peer's game list /
         // covers server-side (the UI can't reach a peer's non-loopback http
         // directly — mixed content). See `lan/server.rs` for the peer API.
@@ -211,6 +219,117 @@ async fn post_backup_now(AxState(state): AxState<PluginState>) -> Json<Value> {
 async fn get_library() -> Json<Value> {
     let library = Library::load().unwrap_or_default();
     Json(serde_json::to_value(&library.entries).unwrap_or(json!([])))
+}
+
+/// Fields the UI needs to create a non-Steam shortcut (live, via
+/// `SteamClient.Apps.AddShortcut`) and launch it. Mirrors what the desktop
+/// `steam::add_to_steam` writes: the shortcut's exe is the stable Spool
+/// binary (`spool_executable`, the `$APPIMAGE` path so it survives restarts)
+/// and its launch options are `--run "<name>" "<game exe>"`, which the
+/// Game-Mode attached `--run` flow consumes. The UI owns the actual shortcut
+/// creation so it can use the live API (no Steam restart) and the appid Steam
+/// returns.
+async fn get_steam_launch_info(
+    AxPath(id): AxPath<String>,
+) -> Result<Json<Value>, StatusCode> {
+    let library = Library::load().unwrap_or_default();
+    let entry = library.find(&id).ok_or(StatusCode::NOT_FOUND)?;
+
+    let spool_exe = crate::paths::spool_executable().ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+    let start_dir = spool_exe
+        .parent()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|| ".".to_string());
+
+    Ok(Json(json!({
+        "appName": entry.game_name,
+        "exe": spool_exe.to_string_lossy(),
+        "startDir": start_dir,
+        "launchOptions": crate::steam::build_launch_options(&entry.game_name, &entry.exe_path),
+    })))
+}
+
+/// Returns `{ imageType: "png"|"jpeg", base64: "<data>" }` for the requested
+/// art kind (`capsule`, `hero`, `logo`, `header`). Portraits are served from
+/// the on-disk cover cache; other kinds are fetched live from SteamGridDB.
+/// WebP images are transcoded to PNG because `SetCustomArtworkForApp` rejects
+/// them. Returns 404 if there is no art or SteamGridDB is not configured.
+async fn get_steam_art(
+    AxState(state): AxState<PluginState>,
+    AxPath((id, kind)): AxPath<(String, String)>,
+) -> Result<Json<Value>, StatusCode> {
+    let library = Library::load().unwrap_or_default();
+    let entry = library.find(&id).ok_or(StatusCode::NOT_FOUND)?;
+
+    // Portrait / capsule: reuse the on-disk cover already downloaded during
+    // "Add game" — no extra network call needed.
+    if kind == "capsule" {
+        if let Some(path_str) = &entry.cover_image_path {
+            let path = std::path::Path::new(path_str);
+            if let Ok(bytes) = std::fs::read(path) {
+                let mime = mime_from_path(path);
+                let (image_type, bytes) = transcode_webp_to_png(mime, bytes);
+                let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+                return Ok(Json(json!({ "imageType": image_type, "base64": b64 })));
+            }
+        }
+        return Err(StatusCode::NOT_FOUND);
+    }
+
+    // Other kinds (hero, logo, header): fetch from SteamGridDB.
+    let config = crate::config::Config::load().unwrap_or_default();
+    if !config.data.steamgriddb_enabled || config.data.steamgriddb_api_key.is_empty() {
+        return Err(StatusCode::NOT_FOUND);
+    }
+
+    let steam_id = entry.steam_id;
+    let art = crate::steamgriddb::fetch_art_bytes(
+        &state.http,
+        &config.data.steamgriddb_api_key,
+        steam_id,
+        &entry.game_name,
+        &kind,
+    )
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    .ok_or(StatusCode::NOT_FOUND)?;
+
+    let (image_type, bytes) = transcode_webp_to_png(&art.mime, art.bytes);
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+
+    Ok(Json(json!({ "imageType": image_type, "base64": b64 })))
+}
+
+/// Infers a MIME type string from a file extension (used for cached covers).
+fn mime_from_path(path: &std::path::Path) -> &'static str {
+    match path.extension().and_then(|e| e.to_str()).unwrap_or("") {
+        "jpg" | "jpeg" => "image/jpeg",
+        "webp" => "image/webp",
+        _ => "image/png",
+    }
+}
+
+/// Transcodes WebP bytes to PNG and returns `("png", transcoded_bytes)`.
+/// For non-WebP MIME types, returns the normalised Steam imageType string
+/// (`"jpeg"` or `"png"`) with the bytes unchanged.
+fn transcode_webp_to_png(mime: &str, bytes: Vec<u8>) -> (&'static str, Vec<u8>) {
+    if mime.contains("webp") {
+        match image::load_from_memory(&bytes) {
+            Ok(img) => {
+                let mut out = std::io::Cursor::new(Vec::new());
+                if img.write_to(&mut out, image::ImageFormat::Png).is_ok() {
+                    return ("png", out.into_inner());
+                }
+            }
+            Err(e) => tracing::warn!(error = %e, "steam-art: webp→png transcode failed; sending as-is"),
+        }
+    }
+    let image_type = if mime.contains("jpeg") || mime.contains("jpg") {
+        "jpeg"
+    } else {
+        "png"
+    };
+    (image_type, bytes)
 }
 
 // ── LAN browsing ───────────────────────────────────────────────────────────
