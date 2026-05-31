@@ -37,6 +37,8 @@ mod launcher;
 mod library;
 mod ludusavi;
 mod ludusavi_config;
+mod metadata;
+mod metadata_backfill;
 mod paths;
 mod process;
 mod proton;
@@ -226,6 +228,7 @@ pub fn run() {
         .manage::<SharedConfig>(Mutex::new(config))
         .manage::<LudusaviClient>(LudusaviClient::new())
         .manage::<SteamGridDbClient>(SteamGridDbClient::new())
+        .manage::<metadata::MetadataClient>(metadata::MetadataClient::new())
         .manage::<RunState>(RunState::default())
         .manage::<PendingRun>(PendingRun::default())
         .manage::<SplashReady>(SplashReady::default())
@@ -270,6 +273,7 @@ pub fn run() {
             ludusavi::set_cloud_webdav,
             // steamgriddb
             steamgriddb::fetch_cover,
+            metadata::fetch_metadata,
             // steam shortcut
             steam::add_spool_to_steam,
             steam::add_to_steam,
@@ -473,6 +477,12 @@ pub fn run() {
             // here with `install_size_mb: 0`. Walks the folder, sums file
             // sizes, saves once at the end.
             size_backfill::spawn_backfill(app.handle().clone());
+
+            // Backfill Steam Store metadata (description, developer,
+            // publisher, genres, release date) for entries that have a
+            // steam_id but empty metadata fields. Throttled to respect
+            // the store endpoint's rate limit.
+            metadata_backfill::spawn_backfill(app.handle().clone());
 
             // Sync server health poll. Runs forever, every 30s — emits
             // `sync:status-changed` so the chrome cloud icon can tint

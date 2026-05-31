@@ -374,6 +374,17 @@ pub fn add_game(
         }
     });
 
+    // Fetch Steam Store metadata (description, developer, publisher,
+    // genres, release date) in parallel. Best-effort and only fills
+    // empty fields — a no-op when the game has no steam_id.
+    let app_for_meta = app.clone();
+    let id_for_meta = entry.id.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Err(e) = crate::metadata::fetch_and_save_metadata(&app_for_meta, &id_for_meta).await {
+            tracing::warn!(game_id = %id_for_meta, error = %e, "metadata fetch failed");
+        }
+    });
+
     Ok(entry)
 }
 
