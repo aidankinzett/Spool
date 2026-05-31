@@ -786,13 +786,13 @@ fn find_game_id_by_name(library: &SharedLibrary, name: &str) -> Option<String> {
 /// one place a wedged cloud sync is most painful (no window, just a splash) and
 /// the one that historically skipped this step.
 fn restamp_rclone(app: &AppHandle) {
-    let (configured_rclone, rclone_args) = app
+    let rclone_args = app
         .state::<SharedConfig>()
         .lock()
         .ok()
-        .map(|g| (g.data.rclone_path.clone(), g.data.rclone_args.clone()))
+        .map(|g| g.data.rclone_args.clone())
         .unwrap_or_default();
-    if let Some(rclone) = paths::resolve_rclone_path(&configured_rclone) {
+    if let Some(rclone) = paths::resolve_rclone_path() {
         if let Err(e) = ludusavi_config::set_cloud(
             None,
             None,

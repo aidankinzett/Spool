@@ -232,14 +232,6 @@
     }
   }
 
-  async function browseRclone() {
-    const picked = await openDialog({ title: 'Locate rclone', multiple: false });
-    if (typeof picked === 'string' && config) {
-      config.rclone_path = picked;
-      await persist();
-    }
-  }
-
   async function connectWebdav() {
     if (!config) return;
     webdavConnecting = true;
@@ -764,16 +756,6 @@
                     <SettingsRow label="Remote path" helper="Subpath on the remote where saves will be synced">
                       {#snippet control()}
                         <TextField bind:value={config!.cloud_path} placeholder="Spool/ludusavi-backup" mono oncommit={persist} />
-                      {/snippet}
-                    </SettingsRow>
-
-                    <SettingsRow label="rclone binary" helper="Path to rclone executable (leave blank to let ludusavi find it)">
-                      {#snippet extras()}
-                        <TextField bind:value={config!.rclone_path} placeholder="rclone" mono full oncommit={persist} />
-                        <Btn variant="ghost" onclick={browseRclone}>
-                          {#snippet icon()}<Folder size={14} />{/snippet}
-                          Browse
-                        </Btn>
                       {/snippet}
                     </SettingsRow>
 

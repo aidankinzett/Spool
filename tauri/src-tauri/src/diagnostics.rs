@@ -43,9 +43,9 @@ pub struct DepStatus {
 /// Called from Settings → Compatibility on mount and after autodetect.
 #[tauri::command]
 pub fn check_dependencies(config: State<'_, crate::config::SharedConfig>) -> Vec<DepStatus> {
-    let (umu_run_cfg, rclone_cfg) = {
+    let umu_run_cfg = {
         let cfg = config.lock().unwrap_or_else(|e| e.into_inner());
-        (cfg.data.umu_run_path.clone(), cfg.data.rclone_path.clone())
+        cfg.data.umu_run_path.clone()
     };
 
     let distro = detect_distro();
@@ -53,7 +53,7 @@ pub fn check_dependencies(config: State<'_, crate::config::SharedConfig>) -> Vec
     vec![
         check_umu_run(&umu_run_cfg, &distro),
         check_ludusavi(&distro),
-        check_rclone(&rclone_cfg, &distro),
+        check_rclone(&distro),
     ]
 }
 
@@ -83,20 +83,11 @@ fn check_ludusavi(_distro: &Distro) -> DepStatus {
     missing("ludusavi", String::new())
 }
 
-fn check_rclone(configured: &str, distro: &Distro) -> DepStatus {
-    if !configured.is_empty() {
-        let p = std::path::PathBuf::from(configured);
-        if p.is_file() {
-            return found("rclone", configured, DepSource::Config);
-        }
-    }
+fn check_rclone(_distro: &Distro) -> DepStatus {
     if let Some(p) = paths::resolve_sidecar_path("rclone") {
         return found("rclone", &p.to_string_lossy(), DepSource::Bundled);
     }
-    if let Some(p) = paths::find_system_binary("rclone") {
-        return found("rclone", &p.to_string_lossy(), DepSource::System);
-    }
-    missing("rclone", install_hint_rclone(distro))
+    missing("rclone", String::new())
 }
 
 fn found(name: &str, path: &str, source: DepSource) -> DepStatus {
@@ -174,12 +165,3 @@ fn install_hint_umu(distro: &Distro) -> String {
     }
 }
 
-fn install_hint_rclone(distro: &Distro) -> String {
-    match distro {
-        Distro::Arch => "sudo pacman -S rclone".to_string(),
-        Distro::Fedora => "sudo dnf install rclone".to_string(),
-        Distro::Debian => "sudo apt install rclone".to_string(),
-        Distro::Suse => "sudo zypper install rclone".to_string(),
-        Distro::Other => "See https://rclone.org/downloads/".to_string(),
-    }
-}

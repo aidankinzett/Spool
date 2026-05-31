@@ -784,26 +784,20 @@ pub async fn open_ludusavi_gui(config: State<'_, SharedConfig>) -> AppResult<()>
 /// deobfuscation), so it too wants `false`. Only set `true` for a server that
 /// itself rclone-reveals the incoming password before validating it.
 pub async fn apply_webdav_remote(
-    config: &SharedConfig,
     url: &str,
     username: &str,
     password: &str,
     provider: &str,
     obscure_password: bool,
 ) -> AppResult<()> {
-    let rclone_cfg = {
-        let cfg = config.lock().map_err(|_| AppError::LockPoisoned)?;
-        cfg.data.rclone_path.clone()
-    };
-
     let ludusavi_exe = crate::paths::resolve_ludusavi_path().ok_or_else(|| {
         AppError::Other("Ludusavi sidecar not found — reinstall Spool.".to_string())
     })?;
 
     // ludusavi shells out to rclone to obscure the password, so the owned config
     // must point at a usable rclone before we invoke `cloud set`.
-    let rclone_exe = crate::paths::resolve_rclone_path(&rclone_cfg).ok_or_else(|| {
-        AppError::Other("rclone not found. Install rclone or set its path in Settings.".to_string())
+    let rclone_exe = crate::paths::resolve_rclone_path().ok_or_else(|| {
+        AppError::Other("rclone sidecar not found — reinstall Spool.".to_string())
     })?;
     crate::ludusavi_config::set_cloud(None, None, None, Some(&rclone_exe.to_string_lossy()), None)?;
 
@@ -866,7 +860,7 @@ pub async fn set_cloud_webdav(
     provider: String,
 ) -> AppResult<()> {
     // Manual WebDAV (Nextcloud, ownCloud, …) expects the plaintext password.
-    apply_webdav_remote(config.inner(), &url, &username, &password, &provider, false).await?;
+    apply_webdav_remote(&url, &username, &password, &provider, false).await?;
     let mut cfg = config.lock().map_err(|_| AppError::LockPoisoned)?;
     cfg.data.cloud_provider = "webdav".to_string();
     cfg.data.cloud_webdav_url = url;

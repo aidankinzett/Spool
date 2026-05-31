@@ -35,7 +35,6 @@ export type ConfigData = {
   cloud_provider: string;
   cloud_remote: string;
   cloud_path: string;
-  rclone_path: string;
   rclone_args: string;
   cloud_webdav_url: string;
   cloud_webdav_username: string;

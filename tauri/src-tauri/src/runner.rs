@@ -791,11 +791,7 @@ fn resolve_rclone_remote(app: &AppHandle) -> Option<(PathBuf, String, String)> {
         .and_then(|p| p.as_str())
         .unwrap_or("ludusavi-backup")
         .to_string();
-    let rclone_exe = {
-        let config_state = app.state::<SharedConfig>();
-        let cfg = config_state.lock().ok()?;
-        crate::paths::resolve_rclone_path(&cfg.data.rclone_path)?
-    };
+    let rclone_exe = crate::paths::resolve_rclone_path()?;
     Some((rclone_exe, remote_name, remote_path))
 }
 
@@ -1102,13 +1098,9 @@ pub async fn get_cloud_conflict_details(
         .and_then(|p| p.as_str())
         .unwrap_or("ludusavi-backup");
         
-    let rclone_exe = {
-        let config = app.state::<SharedConfig>();
-        let cfg = config.lock().map_err(|_| AppError::LockPoisoned)?;
-        crate::paths::resolve_rclone_path(&cfg.data.rclone_path).ok_or_else(|| {
-            AppError::Other("rclone binary not found".into())
-        })?
-    };
+    let rclone_exe = crate::paths::resolve_rclone_path().ok_or_else(|| {
+        AppError::Other("rclone sidecar not found — reinstall Spool.".into())
+    })?;
     
     tracing::info!(
         "get_cloud_conflict_details: querying rclone_exe={:?}, remote_name={}, remote_path={}",

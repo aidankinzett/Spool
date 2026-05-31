@@ -79,7 +79,6 @@ pub struct ConfigData {
     pub cloud_provider: String,
     pub cloud_remote: String,
     pub cloud_path: String,
-    pub rclone_path: String,
     pub rclone_args: String,
     /// WebDAV connection details for the `webdav` provider. Written when the
     /// user connects a WebDAV remote (manually or via the self-hosted Spool
@@ -120,7 +119,6 @@ impl Default for ConfigData {
             cloud_provider: String::new(),
             cloud_remote: String::new(),
             cloud_path: "Spool/ludusavi-backup".to_string(),
-            rclone_path: String::new(),
             rclone_args: "--fast-list --ignore-checksum".to_string(),
             cloud_webdav_url: String::new(),
             cloud_webdav_username: String::new(),
@@ -282,7 +280,7 @@ pub fn update_config(
     cfg.data = data;
     cfg.save()?;
 
-    let rclone_val = crate::paths::resolve_rclone_path(&cfg.data.rclone_path)
+    let rclone_val = crate::paths::resolve_rclone_path()
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_default();
 

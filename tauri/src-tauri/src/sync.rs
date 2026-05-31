@@ -311,7 +311,6 @@ pub async fn use_server_save_storage(app: AppHandle) -> AppResult<()> {
     // ludusavi the plaintext key (obscure_password = false). Pre-obscuring here
     // would put a double-wrapped value on the wire and every sync would 401.
     crate::ludusavi::apply_webdav_remote(
-        cfg_state.inner(),
         &info.webdav_url,
         &info.username,
         &info.password,
