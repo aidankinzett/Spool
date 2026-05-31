@@ -234,7 +234,7 @@ See [`server/README.md`](server/README.md) for the full quick-start (it boils do
 
 ## Building from Source
 
-Spool builds on **Windows and Linux** from the same source tree. It's a Tauri 2 app: a Rust backend (`tauri/src-tauri/`) and a SvelteKit 5 frontend (`tauri/src/`). The bundled `ludusavi` and `rclone` binaries ship as Tauri sidecars. The repo also keeps a tiny C# launcher stub (`launcher_stub.cs`) and its prebuilt `launcher_stub.exe`, embedded into the Rust binary at compile time for Windows-only Armoury Crate launcher generation — a normal build never recompiles it.
+Spool builds on **Windows and Linux** from the same source tree. It's a Tauri 2 app: a Rust backend (`tauri/src-tauri/`) and a SvelteKit 5 frontend (`tauri/src/`). The bundled `ludusavi` and `rclone` binaries ship as Tauri sidecars. The repo also keeps a tiny C# launcher stub (`tauri/src-tauri/launcher_stub.cs`) and its prebuilt `tauri/src-tauri/launcher_stub.exe`, embedded into the Rust binary at compile time for Windows-only Armoury Crate launcher generation — a normal build never recompiles it.
 
 ### Prerequisites
 
@@ -243,7 +243,7 @@ Spool builds on **Windows and Linux** from the same source tree. It's a Tauri 2 
 * The [Tauri 2 system prerequisites](https://v2.tauri.app/start/prerequisites/) for your OS:
   * **Windows** — WebView2 (preinstalled on Windows 11).
   * **Linux** — the GTK/WebKit dev packages, e.g. on Debian/Ubuntu: `libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf`.
-* *(Optional, Windows only)* the framework `csc.exe` shipped with .NET Framework 4.x — only needed to recompile `launcher_stub.exe` after editing `launcher_stub.cs`.
+* *(Optional, Windows only)* the framework `csc.exe` shipped with .NET Framework 4.x — only needed to recompile `tauri/src-tauri/launcher_stub.exe` after editing `launcher_stub.cs`.
 
 ### Build steps
 
