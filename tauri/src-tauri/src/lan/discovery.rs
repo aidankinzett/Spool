@@ -414,6 +414,10 @@ pub fn list_lan_peers(state: State<'_, LanState>) -> Vec<LanPeer> {
 /// running. Updates the shared `LanState` in place; callers read it via
 /// `LanState::snapshot`. There's no event bus in the headless server, so the
 /// change callback is a no-op (the Decky UI polls `/lan/peers`).
+///
+/// Unix-only: its sole caller is `plugin_server.rs`, which is itself
+/// `#![cfg(unix)]`. Without this gate it's dead code on Windows.
+#[cfg(unix)]
 pub fn spawn_peer_listener(state: Arc<LanState>, our_device_id: String) -> AppResult<()> {
     let socket = Arc::new(make_discovery_socket()?);
     let peers = state.peers.clone();
