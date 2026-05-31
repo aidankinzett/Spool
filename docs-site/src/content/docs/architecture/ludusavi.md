@@ -1,14 +1,15 @@
-# Spool-owned ludusavi config — Notes & Gotchas
-
-## Location
-
-`~/.local/share/Spool/ludusavi/config.yaml`
-
-Spool passes `--config ~/.local/share/Spool/ludusavi/` to every ludusavi call. This isolates Spool from the user's personal ludusavi config.
-
+---
+title: Ludusavi Config
+description: How Spool owns and manages its isolated ludusavi config — backup paths, retention, mapping.yaml structure, redirect rules, and cloud sync.
+sidebar:
+  order: 4
 ---
 
-## What Spool writes (via `ensure_config()`)
+Spool passes `--config ~/.local/share/Spool/ludusavi/` to every ludusavi call. This isolates Spool from the user's personal ludusavi config — Spool fully owns that directory.
+
+## What Spool writes (`ensure_config()`)
+
+`ludusavi_config.rs::ensure_config()` runs at startup and writes a minimal config:
 
 ```yaml
 manifest:
@@ -18,36 +19,19 @@ backup:
   path: /home/deck/.local/share/Spool/ludusavi-backup
   format:
     chosen: simple       # plain dirs = parseable mapping.yaml for redirect generation
+  retention:
+    full: 3
+    differential: 0
 
 restore:
   path: /home/deck/.local/share/Spool/ludusavi-backup
 
 cloud:
-  remote: false          # Phase 4 fills this in
+  remote: false          # filled in by Settings → Cloud saves
 ```
 
-**What's NOT set by ensure_config (potential issues):**
-- `backup.retention` — defaults to `full: 1, differential: 0`. With multiple Proton sessions, each backup replaces the previous. If a Windows-origin backup is on disk and a Proton session backs up, the Windows backup gets replaced.
-- `manifest.secondary` — the secondary manifest URL (if needed for community manifest)
-
----
-
-## Retention issue
-
-**Problem:** `full: 1` means only one full backup is kept. If the user:
-1. Copies Windows backups into Spool's backup dir manually (as a workaround before Phase 4)
-2. Plays the game via Proton (which triggers a backup with `--wine-prefix`)
-
-The Proton backup replaces the Windows backup. The next restore no longer has the Windows save to redirect.
-
-**Fix in ensure_config():**
-```rust
-set_path(&mut v, &["backup", "retention", "full"], Value::Number(3.into()));
-```
-
-Or just set `full: 2` to keep Windows + latest Proton.
-
----
+**Fields NOT set by ensure_config:**
+- `manifest.secondary` — the secondary manifest URL (not needed for the community manifest)
 
 ## Backup folder naming: Windows vs Linux
 
@@ -57,8 +41,6 @@ Windows cannot create folders with colons, so a ludusavi backup for:
 - Linux folder: `"Lego Batman: Legacy of the Dark Knight"` (colon allowed)
 
 `redirects.rs` handles this with `windows_safe_name()` — tries the exact name first, then the underscore-escaped version.
-
----
 
 ## mapping.yaml structure
 
@@ -86,7 +68,7 @@ backups:
         registry: ~
 ```
 
-**Key facts from 23 real backups:**
+**Key facts:**
 - `os: windows` with `drives: drive-C: "C:"` is the typical Windows backup
 - `os: linux` with `drives: drive-0: ""` is the Proton/Linux backup (absolute paths)
 - Registry is `hash: ~` (null) in all observed samples — registry saves are uncommon
@@ -94,11 +76,9 @@ backups:
 - Windows username is embedded in the path: `C:/Users/<username>/AppData/...`
 - Children (diffs) share the same OS as the parent
 
----
+## Redirect rules (cross-platform restore)
 
-## Redirect rules (Phase 3)
-
-Written to `config.yaml` before the second restore, cleared after. Format:
+When restoring a foreign-origin backup (e.g. Windows save onto a Linux/Proton install), `redirects.rs` parses `mapping.yaml`, extracts the Windows username, and generates redirect rules written to `config.yaml` before the second restore. They're cleared after.
 
 ```yaml
 redirects:
@@ -107,15 +87,11 @@ redirects:
     target: /home/deck/.local/share/Spool/prefixes/88ec0ff3-3196-4c71-9acb-fe10fd19483c/drive_c/users/steamuser
 ```
 
-The `source` prefix covers all of AppData (Local, Roaming, LocalLow), Documents, Saved Games, OneDrive under that user — one rule covers ~93% of real Windows save paths.
-
-Additional rules for edge cases:
+One user-prefix rule covers ~93% of real Windows save paths (AppData Local/Roaming/LocalLow, Documents, Saved Games, OneDrive). Paths from all differential children are included when generating redirect rules — not just the top-level full backup. Additional rules:
 - `C:/Users/Public` → `<prefix>/drive_c/users/Public`
 - `C:/ProgramData` → `<prefix>/drive_c/ProgramData`
 - `G:/Games/<game>` → local `game_folder_path` (install-dir saves)
-- Xbox/UWP paths (`C:/XboxGames/...`, `Packages/*/wgs`) — skipped (don't run under Proton)
-
----
+- Xbox/UWP paths — skipped (don't run under Proton)
 
 ## Cloud sync: what Spool controls vs what rclone controls
 
@@ -127,8 +103,10 @@ cloud:
   synchronize: true
 apps:
   rclone:
-    path: ""                 # "" = ludusavi finds system rclone
+    path: ""                 # resolved to bundled or system rclone
     arguments: "--fast-list --ignore-checksum"
 ```
 
-Spool does NOT manage rclone authentication — the user needs to run `rclone config` in a terminal first to set up the remote, or use the "Open Ludusavi settings" button to access the ludusavi GUI which can run `rclone config` from within it.
+Spool does **not** manage rclone authentication — the user needs to run `rclone config` in a terminal, or use the "Open Ludusavi settings" button in Settings → Cloud saves (which opens the ludusavi GUI against Spool's config dir, which can run `rclone config` from within it).
+
+For the self-hosted Spool server's WebDAV storage, `ludusavi.rs::apply_webdav_remote` shells out to `ludusavi cloud set webdav ...` which writes an obscured rclone remote automatically — no manual `rclone config` needed for that path.
