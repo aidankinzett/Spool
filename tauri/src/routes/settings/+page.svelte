@@ -176,25 +176,6 @@
     }
   }
 
-  async function autoDetect() {
-    if (!config) return;
-    const found = await api.detectLudusavi();
-    if (found) config.ludusavi_path = found;
-    config = await api.getConfig();
-  }
-
-  async function browseLudusavi() {
-    const picked = await openDialog({
-      title: 'Locate ludusavi executable',
-      multiple: false,
-      filters: [{ name: 'Executable', extensions: ['exe', ''] }, { name: 'All files', extensions: ['*'] }],
-    });
-    if (typeof picked === 'string' && config) {
-      config.ludusavi_path = picked;
-      await persist();
-    }
-  }
-
   async function refreshDeps() {
     depsLoading = true;
     try { deps = await api.checkDependencies(); } finally { depsLoading = false; }
@@ -247,14 +228,6 @@
     const picked = await openDialog({ title: 'Locate umu-run', multiple: false });
     if (typeof picked === 'string' && config) {
       config.umu_run_path = picked;
-      await persist();
-    }
-  }
-
-  async function browseRclone() {
-    const picked = await openDialog({ title: 'Locate rclone', multiple: false });
-    if (typeof picked === 'string' && config) {
-      config.rclone_path = picked;
       await persist();
     }
   }
@@ -488,25 +461,7 @@
 
               <!-- Ludusavi section -->
               <div id="ludusavi">
-                <SettingsCard title="Ludusavi" helper="Spool delegates save backup and restore to ludusavi. We won't touch a game without it.">
-                  <SettingsRow
-                    label="Executable"
-                    helper={config.ludusavi_path ? 'Detected — binary reachable' : 'Browse to ludusavi.exe or use auto-detect'}
-                    status={config.ludusavi_path ? 'ok' : 'warn'}
-                  >
-                    {#snippet extras()}
-                      <TextField bind:value={config!.ludusavi_path} placeholder="C:\path\to\ludusavi.exe" mono full oncommit={persist} />
-                      <Btn variant="ghost" onclick={autoDetect}>
-                        {#snippet icon()}<Sparkles size={14} />{/snippet}
-                        Auto-detect
-                      </Btn>
-                      <Btn variant="ghost" onclick={browseLudusavi}>
-                        {#snippet icon()}<Folder size={14} />{/snippet}
-                        Browse
-                      </Btn>
-                    {/snippet}
-                  </SettingsRow>
-
+                <SettingsCard title="Ludusavi" helper="Spool delegates save backup and restore to ludusavi, which is bundled and managed automatically.">
                   <SettingsRow
                     label="Save revisions to keep"
                     helper="How many save backups to retain per game. More gives more rollback points (restore an earlier save from a game's detail panel), at the cost of more disk and cloud upload. 1–10."
@@ -801,16 +756,6 @@
                     <SettingsRow label="Remote path" helper="Subpath on the remote where saves will be synced">
                       {#snippet control()}
                         <TextField bind:value={config!.cloud_path} placeholder="Spool/ludusavi-backup" mono oncommit={persist} />
-                      {/snippet}
-                    </SettingsRow>
-
-                    <SettingsRow label="rclone binary" helper="Path to rclone executable (leave blank to let ludusavi find it)">
-                      {#snippet extras()}
-                        <TextField bind:value={config!.rclone_path} placeholder="rclone" mono full oncommit={persist} />
-                        <Btn variant="ghost" onclick={browseRclone}>
-                          {#snippet icon()}<Folder size={14} />{/snippet}
-                          Browse
-                        </Btn>
                       {/snippet}
                     </SettingsRow>
 

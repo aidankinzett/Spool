@@ -274,7 +274,6 @@ pub fn run() {
             // config
             config::get_config,
             config::update_config,
-            config::detect_ludusavi,
             config::detect_umu_run,
             config::app_platform,
             diagnostics::check_dependencies,
@@ -551,13 +550,6 @@ pub fn run() {
 /// No GUI / tray / single-instance. Used by `spool --backup "Name"` (the
 /// Decky plugin's forced-close fallback).
 fn run_backup_headless(game_name: &str) -> i32 {
-    let config = match Config::load() {
-        Ok(c) => c,
-        Err(e) => {
-            tracing::error!(error = %e, "--backup: failed to load config");
-            return 1;
-        }
-    };
     let library = match Library::load() {
         Ok(l) => l,
         Err(e) => {
@@ -574,8 +566,8 @@ fn run_backup_headless(game_name: &str) -> i32 {
         tracing::error!(name = %game_name, "--backup: no library entry matches");
         return 1;
     };
-    let Some(ludusavi_exe) = paths::resolve_ludusavi_path(&config.data.ludusavi_path) else {
-        tracing::error!("--backup: ludusavi not configured");
+    let Some(ludusavi_exe) = paths::resolve_ludusavi_path() else {
+        tracing::error!("--backup: ludusavi sidecar not found");
         return 1;
     };
 
@@ -787,13 +779,13 @@ fn find_game_id_by_name(library: &SharedLibrary, name: &str) -> Option<String> {
 /// one place a wedged cloud sync is most painful (no window, just a splash) and
 /// the one that historically skipped this step.
 fn restamp_rclone(app: &AppHandle) {
-    let (configured_rclone, rclone_args) = app
+    let rclone_args = app
         .state::<SharedConfig>()
         .lock()
         .ok()
-        .map(|g| (g.data.rclone_path.clone(), g.data.rclone_args.clone()))
+        .map(|g| g.data.rclone_args.clone())
         .unwrap_or_default();
-    if let Some(rclone) = paths::resolve_rclone_path(&configured_rclone) {
+    if let Some(rclone) = paths::resolve_rclone_path() {
         if let Err(e) = ludusavi_config::set_cloud(
             None,
             None,

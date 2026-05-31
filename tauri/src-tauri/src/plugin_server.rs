@@ -281,16 +281,10 @@ async fn get_lan_peer_cover(
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
 async fn run_backup(state: &PluginState, game_name: &str, session_id: &str) -> Json<Value> {
-    // Reload config and library from disk on every backup so changes made in
-    // the running GUI (new games, updated ludusavi path) are always honoured.
-    let config = crate::config::Config::load().unwrap_or_default();
-
-    let Some(ludusavi_exe) =
-        crate::paths::resolve_ludusavi_path(&config.data.ludusavi_path)
-    else {
-        tracing::error!("plugin backup: ludusavi not configured");
+    let Some(ludusavi_exe) = crate::paths::resolve_ludusavi_path() else {
+        tracing::error!("plugin backup: ludusavi sidecar not found");
         return Json(
-            json!({ "acted": true, "ok": false, "reason": "ludusavi not configured" }),
+            json!({ "acted": true, "ok": false, "reason": "ludusavi sidecar not found" }),
         );
     };
 

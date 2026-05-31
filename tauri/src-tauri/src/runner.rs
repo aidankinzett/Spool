@@ -285,15 +285,9 @@ pub async fn backup_game_core(
 /// sync event so peers can see the new save.
 #[tauri::command]
 pub async fn manual_backup(app: AppHandle, game_id: String) -> AppResult<ManualBackupResult> {
-    let ludusavi_exe = {
-        let config = app.state::<SharedConfig>();
-        let cfg = config.lock().map_err(|_| AppError::LockPoisoned)?;
-        crate::paths::resolve_ludusavi_path(&cfg.data.ludusavi_path).ok_or_else(|| {
-            AppError::Other(
-                "Ludusavi is not configured. Place ludusavi in your PATH or configure it in Settings.".into(),
-            )
-        })?
-    };
+    let ludusavi_exe = crate::paths::resolve_ludusavi_path().ok_or_else(|| {
+        AppError::Other("Ludusavi sidecar not found — reinstall Spool.".into())
+    })?;
     let config_dir = crate::paths::ludusavi_config_dir();
     let ludusavi_client = app.state::<LudusaviClient>();
     let library = app.state::<SharedLibrary>();
@@ -325,13 +319,8 @@ pub async fn manual_backup(app: AppHandle, game_id: String) -> AppResult<ManualB
 /// only when a value actually changed, to avoid pointless UI churn.
 #[tauri::command]
 pub async fn refresh_save_metadata(app: AppHandle, game_id: String) -> AppResult<()> {
-    let ludusavi_exe = {
-        let config = app.state::<SharedConfig>();
-        let cfg = config.lock().map_err(|_| AppError::LockPoisoned)?;
-        match crate::paths::resolve_ludusavi_path(&cfg.data.ludusavi_path) {
-            Some(p) => p,
-            None => return Ok(()),
-        }
+    let Some(ludusavi_exe) = crate::paths::resolve_ludusavi_path() else {
+        return Ok(());
     };
     let config_dir = crate::paths::ludusavi_config_dir();
     let game_name = {
@@ -792,7 +781,7 @@ async fn get_local_active_save_details(
 /// Resolve `(rclone_exe, remote_name, remote_path)` from the ludusavi
 /// `config.yaml` + app config. `None` when cloud isn't configured or the
 /// rclone binary can't be found.
-fn resolve_rclone_remote(app: &AppHandle) -> Option<(PathBuf, String, String)> {
+fn resolve_rclone_remote() -> Option<(PathBuf, String, String)> {
     let raw = std::fs::read_to_string(crate::paths::ludusavi_config_file()).ok()?;
     let config: serde_yaml::Value = serde_yaml::from_str(&raw).ok()?;
     let remote_name = get_rclone_remote_name(&config)?;
@@ -802,11 +791,7 @@ fn resolve_rclone_remote(app: &AppHandle) -> Option<(PathBuf, String, String)> {
         .and_then(|p| p.as_str())
         .unwrap_or("ludusavi-backup")
         .to_string();
-    let rclone_exe = {
-        let config_state = app.state::<SharedConfig>();
-        let cfg = config_state.lock().ok()?;
-        crate::paths::resolve_rclone_path(&cfg.data.rclone_path)?
-    };
+    let rclone_exe = crate::paths::resolve_rclone_path()?;
     Some((rclone_exe, remote_name, remote_path))
 }
 
@@ -847,8 +832,8 @@ async fn rclone_cat_tip(rclone_exe: &Path, target: &str) -> Option<redirects::Ba
 /// Fetch the cloud copy of a game's `mapping.yaml` tip. Tries the exact game
 /// folder name then the Windows-safe variant (mirrors the local lookup and
 /// `query_rclone_details`). `None` when cloud isn't configured or absent.
-async fn fetch_cloud_backup_tip(app: &AppHandle, game_name: &str) -> Option<redirects::BackupTip> {
-    let (rclone_exe, remote_name, remote_path) = resolve_rclone_remote(app)?;
+async fn fetch_cloud_backup_tip(game_name: &str) -> Option<redirects::BackupTip> {
+    let (rclone_exe, remote_name, remote_path) = resolve_rclone_remote()?;
     let mut folders = vec![game_name.to_string()];
     let safe = redirects::windows_safe_name(game_name);
     if safe != game_name {
@@ -1113,13 +1098,9 @@ pub async fn get_cloud_conflict_details(
         .and_then(|p| p.as_str())
         .unwrap_or("ludusavi-backup");
         
-    let rclone_exe = {
-        let config = app.state::<SharedConfig>();
-        let cfg = config.lock().map_err(|_| AppError::LockPoisoned)?;
-        crate::paths::resolve_rclone_path(&cfg.data.rclone_path).ok_or_else(|| {
-            AppError::Other("rclone binary not found".into())
-        })?
-    };
+    let rclone_exe = crate::paths::resolve_rclone_path().ok_or_else(|| {
+        AppError::Other("rclone sidecar not found — reinstall Spool.".into())
+    })?;
     
     tracing::info!(
         "get_cloud_conflict_details: querying rclone_exe={:?}, remote_name={}, remote_path={}",
@@ -1176,15 +1157,9 @@ fn manual_prep(app: &AppHandle, game_id: &str) -> AppResult<(String, PathBuf, Pa
             entry.wine_prefix_path.clone(),
         )
     };
-    let ludusavi_exe = {
-        let config = app.state::<SharedConfig>();
-        let cfg = config.lock().map_err(|_| AppError::LockPoisoned)?;
-        crate::paths::resolve_ludusavi_path(&cfg.data.ludusavi_path).ok_or_else(|| {
-            AppError::Other(
-                "Ludusavi is not configured. Place ludusavi in your PATH or configure it in Settings.".into(),
-            )
-        })?
-    };
+    let ludusavi_exe = crate::paths::resolve_ludusavi_path().ok_or_else(|| {
+        AppError::Other("Ludusavi sidecar not found — reinstall Spool.".into())
+    })?;
     let config_dir = crate::paths::ludusavi_config_dir();
     let wine_prefix = if uses_proton {
         Some(
@@ -1249,15 +1224,9 @@ pub async fn launch_game_inner_steal(
         )
     };
 
-    let ludusavi_exe = {
-        let config = app.state::<SharedConfig>();
-        let cfg = config.lock().map_err(|_| AppError::LockPoisoned)?;
-        crate::paths::resolve_ludusavi_path(&cfg.data.ludusavi_path).ok_or_else(|| {
-            AppError::Other(
-                "Ludusavi is not configured. Place ludusavi in your PATH or configure it in Settings.".into(),
-            )
-        })?
-    };
+    let ludusavi_exe = crate::paths::resolve_ludusavi_path().ok_or_else(|| {
+        AppError::Other("Ludusavi sidecar not found — reinstall Spool.".into())
+    })?;
 
     let (umu_run_path, default_proton_path) = {
         let config = app.state::<SharedConfig>();
@@ -1539,7 +1508,7 @@ async fn run_workflow(
         // baseline (last-synced tip) is what makes this distinction possible.
         let backup_dir = ludusavi_config::backup_dir();
         let local_tip = redirects::read_local_backup_tip(&backup_dir, game_name);
-        let cloud_tip = fetch_cloud_backup_tip(app, game_name).await;
+        let cloud_tip = fetch_cloud_backup_tip(game_name).await;
         let base = {
             let library = app.state::<SharedLibrary>();
             let lib = library.lock().map_err(|_| AppError::LockPoisoned)?;
