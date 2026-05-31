@@ -566,7 +566,14 @@ fn run_backup_headless(game_name: &str) -> i32 {
         }
     };
     let result = rt.block_on(async {
-        runner::backup_game_core(&client, &ludusavi_exe, &config_dir, &lib_state, &game_id).await
+        let r =
+            runner::backup_game_core(&client, &ludusavi_exe, &config_dir, &lib_state, &game_id).await;
+        // Release the play-state lock too. Game Mode SIGKILLs the primary Spool
+        // before its run workflow can release the lock, so this fallback process
+        // does it directly — otherwise the game shows as "playing on <device>"
+        // until the server's stale window elapses. Best-effort, like the backup.
+        sync::release_lock_headless(&config.data, game_name).await;
+        r
     });
 
     match result {
