@@ -21,22 +21,22 @@ uploads ledger.
 
 ## The shape of a transfer
 
-```
-Host A (sender)                          Host B (receiver)
-───────────────                          ─────────────────
-announce every 5s ─── UDP broadcast ───▶ peer registry (B sees A)
-  :47631                                   │
-                                           │ user clicks Install
-GET /games/<id>/manifest  ◀──────────────┤ fetch manifest
-  walk folder, blake3 every file          │
-  ───────────────────────────────────────▶ PeerGameManifest (files + hashes + sizes)
-                                           │
-GET /games/<id>/files/<path>  ◀───────────┤ stream up to 4 files in parallel
-  (HTTP Range for resume)                 │ → write to <name>.partial/
-  ───────────────────────────────────────▶ verify blake3 per file
-                                           │
-                                           │ all files OK → rename .partial → final
-                                           │ → add to library
+```mermaid
+sequenceDiagram
+    participant B as Host B — receiver
+    participant A as Host A — sender
+    Note over A: announce every 5s over<br/>UDP broadcast :47631
+    A-->>B: announce (device, game_count, file_server_port)
+    Note over B: user clicks Install
+    B->>A: GET /games/{id}/manifest
+    Note over A: walk folder,<br/>blake3 every file
+    A-->>B: PeerGameManifest<br/>(files + hashes + sizes)
+    loop up to 4 files in parallel
+        B->>A: GET /games/{id}/files/{path}<br/>(HTTP Range to resume)
+        A-->>B: file bytes
+        Note over B: verify blake3 →<br/>write to .partial/
+    end
+    Note over B: all files verified →<br/>rename .partial → final →<br/>add to library
 ```
 
 ## Discovery: UDP broadcast

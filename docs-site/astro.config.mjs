@@ -1,6 +1,7 @@
 // @ts-check
 import { defineConfig } from 'astro/config';
 import starlight from '@astrojs/starlight';
+import mermaid from 'astro-mermaid';
 
 // https://astro.build/config
 export default defineConfig({
@@ -9,6 +10,9 @@ export default defineConfig({
   site: 'https://aidankinzett.github.io',
   base: '/Spool/',
   integrations: [
+    // Must come before starlight so its rehype plugin processes
+    // ```mermaid``` code blocks first. Dark-only to match the app's UI.
+    mermaid({ theme: 'dark', autoTheme: false }),
     starlight({
       title: 'Spool',
       description:
