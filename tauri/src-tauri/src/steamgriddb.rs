@@ -339,6 +339,7 @@ pub async fn fetch_steam_grid_bundle(
 
 /// One downloaded art asset: raw bytes plus its mime (for the caller to set a
 /// content-type / pick a Steam image type).
+#[cfg(unix)]
 pub struct ArtBytes {
     pub bytes: Vec<u8>,
     pub mime: String,
@@ -354,6 +355,7 @@ pub struct ArtBytes {
 /// `Ok(None)` means SteamGridDB is disabled/unconfigured, the game didn't
 /// resolve, or that kind has no art — all non-errors the caller treats as
 /// "skip this asset".
+#[cfg(unix)]
 pub async fn fetch_art_bytes(
     http: &reqwest::Client,
     api_key: &str,
