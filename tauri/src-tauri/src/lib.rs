@@ -550,13 +550,6 @@ pub fn run() {
 /// No GUI / tray / single-instance. Used by `spool --backup "Name"` (the
 /// Decky plugin's forced-close fallback).
 fn run_backup_headless(game_name: &str) -> i32 {
-    let config = match Config::load() {
-        Ok(c) => c,
-        Err(e) => {
-            tracing::error!(error = %e, "--backup: failed to load config");
-            return 1;
-        }
-    };
     let library = match Library::load() {
         Ok(l) => l,
         Err(e) => {

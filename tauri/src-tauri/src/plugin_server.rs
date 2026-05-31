@@ -183,10 +183,6 @@ async fn get_library() -> Json<Value> {
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
 async fn run_backup(state: &PluginState, game_name: &str, session_id: &str) -> Json<Value> {
-    // Reload config and library from disk on every backup so changes made in
-    // the running GUI (new games added, etc.) are always honoured.
-    let config = crate::config::Config::load().unwrap_or_default();
-
     let Some(ludusavi_exe) = crate::paths::resolve_ludusavi_path() else {
         tracing::error!("plugin backup: ludusavi sidecar not found");
         return Json(
