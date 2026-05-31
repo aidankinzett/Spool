@@ -17,7 +17,7 @@ vi.mock('$lib/api', () => ({
   assetUrl: () => '',
 }));
 vi.mock('$lib/toasts.svelte', () => ({
-  toasts: { push: vi.fn(), success: vi.fn(), error: vi.fn(), info: vi.fn() },
+  toasts: { show: vi.fn(), push: vi.fn(), success: vi.fn(), error: vi.fn(), info: vi.fn() },
 }));
 
 function makeGame(over: Partial<GameEntry> = {}): GameEntry {
@@ -93,5 +93,18 @@ describe('GameDetail', () => {
     expect((screen.getByTestId('play-button') as HTMLButtonElement).disabled).toBe(
       true,
     );
+  });
+
+  it('offers "restore an earlier save" only when more than one revision exists', () => {
+    // 2+ revisions → rollback affordance shown.
+    const { unmount } = render(GameDetail, {
+      props: { game: makeGame({ save_backup_count: 3 }) },
+    });
+    expect(screen.queryByText('Restore an earlier save')).not.toBeNull();
+    unmount();
+
+    // A single revision → nothing to roll back to, so no affordance.
+    render(GameDetail, { props: { game: makeGame({ save_backup_count: 1 }) } });
+    expect(screen.queryByText('Restore an earlier save')).toBeNull();
   });
 });

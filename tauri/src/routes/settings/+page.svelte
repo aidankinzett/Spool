@@ -323,6 +323,14 @@
     persist();
   }
 
+  function onRetentionCommit() {
+    if (!config) return;
+    // Mirror the backend clamp (1–10) so the field reflects what's stored.
+    if (!Number.isFinite(config.save_retention_full)) config.save_retention_full = 3;
+    config.save_retention_full = Math.min(10, Math.max(1, Math.round(config.save_retention_full)));
+    persist();
+  }
+
   function scrollToSection(id: string) {
     activeSection = id;
     document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -496,6 +504,22 @@
                         {#snippet icon()}<Folder size={14} />{/snippet}
                         Browse
                       </Btn>
+                    {/snippet}
+                  </SettingsRow>
+
+                  <SettingsRow
+                    label="Save revisions to keep"
+                    helper="How many save backups to retain per game. More gives more rollback points (restore an earlier save from a game's detail panel), at the cost of more disk and cloud upload. 1–10."
+                  >
+                    {#snippet control()}
+                      <input
+                        type="number"
+                        min="1"
+                        max="10"
+                        bind:value={config!.save_retention_full}
+                        onblur={onRetentionCommit}
+                        class="font-mono h-7 w-24 rounded-sm border border-line-1 bg-bg-2 px-2 text-right text-[12px] text-ink-0 outline-none focus:border-line-3"
+                      />
                     {/snippet}
                   </SettingsRow>
 

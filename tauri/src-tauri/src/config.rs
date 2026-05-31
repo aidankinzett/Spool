@@ -89,6 +89,13 @@ pub struct ConfigData {
     /// active connection.
     pub cloud_webdav_url: String,
     pub cloud_webdav_username: String,
+
+    /// Number of full save revisions ludusavi retains per game (the
+    /// `backup.retention.full` knob). More revisions = more rollback points,
+    /// at the cost of more disk + cloud upload per game. Differentials stay at
+    /// 0 (see `ludusavi_config::ensure_config`). Default 3; clamped to 1–10
+    /// when applied.
+    pub save_retention_full: u32,
 }
 
 impl Default for ConfigData {
@@ -119,6 +126,7 @@ impl Default for ConfigData {
             rclone_args: "--fast-list --ignore-checksum".to_string(),
             cloud_webdav_url: String::new(),
             cloud_webdav_username: String::new(),
+            save_retention_full: 3,
         }
     }
 }
@@ -323,6 +331,9 @@ pub fn update_config(
         Some(&rclone_val),
         Some(&cfg.data.rclone_args),
     );
+
+    // Push the save-revision retention knob into the owned config.yaml.
+    let _ = crate::ludusavi_config::set_retention(cfg.data.save_retention_full);
 
     Ok(cfg.data.clone())
 }
