@@ -27,6 +27,7 @@
     Sparkles,
     Trash2,
   } from '@lucide/svelte';
+  import { onMount } from 'svelte';
   import { openView } from '$lib/nav';
   import { api } from '$lib/api';
   import { toasts } from '$lib/toasts.svelte';
@@ -202,6 +203,11 @@
     void game.id;
     revisionsOpen = false;
     revisions = null;
+  });
+
+  let isWindows = $state(false);
+  onMount(async () => {
+    isWindows = (await api.appPlatform()) === 'windows';
   });
 
   let generatingArmoury = $state(false);
@@ -417,14 +423,16 @@
       {#snippet icon()}<Folder size={14} />{/snippet}
       Open folder
     </Btn>
-    <Btn
-      variant="ghost"
-      onclick={generateArmouryLauncher}
-      disabled={!game.exe_path || generatingArmoury}
-    >
-      {#snippet icon()}<Sparkles size={14} />{/snippet}
-      {generatingArmoury ? 'Generating…' : 'Armoury Crate'}
-    </Btn>
+    {#if isWindows}
+      <Btn
+        variant="ghost"
+        onclick={generateArmouryLauncher}
+        disabled={!game.exe_path || generatingArmoury}
+      >
+        {#snippet icon()}<Sparkles size={14} />{/snippet}
+        {generatingArmoury ? 'Generating…' : 'Armoury Crate'}
+      </Btn>
+    {/if}
     <Btn
       variant="ghost"
       onclick={addToSteam}

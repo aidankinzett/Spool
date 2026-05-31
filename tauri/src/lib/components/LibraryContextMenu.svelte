@@ -34,6 +34,7 @@
   } = $props();
 
   let menuEl: HTMLDivElement | undefined = $state();
+  let isWindows = $state(false);
 
   const BRAND_SPOOL = '#d7c9a0';
   const accent = $derived(game.accent_color ?? BRAND_SPOOL);
@@ -68,9 +69,10 @@
   function handleKey(e: KeyboardEvent) {
     if (e.key === 'Escape') onclose();
   }
-  onMount(() => {
+  onMount(async () => {
     document.addEventListener('mousedown', handleOutside, true);
     document.addEventListener('keydown', handleKey, true);
+    isWindows = (await api.appPlatform()) === 'windows';
   });
   onDestroy(() => {
     document.removeEventListener('mousedown', handleOutside, true);
@@ -354,7 +356,9 @@
       !folderForGame(game),
     )}
     {@render item('Add to Steam', steamIcon, addToSteam, !game.exe_path)}
-    {@render item('Generate Armoury Crate launcher', armouryIcon, generateArmouryLauncher, !game.exe_path)}
+    {#if isWindows}
+      {@render item('Generate Armoury Crate launcher', armouryIcon, generateArmouryLauncher, !game.exe_path)}
+    {/if}
   </div>
 
   <div class="border-t border-dashed border-line-1 py-1">
