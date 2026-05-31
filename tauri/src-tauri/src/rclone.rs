@@ -53,11 +53,16 @@ const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(60);
 /// the holder crashed or went offline without releasing. 3× the heartbeat
 /// interval so a couple of missed writes don't trip it.
 const ACTIVE_STALE_SECS: i64 = 180;
+/// Timeout for the suspend-path marker write. Must be shorter than logind's
+/// InhibitDelayMaxSec (default 5 s) so the write either completes or fails
+/// before the inhibitor expires and the kernel freezes the process mid-upload.
+#[cfg(target_os = "linux")]
+const SUSPEND_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Fast-fail flags folded into every control-plane rclone call so an
 /// unreachable remote (classic SteamOS Game-Mode boot before Wi-Fi is up)
 /// fails in seconds instead of blocking the launch for minutes.
-const FAST_FLAGS: &[&str] = &[
+pub const FAST_FLAGS: &[&str] = &[
     "--contimeout", "5s",
     "--timeout", "30s",
     "--retries", "1",
@@ -248,7 +253,7 @@ fn base_command(exe: &Path) -> tokio::process::Command {
 
 /// `rclone cat <target>` → stdout as a String. `None` on any failure (missing
 /// file, network error, timeout).
-async fn cat(exe: &Path, target: &str) -> Option<String> {
+pub async fn cat(exe: &Path, target: &str) -> Option<String> {
     let mut cmd = base_command(exe);
     cmd.arg("cat").arg(target);
     let child = cmd.spawn().ok()?;
@@ -483,7 +488,9 @@ pub async fn claim_session(app: &AppHandle, game_name: &str, steal: bool) -> Ses
     match classify(marker.as_ref(), &device_id, Utc::now().timestamp(), steal) {
         Decision::Proceed => {
             let ours = build_marker(game_name, &device_id, &device_name, SessionState::Active, false);
-            write_marker(&remote, &ours).await;
+            if !write_marker(&remote, &ours).await {
+                tracing::warn!(game_name, "claim_session: failed to write Active marker — advisory locking disabled for this session");
+            }
             SessionClass::Free
         }
         Decision::ActiveElsewhere => SessionClass::ActiveElsewhere {
@@ -496,9 +503,11 @@ pub async fn claim_session(app: &AppHandle, game_name: &str, steal: bool) -> Ses
 }
 
 /// Spawn the session heartbeat: rewrites our `Active` marker's `updated_at`
-/// every 60 s so peers see the session as live. Returns the JoinHandle; the
+/// every 60 s so peers see the session as live. `started_at` is the real
+/// session-start timestamp captured at claim time — preserved on every tick
+/// so peers always see accurate session age. Returns the JoinHandle; the
 /// runner `.abort()`s it on session end.
-pub fn start_heartbeat(app: AppHandle, game_name: String) -> tokio::task::JoinHandle<()> {
+pub fn start_heartbeat(app: AppHandle, game_name: String, started_at: String) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         loop {
             tokio::time::sleep(HEARTBEAT_INTERVAL).await;
@@ -509,7 +518,15 @@ pub fn start_heartbeat(app: AppHandle, game_name: String) -> tokio::task::JoinHa
             if device_id.is_empty() {
                 continue;
             }
-            let marker = build_marker(&game_name, &device_id, &device_name, SessionState::Active, false);
+            let marker = SessionMarker {
+                game_name: game_name.clone(),
+                device_id,
+                device_name,
+                started_at: started_at.clone(),
+                updated_at: Utc::now().to_rfc3339(),
+                state: SessionState::Active,
+                suspended: false,
+            };
             write_marker(&remote, &marker).await;
         }
     })
@@ -595,6 +612,9 @@ pub async fn complete_session_backup_from_config(cfg: &ConfigData, game_name: &s
 /// Mark our session marker suspended (device sleeping mid-session). A suspended
 /// marker never goes stale, so a peer sees "unsynced session" rather than the
 /// marker being silently reclaimed. Returns `true` on success.
+///
+/// Uses SUSPEND_TIMEOUT (< logind's InhibitDelayMaxSec) so the write completes
+/// or fails before the inhibitor expires and the kernel freezes the process.
 #[cfg(target_os = "linux")]
 pub async fn mark_session_suspended(app: &AppHandle, game_name: &str) -> bool {
     let Some(remote) = resolve_remote(app) else {
@@ -605,7 +625,9 @@ pub async fn mark_session_suspended(app: &AppHandle, game_name: &str) -> bool {
         return false;
     }
     let marker = build_marker(game_name, &device_id, &device_name, SessionState::Active, true);
-    write_marker(&remote, &marker).await
+    tokio::time::timeout(SUSPEND_TIMEOUT, write_marker(&remote, &marker))
+        .await
+        .unwrap_or(false)
 }
 
 /// On resume, re-assert our (awake) marker. Returns `Some(device_name)` of the
@@ -665,6 +687,39 @@ where
     if let Ok(body) = serde_json::to_vec(&blob) {
         rcat(&remote.exe, &target, &body).await;
     }
+}
+
+/// Record a finished session AND mark the backup complete in a single device-
+/// blob roundtrip (cat + rcat). Deletes the session marker, then writes
+/// playtime, last_played, and the backup timestamp together.
+///
+/// Use this in the normal post-session path (cloud upload succeeded) instead
+/// of calling `record_session` + `complete_session_backup` separately, which
+/// would do two roundtrips to the same file.
+pub async fn record_session_and_complete_backup(
+    app: &AppHandle,
+    game_name: &str,
+    session_minutes: i32,
+    session_end: &str,
+) {
+    let Some(remote) = resolve_remote(app) else {
+        return;
+    };
+    let (device_id, device_name) = device_identity(app);
+    if device_id.is_empty() {
+        return;
+    }
+    deletefile(&remote.exe, &remote.session_target(game_name)).await;
+    let delta = session_minutes.max(0) as i64;
+    update_device_blob(&remote, &device_id, |b| {
+        b.device_name = device_name.clone();
+        if delta > 0 {
+            *b.playtime.entry(game_name.to_string()).or_default() += delta;
+        }
+        b.last_played.insert(game_name.to_string(), session_end.to_string());
+        b.backups.insert(game_name.to_string(), Utc::now().to_rfc3339());
+    })
+    .await;
 }
 
 /// Record a finished session in this device's blob (playtime delta + last
