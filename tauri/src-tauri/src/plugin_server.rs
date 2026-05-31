@@ -13,9 +13,8 @@
 
 #![cfg(unix)]
 
-use crate::config::Config;
 use crate::error::{AppError, AppResult};
-use crate::library::{Library, SharedLibrary};
+use crate::library::Library;
 use crate::ludusavi::LudusaviClient;
 use axum::{
     extract::State as AxState,
@@ -35,31 +34,21 @@ use tower_service::Service;
 // ── Server state ─────────────────────────────────────────────────────────────
 
 /// State shared across all request handlers.
+///
+/// Config and library are intentionally **not** cached here — they are
+/// reloaded from disk on every request so the server always sees changes made
+/// by the main Spool GUI (new games, updated paths, etc.) without a restart.
 #[derive(Clone)]
 struct PluginState {
-    config: Arc<Config>,
-    library: Arc<SharedLibrary>,
     ludusavi: Arc<LudusaviClient>,
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
 
-/// Start the plugin Unix socket server and run until killed. Loads config and
-/// library from disk, then serves requests indefinitely. Called from
-/// `lib.rs::run_headless_server`.
+/// Start the plugin Unix socket server and run until killed.
+/// Called from `lib.rs::run_headless_server`.
 pub async fn serve() -> AppResult<()> {
-    let config = Config::load().unwrap_or_else(|e| {
-        tracing::warn!(error = %e, "plugin server: failed to load config, using defaults");
-        Config::default()
-    });
-    let library = Library::load().unwrap_or_else(|e| {
-        tracing::warn!(error = %e, "plugin server: failed to load library, starting empty");
-        Library::default()
-    });
-
     let state = PluginState {
-        config: Arc::new(config),
-        library: Arc::new(Mutex::new(library)),
         ludusavi: Arc::new(LudusaviClient::new()),
     };
 
@@ -155,9 +144,12 @@ async fn post_game_stopped(
 
     tracing::info!(game = %rec.game, "plugin: forced-close fallback triggered");
 
+    // Reload config fresh so any path/server changes made in the GUI are seen.
+    let config = crate::config::Config::load().unwrap_or_default();
+
     // Release the sync-server play lock first — independent of backup result
     // so the game stops showing as "playing on <device>" immediately.
-    crate::sync::release_lock_headless(&state.config.data, &rec.game).await;
+    crate::sync::release_lock_headless(&config.data, &rec.game).await;
 
     run_backup(&state, &rec.game).await
 }
@@ -171,19 +163,20 @@ async fn post_backup_now(AxState(state): AxState<PluginState>) -> Json<Value> {
     run_backup(&state, &rec.game).await
 }
 
-async fn get_library(AxState(state): AxState<PluginState>) -> Json<Value> {
-    let lib = match state.library.lock() {
-        Ok(g) => g,
-        Err(_) => return Json(json!([])),
-    };
-    Json(serde_json::to_value(&lib.entries).unwrap_or(json!([])))
+async fn get_library() -> Json<Value> {
+    let library = Library::load().unwrap_or_default();
+    Json(serde_json::to_value(&library.entries).unwrap_or(json!([])))
 }
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
 async fn run_backup(state: &PluginState, game_name: &str) -> Json<Value> {
+    // Reload config and library from disk on every backup so changes made in
+    // the running GUI (new games, updated ludusavi path) are always honoured.
+    let config = crate::config::Config::load().unwrap_or_default();
+
     let Some(ludusavi_exe) =
-        crate::paths::resolve_ludusavi_path(&state.config.data.ludusavi_path)
+        crate::paths::resolve_ludusavi_path(&config.data.ludusavi_path)
     else {
         tracing::error!("plugin backup: ludusavi not configured");
         return Json(
@@ -197,20 +190,18 @@ async fn run_backup(state: &PluginState, game_name: &str) -> Json<Value> {
 
     let config_dir = crate::paths::ludusavi_config_dir();
 
-    let game_id = {
-        let lib = match state.library.lock() {
-            Ok(g) => g,
-            Err(_) => {
-                return Json(
-                    json!({ "acted": true, "ok": false, "reason": "library lock poisoned" }),
-                )
-            }
-        };
-        lib.entries
-            .iter()
-            .find(|e| e.game_name == game_name)
-            .map(|e| e.id.clone())
-    };
+    let library = Library::load().unwrap_or_default();
+    let library = Mutex::new(library);
+
+    let game_id = library
+        .lock()
+        .ok()
+        .and_then(|lib| {
+            lib.entries
+                .iter()
+                .find(|e| e.game_name == game_name)
+                .map(|e| e.id.clone())
+        });
 
     let Some(game_id) = game_id else {
         tracing::error!(name = %game_name, "plugin backup: game not in library");
@@ -221,7 +212,7 @@ async fn run_backup(state: &PluginState, game_name: &str) -> Json<Value> {
         state.ludusavi.as_ref(),
         &ludusavi_exe,
         &config_dir,
-        state.library.as_ref(),
+        &library,
         &game_id,
     )
     .await

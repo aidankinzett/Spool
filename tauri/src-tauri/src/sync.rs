@@ -24,6 +24,11 @@ use tauri::{AppHandle, Emitter, Manager, State};
 const HEALTH_POLL_INTERVAL: Duration = Duration::from_secs(30);
 const HEALTH_TIMEOUT: Duration = Duration::from_secs(5);
 const ENDPOINT_TIMEOUT: Duration = Duration::from_secs(8);
+// suspend_lock runs inside a systemd-logind delay inhibitor whose default
+// InhibitDelayMaxSec is 5 s. Use a shorter deadline so the request either
+// completes or fails cleanly before logind force-releases the inhibitor and
+// freezes the process mid-flight.
+const SUSPEND_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Reachability state. The frontend renders the chrome cloud icon
 /// based on this.
@@ -601,7 +606,7 @@ pub async fn suspend_lock(app: &AppHandle, game_name: &str) -> bool {
     let client = (*app.state::<reqwest::Client>()).clone();
     match client
         .post(&endpoint)
-        .timeout(ENDPOINT_TIMEOUT)
+        .timeout(SUSPEND_TIMEOUT)
         .bearer_auth(&key)
         .header("X-Device-Id", &device_id)
         .header("X-Device-Name", &device_name)
