@@ -22,10 +22,10 @@
   import { appLocalDataDir } from '@tauri-apps/api/path';
   import { open as openDialog } from '@tauri-apps/plugin-dialog';
   import { getCurrentWindow } from '@tauri-apps/api/window';
-  import { emit } from '@tauri-apps/api/event';
+  import { emit, listen } from '@tauri-apps/api/event';
   import { api, type DeckyPluginInfo } from '$lib/api';
   import { toasts } from '$lib/toasts.svelte';
-  import type { ConfigData, DepStatus, LanPeer, ProtonVersion } from '$lib/types';
+  import type { ConfigData, DepStatus, LanPeer, ProtonVersion, SyncStatus } from '$lib/types';
   import AppChrome from '$lib/components/AppChrome.svelte';
   import MonoLabel from '$lib/components/MonoLabel.svelte';
   import Btn from '$lib/components/Btn.svelte';
@@ -42,6 +42,7 @@
   let activeGroup = $state('general');
   let peers = $state<LanPeer[]>([]);
   let appVersion = $state<string | null>(null);
+  let syncStatus = $state<SyncStatus | null>(null);
 
   let webdavPassword = $state('');
   let webdavConnecting = $state(false);
@@ -54,24 +55,44 @@
   let deckyPlugin = $state<DeckyPluginInfo | null>(null);
   let deckyInstalling = $state(false);
 
-  onMount(async () => {
-    try {
-      config = await api.getConfig();
-      peers = await api.listLanPeers();
-      appVersion = await getVersion();
-      isLinux = (await api.appPlatform()) === 'linux';
-      if (isLinux) {
-        protonVersions = await api.listProtonVersions();
-        deps = await api.checkDependencies();
-        try {
-          deckyPlugin = await api.deckyPluginStatus();
-        } catch (e) {
-          console.error('[settings] deckyPluginStatus failed:', e);
+  const OAUTH_PROVIDERS = ['google-drive', 'onedrive', 'dropbox', 'box'];
+  let oauthConnecting = $state(false);
+  let remoteExists = $state(false);
+
+  onMount(() => {
+    let unlisten: (() => void) | undefined;
+
+    const setup = async () => {
+      try {
+        config = await api.getConfig();
+        peers = await api.listLanPeers();
+        appVersion = await getVersion();
+        syncStatus = await api.currentSyncStatus();
+        isLinux = (await api.appPlatform()) === 'linux';
+        if (isLinux) {
+          protonVersions = await api.listProtonVersions();
+          deps = await api.checkDependencies();
+          try {
+            deckyPlugin = await api.deckyPluginStatus();
+          } catch (e) {
+            console.error('[settings] deckyPluginStatus failed:', e);
+          }
         }
+        if (config && OAUTH_PROVIDERS.includes(config.cloud_provider)) {
+          remoteExists = await api.checkCloudRemoteExists(config.cloud_provider);
+        }
+      } catch (e) {
+        error = String(e);
       }
-    } catch (e) {
-      error = String(e);
-    }
+
+      unlisten = await listen<SyncStatus>('sync:status-changed', (ev) => {
+        syncStatus = ev.payload;
+      });
+    };
+
+    setup();
+
+    return () => { unlisten?.(); };
   });
 
   async function persist(): Promise<boolean> {
@@ -158,10 +179,30 @@
     persist();
   }
 
+  async function connectOAuth() {
+    oauthConnecting = true;
+    try {
+      await api.connectCloudOAuth(config!.cloud_provider);
+      remoteExists = true;
+      syncStatus = await api.refreshSyncStatus();
+      toasts.show({ kind: 'ok', label: 'CLOUD', title: 'Connected', sub: 'Authenticated — saves will sync.' });
+    } catch (e) {
+      toasts.show({ kind: 'bad', label: 'CLOUD · OAUTH', title: "Couldn't connect", sub: String(e) });
+    } finally {
+      oauthConnecting = false;
+    }
+  }
+
+  async function cancelOAuth() {
+    try { await api.cancelCloudOAuth(); } catch (e) { console.warn('[oauth] cancel failed:', e); }
+    oauthConnecting = false;
+  }
+
   // Derived nav status for sidebar dots
   const cloudConfigured = $derived(
     !!config?.cloud_provider && !(config.cloud_provider === 'custom' && !config.cloud_remote)
   );
+  const cloudOnline = $derived(syncStatus?.reachability === 'online');
   const deckOk = $derived(
     !isLinux || (!!deckyPlugin?.installed && deps.every(d => d.found))
   );
@@ -186,7 +227,7 @@
       id: 'saves',
       title: 'Saves',
       sub: 'Backups & cloud sync',
-      status: cloudConfigured ? 'ok' : 'warn',
+      status: cloudOnline ? 'ok' : cloudConfigured ? 'warn' : 'off',
     },
     ...(isLinux
       ? [{
@@ -424,7 +465,13 @@
               >
                 {#snippet icon()}<Cloud size={14} />{/snippet}
                 {#snippet right()}
-                  <Pill kind={cloudConfigured ? 'ok' : 'off'}>{cloudConfigured ? 'Syncing' : 'Local only'}</Pill>
+                  {#if cloudOnline}
+                    <Pill kind="ok">Syncing</Pill>
+                  {:else if cloudConfigured}
+                    <Pill kind="warn">Offline</Pill>
+                  {:else}
+                    <Pill kind="off">Local only</Pill>
+                  {/if}
                 {/snippet}
 
                 <!-- Cloud toggle + sub-fields -->
@@ -454,7 +501,14 @@
                         {#snippet extras()}
                           <select
                             bind:value={config!.cloud_provider}
-                            onchange={persist}
+                            onchange={async () => {
+                              if (oauthConnecting) await cancelOAuth();
+                              remoteExists = false;
+                              await persist();
+                              if (config && OAUTH_PROVIDERS.includes(config.cloud_provider)) {
+                                remoteExists = await api.checkCloudRemoteExists(config.cloud_provider);
+                              }
+                            }}
                             style="color-scheme: dark"
                             class="rounded-[4px] border border-line-1 bg-bg-2 px-2 py-1 text-[11.5px] text-ink-0"
                           >
@@ -470,6 +524,31 @@
                           </select>
                         {/snippet}
                       </SettingsRow>
+
+                      {#if OAUTH_PROVIDERS.includes(config!.cloud_provider)}
+                        <SettingsRow
+                          label="Authentication"
+                          helper={remoteExists
+                            ? 'Authenticated — your account is connected.'
+                            : 'Not connected — click Connect to open a browser and authorise rclone.'}
+                          status={remoteExists ? 'ok' : 'warn'}
+                        >
+                          {#snippet extras()}
+                            {#if oauthConnecting}
+                              <span class="font-mono text-[11px] text-ink-2 animate-pulse">Waiting for browser…</span>
+                              <Btn variant="ghost" onclick={cancelOAuth}>Cancel</Btn>
+                            {:else}
+                              <Btn
+                                variant={remoteExists ? 'ghost' : 'primary'}
+                                onclick={connectOAuth}
+                              >
+                                {#snippet icon()}<Cloud size={14} />{/snippet}
+                                {remoteExists ? 'Reconnect' : 'Connect'}
+                              </Btn>
+                            {/if}
+                          {/snippet}
+                        </SettingsRow>
+                      {/if}
 
                       {#if config.cloud_provider === 'custom'}
                         <SettingsRow label="Remote" helper="rclone remote name (e.g. bazzite, gdrive, b2)">

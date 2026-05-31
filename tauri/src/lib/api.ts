@@ -109,6 +109,13 @@ export const api = {
   currentSyncStatus: (): Promise<SyncStatus> => invoke('current_sync_status'),
   refreshSyncStatus: (): Promise<SyncStatus> => invoke('refresh_sync_status'),
 
+  // Cloud OAuth authentication
+  checkCloudRemoteExists: (provider: string): Promise<boolean> =>
+    invoke('check_cloud_remote_exists', { provider }),
+  connectCloudOAuth: (provider: string): Promise<void> =>
+    invoke('connect_cloud_oauth', { provider }),
+  cancelCloudOAuth: (): Promise<void> => invoke('cancel_cloud_oauth'),
+
   // LAN
   listLanPeers: (): Promise<LanPeer[]> => invoke('list_lan_peers'),
   fetchPeerGames: (addr: string, port: number): Promise<PeerGame[]> =>
