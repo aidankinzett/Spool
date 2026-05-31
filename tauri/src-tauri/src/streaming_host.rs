@@ -58,7 +58,7 @@ struct Candidate {
 /// Sunshine is preferred over Apollo when both exist (most installs are
 /// Sunshine, and Apollo reads the same schema).
 fn candidates() -> Vec<Candidate> {
-    let out = Vec::new();
+    let mut out = Vec::new();
 
     #[cfg(windows)]
     {
