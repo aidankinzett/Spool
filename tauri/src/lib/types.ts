@@ -123,18 +123,17 @@ export type GameEntry = {
   accent_color: string | null;
 
   /**
-   * Cross-device save-sync status. Set by the sync server's
-   * `/events/:game/latest-backup` probe; refreshed at startup +
-   * after each successful backup.
+   * Cross-device save-sync status. Derived from rclone device blobs
+   * at startup and updated after each successful backup.
    *
-   *   "synced"       most recent server event came from this device
+   *   "synced"       this device holds the most recent backup
    *   "cloud-newer"  another device backed up more recently than us
-   *   "local-newer"  we backed up locally but the event didn't reach
-   *                  the server (offline / sync disabled)
+   *   "local-newer"  we backed up locally but the cloud hasn't
+   *                  confirmed it yet (offline / sync disabled)
    *
-   * `null` means we don't have enough info to badge — sync off,
-   * no backup history, or we never queried. The sidebar shows a
-   * small coloured dot on the cover when this is set.
+   * `null` means not enough info to badge — cloud not configured or
+   * no backup history. The sidebar shows a small coloured dot on
+   * the cover when this is set.
    */
   sync_badge: string | null;
 

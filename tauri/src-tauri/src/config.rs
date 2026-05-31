@@ -2,7 +2,7 @@
 //!
 //! The on-disk format mirrors the C# `ConfigData` exactly so an existing
 //! Spool installation's config loads without migration. Fields that aren't
-//! yet exposed in the new UI (LAN share, sync server) are still modelled so
+//! yet exposed in the new UI (LAN share) are still modelled so
 //! the file round-trips cleanly with the C# app — they're just inert until
 //! v2.
 

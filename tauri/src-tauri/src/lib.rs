@@ -358,7 +358,7 @@ pub fn run() {
                 // The normal startup branch does this; the attached launch
                 // skipped it, leaving a stale AppImage-mount rclone path and
                 // (worse) unbounded rclone retries that wedged the restore
-                // phase forever when the save-sync server was unreachable at
+                // phase forever when the cloud remote was unreachable at
                 // Game-Mode boot. Game Mode is exactly where that hang hurts
                 // most — there's no window to recover from, just a splash.
                 restamp_rclone(app.handle());

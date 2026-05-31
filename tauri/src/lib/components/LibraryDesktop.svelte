@@ -120,7 +120,7 @@
           {/if}
         </button>
         <!-- Cloud remote status — cloud icon, tinted by reachability.
-             Clicking opens Settings → Sync Server. -->
+             Clicking opens Settings. -->
         <button
           onclick={() => openView('settings')}
           aria-label="Cloud remote status"

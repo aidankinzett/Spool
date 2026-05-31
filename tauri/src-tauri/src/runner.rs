@@ -206,7 +206,7 @@ async fn persist_backup_stats(
 /// AppHandle-free backup core. Resolves the game's name + wine prefix from the
 /// library, runs `ludusavi backup`, and persists the entry's backup stats.
 /// Returns the bundle count + total bytes. Callers handle event emission and
-/// sync-server recording (best-effort) themselves.
+/// rclone recording (best-effort) themselves.
 pub async fn backup_game_core(
     ludusavi_client: &LudusaviClient,
     ludusavi_exe: &Path,
@@ -1742,7 +1742,7 @@ async fn run_workflow(
                 }
                 // A cloud conflict on the *post-play* backup means the cloud
                 // advanced while we held the play-state lock (lock unavailable
-                // or sync server down). We just played, so local is
+                // or cloud remote unreachable). We just played, so local is
                 // authoritative — force an upload so the next device sees a
                 // clean fast-forward instead of a phantom conflict.
                 if out
