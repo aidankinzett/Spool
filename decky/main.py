@@ -124,6 +124,41 @@ async def _run_backup_blocking(game: str, settings: dict) -> dict:
     return {"ok": False, "reason": f"backup exited with code {code}"}
 
 
+async def _release_lock_blocking(game: str, settings: dict) -> None:
+    """Run `spool --release-lock "<game>"` and wait for it. Best-effort.
+
+    Separate one-shot from the backup so the play-state lock is dropped the
+    moment Steam force-closes the game, regardless of whether the subsequent
+    backup succeeds (a backup is slower and can fail on a flaky remote). The
+    release is scoped by device id server-side, so it only ever drops this
+    device's own lock. Failures are logged and otherwise ignored — the server's
+    stale window is the ultimate backstop.
+    """
+    cmd = logic.resolve_spool_command(settings, _home())
+    if not cmd:
+        return  # backup path already logs the missing-executable error
+    argv = logic.build_release_lock_argv(cmd, game)
+    decky.logger.info("Spool Backup: running %s", argv)
+    try:
+        with open(BACKUP_LOG, "ab") as log:
+            proc = await asyncio.create_subprocess_exec(
+                *argv,
+                start_new_session=True,  # detach: survives a force-close
+                stdout=log,
+                stderr=asyncio.subprocess.STDOUT,
+                stdin=asyncio.subprocess.DEVNULL,
+                env=_spawn_env(),
+            )
+            code = await proc.wait()
+    except OSError as exc:
+        decky.logger.error("Spool Backup: failed to launch lock release: %s", exc)
+        return
+    if code == 0:
+        decky.logger.info("Spool Backup: lock released for '%s'", game)
+    else:
+        decky.logger.error("Spool Backup: lock release for '%s' exited %s", game, code)
+
+
 class Plugin:
     async def _main(self):
         decky.logger.info("Spool Backup loaded")
@@ -158,6 +193,12 @@ class Plugin:
         # decky.emit is async — must be awaited or the event is never sent.
         if notify:
             await decky.emit("spool_backup_started", game)
+        # Drop the sync-server play lock first. Steam SIGKILLed Spool before its
+        # run workflow could release it, so without this the game shows as
+        # "playing on <device>" until the server's stale window elapses. Done
+        # before (and independent of) the backup so a slow/failing backup can't
+        # delay it.
+        await _release_lock_blocking(game, settings)
         result = await _run_backup_blocking(game, settings)
         if notify:
             await decky.emit("spool_backup_finished", game, result.get("ok", False),

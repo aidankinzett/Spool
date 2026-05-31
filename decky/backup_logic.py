@@ -108,6 +108,15 @@ def build_backup_argv(spool_command: str, game: str) -> list[str]:
     return [spool_command, "--backup", game]
 
 
+def build_release_lock_argv(spool_command: str, game: str) -> list[str]:
+    """The argv for releasing a single game's sync-server play lock.
+
+    Separate from the backup so the fallback can drop the lock first, regardless
+    of whether the backup then succeeds.
+    """
+    return [spool_command, "--release-lock", game]
+
+
 def session_path(settings: dict, home: str) -> str:
     """Session-record path: explicit `session_file` setting, else the default."""
     configured = (settings or {}).get("session_file", "").strip()

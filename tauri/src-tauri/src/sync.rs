@@ -452,16 +452,68 @@ pub async fn acquire_lock(app: &AppHandle, game_name: &str) -> AcquireOutcome {
 /// Fire-and-forget POST /locks/:game/release. Failures are logged
 /// and ignored — the server's stale-lock detection will eventually
 /// reclaim if we never released.
+///
+/// The server identifies which lock to delete by the `X-Device-Id`
+/// header (it scopes the delete to `user_id + game_name + device_id`),
+/// so this header is REQUIRED — without it the endpoint 400s and the
+/// lock is never released, leaving the game "playing" until the stale
+/// window elapses.
 pub async fn release_lock(app: &AppHandle, game_name: &str) {
     let Ok((url, key)) = config_snapshot(app) else {
         return;
     };
-    let endpoint = join_url(&url, &format!("locks/{}/release", urlencode(game_name)));
+    let (device_id, device_name) = device_identity(app);
+    if device_id.is_empty() {
+        return;
+    }
     let client = (*app.state::<reqwest::Client>()).clone();
+    release_lock_request(&client, &url, &key, &device_id, &device_name, game_name).await;
+}
+
+/// AppHandle-free lock release for the headless `spool --backup` path (the
+/// Decky Loader forced-close fallback). In SteamOS Game Mode, Steam SIGKILLs
+/// the primary Spool before [`crate::runner`]'s workflow reaches its own
+/// `release_lock`, so the play-state lock would otherwise dangle until the
+/// server's stale window elapses. This separate `--backup` process re-reads the
+/// on-disk config and releases the lock directly as part of the same safety net
+/// that re-runs the backup.
+///
+/// Best-effort and offline-safe: no-op when sync is disabled / unconfigured or
+/// the device id is missing. Builds a one-shot reqwest client since this process
+/// has no Tauri-managed one.
+pub async fn release_lock_headless(cfg: &crate::config::ConfigData, game_name: &str) {
+    if !cfg.sync_server_enabled {
+        return;
+    }
+    let url = cfg.sync_server_url.trim();
+    let key = cfg.sync_server_api_key.trim();
+    let device_id = cfg.device_id.trim();
+    if url.is_empty() || key.is_empty() || device_id.is_empty() {
+        return;
+    }
+    let client = reqwest::Client::new();
+    release_lock_request(&client, url, key, device_id, cfg.device_name.trim(), game_name).await;
+}
+
+/// Shared POST to /locks/:game/release used by both the in-app and headless
+/// release paths. The `X-Device-Id` header is REQUIRED — the server scopes the
+/// delete to `user_id + game_name + device_id`, so without it the endpoint 400s
+/// and the lock is never released. Fire-and-forget: failures are logged.
+async fn release_lock_request(
+    client: &reqwest::Client,
+    url: &str,
+    key: &str,
+    device_id: &str,
+    device_name: &str,
+    game_name: &str,
+) {
+    let endpoint = join_url(url, &format!("locks/{}/release", urlencode(game_name)));
     match client
         .post(&endpoint)
         .timeout(ENDPOINT_TIMEOUT)
-        .bearer_auth(&key)
+        .bearer_auth(key)
+        .header("X-Device-Id", device_id)
+        .header("X-Device-Name", device_name)
         .send()
         .await
     {
@@ -481,6 +533,15 @@ pub fn start_heartbeat(app: AppHandle, game_name: String) -> tokio::task::JoinHa
             let Ok((url, key)) = config_snapshot(&app) else {
                 return; // sync got disabled mid-session — stop pinging
             };
+            // The server's heartbeat endpoint scopes the update by
+            // `X-Device-Id` (user_id + game_name + device_id) and 400s
+            // without it — so the header is REQUIRED to keep the lock
+            // fresh. Missing it means `last_heartbeat` never advances and
+            // the lock goes stale mid-session.
+            let (device_id, device_name) = device_identity(&app);
+            if device_id.is_empty() {
+                continue;
+            }
             let endpoint =
                 join_url(&url, &format!("locks/{}/heartbeat", urlencode(&game_name)));
             let client = (*app.state::<reqwest::Client>()).clone();
@@ -488,6 +549,8 @@ pub fn start_heartbeat(app: AppHandle, game_name: String) -> tokio::task::JoinHa
                 .post(&endpoint)
                 .timeout(ENDPOINT_TIMEOUT)
                 .bearer_auth(&key)
+                .header("X-Device-Id", &device_id)
+                .header("X-Device-Name", &device_name)
                 .send()
                 .await
             {
