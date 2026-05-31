@@ -77,10 +77,12 @@ pub fn mark_backed_up() {
 /// Like `mark_backed_up` but only flips the flag when the on-disk
 /// `session_id` still matches `expected_id`. No-op when a newer session
 /// has started since the backup was triggered.
+#[allow(dead_code)]
 pub fn mark_backed_up_if(expected_id: &str) {
     mark_backed_up_if_at(&crate::paths::active_session_file(), expected_id);
 }
 
+#[allow(dead_code)]
 fn mark_backed_up_if_at(path: &Path, expected_id: &str) {
     if let Some(mut rec) = read_at(path) {
         if rec.session_id == expected_id {
