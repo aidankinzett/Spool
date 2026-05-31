@@ -18,6 +18,7 @@ import type {
   UploadSnapshot,
   SearchCandidate,
   RawConflictDetails,
+  SaveRevision,
 } from './types';
 
 /** Status of the companion Spool Backup Decky plugin (mirrors the Rust
@@ -130,6 +131,19 @@ export const api = {
     invoke('manual_backup', { gameId }),
   manualRestore: (gameId: string): Promise<{ game_count: number }> =>
     invoke('manual_restore', { gameId }),
+  /** List the save revisions ludusavi retains for a game, newest first. */
+  listSaveRevisions: (gameId: string): Promise<SaveRevision[]> =>
+    invoke('list_save_revisions', { gameId }),
+  /**
+   * Roll back to an earlier save revision. Restores the chosen backup, then
+   * pins it as the new tip (immediate cloud-synced backup) so it isn't
+   * clobbered by the next pre-launch restore. Blocked while a game is running.
+   */
+  restoreSaveRevision: (
+    gameId: string,
+    backupName: string,
+  ): Promise<{ game_count: number }> =>
+    invoke('restore_save_revision', { gameId, backupName }),
   /**
    * Refresh a game's save-backup stats (revision count + latest-backup time)
    * from ludusavi's real backup store. Fire-and-forget from the detail view;

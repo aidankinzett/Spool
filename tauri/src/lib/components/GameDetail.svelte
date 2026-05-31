@@ -17,18 +17,20 @@
    * it up later is a one-liner.
    */
   import {
+    ChevronDown,
     Cloud,
     Copy,
     Folder,
     Pencil,
     Play,
+    RotateCcw,
     Sparkles,
     Trash2,
   } from '@lucide/svelte';
   import { openView } from '$lib/nav';
   import { api } from '$lib/api';
   import { toasts } from '$lib/toasts.svelte';
-  import type { GameEntry, RunPhase } from '$lib/types';
+  import type { GameEntry, RunPhase, SaveRevision } from '$lib/types';
   import {
     absDate,
     absDateTime,
@@ -128,6 +130,79 @@
     await api.removeGame(game.id);
     // library:changed event will cause the parent page to clear selection.
   }
+
+  // ── Restore an earlier save (rollback) ──────────────────────────────────
+  // Lazily loaded when the user expands the picker. The backend lists
+  // ludusavi's local revisions newest-first with the tip flagged.
+  let revisionsOpen = $state(false);
+  let revisions = $state<SaveRevision[] | null>(null);
+  let revisionsLoading = $state(false);
+  let rollingBack = $state<string | null>(null);
+
+  async function toggleRevisions() {
+    revisionsOpen = !revisionsOpen;
+    if (revisionsOpen && revisions == null && !revisionsLoading) {
+      revisionsLoading = true;
+      try {
+        revisions = await api.listSaveRevisions(game.id);
+      } catch (e) {
+        toasts.show({
+          kind: 'bad',
+          label: 'LUDUSAVI',
+          title: "Couldn't load save revisions",
+          sub: String(e),
+          catalog: fmtCatalog(game.catalog_number),
+        });
+        revisionsOpen = false;
+      } finally {
+        revisionsLoading = false;
+      }
+    }
+  }
+
+  async function rollBackTo(rev: SaveRevision) {
+    if (rev.is_current || isRunning || rollingBack) return;
+    const when = absDateTime(rev.when);
+    if (
+      !confirm(
+        `Restore the save backup from ${when} for "${game.game_name}"?\n\n` +
+          `This replaces your current save files. Spool snapshots the ` +
+          `restored save as the newest revision so it sticks (this uses one ` +
+          `retention slot, dropping the oldest backup).`,
+      )
+    )
+      return;
+    rollingBack = rev.name;
+    try {
+      await api.restoreSaveRevision(game.id, rev.name);
+      toasts.show({
+        kind: 'ok',
+        label: 'LUDUSAVI · RESTORE',
+        title: 'Earlier save restored',
+        sub: `${game.game_name} · backup from ${when}`,
+        catalog: fmtCatalog(game.catalog_number),
+      });
+      // The revision list changed (a new tip was pinned) — reload it.
+      revisions = await api.listSaveRevisions(game.id).catch(() => revisions);
+    } catch (e) {
+      toasts.show({
+        kind: 'bad',
+        label: 'LUDUSAVI · RESTORE',
+        title: "Couldn't restore",
+        sub: String(e),
+        catalog: fmtCatalog(game.catalog_number),
+      });
+    } finally {
+      rollingBack = null;
+    }
+  }
+
+  // Reset the picker when switching games so we don't show a stale list.
+  $effect(() => {
+    void game.id;
+    revisionsOpen = false;
+    revisions = null;
+  });
 
   let generatingArmoury = $state(false);
   async function generateArmouryLauncher() {
@@ -437,6 +512,72 @@
             <Cloud size={12} class="text-ok" />
             Saves restore before launch and back up on exit automatically.
           </div>
+
+          {#if game.save_backup_count > 1}
+            <div class="mt-3 border-t border-dashed border-line-1 pt-3">
+              <button
+                type="button"
+                onclick={toggleRevisions}
+                class="flex items-center gap-1.5 text-[11.5px] text-ink-2 transition-colors hover:text-ink-0"
+                aria-expanded={revisionsOpen}
+              >
+                <RotateCcw size={12} />
+                Restore an earlier save
+                <ChevronDown
+                  size={12}
+                  class="transition-transform {revisionsOpen ? 'rotate-180' : ''}"
+                />
+              </button>
+
+              {#if revisionsOpen}
+                <div class="mt-2 flex flex-col gap-1">
+                  {#if revisionsLoading}
+                    <div class="text-[11px] text-ink-3">Loading revisions…</div>
+                  {:else if revisions && revisions.length > 0}
+                    {#each revisions as rev (rev.name)}
+                      <div
+                        class="flex items-center justify-between gap-2 rounded-sm border border-line-1 bg-bg-2 px-2.5 py-1.5"
+                      >
+                        <div class="min-w-0">
+                          <div class="truncate text-[12px] text-ink-0">
+                            {absDateTime(rev.when)}
+                          </div>
+                          <div class="font-mono text-[10px] tracking-[0.02em] text-ink-3">
+                            {relDate(rev.when)}
+                          </div>
+                        </div>
+                        {#if rev.is_current}
+                          <span
+                            class="font-mono shrink-0 text-[9.5px] uppercase tracking-[0.08em] text-ok"
+                          >
+                            Current
+                          </span>
+                        {:else}
+                          <button
+                            type="button"
+                            onclick={() => rollBackTo(rev)}
+                            disabled={isRunning || rollingBack != null}
+                            class="shrink-0 rounded-sm border border-line-2 px-2 py-1 text-[11px] text-ink-1 transition-colors hover:border-line-3 hover:text-ink-0 disabled:cursor-not-allowed disabled:opacity-40"
+                            title={isRunning
+                              ? 'Stop the game before restoring an earlier save'
+                              : `Restore the backup from ${absDateTime(rev.when)}`}
+                          >
+                            {rollingBack === rev.name ? 'Restoring…' : 'Restore'}
+                          </button>
+                        {/if}
+                      </div>
+                    {/each}
+                    <div class="font-mono mt-0.5 text-[10px] leading-relaxed text-ink-3">
+                      Restoring snapshots the chosen save as the newest
+                      revision, so it survives the next launch.
+                    </div>
+                  {:else}
+                    <div class="text-[11px] text-ink-3">No earlier revisions.</div>
+                  {/if}
+                </div>
+              {/if}
+            </div>
+          {/if}
         {:else if game.save_paths.length > 0}
           <div class="flex items-start gap-2.5 text-[12.5px] text-ink-2">
             <Cloud size={14} class="mt-0.5 shrink-0 text-ink-3" />

@@ -399,6 +399,7 @@ pub async fn manual_restore(app: AppHandle, game_id: String) -> AppResult<Manual
         &game_name,
         wine_prefix.as_deref(),
         game_folder.as_deref(),
+        None,
     )
     .await
     .map_err(|e| AppError::Other(format!("ludusavi restore: {e}")))?;
@@ -424,6 +425,103 @@ pub async fn manual_restore(app: AppHandle, game_id: String) -> AppResult<Manual
     // pulled the latest. Best-effort.
     if game_count > 0 {
         sync::record_restore_event(&app, &game_name).await;
+    }
+
+    Ok(ManualRestoreResult { game_count })
+}
+
+/// List the save revisions ludusavi currently retains for a game, newest
+/// first, with the tip flagged. Backs the in-app "restore an earlier save"
+/// picker in the game detail card. Reflects the local backup store, so
+/// cloud-only revisions this device hasn't pulled aren't included.
+#[tauri::command]
+pub async fn list_save_revisions(
+    app: AppHandle,
+    game_id: String,
+) -> AppResult<Vec<crate::ludusavi::SaveRevision>> {
+    let (game_name, ludusavi_exe, config_dir, _wine_prefix) = manual_prep(&app, &game_id)?;
+    let ludusavi_client = app.state::<LudusaviClient>();
+    ludusavi_client
+        .list_revisions(&ludusavi_exe, &config_dir, &game_name)
+        .await
+}
+
+/// Roll back to an earlier save revision. This is a deliberate, destructive
+/// action the user invokes from the detail card — never part of the automatic
+/// launch workflow.
+///
+/// A ludusavi restore only writes a backup into the live save dir; it does not
+/// change the revision history, so a bare rollback would be silently clobbered
+/// by the next pre-launch restore (which always lands the tip). To make the
+/// rollback durable we **pin** it: restore the chosen revision locally, then
+/// immediately back up so the rolled-back files become a new tip revision.
+/// That backup is cloud-synced, so the rollback propagates to every device and
+/// the cloud-conflict baseline advances to the new tip. Pinning consumes one
+/// retention slot (the oldest revision rolls off).
+///
+/// Guarded by the single-launch lock so a rollback can't race a running
+/// session (and vice versa).
+#[tauri::command]
+pub async fn restore_save_revision(
+    app: AppHandle,
+    game_id: String,
+    backup_name: String,
+) -> AppResult<ManualRestoreResult> {
+    let run_state = app.state::<RunState>();
+    let _guard = run_state.try_acquire(&game_id)?;
+
+    let (game_name, ludusavi_exe, config_dir, wine_prefix) = manual_prep(&app, &game_id)?;
+    let game_folder = {
+        let library = app.state::<SharedLibrary>();
+        let lib = library.lock().map_err(|_| AppError::LockPoisoned)?;
+        lib.find(&game_id)
+            .and_then(|e| e.game_folder_path.as_ref().map(PathBuf::from))
+    };
+    let ludusavi_client = app.state::<LudusaviClient>();
+
+    // ── Step 1: restore the chosen revision into the live save location ───
+    let out = restore_with_redirects(
+        &ludusavi_client,
+        &ludusavi_exe,
+        &config_dir,
+        &game_name,
+        wine_prefix.as_deref(),
+        game_folder.as_deref(),
+        Some(&backup_name),
+    )
+    .await
+    .map_err(|e| AppError::Other(format!("ludusavi restore: {e}")))?;
+
+    let game_count = out
+        .overall
+        .as_ref()
+        .map(|o| o.total_games)
+        .unwrap_or(0);
+
+    // ── Step 2: pin the rolled-back state as the new tip (cloud-synced) ───
+    let library = app.state::<SharedLibrary>();
+    backup_game_core(
+        &ludusavi_client,
+        &ludusavi_exe,
+        &config_dir,
+        &library,
+        &game_id,
+    )
+    .await
+    .map_err(|e| AppError::Other(format!("failed to pin rolled-back save: {e}")))?;
+
+    // Advance the cloud-sync baseline to the freshly-written tip so the next
+    // launch's conflict check is exact rather than falling back to timestamps.
+    let backup_dir = ludusavi_config::backup_dir();
+    if let Some(tip) = redirects::read_local_backup_tip(&backup_dir, &game_name) {
+        let _ = set_cloud_baseline(&app, &game_id, &tip.name);
+    }
+
+    // Let peers know we just changed the save, and repaint the library
+    // (backup count / last-backed-up just changed).
+    sync::record_restore_event(&app, &game_name).await;
+    if let Err(e) = app.emit("library:changed", &game_id) {
+        tracing::warn!(error = %e, "failed to emit library:changed after rollback");
     }
 
     Ok(ManualRestoreResult { game_count })
@@ -476,6 +574,7 @@ pub async fn resolve_cloud_conflict(
         &game_name,
         wine_prefix.as_deref(),
         game_folder.as_deref(),
+        None,
     )
     .await
     .map_err(|e| AppError::Other(format!("ludusavi restore: {e}")))?;
@@ -1293,9 +1392,27 @@ async fn restore_with_redirects(
     game_name: &str,
     prefix_root: Option<&Path>,
     game_folder: Option<&Path>,
+    backup: Option<&str>,
 ) -> AppResult<crate::ludusavi::ApiOutput> {
-    // ── Pass 1: restore (pulls cloud) ─────────────────────────────────────
-    let first = ludusavi_client.restore(ludusavi_exe, config_dir, game_name).await?;
+    // Restore the requested revision, or the tip. `Some(id)` is a local
+    // rollback (no cloud sync — see `restore_backup`); `None` is the normal
+    // cloud-syncing restore of the latest backup. Both passes restore the
+    // same selection.
+    macro_rules! do_restore {
+        () => {
+            match backup {
+                Some(id) => {
+                    ludusavi_client
+                        .restore_backup(ludusavi_exe, config_dir, game_name, id)
+                        .await
+                }
+                None => ludusavi_client.restore(ludusavi_exe, config_dir, game_name).await,
+            }
+        };
+    }
+
+    // ── Pass 1: restore (pulls cloud unless rolling back to an id) ─────────
+    let first = do_restore!()?;
 
     // ── Read mapping.yaml to detect origin ────────────────────────────────
     let backup_dir = ludusavi_config::backup_dir();
@@ -1335,7 +1452,7 @@ async fn restore_with_redirects(
     );
 
     // ── Pass 2: restore with redirects in place ───────────────────────────
-    let second = ludusavi_client.restore(ludusavi_exe, config_dir, game_name).await?;
+    let second = do_restore!()?;
 
     // Clear redirects after the restore so they don't affect unrelated
     // operations (e.g. a manual backup). We regenerate on every restore.
@@ -1394,6 +1511,7 @@ async fn run_workflow(
         game_name,
         wine_prefix.as_deref(),
         game_folder.as_deref(),
+        None,
     ).await?;
     if restore
         .errors
@@ -1440,6 +1558,7 @@ async fn run_workflow(
                     game_name,
                     wine_prefix.as_deref(),
                     game_folder.as_deref(),
+                    None,
                 )
                 .await?;
                 if out.errors.as_ref().and_then(|e| e.cloud_conflict.as_ref()).is_some() {
