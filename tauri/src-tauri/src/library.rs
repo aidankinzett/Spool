@@ -9,7 +9,7 @@ use crate::error::{AppError, AppResult};
 use crate::paths;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, State};
 
 /// One game in the library. Matches the C# `GameEntry` JSON shape exactly
@@ -272,9 +272,11 @@ impl Library {
     }
 }
 
-/// Shared library state. Wrapping in [`Mutex`] is fine here because every
-/// access is a quick read/clone — we never hold the guard across an `.await`.
-pub type SharedLibrary = Mutex<Library>;
+/// Shared library state. The outer [`Arc`] lets callers clone a handle into
+/// spawned tasks without touching Tauri's `State<'_, _>` lifetime — in
+/// particular `lan/install.rs`'s download task and the headless plugin
+/// server both need to push a new entry after the partial rename.
+pub type SharedLibrary = Arc<Mutex<Library>>;
 
 /// Filesystem-safe filename derived from a game name.
 ///
