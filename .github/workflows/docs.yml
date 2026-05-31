@@ -5,7 +5,7 @@ on:
   push:
     branches: [master]
     paths:
-      - 'website/**'
+      - 'docs-site/**'
       - '.github/workflows/docs.yml'
   # Allow manual runs from the Actions tab.
   workflow_dispatch:
@@ -28,11 +28,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
       - name: Build with Astro
-        # Auto-detects the package manager from website/bun.lock and runs
+        # Auto-detects the package manager from docs-site/bun.lock and runs
         # install + astro build, then uploads the Pages artifact.
         uses: withastro/action@v3
         with:
-          path: website
+          path: docs-site
 
   deploy:
     needs: build

@@ -3,12 +3,12 @@
 Developer-facing docs for Spool, built with [Astro](https://astro.build/) +
 [Starlight](https://starlight.astro.build/). Deployed to GitHub Pages at
 <https://aidankinzett.github.io/Spool/> by `.github/workflows/docs.yml` on every
-push to `master` that touches `website/`.
+push to `master` that touches `docs-site/`.
 
 ## Local development
 
 ```bash
-cd website
+cd docs-site
 bun install
 bun run dev      # http://localhost:4321/Spool/
 ```

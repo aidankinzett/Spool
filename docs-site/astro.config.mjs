@@ -36,7 +36,7 @@ export default defineConfig({
         },
       ],
       editLink: {
-        baseUrl: 'https://github.com/aidankinzett/Spool/edit/master/website/',
+        baseUrl: 'https://github.com/aidankinzett/Spool/edit/master/docs-site/',
       },
     }),
   ],

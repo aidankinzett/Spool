@@ -82,7 +82,7 @@ bun run test:e2e  # builds the app then runs the WebDriver suite
 | `server/` | Self-hostable Hono sync server |
 | `decky/` | Companion Decky Loader plugin |
 | `docs/` | Internal dev plans & design specs |
-| `website/` | This documentation site |
+| `docs-site/` | This documentation site |
 
 See [Architecture → Overview](/Spool/architecture/overview/) for the full
 module map.

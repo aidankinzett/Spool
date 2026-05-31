@@ -42,7 +42,7 @@ GitHub Actions workflows live in `.github/workflows/`:
   Linux AppImage and publishes a GitHub Release plus a `latest.json` updater
   manifest.
 - **`docs.yml`** — builds and deploys this documentation site to GitHub Pages
-  on pushes to `master` that touch `website/`.
+  on pushes to `master` that touch `docs-site/`.
 
 ## Conventions worth knowing
 
@@ -60,15 +60,15 @@ GitHub Actions workflows live in `.github/workflows/`:
 
 ## Editing these docs
 
-The docs site is a standalone Astro project in `website/`.
+The docs site is a standalone Astro project in `docs-site/`.
 
 ```bash
-cd website
+cd docs-site
 bun install
 bun run dev      # local preview with hot reload
-bun run build    # production build into website/dist/
+bun run build    # production build into docs-site/dist/
 ```
 
-Content lives in `website/src/content/docs/` as Markdown / MDX. The sidebar is
-configured in `website/astro.config.mjs`. Every page has an "Edit page" link
+Content lives in `docs-site/src/content/docs/` as Markdown / MDX. The sidebar is
+configured in `docs-site/astro.config.mjs`. Every page has an "Edit page" link
 that points straight at the source file on GitHub.
