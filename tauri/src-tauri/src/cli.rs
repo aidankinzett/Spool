@@ -12,6 +12,7 @@
 //!   spool --run "Game Name" "ExePath"  → launch this game's workflow
 //!   spool --backup "Game Name"         → headless one-shot backup, then exit
 //!   spool --release-lock "Game Name"   → headless one-shot lock release, then exit
+//!   spool --headless-server            → start the plugin Unix socket server, run forever
 //!
 //! Anything else is treated as `Normal`. We can extend with more
 //! subcommands (--quit, --backup-all, etc.) as use cases arrive.
@@ -34,6 +35,12 @@ pub enum CliMode {
     /// `--backup` — Steam SIGKILLs Spool before its run workflow can release the
     /// lock, so this drops it directly. No GUI, no tray.
     ReleaseLock { game_name: String },
+    /// Start the plugin Unix socket server and run until killed. No tray, no
+    /// window, no single-instance registration. Used by the Decky plugin
+    /// (`spool --headless-server`) to get a persistent IPC endpoint it can
+    /// query for session state, library data, and backup operations — replacing
+    /// the old per-operation `--backup` / `--release-lock` subprocess spawns.
+    HeadlessServer,
 }
 
 /// Parses argv, skipping the program-name arg at position 0.
@@ -54,6 +61,9 @@ pub fn parse_args<S: AsRef<str>>(args: &[S]) -> CliMode {
         return CliMode::ReleaseLock {
             game_name: rest[1].to_string(),
         };
+    }
+    if rest.len() == 1 && rest[0] == "--headless-server" {
+        return CliMode::HeadlessServer;
     }
     CliMode::Normal
 }
@@ -125,5 +135,18 @@ mod tests {
             parse_args::<&str>(&["spool.exe", "--release-lock"]),
             CliMode::Normal
         );
+    }
+
+    #[test]
+    fn headless_server_parses() {
+        let argv = ["spool", "--headless-server"];
+        assert_eq!(parse_args(&argv), CliMode::HeadlessServer);
+    }
+
+    #[test]
+    fn headless_server_with_extra_args_falls_back_to_normal() {
+        // Extra args → unrecognised, fall through to Normal.
+        let argv = ["spool", "--headless-server", "--extra"];
+        assert_eq!(parse_args(&argv), CliMode::Normal);
     }
 }

@@ -53,7 +53,6 @@ const PLUGIN_DIR_NAME: &str = "spool-backup";
 mod embedded {
     pub const INDEX_JS: &str = include_str!("../../../decky/dist/index.js");
     pub const MAIN_PY: &str = include_str!("../../../decky/main.py");
-    pub const BACKUP_LOGIC_PY: &str = include_str!("../../../decky/backup_logic.py");
     pub const PLUGIN_JSON: &str = include_str!("../../../decky/plugin.json");
     pub const PACKAGE_JSON: &str = include_str!("../../../decky/package.json");
 }
@@ -136,7 +135,6 @@ mod imp {
         std::fs::create_dir_all(staging.join("dist"))?;
         std::fs::write(staging.join("dist").join("index.js"), embedded::INDEX_JS)?;
         std::fs::write(staging.join("main.py"), embedded::MAIN_PY)?;
-        std::fs::write(staging.join("backup_logic.py"), embedded::BACKUP_LOGIC_PY)?;
         std::fs::write(staging.join("plugin.json"), embedded::PLUGIN_JSON)?;
         std::fs::write(staging.join("package.json"), embedded::PACKAGE_JSON)?;
 

@@ -31,6 +31,14 @@ pub fn active_session_file() -> PathBuf {
     app_data_dir().join("active-session.json")
 }
 
+/// Unix socket path for the companion Decky plugin server
+/// (`spool --headless-server`). The plugin connects here instead of
+/// spawning `spool --backup` / `spool --release-lock` subprocesses.
+#[cfg(unix)]
+pub fn plugin_socket_path() -> PathBuf {
+    app_data_dir().join("plugin.sock")
+}
+
 #[allow(dead_code)]
 pub fn covers_dir() -> PathBuf {
     app_data_dir().join("covers")
