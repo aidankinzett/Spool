@@ -8,9 +8,10 @@
 //!      us whether to focus the library or kick off a game launch.
 //!
 //! Format:
-//!   spool                            → normal library launch
-//!   spool --run "Game Name" "ExePath"→ launch this game's workflow
-//!   spool --backup "Game Name"       → headless one-shot backup, then exit
+//!   spool                              → normal library launch
+//!   spool --run "Game Name" "ExePath"  → launch this game's workflow
+//!   spool --backup "Game Name"         → headless one-shot backup, then exit
+//!   spool --release-lock "Game Name"   → headless one-shot lock release, then exit
 //!
 //! Anything else is treated as `Normal`. We can extend with more
 //! subcommands (--quit, --backup-all, etc.) as use cases arrive.
@@ -23,7 +24,16 @@ pub enum CliMode {
     Run { game_name: String, exe_path: String },
     /// Headless one-shot: back up a single game's saves, then exit. Used by
     /// the Decky plugin's forced-close fallback. No GUI, no tray.
+    ///
+    /// Deliberately does NOT release the sync-server play lock — that's a
+    /// separate concern (`ReleaseLock`) so a plain backup never has the hidden
+    /// side effect of dropping a lock. The Decky fallback invokes both.
     Backup { game_name: String },
+    /// Headless one-shot: release a single game's sync-server play lock, then
+    /// exit. Used by the Decky plugin's forced-close fallback alongside
+    /// `--backup` — Steam SIGKILLs Spool before its run workflow can release the
+    /// lock, so this drops it directly. No GUI, no tray.
+    ReleaseLock { game_name: String },
 }
 
 /// Parses argv, skipping the program-name arg at position 0.
@@ -37,6 +47,11 @@ pub fn parse_args<S: AsRef<str>>(args: &[S]) -> CliMode {
     }
     if rest.len() >= 2 && rest[0] == "--backup" {
         return CliMode::Backup {
+            game_name: rest[1].to_string(),
+        };
+    }
+    if rest.len() >= 2 && rest[0] == "--release-lock" {
+        return CliMode::ReleaseLock {
             game_name: rest[1].to_string(),
         };
     }
@@ -91,5 +106,24 @@ mod tests {
     #[test]
     fn backup_missing_name_falls_back_to_normal() {
         assert_eq!(parse_args::<&str>(&["spool.exe", "--backup"]), CliMode::Normal);
+    }
+
+    #[test]
+    fn release_lock_with_name_parses() {
+        let argv = ["spool.exe", "--release-lock", "Hades"];
+        assert_eq!(
+            parse_args(&argv),
+            CliMode::ReleaseLock {
+                game_name: "Hades".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn release_lock_missing_name_falls_back_to_normal() {
+        assert_eq!(
+            parse_args::<&str>(&["spool.exe", "--release-lock"]),
+            CliMode::Normal
+        );
     }
 }

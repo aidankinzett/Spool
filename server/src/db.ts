@@ -159,6 +159,9 @@ export const queries = {
   deleteLock: db.prepare(
     "DELETE FROM locks WHERE user_id = ? AND game_name = ? AND device_id = ?"
   ),
+  deleteStaleLocks: db.prepare(
+    "DELETE FROM locks WHERE last_heartbeat < ?"
+  ),
   insertBackupEvent: db.prepare(
     `INSERT INTO backup_events (id, user_id, game_name, device_id, device_name, event_type, occurred_at)
      VALUES (?, ?, ?, ?, ?, ?, ?)`
@@ -187,3 +190,14 @@ export const queries = {
        total_minutes = total_minutes + excluded.total_minutes`
   ),
 };
+
+// Delete every lock whose heartbeat is older than the stale threshold. Locks are
+// normally removed on release; this reaps the ones left behind when a client was
+// killed before releasing (SteamOS force-close, a crash, or a failed release
+// call). `acquire` already treats a stale lock as free, so this is purely to
+// stop dead rows accumulating. Returns the number removed. ISO-8601 UTC
+// timestamps sort lexicographically, so the string comparison is correct.
+export function sweepStaleLocks(): number {
+  const cutoff = new Date(Date.now() - STALE_THRESHOLD_MS).toISOString();
+  return queries.deleteStaleLocks.run(cutoff).changes;
+}
