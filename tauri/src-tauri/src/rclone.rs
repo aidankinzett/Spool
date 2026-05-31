@@ -561,6 +561,16 @@ pub async fn complete_session_backup(app: &AppHandle, game_name: &str) {
     .await;
 }
 
+/// Delete our session marker without recording a backup — used when a game
+/// failed to launch so no actual session occurred. Prevents a stale
+/// `PendingBackup` marker from permanently blocking other devices.
+pub async fn delete_session_marker(app: &AppHandle, game_name: &str) {
+    let Some(remote) = resolve_remote(app) else {
+        return;
+    };
+    deletefile(&remote.exe, &remote.session_target(game_name)).await;
+}
+
 /// AppHandle-free marker deletion for `spool --backup` after a successful cloud
 /// upload. No-op when cloud isn't configured.
 pub async fn complete_session_backup_from_config(cfg: &ConfigData, game_name: &str) {

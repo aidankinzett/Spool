@@ -1642,6 +1642,11 @@ async fn run_workflow(
     // a peer keeps warning until then.
     heartbeat.abort();
     suspend_watcher.abort();
+    // Await the heartbeat so its tokio task is dropped (triggering kill_on_drop
+    // on the rclone child) before we write PendingBackup. Without this, an
+    // in-flight Active rcat whose stdin was already closed could complete on the
+    // remote after our PendingBackup write, briefly reverting the marker.
+    let _ = heartbeat.await;
     rclone::mark_session_pending_backup(app, game_name).await;
 
     tracing::info!(
@@ -1651,6 +1656,9 @@ async fn run_workflow(
     );
 
     if let Err(e) = spawn_result {
+        // No game session occurred — delete the marker so other devices aren't
+        // permanently blocked by a PendingBackup state that will never resolve.
+        rclone::delete_session_marker(app, game_name).await;
         return Err(AppError::Other(format!("Game failed to launch: {e}")));
     }
 
