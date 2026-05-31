@@ -2,11 +2,14 @@ import {
   callable,
   definePlugin,
   toaster,
+  routerHook,
   addEventListener,
   removeEventListener,
 } from "@decky/api";
 import {
   ButtonItem,
+  Focusable,
+  Navigation,
   PanelSection,
   PanelSectionRow,
   TextField,
@@ -15,6 +18,10 @@ import {
 } from "@decky/ui";
 import { useEffect, useState } from "react";
 import { FaFloppyDisk } from "react-icons/fa6";
+
+// Full-screen library route registered via routerHook. The QAM "Browse
+// Library" button navigates here.
+const SPOOL_ROUTE = "/spool";
 
 // `SteamClient` (incl. GameSessions.RegisterForAppLifetimeNotifications and the
 // LifetimeNotification payload) is provided as an ambient global by @decky/ui.
@@ -44,6 +51,136 @@ const setSettings = callable<
   Settings
 >("set_settings");
 
+// Hands the UI the headless server's loopback base URL (e.g.
+// "http://127.0.0.1:47650") so it can fetch /library and <img>-load /covers/*
+// directly. `baseUrl` is null when the server isn't running.
+const getServerBase = callable<[], { baseUrl: string | null }>(
+  "get_server_base",
+);
+
+// Mirror of the fields the grid needs from the Rust `GameEntry`.
+interface LibraryGame {
+  id: string;
+  game_name: string;
+  cover_image_path: string | null;
+  accent_color: string | null;
+}
+
+// ── Full-screen library grid ──────────────────────────────────────────────
+//
+// Talks to the headless server over loopback HTTP directly (not through the
+// Decky callable bridge): one callable to learn the base URL, then a plain
+// `fetch` for the library and `<img>` tags for covers. `http://127.0.0.1` is
+// a secure origin, so the covers aren't blocked as mixed content from the
+// https://steamloopback.host page.
+function LibraryGrid() {
+  const [base, setBase] = useState<string | null>(null);
+  const [games, setGames] = useState<LibraryGame[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const { baseUrl } = await getServerBase();
+      if (cancelled) return;
+      if (!baseUrl) {
+        setError("Spool isn’t running. Launch Spool, then try again.");
+        return;
+      }
+      setBase(baseUrl);
+      try {
+        const res = await fetch(`${baseUrl}/library`);
+        const data = (await res.json()) as LibraryGame[];
+        if (!cancelled) setGames(data);
+      } catch {
+        if (!cancelled) setError("Couldn’t load your library.");
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const coverUrl = (g: LibraryGame): string | null => {
+    if (!base || !g.cover_image_path) return null;
+    const file = g.cover_image_path.split(/[/\\]/).pop();
+    return file ? `${base}/covers/${encodeURIComponent(file)}` : null;
+  };
+
+  return (
+    <div
+      style={{
+        height: "100%",
+        overflowY: "scroll",
+        padding: "2rem",
+        boxSizing: "border-box",
+      }}
+    >
+      <h1 style={{ margin: "0 0 1.25rem" }}>Spool Library</h1>
+
+      {error && <div style={{ opacity: 0.8 }}>{error}</div>}
+      {!error && !games && <div style={{ opacity: 0.7 }}>Loading…</div>}
+      {games && games.length === 0 && (
+        <div style={{ opacity: 0.7 }}>No games in your library yet.</div>
+      )}
+
+      {games && games.length > 0 && (
+        <Focusable
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fill, minmax(150px, 1fr))",
+            gap: "1.25rem",
+          }}
+        >
+          {games.map((g) => {
+            const url = coverUrl(g);
+            return (
+              <Focusable
+                key={g.id}
+                onActivate={() => {}}
+                style={{
+                  aspectRatio: "2 / 3",
+                  borderRadius: "8px",
+                  overflow: "hidden",
+                  position: "relative",
+                  display: "flex",
+                  alignItems: "flex-end",
+                  background: g.accent_color ?? "#1a2330",
+                }}
+              >
+                {url ? (
+                  <img
+                    src={url}
+                    alt={g.game_name}
+                    style={{
+                      position: "absolute",
+                      inset: 0,
+                      width: "100%",
+                      height: "100%",
+                      objectFit: "cover",
+                    }}
+                  />
+                ) : (
+                  <span
+                    style={{
+                      padding: "0.5rem",
+                      fontSize: "0.85rem",
+                      fontWeight: 600,
+                      textShadow: "0 1px 3px rgba(0,0,0,0.85)",
+                    }}
+                  >
+                    {g.game_name}
+                  </span>
+                )}
+              </Focusable>
+            );
+          })}
+        </Focusable>
+      )}
+    </div>
+  );
+}
+
 function Content() {
   const [status, setStatus] = useState<Awaited<ReturnType<typeof getStatus>> | null>(
     null,
@@ -65,6 +202,20 @@ function Content() {
 
   return (
     <>
+      <PanelSection title="Library">
+        <PanelSectionRow>
+          <ButtonItem
+            layout="below"
+            onClick={() => {
+              Navigation.Navigate(SPOOL_ROUTE);
+              Navigation.CloseSideMenus();
+            }}
+          >
+            Browse Library
+          </ButtonItem>
+        </PanelSectionRow>
+      </PanelSection>
+
       <PanelSection title="Spool Backup">
         <PanelSectionRow>
           {status?.hasSession ? (
@@ -132,6 +283,11 @@ function Content() {
 }
 
 export default definePlugin(() => {
+  // Register the full-screen library route. The QAM "Browse Library" button
+  // navigates to it; we remove it on dismount to avoid duplicate patches
+  // across hot-reloads.
+  routerHook.addRoute(SPOOL_ROUTE, LibraryGrid);
+
   // Register the game-stop listener ONCE at plugin load (not inside the panel,
   // which unmounts when the QAM closes). On a stop, let the backend decide
   // whether a forced-close fallback backup is needed.
@@ -164,6 +320,7 @@ export default definePlugin(() => {
     onDismount() {
       sub.unregister();
       removeEventListener("spool_backup_finished", onBackupFinished);
+      routerHook.removeRoute(SPOOL_ROUTE);
     },
   };
 });

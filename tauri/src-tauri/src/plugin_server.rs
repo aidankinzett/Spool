@@ -1,13 +1,16 @@
-//! Unix-socket HTTP server for the companion Decky plugin.
+//! Loopback HTTP server for the companion Decky plugin.
 //!
 //! `spool --headless-server` starts this server so the Decky plugin can
-//! query library/session state and trigger backup operations over a local
-//! Unix socket rather than spawning `spool --backup` / `spool --release-lock`
-//! subprocesses for each operation.
+//! query library/session state, serve cover art, and trigger backup
+//! operations over local HTTP rather than spawning `spool --backup` /
+//! `spool --release-lock` subprocesses for each operation.
 //!
-//! The socket lives at `~/.local/share/Spool/plugin.sock`. It is created at
-//! server startup (removing any stale socket from a prior crash) and removed
-//! on clean shutdown. An absent socket file means the server is not running.
+//! It binds a loopback TCP port (preferring 47650, falling back to an
+//! ephemeral port) and writes the resolved port to
+//! `~/.local/share/Spool/plugin-http-port`. Both the plugin's Python backend
+//! and its React UI read that file to build the `http://127.0.0.1:<port>`
+//! base URL — the UI fetches `/library` and `<img>`-loads `/covers/*`
+//! directly. An absent port file means the server is not running.
 //!
 //! Linux/Unix only — `#[cfg(unix)]` gates the whole module.
 
@@ -22,14 +25,11 @@ use axum::{
     routing::{get, post},
     Router,
 };
-use hyper::body::Incoming;
-use hyper::server::conn::http1;
-use hyper_util::rt::TokioIo;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
-use tokio::net::UnixListener;
-use tower_service::Service;
+use tokio::net::TcpListener;
+use tower_http::{cors::CorsLayer, services::ServeDir};
 
 // ── Server state ─────────────────────────────────────────────────────────────
 
@@ -52,46 +52,58 @@ pub async fn serve() -> AppResult<()> {
         ludusavi: Arc::new(LudusaviClient::new()),
     };
 
-    let socket_path = crate::paths::plugin_socket_path();
-    // Remove a stale socket left by a prior crash.
-    let _ = std::fs::remove_file(&socket_path);
-    if let Some(parent) = socket_path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-
-    let listener = UnixListener::bind(&socket_path)
-        .map_err(|e| AppError::Other(format!("plugin socket bind: {e}")))?;
-
-    tracing::info!(path = %socket_path.display(), "plugin socket server listening");
-
     let router = Router::new()
         .route("/status", get(get_status))
         .route("/session", get(get_session))
         .route("/session/game-stopped", post(post_game_stopped))
         .route("/session/backup-now", post(post_backup_now))
         .route("/library", get(get_library))
+        // Static cover art straight off disk — no per-cover handler. The UI
+        // `<img>`-loads `/covers/<safe_name>.<ext>`.
+        .nest_service("/covers", ServeDir::new(crate::paths::covers_dir()))
+        // The Decky UI runs under https://steamloopback.host, so its `/library`
+        // fetch is cross-origin and needs CORS. `<img>` covers are not
+        // CORS-gated and load without this.
+        .layer(CorsLayer::permissive())
         .with_state(state);
 
-    // axum 0.7's `serve` only accepts TcpListener; drive hyper directly.
-    loop {
-        let (stream, _) = listener
-            .accept()
-            .await
-            .map_err(|e| AppError::Other(format!("plugin socket accept: {e}")))?;
-        let io = TokioIo::new(stream);
-        // Clone once per connection so the spawn closure owns its own handle.
-        // service_fn requires Fn (not FnMut), so we clone again per request
-        // and call on the temporary — Router::call returns an owned future.
-        let router = router.clone();
-        tokio::spawn(async move {
-            let service = hyper::service::service_fn(move |req: hyper::Request<Incoming>| {
-                router.clone().call(req)
-            });
-            if let Err(e) = http1::Builder::new().serve_connection(io, service).await {
-                tracing::debug!(error = %e, "plugin socket connection closed");
-            }
-        });
+    // Bind a loopback TCP port. Prefer a stable one so the plugin can find us;
+    // fall back to ephemeral if it's already taken (e.g. a stale instance).
+    const PREFERRED_PORT: u16 = 47650;
+    let listener = match TcpListener::bind(("127.0.0.1", PREFERRED_PORT)).await {
+        Ok(l) => l,
+        Err(e) => {
+            tracing::warn!(
+                port = PREFERRED_PORT,
+                error = %e,
+                "preferred plugin HTTP port unavailable; falling back to ephemeral"
+            );
+            TcpListener::bind(("127.0.0.1", 0))
+                .await
+                .map_err(|e| AppError::Other(format!("plugin http bind: {e}")))?
+        }
+    };
+
+    let port = listener
+        .local_addr()
+        .map_err(|e| AppError::Other(format!("plugin http local_addr: {e}")))?
+        .port();
+
+    // Publish the resolved port so the Decky plugin (Python backend + React
+    // UI) can reach us. An absent file means the server is not running.
+    let port_path = crate::paths::plugin_http_port_path();
+    if let Some(parent) = port_path.parent() {
+        std::fs::create_dir_all(parent)?;
     }
+    std::fs::write(&port_path, port.to_string())?;
+
+    tracing::info!(port, path = %port_path.display(), "plugin HTTP server listening");
+
+    axum::serve(listener, router.into_make_service())
+        .await
+        .map_err(|e| AppError::Other(format!("plugin http serve: {e}")))?;
+
+    Ok(())
 }
 
 // ── Handlers ──────────────────────────────────────────────────────────────────
