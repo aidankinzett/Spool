@@ -79,6 +79,11 @@ export interface Lock {
   device_name: string;
   locked_at: string;
   last_heartbeat: string;
+  // When set and still in the future, the holder is suspended (e.g. the Steam
+  // Deck went to sleep mid-session). The lock is kept alive — exempt from the
+  // heartbeat stale rule — until this bounded deadline, after which it falls
+  // back to normal staleness. NULL during normal play. See SUSPEND_GRACE_MS.
+  suspended_until: string | null;
 }
 
 export interface GameLastPlayed {
@@ -124,9 +129,40 @@ function ensureBackupEventsConstraint(): void {
 
 ensureBackupEventsConstraint();
 
+// Adds the `suspended_until` column to a pre-existing `locks` table.
+// CREATE TABLE IF NOT EXISTS won't add a column to a table that already
+// exists, so older deployments need this one-shot ALTER.
+function ensureLockColumns(): void {
+  const cols = db.prepare("PRAGMA table_info(locks)").all() as { name: string }[];
+  if (!cols.some((c) => c.name === "suspended_until")) {
+    db.exec("ALTER TABLE locks ADD COLUMN suspended_until TEXT");
+  }
+}
+
+ensureLockColumns();
+
 export const STALE_THRESHOLD_MS = 5 * 60 * 1000;
 
+// How long a suspended lock is held past its last heartbeat. Bounded on
+// purpose: a Deck that dies mid-sleep (or never wakes) still releases its
+// lock after this window, so the lock is never un-reclaimable. The grace is
+// the auto-heal backstop; the primary recovery for a suspended holder is the
+// user's explicit "Play here instead" override (a stealing acquire).
+export const SUSPEND_GRACE_MS = 2 * 60 * 60 * 1000; // 2 hours
+
+// True while a lock carries a suspend marker that hasn't yet expired.
+export function isSuspended(lock: Lock): boolean {
+  return (
+    lock.suspended_until != null &&
+    new Date(lock.suspended_until).getTime() > Date.now()
+  );
+}
+
 export function isStale(lock: Lock): boolean {
+  // A lock suspended within its grace window is explicitly NOT stale — the
+  // holder is asleep, not gone. Once the grace expires it falls through to the
+  // normal heartbeat rule.
+  if (isSuspended(lock)) return false;
   return Date.now() - new Date(lock.last_heartbeat).getTime() > STALE_THRESHOLD_MS;
 }
 
@@ -144,23 +180,35 @@ export const queries = {
     "SELECT * FROM locks WHERE user_id = ? AND game_name = ?"
   ),
   upsertLock: db.prepare(
-    `INSERT INTO locks (id, user_id, game_name, device_id, device_name, locked_at, last_heartbeat)
-     VALUES (?, ?, ?, ?, ?, ?, ?)
+    // A fresh acquire (or a stealing override) always clears any suspend
+    // marker — the new holder is awake and actively playing.
+    `INSERT INTO locks (id, user_id, game_name, device_id, device_name, locked_at, last_heartbeat, suspended_until)
+     VALUES (?, ?, ?, ?, ?, ?, ?, NULL)
      ON CONFLICT(user_id, game_name) DO UPDATE SET
        id = excluded.id,
        device_id = excluded.device_id,
        device_name = excluded.device_name,
        locked_at = excluded.locked_at,
-       last_heartbeat = excluded.last_heartbeat`
+       last_heartbeat = excluded.last_heartbeat,
+       suspended_until = NULL`
   ),
   updateHeartbeat: db.prepare(
-    "UPDATE locks SET last_heartbeat = ? WHERE user_id = ? AND game_name = ? AND device_id = ?"
+    // A normal heartbeat clears the suspend marker too, so the first ping
+    // after the holder wakes transparently un-suspends the lock.
+    "UPDATE locks SET last_heartbeat = ?, suspended_until = NULL WHERE user_id = ? AND game_name = ? AND device_id = ?"
+  ),
+  setSuspended: db.prepare(
+    // Bump the heartbeat at suspend time too, so the grace window is measured
+    // from when the holder actually went to sleep.
+    "UPDATE locks SET suspended_until = ?, last_heartbeat = ? WHERE user_id = ? AND game_name = ? AND device_id = ?"
   ),
   deleteLock: db.prepare(
     "DELETE FROM locks WHERE user_id = ? AND game_name = ? AND device_id = ?"
   ),
   deleteStaleLocks: db.prepare(
-    "DELETE FROM locks WHERE last_heartbeat < ?"
+    // Never reap a lock that's still inside its suspend grace, even if its
+    // heartbeat looks stale — the holder is asleep, not dead.
+    "DELETE FROM locks WHERE last_heartbeat < ? AND (suspended_until IS NULL OR suspended_until < ?)"
   ),
   insertBackupEvent: db.prepare(
     `INSERT INTO backup_events (id, user_id, game_name, device_id, device_name, event_type, occurred_at)
@@ -198,6 +246,7 @@ export const queries = {
 // stop dead rows accumulating. Returns the number removed. ISO-8601 UTC
 // timestamps sort lexicographically, so the string comparison is correct.
 export function sweepStaleLocks(): number {
-  const cutoff = new Date(Date.now() - STALE_THRESHOLD_MS).toISOString();
-  return queries.deleteStaleLocks.run(cutoff).changes;
+  const now = new Date();
+  const cutoff = new Date(now.getTime() - STALE_THRESHOLD_MS).toISOString();
+  return queries.deleteStaleLocks.run(cutoff, now.toISOString()).changes;
 }

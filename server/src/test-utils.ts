@@ -28,6 +28,9 @@ export function seedLock(opts: {
   deviceId: string;
   deviceName?: string;
   heartbeatAgeMs?: number;
+  // When set, marks the lock suspended until `now + suspendedForMs` (negative
+  // values produce an already-expired suspend marker).
+  suspendedForMs?: number;
 }): void {
   const ts = new Date(Date.now() - (opts.heartbeatAgeMs ?? 0)).toISOString();
   queries.upsertLock.run(
@@ -39,4 +42,8 @@ export function seedLock(opts: {
     ts,
     ts
   );
+  if (opts.suspendedForMs !== undefined) {
+    const suspendedUntil = new Date(Date.now() + opts.suspendedForMs).toISOString();
+    queries.setSuspended.run(suspendedUntil, ts, opts.userId, opts.gameName, opts.deviceId);
+  }
 }
