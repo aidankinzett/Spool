@@ -194,7 +194,7 @@ async fn post_game_stopped(
 
     // Release the sync-server play lock first — independent of backup result
     // so the game stops showing as "playing on <device>" immediately.
-    crate::sync::release_lock_headless(&config.data, &rec.game).await;
+    crate::rclone::release_marker_headless(&config.data, &rec.game).await;
 
     run_backup(&state, &rec.game, &rec.session_id).await
 }
