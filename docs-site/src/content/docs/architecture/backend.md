@@ -23,9 +23,8 @@ that owns all state and side effects. This page is a map of the modules.
 
 ## Persistence
 
-- **`config.rs`** — app-wide settings persisted to `config.json`. On-disk shape
-  mirrors the legacy C# `ConfigData`; `#[serde(default)]` on every field means
-  existing files load without migration.
+- **`config.rs`** — app-wide settings persisted to `config.json`.
+  `#[serde(default)]` on every field means older files load without migration.
 - **`library.rs`** — `GameEntry` + `Library` CRUD with atomic JSON saves to
   `library.json`. Emits `library:changed` on every mutation.
 
@@ -40,6 +39,7 @@ that owns all state and side effects. This page is a map of the modules.
 - **`steam.rs`** — non-Steam shortcut creation (`shortcuts.vdf`) + grid art.
 - **`sync.rs`** — sync-server HTTP client (the Hono server in `server/`):
   account registration, per-game play-state locks, save events, playtime sync.
+- **`metadata.rs`** — HTTP client for the public Steam Store `appdetails` API. Enriches game entries with description, developer, publisher, genres, and release date (no API key required).
 - **`lan/`** — the LAN game-sharing subsystem (`discovery.rs` UDP-broadcast peer
   discovery, `server.rs` in-process axum file server with blake3 manifests,
   `install.rs` the resumable content-addressed receiver).
@@ -54,7 +54,9 @@ These are `#[cfg]`-gated and degrade gracefully on the other OS.
 - **Linux-only** — `proton.rs` (umu-launcher + per-game Wine prefixes),
   `gamemode.rs` (SteamOS Game Mode detection), `session.rs` (Game-Mode session
   records), `decky_install.rs` (companion Decky plugin installer),
-  `redirects.rs` (cross-platform save-path mapping).
+  `redirects.rs` (cross-platform save-path mapping), `plugin_server.rs` (Unix-socket
+  HTTP server for Decky companion communication), `suspend.rs` (D-Bus system
+  suspend/resume watcher for play locks).
 
 ## Cross-platform OS integration
 
@@ -74,3 +76,5 @@ One-shot tasks at boot for legacy library entries, saved once at the end:
 
 - **`accent_backfill.rs`** — fills missing accent colours from covers on disk.
 - **`size_backfill.rs`** — computes install sizes via `walkdir`.
+- **`metadata_backfill.rs`** — throttled startup task that enriches library entries having a Steam ID but missing description/developer fields.
+

@@ -43,12 +43,16 @@ GitHub Actions workflows live in `.github/workflows/`:
   manifest.
 - **`docs.yml`** — builds and deploys this documentation site to GitHub Pages
   on pushes to `master` that touch `docs-site/`.
+- **`decky.yml`** — builds, verifies, and packages the Spool Backup Decky Loader plugin into an installable zip on pushes affecting `decky/` or the plugin server backend.
+- **`bump-release.yml`** — manual workflow kickoff that increments version components (major, minor, patch), tags the commit, and triggers `release.yml`.
+- **`server-publish.yml`** — on version tags, builds and publishes the sync-server Docker image to GHCR (only when `server/` changes).
+
 
 ## Conventions worth knowing
 
-- **JSON shape compatibility:** `library.json` and `config.json` mirror the
-  legacy C# app. Every field carries `#[serde(default)]` so existing user data
-  loads without migration — keep it that way when adding fields.
+- **JSON shape compatibility:** every field on the `library.json` and
+  `config.json` structs carries `#[serde(default)]`, so older files load
+  without migration — keep it that way when adding fields.
 - **Lock discipline:** never hold a `std::sync::Mutex` guard across `.await`.
   Snapshot what you need, drop the guard, then await.
 - **Add a command, add a wrapper:** when you add a Rust `#[tauri::command]`,

@@ -56,8 +56,7 @@ there's no cold-start cost on game launch.
 ## Data files
 
 State lives under `paths::app_data_dir()` — `%LOCALAPPDATA%\Spool\` on Windows,
-`~/.local/share/Spool/` on Linux, `~/Library/Application Support/Spool/` on
-macOS.
+`~/.local/share/Spool/` on Linux.
 
 | File | Contents |
 | --- | --- |
