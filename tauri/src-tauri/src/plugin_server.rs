@@ -123,10 +123,9 @@ async fn post_game_stopped(
         return Json(json!({ "acted": false }));
     };
 
-    // Spool's non-Steam shortcut appids set the high bit (crc32 | 0x80000000).
-    // Steam surfaces those as a signed int32 in some code paths, so the same id
-    // can arrive negative. Mask both to unsigned 32-bit before comparing.
-    if rec.backed_up || (rec.steam_appid & 0xFFFF_FFFF) != (body.appid & 0xFFFF_FFFF) {
+    // The JS frontend coerces unAppID to unsigned with `>>> 0` before sending,
+    // so body.appid and rec.steam_appid are both u32 — compare directly.
+    if rec.backed_up || rec.steam_appid != body.appid {
         tracing::info!(
             appid = body.appid,
             session_appid = rec.steam_appid,
