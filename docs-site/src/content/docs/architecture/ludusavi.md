@@ -87,7 +87,7 @@ redirects:
     target: /home/deck/.local/share/Spool/prefixes/88ec0ff3-3196-4c71-9acb-fe10fd19483c/drive_c/users/steamuser
 ```
 
-One user-prefix rule covers ~93% of real Windows save paths (AppData Local/Roaming/LocalLow, Documents, Saved Games, OneDrive). Additional rules:
+One user-prefix rule covers ~93% of real Windows save paths (AppData Local/Roaming/LocalLow, Documents, Saved Games, OneDrive). Paths from all differential children are included when generating redirect rules — not just the top-level full backup. Additional rules:
 - `C:/Users/Public` → `<prefix>/drive_c/users/Public`
 - `C:/ProgramData` → `<prefix>/drive_c/ProgramData`
 - `G:/Games/<game>` → local `game_folder_path` (install-dir saves)

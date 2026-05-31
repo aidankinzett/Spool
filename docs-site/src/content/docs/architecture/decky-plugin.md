@@ -7,15 +7,17 @@ sidebar:
 
 The Spool Backup Decky Loader plugin provides a forced-close backup safety net for SteamOS / Steam Deck Game Mode. It lives in `decky/` in the repo and is a separate sub-project from the Tauri app.
 
-See also: [SteamOS Game Mode Launch](./game-mode) for the Spool-side contract (session record + `spool --backup` CLI) this plugin consumes.
+See also: [SteamOS Game Mode Launch](./game-mode) for the Spool-side session record and `--headless-server` contract this plugin consumes.
 
 ## The problem
 
 On SteamOS Game Mode, when the user closes a game via **Quick Access → Exit Game**, Steam SIGKILLs the tracked process tree. The process Steam tracks is Spool's attached `spool --run` instance, so Spool can be killed **before** its post-session ludusavi backup runs — that session's saves are not backed up.
 
-Any backup runner inside Steam's killed tree races the SIGKILL. The fix is to trigger the backup from a process that **survives** the close. Decky Loader's plugin backend runs in the Steam/Decky service context — outside the game's process tree — so a backup it spawns survives the force-close.
+Any backup runner inside Steam's killed tree races the SIGKILL. The fix is to trigger the backup from a process that **survives** the close. Decky Loader's plugin backend runs in the Steam/Decky service context — outside the game's process tree — so a backup it starts survives the force-close.
 
 ## Architecture
+
+The plugin is a thin adapter around `spool --headless-server`. Rather than reading `active-session.json` and spawning `spool --backup` directly, the backend starts a persistent headless server subprocess and communicates with it over a Unix socket. This avoids the cold-start cost of a fresh Spool process per operation and gives the server access to live in-process state (library, LAN peers).
 
 ```
 Steam (Game Mode)
@@ -25,57 +27,58 @@ Decky plugin FRONTEND (src/index.tsx, runs in the Steam UI / SP context)
    │  bRunning === false  →  call("on_app_stop", unAppID)
    ▼
 Decky plugin BACKEND (main.py, runs in the Decky service as the `deck` user)
-   │  read active-session.json
-   │  if appid matches && !backed_up:
+   │  POST /session/game-stopped  { "appid": <unAppID> }
+   │  (over Unix socket at ~/.local/share/Spool/plugin.sock)
    ▼
-   spawn:  spool --backup "<game>"   (detached, survives force-close)
-   │
+spool --headless-server  (started by plugin at load time, persistent)
+   │  checks active-session.json: appid matches && !backed_up?
    ▼
-spool --backup  →  ludusavi backup  →  session.backed_up = true  →  exit
+   run ludusavi backup  →  session.backed_up = true
 ```
 
-The frontend forwards **every** stop event; the backend does the appid/record matching and cheaply no-ops on non-matches. This keeps the frontend dumb and matching logic unit-testable in Python.
+On plugin load (`_main`), the backend resolves the spool command and starts `spool --headless-server` as a detached subprocess. On plugin unload (`_unload`), it terminates the server and cleans up the socket file.
+
+The frontend forwards **every** stop event to the backend; the backend forwards to the server, which does the appid/session matching and cheaply no-ops on non-matches.
 
 ## Double-backup avoidance
 
-The `backed_up` flag in the session record is the guard, re-read at stop time:
+The `backed_up` flag in `active-session.json` is checked by the headless server:
 
-- **Normal in-game quit**: attached `spool --run` backs up → sets `backed_up: true` → exits → *then* Steam fires the stop event. By the time `on_app_stop` reads the file it's already `true` → no-op. (Guaranteed ordering: the flag is written before the process exits, which is before Steam observes the stop.)
-- **Forced "Exit Game"**: Spool SIGKILLed before flipping the flag → record stays `false` → plugin spawns the fallback.
-- **Grace re-read**: optionally re-read the record after ≈1–2 s before spawning; if it flipped to `true` in the interim, skip. Eliminates the only realistic race on slow disk flush.
+- **Normal in-game quit**: attached `spool --run` backs up → sets `backed_up: true` → exits → *then* Steam fires the stop event. By the time the server processes the game-stopped request it's already `true` → no-op.
+- **Forced "Exit Game"**: Spool SIGKILLed before flipping the flag → record stays `false` → server runs the fallback backup.
 
 ## Privilege: no `_root` flag
 
 The plugin omits `_root` in `plugin.json`, so the backend runs as the `deck` user. Consequences, all desirable:
-- `decky.HOME` / process `$HOME` is the deck user's home → `active-session.json` resolves at the right path with no `sudo`.
-- The spawned `spool --backup` inherits the deck user's env (HOME, XDG_DATA_HOME, user dbus), so ludusavi reads/writes the same save and backup paths Spool uses interactively, with correct file ownership.
+- `decky.HOME` / process `$HOME` is the deck user's home → paths resolve correctly with no `sudo`.
+- The `spool --headless-server` subprocess inherits the deck user's env (HOME, XDG_DATA_HOME, user dbus), so ludusavi reads/writes the same save and backup paths Spool uses interactively, with correct file ownership.
 
-## Path resolution
+Decky Loader's PyInstaller bundle prepends a `/tmp/_MEI*` directory to `LD_LIBRARY_PATH`. `main.py::_clean_env()` strips this before launching the server so it sees the host library path instead of Decky's bundled libs.
 
-Both the session file and spool command are **autodetected with a config override** stored in `decky.DECKY_PLUGIN_SETTINGS_DIR/settings.json`:
+## Spool command resolution
 
-- **Session file**: default `${HOME}/.local/share/Spool/active-session.json`. Override key `session_file`.
-- **Spool command** resolution order:
-  1. Configured `spool_command` (if set and exists)
-  2. `${HOME}/.local/share/Spool/spool-launcher.sh` (AppImage installs — the stable wrapper)
-  3. `spool` on `PATH` / `/usr/bin/spool` (native installs)
+The backend resolves the spool command to start `--headless-server` in this order:
+1. Configured `spool_command` in `decky.DECKY_PLUGIN_SETTINGS_DIR/settings.json` (if set and exists)
+2. `${HOME}/.local/share/Spool/spool-launcher.sh` (AppImage installs — the stable wrapper)
+3. `spool` on `PATH`
+4. `/usr/bin/spool` (native installs)
 
 ## Degraded / no-op paths
 
-- **No record** (file missing, or `spool_executable()` was `None` at launch): `on_app_stop` no-ops.
-- **appid mismatch** (a non-Spool game stopped): no-op. No effect on non-Spool games.
-- **Stale record** from a prior crashed session of the same game (`backed_up: false`, old `started_at`): spawning a backup of the current saves is harmless/desirable.
-- **spool command not found**: logs an error, no crash.
+- **Socket unavailable** (server not running, spool not found): `on_app_stop` returns `{ "acted": false, "reason": "socket unavailable" }` and logs a warning. No crash.
+- **appid mismatch** (a non-Spool game stopped): the server no-ops. No effect on non-Spool games.
+- **Already backed up** (`backed_up: true` in the session record): server no-ops, no double backup.
 
 ## File structure
 
 | File | Role |
 |------|------|
-| `decky/plugin.json` | Manifest: name, author, `flags` (no `_root`), `api_version: 1` |
-| `decky/main.py` | Python backend: `class Plugin` + pure helpers (testable without Decky runtime) |
+| `decky/plugin.json` | Manifest: name, author, `flags: []` (no `_root`), `api_version: 1` |
+| `decky/main.py` | Python backend: `class Plugin` + Unix-socket HTTP client + server lifecycle |
 | `decky/src/index.tsx` | Frontend: `definePlugin`, lifecycle hook, QAM panel |
-| `decky/tests/test_backend.py` | Pure-helper unit tests (`pytest`) |
-| `.github/workflows/decky.yml` | CI: pnpm build + python tests + zip artifact |
+| `decky/package.json` | Build config (`@decky/api`, `@decky/rollup`, pnpm) |
+| `decky/README.md` | Install/setup docs |
+| `.github/workflows/decky.yml` | CI: pnpm build + zip artifact |
 
 ## Frontend lifecycle hook
 

@@ -67,7 +67,7 @@ Today's path verbatim: single-instance, tray, pollers, library window, `PendingR
 
 ## Splash window
 
-`routes/splash/+page.svelte` subscribes to `run:phase` events and shows a compact status: "Restoring saves…", "Launching game…", spinner. When phase reaches `playing`, the splash hides (game is in the foreground in gamescope). On `error`, it shows the message briefly before the process exits.
+`routes/splash/+page.svelte` subscribes to `run:phase` events and shows restore / launch / backup progress with cover art and cloud-sync status. It calls `api.notifySplashReady()` after registering its event listener so the Rust workflow doesn't emit phases before the frontend is listening. When the phase reaches `playing`, the splash transitions to its "exit flow" UI; when the full workflow completes, `app.exit(0)` is called from Rust (`lib.rs`), which terminates the entire process and closes the window.
 
 ## Files
 
