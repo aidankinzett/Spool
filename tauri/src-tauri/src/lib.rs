@@ -43,6 +43,7 @@ mod metadata_backfill;
 mod paths;
 mod process;
 mod proton;
+mod rclone;
 mod redirects;
 mod registry;
 mod runner;
@@ -51,14 +52,13 @@ mod size_backfill;
 mod steam;
 mod steamgriddb;
 mod streaming_host;
-mod sync;
 mod suspend;
 mod system_open;
 
 use cli::CliMode;
 use config::{Config, SharedConfig};
 use lan::{LanDownloadState, LanServerShutdown, LanState, LanUploadsState};
-use sync::SyncStatusState;
+use rclone::SyncStatusState;
 use library::{Library, SharedLibrary};
 use ludusavi::LudusaviClient;
 use runner::RunState;
@@ -299,11 +299,9 @@ pub fn run() {
             launcher::generate_armoury_launcher,
             // registry compat-flag probe
             registry::get_run_as_admin_in_registry,
-            // sync server
-            sync::current_sync_status,
-            sync::refresh_sync_status,
-            sync::sync_register_account,
-            sync::use_server_save_storage,
+            // cloud control-plane status (rclone reachability)
+            rclone::current_sync_status,
+            rclone::refresh_sync_status,
             // lan discovery
             lan::discovery::list_lan_peers,
             lan::install::fetch_peer_games,
@@ -455,32 +453,6 @@ pub fn run() {
             // cloud-sync flags are present.
             restamp_rclone(app.handle());
 
-            // If the user opted into the turnkey self-hosted save store, refresh
-            // its WebDAV credentials on boot. The sync server's API key doubles
-            // as the WebDAV password; if it rotates (or the stored remote drifts
-            // out of sync), every cloud sync 401s. Re-fetching `/storage` and
-            // re-applying the remote keeps it authenticated — and as a bonus
-            // re-stamps the rclone path via the same path as Settings. Spawned
-            // off the setup thread since it makes a network call.
-            {
-                let provider = app
-                    .state::<SharedConfig>()
-                    .lock()
-                    .ok()
-                    .map(|g| g.data.cloud_provider.clone())
-                    .unwrap_or_default();
-                if provider == "spool-server" {
-                    let handle = app.handle().clone();
-                    tauri::async_runtime::spawn(async move {
-                        if let Err(e) = sync::use_server_save_storage(handle).await {
-                            tracing::warn!(error = %e, "startup: failed to refresh self-hosted save storage credentials");
-                        } else {
-                            tracing::info!("startup: refreshed self-hosted save storage credentials");
-                        }
-                    });
-                }
-            }
-
             // Kick off LAN peer discovery in the background. Logs and
             // skips if the socket can't bind (port in use, firewall, etc.)
             // — peer count stays at 0 in that case but everything else
@@ -504,17 +476,17 @@ pub fn run() {
             // the store endpoint's rate limit.
             metadata_backfill::spawn_backfill(app.handle().clone());
 
-            // Sync server health poll. Runs forever, every 30s — emits
-            // `sync:status-changed` so the chrome cloud icon can tint
-            // itself. No-op (Unconfigured) when the user hasn't set
-            // a server URL / API key.
-            sync::spawn_health_poller(app.handle().clone());
+            // Cloud reachability poll. Runs forever, every 60s — probes the
+            // rclone remote and emits `sync:status-changed` so the chrome
+            // cloud icon can tint itself. No-op (Unconfigured) when cloud
+            // saves aren't set up.
+            rclone::spawn_health_poller(app.handle().clone());
 
-            // One-shot cross-device merge: pull last-played, playtime
-            // and latest-backup events, fold into the library. Runs
-            // ~4 s after launch so the health poll has a chance to
-            // confirm reachability first.
-            sync::spawn_startup_sync(app.handle().clone());
+            // One-shot cross-device fold: list per-device blobs in the remote,
+            // sum playtime / take max last-played / derive the badge, merge
+            // into the library. Runs ~4 s after launch so the reachability
+            // poll has a chance to confirm the remote first.
+            rclone::spawn_startup_fold(app.handle().clone());
 
             // Startup --run dispatch: queue the game id so the frontend
             // can pick it up once its listeners are ready.
@@ -603,6 +575,12 @@ fn run_backup_headless(game_name: &str) -> i32 {
         Ok(r) => {
             tracing::info!(game_name, games = r.game_count, "--backup complete");
             session::mark_backed_up();
+            // The saves are now in the cloud (backup_game_core cloud-syncs):
+            // clear the unsynced-session marker and record this device as the
+            // latest backer so peers stop warning. Best-effort.
+            rt.block_on(async {
+                rclone::complete_session_backup_from_config(&config.data, game_name).await;
+            });
             0
         }
         Err(e) => {
@@ -612,15 +590,15 @@ fn run_backup_headless(game_name: &str) -> i32 {
     }
 }
 
-/// Headless one-shot lock release: load config, release the named game's
-/// sync-server play lock, then return a process exit code. No GUI / tray.
+/// Headless one-shot: flip the named game's unsynced-session marker to
+/// `pending-backup`, then return a process exit code. No GUI / tray.
 ///
 /// Used by `spool --release-lock "Name"` — the Decky plugin's forced-close
-/// fallback runs this *before* `--backup` so the game stops showing as "playing
-/// on <device>" the moment Steam kills Spool, independent of whether the
-/// subsequent backup succeeds. The release is scoped by device id on the server,
-/// so it only ever drops this device's own lock and is a harmless no-op
-/// otherwise. No-op (success) when sync is disabled / unconfigured.
+/// fallback runs this *before* `--backup` so peers immediately see "this
+/// device has unsynced saves" the moment Steam kills Spool, independent of
+/// whether the subsequent backup succeeds. The follow-up `--backup` deletes
+/// the marker once the saves actually reach the cloud. No-op (success) when
+/// cloud saves aren't configured.
 fn run_release_lock_headless(game_name: &str) -> i32 {
     let config = match Config::load() {
         Ok(c) => c,
@@ -629,10 +607,6 @@ fn run_release_lock_headless(game_name: &str) -> i32 {
             return 1;
         }
     };
-    if !config.data.sync_server_enabled {
-        // Nothing to release — sync isn't in play. Success, not an error.
-        return 0;
-    }
 
     let rt = match tokio::runtime::Runtime::new() {
         Ok(rt) => rt,
@@ -642,7 +616,7 @@ fn run_release_lock_headless(game_name: &str) -> i32 {
         }
     };
     rt.block_on(async {
-        sync::release_lock_headless(&config.data, game_name).await;
+        rclone::mark_session_pending_backup_from_config(&config.data, game_name).await;
     });
     tracing::info!(game_name, "--release-lock complete");
     0

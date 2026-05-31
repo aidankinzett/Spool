@@ -44,11 +44,6 @@ pub struct ConfigData {
     pub device_id: String,
     pub device_name: String,
 
-    // ── v2 — deferred but modelled for JSON round-trip compat ─────────────
-    pub sync_server_enabled: bool,
-    pub sync_server_url: String,
-    pub sync_server_api_key: String,
-
     pub lan_share_enabled: bool,
     pub lan_share_port: u16,
     pub lan_install_dir: String,
@@ -79,6 +74,13 @@ pub struct ConfigData {
     // ── Cloud / rclone settings ──────────────────────────────────────────
     pub cloud_provider: String,
     pub cloud_remote: String,
+    /// Base folder on the remote. Ludusavi saves go to
+    /// `<cloud_base_path>/ludusavi-backup`; Spool's cross-device control plane
+    /// (session markers, per-device blobs) lives under `<cloud_base_path>/_spool`.
+    pub cloud_base_path: String,
+    /// Legacy: the exact ludusavi remote subpath. Superseded by
+    /// `cloud_base_path` (the ludusavi path is now derived). Kept for JSON
+    /// round-trip with older config files; no longer read.
     pub cloud_path: String,
     pub rclone_path: String,
     pub rclone_args: String,
@@ -108,9 +110,6 @@ impl Default for ConfigData {
             theme: "system".to_string(),
             device_id: String::new(),
             device_name: String::new(),
-            sync_server_enabled: false,
-            sync_server_url: String::new(),
-            sync_server_api_key: String::new(),
             lan_share_enabled: true,
             lan_share_port: 47632,
             lan_install_dir: String::new(),
@@ -121,6 +120,7 @@ impl Default for ConfigData {
             tray_intro_seen: false,
             cloud_provider: String::new(),
             cloud_remote: String::new(),
+            cloud_base_path: "Spool".to_string(),
             cloud_path: "Spool/ludusavi-backup".to_string(),
             rclone_path: String::new(),
             rclone_args: "--fast-list --ignore-checksum".to_string(),
@@ -323,11 +323,17 @@ pub fn update_config(
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_default();
 
-    // Sync cloud/rclone settings to Spool-owned ludusavi config.yaml
+    // Sync cloud/rclone settings to Spool-owned ludusavi config.yaml. The
+    // ludusavi remote subpath is derived from the base folder so it always sits
+    // beside Spool's `_spool` control-plane dir.
+    let ludusavi_remote_path = format!(
+        "{}/ludusavi-backup",
+        cfg.data.cloud_base_path.trim().trim_end_matches('/')
+    );
     let _ = crate::ludusavi_config::set_cloud(
         Some(&cfg.data.cloud_provider),
         Some(&cfg.data.cloud_remote),
-        Some(&cfg.data.cloud_path),
+        Some(&ludusavi_remote_path),
         Some(&rclone_val),
         Some(&cfg.data.rclone_args),
     );

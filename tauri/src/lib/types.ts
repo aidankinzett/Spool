@@ -13,10 +13,6 @@ export type ConfigData = {
   device_id: string;
   device_name: string;
 
-  sync_server_enabled: boolean;
-  sync_server_url: string;
-  sync_server_api_key: string;
-
   lan_share_enabled: boolean;
   lan_share_port: number;
   lan_install_dir: string;
@@ -35,6 +31,11 @@ export type ConfigData = {
 
   cloud_provider: string;
   cloud_remote: string;
+  /** Base folder on the remote. Saves → `<base>/ludusavi-backup`; Spool's
+   * cross-device control plane → `<base>/_spool`. */
+  cloud_base_path: string;
+  /** Legacy: exact ludusavi remote subpath, superseded by `cloud_base_path`.
+   * Kept for JSON round-trip with older configs; no longer read. */
   cloud_path: string;
   rclone_path: string;
   rclone_args: string;
@@ -260,20 +261,20 @@ export type UploadSnapshot = {
 };
 
 /**
- * Reachability state for the configured sync server. Mirrors the
- * Rust `SyncReachability` in sync.rs.
+ * Reachability state for the configured cloud remote. Mirrors the
+ * Rust `SyncReachability` in rclone.rs.
  *
- *   unconfigured → no URL / API key set → icon dimmed
- *   online       → /health returned 200 within timeout → green
- *   offline      → network error, non-200, or timeout → red
+ *   unconfigured → no cloud remote set → icon dimmed
+ *   online       → `rclone lsd` succeeded within timeout → green
+ *   offline      → rclone error or timeout → red
  */
 export type SyncReachability = 'unconfigured' | 'online' | 'offline';
 
 /**
- * Snapshot of the sync-server health poll. Mirrors `SyncStatus` in
- * sync.rs. Emitted as `sync:status-changed` events whenever any
- * field changes, also available via `currentSyncStatus()` for
- * mount-time catch-up.
+ * Snapshot of the cloud-remote reachability poll. Mirrors `SyncStatus` in
+ * rclone.rs. Emitted as `sync:status-changed` events whenever any field
+ * changes, also available via `currentSyncStatus()` for mount-time catch-up.
+ * `server_version` is retained for shape compatibility but is always null.
  */
 export type SyncStatus = {
   reachability: SyncReachability;

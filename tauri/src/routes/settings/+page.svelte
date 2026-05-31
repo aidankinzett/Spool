@@ -10,7 +10,6 @@
     Plus,
     RefreshCcw,
     Sparkles,
-    Trash2,
     Wifi,
   } from '@lucide/svelte';
   import { goto } from '$app/navigation';
@@ -43,16 +42,11 @@
     error: null,
     last_ok_ago_secs: null,
   });
-  let registerOpen = $state(false);
-  let registerAdminSecret = $state('');
-  let registerUsername = $state('');
-  let registerSubmitting = $state(false);
 
   // Cloud saves — WebDAV. The password is never persisted to config (ludusavi
   // obscures it into rclone.conf); it only lives here long enough to connect.
   let webdavPassword = $state('');
   let webdavConnecting = $state(false);
-  let serverStorageConnecting = $state(false);
 
   // Proton / Compatibility (Linux only).
   let isLinux = $state(false);
@@ -98,34 +92,6 @@
   async function persistAndRefresh() {
     await persist();
     await refreshSync();
-  }
-
-  async function submitRegister() {
-    if (!config) return;
-    const url = config.sync_server_url.trim();
-    if (!url) {
-      toasts.show({ kind: 'warn', label: 'SYNC', title: 'Server URL required', sub: 'Set the URL above before registering.' });
-      return;
-    }
-    if (!registerAdminSecret.trim() || !registerUsername.trim()) {
-      toasts.show({ kind: 'warn', label: 'SYNC', title: 'Missing fields', sub: 'Admin secret and username are both required.' });
-      return;
-    }
-    registerSubmitting = true;
-    try {
-      const apiKey = await api.syncRegisterAccount(url, registerAdminSecret.trim(), registerUsername.trim());
-      config.sync_server_api_key = apiKey;
-      config.sync_server_enabled = true;
-      await persistAndRefresh();
-      registerAdminSecret = '';
-      registerUsername = '';
-      registerOpen = false;
-      toasts.show({ kind: 'ok', label: 'SYNC', title: 'Registered', sub: 'API key filled in. Sync server is now configured.' });
-    } catch (e) {
-      toasts.show({ kind: 'bad', label: 'SYNC · REGISTER', title: "Couldn't register", sub: String(e) });
-    } finally {
-      registerSubmitting = false;
-    }
   }
 
   async function persist(): Promise<boolean> {
@@ -279,35 +245,6 @@
     }
   }
 
-  async function useServerStorage() {
-    serverStorageConnecting = true;
-    try {
-      await api.useServerSaveStorage();
-      config = await api.getConfig();
-      toasts.show({ kind: 'ok', label: 'CLOUD', title: 'Save storage connected', sub: 'Saves will sync to your Spool server.' });
-    } catch (e) {
-      toasts.show({ kind: 'bad', label: 'CLOUD · SERVER', title: "Couldn't connect storage", sub: String(e) });
-    } finally {
-      serverStorageConnecting = false;
-    }
-  }
-
-  async function disconnectServerStorage() {
-    if (!config) return;
-    serverStorageConnecting = true;
-    try {
-      config.cloud_provider = '';
-      config.cloud_webdav_url = '';
-      config.cloud_webdav_username = '';
-      await persist();
-      toasts.show({ kind: 'ok', label: 'CLOUD', title: 'Disconnected', sub: 'Save storage turned off.' });
-    } catch (e) {
-      toasts.show({ kind: 'bad', label: 'CLOUD · SERVER', title: "Couldn't disconnect", sub: String(e) });
-    } finally {
-      serverStorageConnecting = false;
-    }
-  }
-
   async function browseLanInstallDir() {
     const picked = await openDialog({ title: 'Pick the LAN install folder', directory: true, multiple: false });
     if (typeof picked === 'string' && config) {
@@ -365,7 +302,6 @@
       title: 'Sharing & Sync',
       items: [
         { id: 'lan', title: 'LAN sharing', sub: 'Transfers between devices' },
-        { id: 'sync', title: 'Sync server', sub: 'Session locks' },
         { id: 'device', title: 'This device', sub: 'Shown to peers' },
       ],
     },
@@ -697,50 +633,28 @@
               <!-- Cloud saves (rclone) -->
               <div id="cloud-saves">
                 <SettingsCard title="Cloud saves (rclone)" helper="Configure a cloud remote here, then use 'Open Ludusavi settings' to run rclone config / authenticate.">
-                  
-                  {#if config.cloud_provider === 'spool-server'}
-                    <!-- Connected to the self-hosted Spool server (turnkey path). -->
-                    <SettingsRow
-                      label="Save storage"
-                      status="ok"
-                      helper="Saves sync to your Spool server's built-in storage."
-                    >
-                      {#snippet extras()}
-                        <Btn variant="ghost" onclick={disconnectServerStorage} disabled={serverStorageConnecting}>
-                          {#snippet icon()}<Trash2 size={14} />{/snippet}
-                          {serverStorageConnecting ? 'Working…' : 'Disconnect'}
-                        </Btn>
-                      {/snippet}
-                    </SettingsRow>
-                    <SettingsRow label="Server" helper="WebDAV endpoint provided by your Spool server">
-                      {#snippet control()}
-                        <TextField value={config!.cloud_webdav_url} mono full readonly />
-                      {/snippet}
-                    </SettingsRow>
-                    <SettingsRow label="Account">
-                      {#snippet control()}
-                        <TextField value={config!.cloud_webdav_username} mono readonly />
-                      {/snippet}
-                    </SettingsRow>
-                  {:else}
-                    {#if !config.cloud_provider || (config.cloud_provider === 'custom' && !config.cloud_remote)}
+
+                  {#if !config.cloud_provider || (config.cloud_provider === 'custom' && !config.cloud_remote)}
                       <div class="mx-[18px] mb-3.5 rounded-sm border border-dashed border-warn/40 bg-warn/5 p-3 text-[11.5px] text-ink-2">
                         Cloud sync is not configured — saves are backed up locally only.
                       </div>
-                    {/if}
-
-                    {#if config.sync_server_enabled && config.sync_server_url && config.sync_server_api_key}
-                      <SettingsRow
-                        label="Self-hosted storage"
-                        helper="Sync saves to your Spool server's built-in WebDAV store — no extra setup."
-                      >
-                        {#snippet extras()}
-                          <Btn variant="primary" onclick={useServerStorage} disabled={serverStorageConnecting}>
-                            {#snippet icon()}<Sparkles size={14} />{/snippet}
-                            {serverStorageConnecting ? 'Connecting…' : 'Use my Spool server for save storage'}
-                          </Btn>
-                        {/snippet}
-                      </SettingsRow>
+                    {:else}
+                      <div class="mx-[18px] mb-3.5 flex items-center gap-2 rounded-sm border border-dashed border-line-1 bg-bg-0 p-3 text-[11.5px] text-ink-2">
+                        <Pill kind={syncStatus.reachability === 'online' ? 'ok' : syncStatus.reachability === 'offline' ? 'warn' : 'off'}>
+                          {syncStatus.reachability === 'online' ? 'Reachable' : syncStatus.reachability === 'offline' ? 'Unreachable' : '—'}
+                        </Pill>
+                        <span>
+                          {#if syncStatus.reachability === 'offline'}
+                            Couldn't reach the remote{syncStatus.error ? ` · ${syncStatus.error}` : ''}
+                          {:else}
+                            Saves and cross-device session state sync through this remote.
+                          {/if}
+                        </span>
+                        <Btn variant="ghost" onclick={refreshSync}>
+                          {#snippet icon()}<RefreshCcw size={14} />{/snippet}
+                          Check
+                        </Btn>
+                      </div>
                     {/if}
 
                     <SettingsRow label="Provider" helper="Choose a cloud storage provider or Custom for a custom rclone remote name">
@@ -798,9 +712,12 @@
                       </SettingsRow>
                     {/if}
 
-                    <SettingsRow label="Remote path" helper="Subpath on the remote where saves will be synced">
+                    <SettingsRow
+                      label="Remote folder"
+                      helper="Base folder on the remote. Saves go to <folder>/ludusavi-backup; Spool's cross-device session data to <folder>/_spool."
+                    >
                       {#snippet control()}
-                        <TextField bind:value={config!.cloud_path} placeholder="Spool/ludusavi-backup" mono oncommit={persist} />
+                        <TextField bind:value={config!.cloud_base_path} placeholder="Spool" mono oncommit={persist} />
                       {/snippet}
                     </SettingsRow>
 
@@ -1001,109 +918,6 @@
                                 <Pill kind="info" soft>peer</Pill>
                               </div>
                             {/each}
-                          </div>
-                        {/if}
-                      </div>
-                    {/if}
-                  </div>
-                </SettingsCard>
-              </div>
-
-              <!-- Sync server section -->
-              <div id="sync">
-                <SettingsCard title="Sync server" helper="A small HTTP service that holds a per-game lock so two devices don't fight over saves.">
-                  <div class="border-b border-dashed border-line-1">
-                    <div class="flex items-center gap-[14px] px-[18px] py-[14px]">
-                      <div class="flex-1">
-                        <div class="flex items-center gap-2 text-[13px] font-medium text-ink-0">
-                          Use a sync server
-                          <Pill kind={config.sync_server_enabled ? (syncStatus.reachability === 'online' ? 'ok' : 'warn') : 'off'}>
-                            {config.sync_server_enabled ? (syncStatus.reachability === 'online' ? 'Online' : 'Offline') : 'OFF'}
-                          </Pill>
-                        </div>
-                        <div class="mt-[3px] text-[11.5px] text-ink-2">
-                          {#if config.sync_server_enabled && syncStatus.reachability === 'online'}
-                            {config.sync_server_url}{syncStatus.server_version ? ` · v${syncStatus.server_version}` : ''}
-                          {:else if config.sync_server_enabled && syncStatus.reachability === 'offline'}
-                            Unreachable · {syncStatus.error ?? 'no response'}
-                          {:else if config.sync_server_enabled}
-                            Configure a server URL below.
-                          {:else}
-                            Off — you'll only get local backups.
-                          {/if}
-                        </div>
-                      </div>
-                      <Toggle bind:checked={config!.sync_server_enabled} onchange={persistAndRefresh} />
-                    </div>
-
-                    {#if config.sync_server_enabled}
-                      <div class="bg-bg-0 pb-1">
-                        <SettingsRow label="Server URL"
-                          helper={syncStatus.reachability === 'online'
-                            ? `Online${syncStatus.server_version ? ` · v${syncStatus.server_version}` : ''}`
-                            : syncStatus.reachability === 'offline'
-                              ? `Unreachable · ${syncStatus.error ?? 'no response'}`
-                              : 'Not yet configured.'}
-                          status={syncStatus.reachability === 'online' ? 'ok' : syncStatus.reachability === 'offline' ? 'warn' : undefined}
-                        >
-                          {#snippet extras()}
-                            <TextField
-                              bind:value={config!.sync_server_url}
-                              placeholder="http://raspberrypi.local:47633"
-                              mono
-                              full
-                              oncommit={persistAndRefresh}
-                            />
-                            <Btn variant="ghost" onclick={refreshSync}>
-                              {#snippet icon()}<RefreshCcw size={14} />{/snippet}
-                              Check
-                            </Btn>
-                          {/snippet}
-                        </SettingsRow>
-
-                        <SettingsRow label="API key" helper="Generated once when you register. On your other devices, paste this same key — don't register again.">
-                          {#snippet extras()}
-                            <TextField
-                              bind:value={config!.sync_server_api_key}
-                              placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-                              mono
-                              masked
-                              full
-                              oncommit={persistAndRefresh}
-                            />
-                            <Btn variant="ghost" onclick={() => (registerOpen = !registerOpen)}>
-                              {#snippet icon()}<KeyRound size={14} />{/snippet}
-                              {registerOpen ? 'Cancel' : 'Register…'}
-                            </Btn>
-                          {/snippet}
-                        </SettingsRow>
-
-                        {#if registerOpen}
-                          <div class="border-l-2 border-spool/40 bg-bg-2/40 mx-[18px] mb-3 px-4 py-3">
-                            <div class="font-mono mb-2 text-[10px] uppercase tracking-[0.1em] text-spool">Register new account</div>
-                            <div class="mb-3 rounded-sm border border-dashed border-spool/40 bg-spool/5 p-2.5 text-[11px] leading-[1.45] text-ink-2">
-                              <span class="font-medium text-ink-1">Do this once.</span> Your account is shared across all your devices. On your other PCs, paste this same API key instead of registering again — that's what makes saves sync and play-locking work together.
-                            </div>
-                            <p class="mb-3 text-[11.5px] leading-[1.45] text-ink-2">
-                              Enter the admin secret you set in the server's compose file, and a name for your account.
-                              The server returns an API key that gets pasted in automatically — reuse that same key on your other devices.
-                            </p>
-                            <div class="flex flex-col gap-2">
-                              <div class="flex items-center gap-2">
-                                <span class="font-mono w-[120px] shrink-0 text-[10.5px] uppercase tracking-[0.08em] text-ink-2">Admin secret</span>
-                                <TextField bind:value={registerAdminSecret} placeholder="ADMIN_SECRET from docker-compose.yml" mono masked full />
-                              </div>
-                              <div class="flex items-center gap-2">
-                                <span class="font-mono w-[120px] shrink-0 text-[10.5px] uppercase tracking-[0.08em] text-ink-2">Account name</span>
-                                <TextField bind:value={registerUsername} placeholder="me" mono full />
-                              </div>
-                              <div class="mt-1 flex justify-end">
-                                <Btn onclick={submitRegister} disabled={registerSubmitting}>
-                                  {#snippet icon()}<KeyRound size={14} />{/snippet}
-                                  {registerSubmitting ? 'Registering…' : 'Register'}
-                                </Btn>
-                              </div>
-                            </div>
                           </div>
                         {/if}
                       </div>

@@ -303,18 +303,24 @@ export function createLibrary() {
         // a newly-set one; then set whichever (if any) this error maps to.
         conflictGameId = null;
         suspendedConflict = null;
-        // Capture the full device name by anchoring to the fixed suffix the
-        // Rust side emits (runner.rs), rather than stopping at the first ". "
-        // — device names can legitimately contain a dot.
-        const suspendedMatch = message?.match(
-          /^Suspended session on (.+?)(?=\. That device is asleep mid-session)/,
-        );
+        // Capture the device name by anchoring to the fixed suffix the Rust
+        // side emits (runner.rs), rather than stopping at the first ". " —
+        // device names can legitimately contain a dot. Both the "actively
+        // playing elsewhere" and "unsynced session elsewhere" cases offer the
+        // same "Play here anyway" override (re-runs the launch with steal).
+        const overrideMatch =
+          message?.match(
+            /^Already playing on (.+?)(?=\. Close it there, or play here anyway)/,
+          ) ??
+          message?.match(
+            /^Unsynced session on (.+?)(?=\. Its latest saves aren't in the cloud yet)/,
+          );
         if (message && /cloud sync conflict/i.test(message)) {
           conflictGameId = game_id;
-        } else if (suspendedMatch) {
-          // Another device is asleep mid-session — offer the override instead
-          // of a dead-end error toast.
-          suspendedConflict = { gameId: game_id, deviceName: suspendedMatch[1] };
+        } else if (overrideMatch) {
+          // Another device holds (or hasn't synced) this game's session —
+          // offer the override instead of a dead-end error toast.
+          suspendedConflict = { gameId: game_id, deviceName: overrideMatch[1] };
         } else {
           showRunErrorToast(game_id, message ?? 'Game launch failed');
         }

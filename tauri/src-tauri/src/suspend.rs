@@ -1,21 +1,20 @@
-//! System-suspend watcher for the play-state lock.
+//! System-suspend watcher for the unsynced-session marker.
 //!
 //! When a device sleeps mid-session — most importantly a Steam Deck that
 //! suspends while a game is running — every userspace process freezes, so the
-//! lock heartbeat (`sync::start_heartbeat`) stops pinging. Without intervention
-//! the sync server would mark the lock stale after a few minutes and let
-//! another device grab it, even though the original session is merely asleep
-//! and about to resume.
+//! session heartbeat (`rclone::start_heartbeat`) stops rewriting the marker.
+//! Without intervention the marker would age out to "stale" and a peer might
+//! treat the session as abandoned, even though it's merely asleep.
 //!
 //! This watcher subscribes to systemd-logind's `PrepareForSleep` D-Bus signal,
-//! which fires *before* the freeze. On the way down it marks the lock suspended
-//! (`POST /locks/:game/suspend`) so the server keeps it alive for a bounded
-//! grace window; on resume it lets the normal heartbeat un-suspend it, and
-//! warns if the lock was taken over while we slept.
+//! which fires *before* the freeze. On the way down it marks the session marker
+//! suspended (a suspended marker never goes stale, so a peer sees an *unsynced
+//! session* rather than the marker being reclaimed); on resume it re-asserts an
+//! awake marker, and warns if a peer took the session over while we slept.
 //!
-//! To guarantee the suspend POST actually lands before the system freezes, the
+//! To guarantee the suspend write actually lands before the system freezes, the
 //! watcher holds a logind *delay* inhibitor lock and only releases it once the
-//! suspend call has been fired — the standard "react before sleep" pattern.
+//! marker write has been fired — the standard "react before sleep" pattern.
 //!
 //! Non-Linux targets get a no-op watcher: the returned handle is an
 //! already-finished task, so the caller's unconditional `.abort()` is harmless.
@@ -44,7 +43,7 @@ pub fn start_suspend_watcher(app: AppHandle, game_name: String) -> JoinHandle<()
 #[cfg(target_os = "linux")]
 mod linux {
     use super::*;
-    use crate::sync;
+    use crate::rclone;
     use zbus::zvariant::OwnedFd;
     use zbus::{Connection, Proxy};
 
@@ -117,22 +116,19 @@ mod linux {
             };
 
             if about_to_sleep {
-                tracing::info!(game = %game_name, "suspend: system sleeping — marking lock suspended");
-                sync::suspend_lock(&app, &game_name).await;
+                tracing::info!(game = %game_name, "suspend: system sleeping — marking session suspended");
+                rclone::mark_session_suspended(&app, &game_name).await;
                 // Release the inhibitor so the suspend can proceed now that the
-                // lock is marked. Re-taken on resume.
+                // marker is updated. Re-taken on resume.
                 inhibitor = None;
             } else {
-                tracing::info!(game = %game_name, "suspend: system resumed — refreshing lock");
-                // Re-assert the lock immediately rather than waiting up to 30s
-                // for the next heartbeat. If another device stole the suspended
-                // lock while we slept, warn the user; the local game keeps
+                tracing::info!(game = %game_name, "suspend: system resumed — refreshing session marker");
+                // Re-assert our marker immediately rather than waiting up to
+                // 60s for the next heartbeat. If another device took over the
+                // session while we slept, warn the user; the local game keeps
                 // running regardless.
-                match sync::acquire_lock(&app, &game_name, false).await {
-                    sync::AcquireOutcome::Acquired => {}
-                    sync::AcquireOutcome::Conflict { device_name, .. } => {
-                        warn_lock_taken(&app, &game_name, &device_name);
-                    }
+                if let Some(device_name) = rclone::resume_session(&app, &game_name).await {
+                    warn_lock_taken(&app, &game_name, &device_name);
                 }
                 inhibitor = take_delay_inhibitor(&proxy).await;
             }
