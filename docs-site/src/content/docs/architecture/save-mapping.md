@@ -137,19 +137,19 @@ know what redirects a backup needs until it has read the backup's `mapping.yaml`
 exists on disk after a cloud-syncing restore has pulled it down. The solution is to restore
 **twice**:
 
-```
-Pass 1  ── restore (pulls the backup + mapping.yaml from cloud)
-        │
-        ├─ read mapping.yaml → discover every recorded save path
-        ├─ classify each path by format, derive redirect rules
-        │
-        ├─ 0 rules?  → save is already native here. Clear stale redirects, done.
-        │
-        └─ N rules?  → write them to ludusavi's config.yaml
-                       │
-Pass 2  ──────────────┴─ restore again — this time the saves land in the right place
-        │
-        └─ clear the redirects (regenerated fresh on every restore)
+```mermaid
+flowchart TD
+    P1["Pass 1: restore<br/>(pulls the backup + mapping.yaml from cloud)"]
+    READ["read mapping.yaml →<br/>discover every recorded save path"]
+    CLASSIFY["classify each path by format,<br/>derive redirect rules"]
+    DECIDE{"any redirects<br/>needed?"}
+    NATIVE["0 rules — save is already native here.<br/>Clear stale redirects, done."]
+    WRITE["N rules — write them to<br/>ludusavi's config.yaml"]
+    P2["Pass 2: restore again —<br/>the saves land in the right place"]
+    CLEAR["clear the redirects<br/>(regenerated fresh on every restore)"]
+    P1 --> READ --> CLASSIFY --> DECIDE
+    DECIDE -->|none| NATIVE
+    DECIDE -->|some| WRITE --> P2 --> CLEAR
 ```
 
 This is `restore_with_redirects` in `runner.rs`. The second pass only runs when the first pass
