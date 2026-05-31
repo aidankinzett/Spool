@@ -21,8 +21,9 @@ workflow. For how Spool owns ludusavi's config, see [Ludusavi Config](/Spool/arc
 
 Spool delegates the actual save scanning, backup, and restore to
 [ludusavi](https://github.com/mtkennerly/ludusavi). Ludusavi records every save file by its
-**absolute path** and, on restore, writes each file straight back to that recorded path. That
-is exactly what you want on a single machine — and exactly wrong across machines:
+**absolute path** and, on restore, writes each file faithfully back to that recorded path. On a
+single machine that's exactly the behaviour you want. Moving a save *between* machines just adds
+one more question on top: where should each recorded path land on the new machine?
 
 - The recorded path `C:/Users/akinz/...` doesn't exist on a Linux handheld.
 - The Windows username (`akinz`) won't match the Linux user.
@@ -34,7 +35,7 @@ restore to *source*, write to *target* instead." Spool's job is to read what a b
 contains, figure out where each path *should* land on the current machine, and synthesise the
 right redirects automatically — for any combination of source and destination OS.
 
-## The key insight: classify by path *format*, not by OS
+## Classify by path *format*, not by OS
 
 Every ludusavi backup is stamped with the OS that authored it (`os: windows` or `os: linux` in
 `mapping.yaml`). The obvious approach would be to branch on that field. **Spool deliberately does
@@ -212,7 +213,7 @@ classification (rather than the `os` field) necessary.
 ## Cross-device Linux: prefix-root remapping
 
 Two Linux handhelds sharing a save via cloud have *different* home directories, so their prefix roots
-differ (`/home/alice/.../prefixes/abc` vs `/home/bob/.../prefixes/abc`). A prefix-format path is
+differ (`/home/alice/.../prefixes/3f9a…` vs `/home/bob/.../prefixes/7c21…`). A prefix-format path is
 remapped only when the authoring prefix root differs from the local one:
 
 ```rust
@@ -226,6 +227,13 @@ if &drive_c != local_drive_c {
 Because every game gets a deterministic prefix path keyed on its `game_id`
 (`~/.local/share/Spool/prefixes/<game_id>/`), the same game on the same machine always resolves to
 the same prefix — so the common case (replaying your own save) generates zero redirects.
+
+Note that `game_id` is a random UUID minted locally when the game is added to the library (and a
+fresh one is minted again on the receiving device for a LAN install), so it is *not* stable across
+devices — alice's and bob's copies of the same game have different ids as well as different home
+dirs. That's why the remap swaps the entire `…/drive_c` prefix root in one rule rather than just the
+home-directory portion. The cross-device match that decides two saves belong to the same game is by
+**game name** (ludusavi's backup folder is named after the game), not the `game_id`.
 
 ## How it fits the run workflow
 
