@@ -209,7 +209,12 @@ pub fn resolve_remote_from_config(cfg: &ConfigData) -> Option<RcloneRemote> {
 }
 
 /// The configured base folder, defaulting to `Spool` if the user cleared it.
-fn base_path(cfg: &ConfigData) -> String {
+/// The remote base folder, normalized: trimmed, no trailing slash, and falling
+/// back to `"Spool"` when blank. Both the rclone control plane and the derived
+/// ludusavi backup path (`config::update_config`) go through this so an empty
+/// `cloud_base_path` can never split saves and `_spool` state across different
+/// remote roots.
+pub(crate) fn base_path(cfg: &ConfigData) -> String {
     let b = cfg.cloud_base_path.trim().trim_end_matches('/');
     if b.is_empty() { "Spool".to_string() } else { b.to_string() }
 }
@@ -364,16 +369,25 @@ async fn lsd(exe: &Path, remote: &str) -> Result<(), String> {
 
 // ── Session markers (the unsynced-session warning) ──────────────────────────
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum SessionState {
     /// A game is being played right now on the owning device.
     Active,
     /// The session ended but its saves haven't been uploaded to the cloud yet.
+    /// Fail-safe default: a marker missing its `state` is treated as having
+    /// unsynced saves (peer warns) rather than as a live active session.
+    #[default]
     PendingBackup,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Container-level `#[serde(default)]` (plus the `Default` impls above and on
+/// `SessionState`) means an older marker missing a future field still loads —
+/// the same JSON-shape-compatibility rule the persisted config/library follow,
+/// important here because markers are written and read across devices that may
+/// be on different Spool versions.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct SessionMarker {
     /// Plaintext name — guards against a hash collision on read.
     pub game_name: String,
@@ -384,7 +398,6 @@ pub struct SessionMarker {
     pub updated_at: String,
     pub state: SessionState,
     /// Set by the logind suspend watcher; a suspended marker never goes stale.
-    #[serde(default)]
     pub suspended: bool,
 }
 

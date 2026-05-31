@@ -326,11 +326,10 @@ pub fn update_config(
 
     // Sync cloud/rclone settings to Spool-owned ludusavi config.yaml. The
     // ludusavi remote subpath is derived from the base folder so it always sits
-    // beside Spool's `_spool` control-plane dir.
-    let ludusavi_remote_path = format!(
-        "{}/ludusavi-backup",
-        cfg.data.cloud_base_path.trim().trim_end_matches('/')
-    );
+    // beside Spool's `_spool` control-plane dir. Use the same normalizer the
+    // control plane uses so a blank base folder can't put saves under
+    // `/ludusavi-backup` while `_spool` falls back to `Spool/_spool`.
+    let ludusavi_remote_path = format!("{}/ludusavi-backup", crate::rclone::base_path(&cfg.data));
     let _ = crate::ludusavi_config::set_cloud(
         Some(&cfg.data.cloud_provider),
         Some(&cfg.data.cloud_remote),
