@@ -452,16 +452,28 @@ pub async fn acquire_lock(app: &AppHandle, game_name: &str) -> AcquireOutcome {
 /// Fire-and-forget POST /locks/:game/release. Failures are logged
 /// and ignored — the server's stale-lock detection will eventually
 /// reclaim if we never released.
+///
+/// The server identifies which lock to delete by the `X-Device-Id`
+/// header (it scopes the delete to `user_id + game_name + device_id`),
+/// so this header is REQUIRED — without it the endpoint 400s and the
+/// lock is never released, leaving the game "playing" until the stale
+/// window elapses.
 pub async fn release_lock(app: &AppHandle, game_name: &str) {
     let Ok((url, key)) = config_snapshot(app) else {
         return;
     };
+    let (device_id, device_name) = device_identity(app);
+    if device_id.is_empty() {
+        return;
+    }
     let endpoint = join_url(&url, &format!("locks/{}/release", urlencode(game_name)));
     let client = (*app.state::<reqwest::Client>()).clone();
     match client
         .post(&endpoint)
         .timeout(ENDPOINT_TIMEOUT)
         .bearer_auth(&key)
+        .header("X-Device-Id", &device_id)
+        .header("X-Device-Name", &device_name)
         .send()
         .await
     {
@@ -481,6 +493,15 @@ pub fn start_heartbeat(app: AppHandle, game_name: String) -> tokio::task::JoinHa
             let Ok((url, key)) = config_snapshot(&app) else {
                 return; // sync got disabled mid-session — stop pinging
             };
+            // The server's heartbeat endpoint scopes the update by
+            // `X-Device-Id` (user_id + game_name + device_id) and 400s
+            // without it — so the header is REQUIRED to keep the lock
+            // fresh. Missing it means `last_heartbeat` never advances and
+            // the lock goes stale mid-session.
+            let (device_id, device_name) = device_identity(&app);
+            if device_id.is_empty() {
+                continue;
+            }
             let endpoint =
                 join_url(&url, &format!("locks/{}/heartbeat", urlencode(&game_name)));
             let client = (*app.state::<reqwest::Client>()).clone();
@@ -488,6 +509,8 @@ pub fn start_heartbeat(app: AppHandle, game_name: String) -> tokio::task::JoinHa
                 .post(&endpoint)
                 .timeout(ENDPOINT_TIMEOUT)
                 .bearer_auth(&key)
+                .header("X-Device-Id", &device_id)
+                .header("X-Device-Name", &device_name)
                 .send()
                 .await
             {
