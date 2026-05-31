@@ -648,8 +648,8 @@
                               {#if dep.found}
                                 <span
                                   class="rounded-[3px] px-1.5 py-px font-mono text-[9.5px] uppercase tracking-[0.08em]"
-                                  style:background={dep.source === 'bundled' ? 'rgba(126,198,255,0.12)' : dep.source === 'config' ? 'rgba(215,201,160,0.12)' : 'rgba(120,220,160,0.12)'}
-                                  style:color={dep.source === 'bundled' ? 'var(--color-info)' : dep.source === 'config' ? 'var(--color-spool)' : 'var(--color-ok)'}
+                                  style:background={dep.source === 'bundled' ? 'rgba(126,198,255,0.12)' : 'rgba(120,220,160,0.12)'}
+                                  style:color={dep.source === 'bundled' ? 'var(--color-info)' : 'var(--color-ok)'}
                                 >{dep.source}</span>
                               {/if}
                             </div>
