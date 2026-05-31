@@ -14,12 +14,12 @@
    * non-danger rows, red hover for Remove.
    */
   import { onMount, onDestroy } from 'svelte';
-  import { ArrowDownToLine, ArrowUpFromLine, Folder, Package, Pencil, Play, Trash2 } from '@lucide/svelte';
+  import { ArrowDownToLine, ArrowUpFromLine, Cast, Folder, Package, Pencil, Play, Trash2 } from '@lucide/svelte';
   import { openView } from '$lib/nav';
   import { api, assetUrl } from '$lib/api';
   import { fmtCatalog } from '$lib/format';
   import { toasts } from '$lib/toasts.svelte';
-  import type { GameEntry } from '$lib/types';
+  import type { GameEntry, StreamingHostInfo } from '$lib/types';
 
   let {
     game,
@@ -35,6 +35,14 @@
 
   let menuEl: HTMLDivElement | undefined = $state();
   let isWindows = $state(false);
+  let streamingHost = $state<StreamingHostInfo | null>(null);
+  const hostLabel = $derived(
+    streamingHost?.kind === 'apollo'
+      ? 'Apollo'
+      : streamingHost?.kind === 'sunshine'
+        ? 'Sunshine'
+        : 'Apollo/Sunshine',
+  );
 
   const BRAND_SPOOL = '#d7c9a0';
   const accent = $derived(game.accent_color ?? BRAND_SPOOL);
@@ -73,6 +81,11 @@
     document.addEventListener('mousedown', handleOutside, true);
     document.addEventListener('keydown', handleKey, true);
     isWindows = (await api.appPlatform()) === 'windows';
+    try {
+      streamingHost = await api.detectStreamingHost();
+    } catch {
+      streamingHost = null;
+    }
   });
   onDestroy(() => {
     document.removeEventListener('mousedown', handleOutside, true);
@@ -253,6 +266,28 @@
     }
   }
 
+  async function addToStreamingHost() {
+    onclose();
+    try {
+      const r = await api.addToStreamingHost(game.id);
+      const label = r.host_kind === 'apollo' ? 'Apollo' : 'Sunshine';
+      toasts.show({
+        kind: 'ok',
+        label: label.toUpperCase(),
+        title: `Added to ${label}`,
+        sub: `"${game.game_name}" is now streamable from ${label}.`,
+        catalog: fmtCatalog(game.catalog_number),
+      });
+    } catch (e) {
+      toasts.show({
+        kind: 'bad',
+        label: `${hostLabel.toUpperCase()} · FAILED`,
+        title: `Couldn't add to ${hostLabel}`,
+        sub: String(e),
+      });
+    }
+  }
+
   function openEdit() {
     onclose();
     openView('edit', { id: game.id });
@@ -356,6 +391,9 @@
       !folderForGame(game),
     )}
     {@render item('Add to Steam', steamIcon, addToSteam, !game.exe_path)}
+    {#if streamingHost?.detected}
+      {@render item(`Add to ${hostLabel}`, hostIcon, addToStreamingHost, !game.exe_path)}
+    {/if}
     {#if isWindows}
       {@render item('Generate Armoury Crate launcher', armouryIcon, generateArmouryLauncher, !game.exe_path)}
     {/if}
@@ -369,6 +407,7 @@
   {#snippet playIcon()}<Play size={13} fill="currentColor" />{/snippet}
   {#snippet folderIcon()}<Folder size={13} />{/snippet}
   {#snippet steamIcon()}<Play size={13} />{/snippet}
+  {#snippet hostIcon()}<Cast size={13} />{/snippet}
   {#snippet armouryIcon()}<Package size={13} />{/snippet}
   {#snippet backupIcon()}<ArrowUpFromLine size={13} />{/snippet}
   {#snippet restoreIcon()}<ArrowDownToLine size={13} />{/snippet}
