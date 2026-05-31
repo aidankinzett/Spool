@@ -681,7 +681,6 @@
                         <TextField bind:value={config!.rclone_args} placeholder="--fast-list --ignore-checksum" mono oncommit={persist} />
                       {/snippet}
                     </SettingsRow>
-                  {/if}
 
                   <div class="flex justify-end px-[18px] py-[10px] bg-bg-0">
                     <Btn variant="ghost" onclick={() => api.openLudusaviGui().catch(err => toasts.show({ kind: 'bad', label: 'LUDUSAVI', title: 'Could not open settings', sub: String(err) }))}>
