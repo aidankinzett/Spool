@@ -159,7 +159,6 @@ def _clean_env() -> dict:
 
 
 def _resolve_spool_command(settings: dict) -> Optional[str]:
-    home = os.environ.get("HOME") or os.path.expanduser("~")
     configured = (settings or {}).get("spool_command", "").strip()
     if configured and os.path.exists(configured):
         return configured

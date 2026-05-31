@@ -79,7 +79,7 @@ pub async fn serve() -> AppResult<()> {
         .route("/library", get(get_library))
         .with_state(state);
 
-    axum::serve(listener, router)
+    axum::serve(listener, router.into_make_service())
         .await
         .map_err(|e| AppError::Other(format!("plugin socket serve: {e}")))?;
 

@@ -113,7 +113,7 @@ function Content() {
         <PanelSectionRow>
           <ToggleField
             label="Notify on backup"
-            description="Show a toast when a backup starts and finishes."
+            description="Show a toast when a backup finishes."
             checked={settings?.notify ?? true}
             onChange={(value) => void save({ notify: value })}
           />

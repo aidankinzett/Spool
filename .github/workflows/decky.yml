@@ -5,9 +5,23 @@ name: decky-plugin
 on:
   push:
     branches: [master]
-    paths: ["decky/**", "tauri/src-tauri/src/plugin_server.rs", ".github/workflows/decky.yml"]
+    paths:
+      - "decky/**"
+      - "tauri/src-tauri/src/plugin_server.rs"
+      - "tauri/src-tauri/src/cli.rs"
+      - "tauri/src-tauri/src/lib.rs"
+      - "tauri/src-tauri/src/paths.rs"
+      - "tauri/src-tauri/Cargo.toml"
+      - ".github/workflows/decky.yml"
   pull_request:
-    paths: ["decky/**", "tauri/src-tauri/src/plugin_server.rs", ".github/workflows/decky.yml"]
+    paths:
+      - "decky/**"
+      - "tauri/src-tauri/src/plugin_server.rs"
+      - "tauri/src-tauri/src/cli.rs"
+      - "tauri/src-tauri/src/lib.rs"
+      - "tauri/src-tauri/src/paths.rs"
+      - "tauri/src-tauri/Cargo.toml"
+      - ".github/workflows/decky.yml"
 
 defaults:
   run:
