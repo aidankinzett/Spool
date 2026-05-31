@@ -2,7 +2,7 @@
 title: Decky Backup Plugin
 description: The Spool Backup Decky Loader plugin — forced-close save backup safety net for SteamOS Game Mode.
 sidebar:
-  order: 6
+  order: 8
 ---
 
 The Spool Backup Decky Loader plugin provides a forced-close backup safety net for SteamOS / Steam Deck Game Mode. It lives in `decky/` in the repo and is a separate sub-project from the Tauri app.
@@ -19,21 +19,17 @@ Any backup runner inside Steam's killed tree races the SIGKILL. The fix is to tr
 
 The plugin is a thin adapter around `spool --headless-server`. Rather than reading `active-session.json` and spawning `spool --backup` directly, the backend starts a persistent headless server subprocess and communicates with it over a Unix socket. This avoids the cold-start cost of a fresh Spool process per operation and gives the server access to live in-process state (library, LAN peers).
 
-```
-Steam (Game Mode)
-   │  game stop  (SteamClient.GameSessions.RegisterForAppLifetimeNotifications)
-   ▼
-Decky plugin FRONTEND (src/index.tsx, runs in the Steam UI / SP context)
-   │  bRunning === false  →  call("on_app_stop", unAppID)
-   ▼
-Decky plugin BACKEND (main.py, runs in the Decky service as the `deck` user)
-   │  POST /session/game-stopped  { "appid": <unAppID> }
-   │  (over Unix socket at ~/.local/share/Spool/plugin.sock)
-   ▼
-spool --headless-server  (started by plugin at load time, persistent)
-   │  checks active-session.json: appid matches && !backed_up?
-   ▼
-   run ludusavi backup  →  session.backed_up = true
+```mermaid
+flowchart TD
+    STEAM["Steam (Game Mode)"]
+    FE["Decky plugin FRONTEND<br/>(src/index.tsx — Steam UI / SP context)"]
+    BE["Decky plugin BACKEND<br/>(main.py — Decky service, deck user)"]
+    HS["spool --headless-server<br/>(started by plugin at load time, persistent)"]
+    BK["run ludusavi backup →<br/>session.backed_up = true"]
+    STEAM -->|"game stop (RegisterForAppLifetimeNotifications)"| FE
+    FE -->|"bRunning === false → call(on_app_stop, unAppID)"| BE
+    BE -->|"POST /session/game-stopped {appid}<br/>over Unix socket plugin.sock"| HS
+    HS -->|"active-session.json: appid matches and not backed_up?"| BK
 ```
 
 On plugin load (`_main`), the backend resolves the spool command and starts `spool --headless-server` as a detached subprocess. On plugin unload (`_unload`), it terminates the server and cleans up the socket file.

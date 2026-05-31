@@ -2,7 +2,7 @@
 title: SteamOS Game Mode Launch
 description: How Spool's attached-launch mode works in SteamOS Game Mode — splash window, no tray, exit on game close, session record for the Decky plugin.
 sidebar:
-  order: 5
+  order: 7
 ---
 
 On a Steam Deck / Bazzite / SteamOS **Game Mode** session, Spool switches into *attached-launch* mode: it shows a minimal splash instead of the library window, runs the game workflow, and **exits when the game exits** so Steam correctly registers the game stopping.

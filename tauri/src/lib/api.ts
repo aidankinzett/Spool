@@ -49,7 +49,6 @@ export const api = {
   // Config
   getConfig: (): Promise<ConfigData> => invoke('get_config'),
   updateConfig: (data: ConfigData): Promise<ConfigData> => invoke('update_config', { data }),
-  detectLudusavi: (): Promise<string> => invoke('detect_ludusavi'),
   detectUmuRun: (): Promise<string> => invoke('detect_umu_run'),
   appPlatform: (): Promise<string> => invoke('app_platform'),
   checkDependencies: (): Promise<DepStatus[]> => invoke('check_dependencies'),

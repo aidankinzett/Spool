@@ -4,7 +4,6 @@ export type UiMode = 'auto' | 'desktop' | 'touch';
 // Mirror of the Rust `ConfigData` struct in src-tauri/src/config.rs.
 // Keep field names in lockstep — serde uses these exact snake_case names.
 export type ConfigData = {
-  ludusavi_path: string;
   steamgriddb_enabled: boolean;
   steamgriddb_api_key: string;
   spool_exe: string;
@@ -37,7 +36,6 @@ export type ConfigData = {
   /** Legacy: exact ludusavi remote subpath, superseded by `cloud_base_path`.
    * Kept for JSON round-trip with older configs; no longer read. */
   cloud_path: string;
-  rclone_path: string;
   rclone_args: string;
   cloud_webdav_url: string;
   cloud_webdav_username: string;
