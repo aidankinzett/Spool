@@ -4,6 +4,7 @@
   import LibraryDesktop from '$lib/components/LibraryDesktop.svelte';
   import LibraryTouch from '$lib/components/LibraryTouch.svelte';
   import CloudConflictModal from '$lib/components/CloudConflictModal.svelte';
+  import SuspendedLockModal from '$lib/components/SuspendedLockModal.svelte';
   import { api, assetUrl } from '$lib/api';
   import { absDateTime, relDate, fmtSize } from '$lib/format';
   import type { RawConflictDetails } from '$lib/types';
@@ -100,6 +101,33 @@
       }}
       onClose={() => {
         lib.conflictGameId = null;
+      }}
+    />
+  {/if}
+{/if}
+
+{#if lib.suspendedConflict}
+  {@const sc = lib.suspendedConflict}
+  {@const suspendedGame = lib.games.find((g) => g.id === sc.gameId)}
+  {#if suspendedGame}
+    <SuspendedLockModal
+      gameName={suspendedGame.game_name}
+      deviceName={sc.deviceName}
+      catalogId={suspendedGame.catalog_number ? `SPL-${String(suspendedGame.catalog_number).padStart(4, '0')}` : undefined}
+      accent={suspendedGame.accent_color}
+      coverUrl={assetUrl(suspendedGame.cover_image_path)}
+      context={uiMode.resolved === 'touch' ? 'gamemode' : 'desktop'}
+      onConfirm={async () => {
+        const id = sc.gameId;
+        lib.suspendedConflict = null;
+        try {
+          await api.launchGame(id, true);
+        } catch (e) {
+          console.error('[library] override launch failed:', e);
+        }
+      }}
+      onCancel={() => {
+        lib.suspendedConflict = null;
       }}
     />
   {/if}

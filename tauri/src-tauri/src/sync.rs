@@ -385,14 +385,25 @@ pub enum AcquireOutcome {
     Acquired,
     /// Another device currently holds the lock. The body carries
     /// their device name so we can show a useful error toast.
-    Conflict { device_name: String },
+    ///
+    /// `suspended` is true when the holder is asleep mid-session (e.g.
+    /// a Steam Deck that suspended); such a lock can be overridden with
+    /// a stealing acquire after warning the user that the suspended
+    /// device's unsaved progress may be lost.
+    Conflict {
+        device_name: String,
+        suspended: bool,
+    },
 }
 
-/// Body shape POSTed to /locks/:game/acquire.
+/// Body shape POSTed to /locks/:game/acquire. `steal` is only set on an
+/// explicit user override of a suspended lock.
 #[derive(Debug, Serialize)]
 struct AcquireBody<'a> {
     device_id: &'a str,
     device_name: &'a str,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    steal: bool,
 }
 
 /// 409 response body for an acquire conflict.
@@ -400,13 +411,19 @@ struct AcquireBody<'a> {
 struct AcquireConflictBody {
     #[serde(default)]
     device_name: Option<String>,
+    #[serde(default)]
+    suspended: bool,
 }
 
 /// Asks the sync server to acquire a per-game play lock. Returns
 /// `Acquired` on success / disabled / server error; `Conflict` only
 /// when another device holds an unexpired lock. Best-effort:
 /// network/timeout errors log a warning and resolve as `Acquired`.
-pub async fn acquire_lock(app: &AppHandle, game_name: &str) -> AcquireOutcome {
+///
+/// `steal` forces the acquire over a *suspended* lock (the server
+/// rejects a steal of a live, actively-heartbeating lock). It's set
+/// only by the user's explicit "Play here instead" override.
+pub async fn acquire_lock(app: &AppHandle, game_name: &str, steal: bool) -> AcquireOutcome {
     let Ok((url, key)) = config_snapshot(app) else {
         return AcquireOutcome::Acquired;
     };
@@ -423,6 +440,7 @@ pub async fn acquire_lock(app: &AppHandle, game_name: &str) -> AcquireOutcome {
         .json(&AcquireBody {
             device_id: &device_id,
             device_name: &device_name,
+            steal,
         })
         .send()
         .await
@@ -443,6 +461,7 @@ pub async fn acquire_lock(app: &AppHandle, game_name: &str) -> AcquireOutcome {
             device_name: body
                 .device_name
                 .unwrap_or_else(|| "another device".to_string()),
+            suspended: body.suspended,
         };
     }
     tracing::warn!(status = %status, "sync: acquire_lock unexpected status — proceeding without lock");
@@ -558,6 +577,47 @@ pub fn start_heartbeat(app: AppHandle, game_name: String) -> tokio::task::JoinHa
             }
         }
     })
+}
+
+/// POST /locks/:game/suspend — marks this device's lock as suspended so
+/// the server keeps it alive past the heartbeat stale window while the
+/// device sleeps. Best-effort; like the heartbeat it requires the
+/// `X-Device-Id` header. Called from the logind suspend watcher just
+/// before the system freezes. Returns `true` if the server accepted it.
+///
+/// Linux-only: the only caller is the logind-based suspend watcher
+/// (`suspend.rs`), so gating it here keeps the Windows build free of a
+/// dead-code warning (CI builds with `-D warnings`).
+#[cfg(target_os = "linux")]
+pub async fn suspend_lock(app: &AppHandle, game_name: &str) -> bool {
+    let Ok((url, key)) = config_snapshot(app) else {
+        return false;
+    };
+    let (device_id, device_name) = device_identity(app);
+    if device_id.is_empty() {
+        return false;
+    }
+    let endpoint = join_url(&url, &format!("locks/{}/suspend", urlencode(game_name)));
+    let client = (*app.state::<reqwest::Client>()).clone();
+    match client
+        .post(&endpoint)
+        .timeout(ENDPOINT_TIMEOUT)
+        .bearer_auth(&key)
+        .header("X-Device-Id", &device_id)
+        .header("X-Device-Name", &device_name)
+        .send()
+        .await
+    {
+        Ok(resp) if resp.status().is_success() => true,
+        Ok(resp) => {
+            tracing::warn!(status = %resp.status(), "sync: suspend_lock non-200");
+            false
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "sync: suspend_lock failed");
+            false
+        }
+    }
 }
 
 /// POST /events/:game/backup — records the device that just backed

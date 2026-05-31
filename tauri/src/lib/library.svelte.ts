@@ -56,6 +56,9 @@ export function createLibrary() {
   let searchQuery = $state('');
   let filter = $state<'all' | 'recent' | 'played'>('all');
   let conflictGameId = $state<string | null>(null);
+  // Set when a launch is blocked by another device that's *suspended*
+  // mid-session — drives the "Play here instead" override modal.
+  let suspendedConflict = $state<{ gameId: string; deviceName: string } | null>(null);
 
   // Run tracking
   let runningId = $state<string | null>(null);
@@ -295,8 +298,23 @@ export function createLibrary() {
         runningPhase = phase;
       }
       if (phase === 'error') {
+        // Only one launch-blocking modal is valid at a time. Clear both first
+        // so a stale overlay from an earlier launch can't linger or stack with
+        // a newly-set one; then set whichever (if any) this error maps to.
+        conflictGameId = null;
+        suspendedConflict = null;
+        // Capture the full device name by anchoring to the fixed suffix the
+        // Rust side emits (runner.rs), rather than stopping at the first ". "
+        // — device names can legitimately contain a dot.
+        const suspendedMatch = message?.match(
+          /^Suspended session on (.+?)(?=\. That device is asleep mid-session)/,
+        );
         if (message && /cloud sync conflict/i.test(message)) {
           conflictGameId = game_id;
+        } else if (suspendedMatch) {
+          // Another device is asleep mid-session — offer the override instead
+          // of a dead-end error toast.
+          suspendedConflict = { gameId: game_id, deviceName: suspendedMatch[1] };
         } else {
           showRunErrorToast(game_id, message ?? 'Game launch failed');
         }
@@ -456,6 +474,8 @@ export function createLibrary() {
     set filter(v: 'all' | 'recent' | 'played') { filter = v; },
     get conflictGameId() { return conflictGameId; },
     set conflictGameId(v: string | null) { conflictGameId = v; },
+    get suspendedConflict() { return suspendedConflict; },
+    set suspendedConflict(v: { gameId: string; deviceName: string } | null) { suspendedConflict = v; },
     // Derived (read-only)
     get filteredGames() { return filteredGames; },
     get selectedGame() { return selectedGame; },

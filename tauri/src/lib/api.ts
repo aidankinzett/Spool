@@ -128,7 +128,13 @@ export const api = {
     invoke('cancel_upload', { sessionId }),
 
   // Run workflow
-  launchGame: (gameId: string): Promise<void> => invoke('launch_game', { gameId }),
+  /**
+   * Launch a game through the run workflow. `steal` overrides a *suspended*
+   * play-state lock held by another sleeping device (the "Play here instead"
+   * path) — the server refuses to steal a live, actively-played lock.
+   */
+  launchGame: (gameId: string, steal = false): Promise<void> =>
+    invoke('launch_game', { gameId, steal }),
   manualBackup: (
     gameId: string,
   ): Promise<{ game_count: number; bytes_total: number }> =>

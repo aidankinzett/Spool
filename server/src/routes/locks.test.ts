@@ -82,6 +82,12 @@ describe("POST /locks/:game/acquire", () => {
     expect(res.status).toBe(400);
   });
 
+  it("rejects a non-object JSON body without crashing", async () => {
+    expect((await acquire("Hades", "null")).status).toBe(400);
+    expect((await acquire("Hades", "42")).status).toBe(400);
+    expect((await acquire("Hades", "[]")).status).toBe(400);
+  });
+
   it("requires device_id and device_name", async () => {
     expect((await acquire("Hades", { device_id: "deck" })).status).toBe(400);
     expect((await acquire("Hades", { device_name: "Deck" })).status).toBe(400);
@@ -118,6 +124,74 @@ describe("POST /locks/:game/acquire", () => {
     seedLock({ userId: other.id, gameName: "Hades", deviceId: "desktop" });
     const res = await acquire("Hades", { device_id: "deck", device_name: "Deck" });
     expect(res.status).toBe(200);
+  });
+
+  it("blocks a suspended lock without steal, flagging it suspended", async () => {
+    seedLock({
+      userId,
+      gameName: "Hades",
+      deviceId: "desktop",
+      deviceName: "PC",
+      suspendedForMs: 60 * 60 * 1000,
+    });
+    const res = await acquire("Hades", { device_id: "deck", device_name: "Deck" });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ device_name: "PC", suspended: true });
+  });
+
+  it("steals a suspended lock when steal is set", async () => {
+    seedLock({
+      userId,
+      gameName: "Hades",
+      deviceId: "desktop",
+      suspendedForMs: 60 * 60 * 1000,
+    });
+    const res = await acquire("Hades", { device_id: "deck", device_name: "Deck", steal: true });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ acquired: true });
+
+    // The new holder owns it, and stealing cleared the suspend marker.
+    const body = await (await app.request("/locks/Hades", { headers: auth() })).json();
+    expect(body).toMatchObject({ device_id: "deck", suspended: false });
+  });
+
+  it("does not let steal override a live, actively-held lock", async () => {
+    seedLock({ userId, gameName: "Hades", deviceId: "desktop", deviceName: "PC" });
+    const res = await acquire("Hades", { device_id: "deck", device_name: "Deck", steal: true });
+    expect(res.status).toBe(409);
+  });
+});
+
+describe("POST /locks/:game/suspend", () => {
+  it("marks a held lock suspended and keeps it live past the stale threshold", async () => {
+    seedLock({
+      userId,
+      gameName: "Hades",
+      deviceId: "deck",
+      heartbeatAgeMs: STALE_THRESHOLD_MS + 60_000,
+    });
+    const res = await app.request("/locks/Hades/suspend", {
+      method: "POST",
+      headers: auth({ "X-Device-Id": "deck" }),
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ ok: true });
+
+    const body = await (await app.request("/locks/Hades", { headers: auth() })).json();
+    expect(body).toMatchObject({ stale: false, suspended: true });
+  });
+
+  it("requires the X-Device-Id header", async () => {
+    const res = await app.request("/locks/Hades/suspend", { method: "POST", headers: auth() });
+    expect(res.status).toBe(400);
+  });
+
+  it("404s when the device holds no lock", async () => {
+    const res = await app.request("/locks/Hades/suspend", {
+      method: "POST",
+      headers: auth({ "X-Device-Id": "ghost" }),
+    });
+    expect(res.status).toBe(404);
   });
 });
 
