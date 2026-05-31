@@ -28,6 +28,7 @@
 mod accent_backfill;
 mod cli;
 mod decky_install;
+mod plugin_server;
 mod diagnostics;
 mod config;
 mod error;
@@ -142,10 +143,8 @@ pub fn run() {
     let _log_guard = init_tracing();
     tracing::info!("spool starting up");
 
-    // Headless one-shot subcommands (Decky plugin forced-close fallback). No
-    // GUI. `--backup` and `--release-lock` are deliberately separate so a plain
-    // backup never has the hidden side effect of dropping a play lock; the Decky
-    // fallback invokes both (release first, then backup).
+    // Headless subcommands — no GUI, no tray, no single-instance. Parse once
+    // here so we can exit early before any Tauri setup.
     let initial_args: Vec<String> = std::env::args().collect();
     match cli::parse_args(&initial_args) {
         CliMode::Backup { ref game_name } => {
@@ -153,6 +152,9 @@ pub fn run() {
         }
         CliMode::ReleaseLock { ref game_name } => {
             std::process::exit(run_release_lock_headless(game_name));
+        }
+        CliMode::HeadlessServer => {
+            std::process::exit(run_headless_server());
         }
         _ => {}
     }
@@ -640,6 +642,39 @@ fn run_release_lock_headless(game_name: &str) -> i32 {
     0
 }
 
+/// Start the plugin Unix socket server and run until killed. No tray, no
+/// window, no single-instance registration.
+///
+/// Used by the Decky plugin (`spool --headless-server`) to get a persistent
+/// IPC endpoint for session/backup/library queries — replacing the old
+/// per-operation `--backup` / `--release-lock` subprocess spawns. The server
+/// is Linux/Unix-only; on other platforms this exits immediately with an error.
+fn run_headless_server() -> i32 {
+    #[cfg(unix)]
+    {
+        let rt = match tokio::runtime::Runtime::new() {
+            Ok(rt) => rt,
+            Err(e) => {
+                tracing::error!(error = %e, "--headless-server: failed to start tokio runtime");
+                return 1;
+            }
+        };
+        rt.block_on(async {
+            if let Err(e) = plugin_server::serve().await {
+                tracing::error!(error = %e, "--headless-server: exited with error");
+                1
+            } else {
+                0
+            }
+        })
+    }
+    #[cfg(not(unix))]
+    {
+        tracing::error!("--headless-server is only supported on Linux/Unix");
+        1
+    }
+}
+
 /// Builds the tray icon + context menu and registers click handlers.
 fn mount_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     let show_item = MenuItem::with_id(app, "tray:show", "Show Spool", true, None::<&str>)?;
@@ -851,10 +886,14 @@ fn handle_forwarded_launch(app: &AppHandle, argv: &[String]) {
         }
         CliMode::Normal => show_library(app),
         CliMode::Backup { game_name } => {
-            tracing::warn!(name = %game_name, "forwarded --backup: headless backup not yet implemented in forwarded-launch path");
+            tracing::warn!(name = %game_name, "forwarded --backup: ignored (use --headless-server)");
         }
         CliMode::ReleaseLock { game_name } => {
-            tracing::warn!(name = %game_name, "forwarded --release-lock: headless release not handled in forwarded-launch path");
+            tracing::warn!(name = %game_name, "forwarded --release-lock: ignored (use --headless-server)");
+        }
+        CliMode::HeadlessServer => {
+            // --headless-server doesn't register with single-instance, so
+            // this branch is unreachable in practice.
         }
     }
 }
