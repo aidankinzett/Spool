@@ -190,7 +190,7 @@ fn revisions_from(out: BackupsOutput) -> Vec<SaveRevision> {
         })
         .collect();
     // Newest first.
-    revs.sort_by(|a, b| b.when.cmp(&a.when));
+    revs.sort_by_key(|r| std::cmp::Reverse(r.when));
     if let Some(tip) = revs.first_mut() {
         tip.is_current = true;
     }
