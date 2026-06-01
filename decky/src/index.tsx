@@ -14,10 +14,11 @@ import {
 } from "@decky/ui";
 import { createElement, type ReactElement } from "react";
 import { FaFloppyDisk } from "react-icons/fa6";
-import { SPOOL_ROUTE, SPOOL_GAME_ROUTE } from "./constants";
+import { SPOOL_ROUTE, SPOOL_GAME_ROUTE, SPOOL_LAN_GAME_ROUTE } from "./constants";
 import { onAppStop } from "./api/callables";
 import { Content } from "./components/content";
 import { GameDetailPage } from "./components/game-detail-panel";
+import { PeerGameDetailPage } from "./components/peer-game-detail-panel";
 import { PlaytimePatchWrapper } from "./components/playtime-patch-wrapper";
 import { SpoolPage } from "./components/spool-page";
 
@@ -29,6 +30,7 @@ export default definePlugin(() => {
   // shadows the detail page (first matching <Route> in the Switch wins).
   routerHook.addRoute(SPOOL_ROUTE, SpoolPage, { exact: true });
   routerHook.addRoute(SPOOL_GAME_ROUTE, GameDetailPage);
+  routerHook.addRoute(SPOOL_LAN_GAME_ROUTE, PeerGameDetailPage);
 
   // Patch the Steam game-detail page to inject Spool's cross-device playtime
   // badge. Uses afterPatch + findInReactTree to splice into the InnerContainer
@@ -96,6 +98,7 @@ export default definePlugin(() => {
       removeEventListener("spool_backup_finished", onBackupFinished);
       routerHook.removeRoute(SPOOL_ROUTE);
       routerHook.removeRoute(SPOOL_GAME_ROUTE);
+      routerHook.removeRoute(SPOOL_LAN_GAME_ROUTE);
       routerHook.removePatch("/library/app/:appid", playtimePatch);
     },
   };

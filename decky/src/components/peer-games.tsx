@@ -1,14 +1,13 @@
 import { toaster } from "@decky/api";
-import { ButtonItem, Focusable } from "@decky/ui";
+import { Navigation, ButtonItem, Focusable } from "@decky/ui";
 import { useEffect, useRef, useState } from "react";
 import type { DownloadProgress, LanPeer, PeerGame } from "../types";
 import { fmtBytes } from "../lib/format";
 import { CoverGrid } from "./cover-grid";
-import { PeerGameDetailPage } from "./peer-game-detail-panel";
 
-// A selected peer’s shared games, fetched through the server-side proxy.
-// Activating a tile kicks off a download; a progress row appears above the
-// grid while the install is in flight.
+// A selected peer's shared games, fetched through the server-side proxy.
+// Activating a tile navigates to the LAN game detail page (router-based so
+// the hardware B button navigates back here).
 export function PeerGames({
   base,
   peer,
@@ -21,7 +20,6 @@ export function PeerGames({
   const [games, setGames] = useState<PeerGame[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [download, setDownload] = useState<DownloadProgress | null>(null);
-  const [selectedGame, setSelectedGame] = useState<PeerGame | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const peerBase = `${base}/lan/peers/${peer.addr}/${peer.file_server_port}`;
 
@@ -35,7 +33,7 @@ export function PeerGames({
         const data = (await res.json()) as PeerGame[];
         if (!cancelled) setGames(data);
       } catch {
-        if (!cancelled) setError("Couldn’t reach this device.");
+        if (!cancelled) setError("Couldn't reach this device.");
       }
     })();
     return () => {
@@ -78,33 +76,11 @@ export function PeerGames({
             } else if (p?.status === "error") {
               toaster.toast({ title: "Install failed", body: p.message ?? p.game_name });
             }
-            // Clear the terminal state row after 3 s.
             setTimeout(() => setDownload(null), 3000);
           }
         })
         .catch(() => undefined);
     }, 500);
-  }
-
-  async function startDownload(gameId: string) {
-    if (download && (download.status === "starting" || download.status === "transferring")) {
-      return; // already in flight
-    }
-    try {
-      const res = await fetch(`${base}/lan/install`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          peer_addr: peer.addr,
-          peer_port: peer.file_server_port,
-          game_id: gameId,
-        }),
-      });
-      if (!res.ok) throw new Error("Server error");
-      startPolling();
-    } catch {
-      toaster.toast({ title: "Install failed", body: "Couldn’t start download." });
-    }
   }
 
   async function cancelDownload() {
@@ -209,35 +185,21 @@ export function PeerGames({
       {error && <div style={{ opacity: 0.8 }}>{error}</div>}
       {!error && !games && <div style={{ opacity: 0.7 }}>Loading…</div>}
       {games && games.length === 0 && (
-        <div style={{ opacity: 0.7 }}>This device isn’t sharing any games.</div>
+        <div style={{ opacity: 0.7 }}>This device isn't sharing any games.</div>
       )}
       {games && games.length > 0 && (
         <CoverGrid
-          onActivate={(id) => {
-            const g = games.find((x) => x.id === id) ?? null;
-            if (g) setSelectedGame(g);
-          }}
+          onActivate={(id) =>
+            Navigation.Navigate(
+              `/spool/lan-game/${peer.addr}/${peer.file_server_port}/${id}`,
+            )
+          }
           tiles={games.map((g) => ({
             key: g.id,
             name: g.game_name,
             coverUrl: `${peerBase}/games/${g.id}/cover`,
           }))}
         />
-      )}
-
-      {selectedGame && (
-        <div style={{ position: "fixed", inset: 0, zIndex: 100 }}>
-          <PeerGameDetailPage
-            base={base}
-            peer={peer}
-            game={selectedGame}
-            onDownload={() => {
-              void startDownload(selectedGame.id);
-              setSelectedGame(null);
-            }}
-            isDownloading={isActive}
-          />
-        </div>
       )}
     </div>
   );

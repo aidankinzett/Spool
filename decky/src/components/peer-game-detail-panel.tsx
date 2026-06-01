@@ -1,28 +1,95 @@
-import { Focusable } from "@decky/ui";
+import { Navigation, Focusable } from "@decky/ui";
+import { useEffect, useState } from "react";
 import type { LanPeer, PeerGame } from "../types";
 import { fmtBytes } from "../lib/format";
+import { useServerBase } from "../hooks/use-server-base";
+import { useParams } from "../lib/steam";
 
-export function PeerGameDetailPage({
-  base,
-  peer,
-  game,
-  onDownload,
-  isDownloading,
-}: {
-  base: string;
-  peer: LanPeer;
-  game: PeerGame;
-  onDownload: () => void;
-  isDownloading: boolean;
-}) {
-  const peerBase = `${base}/lan/peers/${peer.addr}/${peer.file_server_port}`;
-  const coverUrl = `${peerBase}/games/${game.id}/cover`;
+export function PeerGameDetailPage() {
+  const { peerAddr, peerPort, gameId } =
+    useParams<{ peerAddr: string; peerPort: string; gameId: string }>();
+  const { base, error: baseError } = useServerBase();
 
-  const sizeMb = game.install_size_mb;
+  const [game, setGame] = useState<PeerGame | null>(null);
+  const [peer, setPeer] = useState<LanPeer | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [isDownloading, setIsDownloading] = useState(false);
+
+  const peerBase = base
+    ? `${base}/lan/peers/${peerAddr}/${peerPort}`
+    : null;
+
+  // Fetch game details from the peer's game list.
+  useEffect(() => {
+    if (!peerBase) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await fetch(`${peerBase}/games`);
+        if (!res.ok) throw new Error();
+        const games = (await res.json()) as PeerGame[];
+        const found = games.find((g) => g.id === gameId) ?? null;
+        if (!cancelled) {
+          if (found) setGame(found);
+          else setError("Game not found on this device.");
+        }
+      } catch {
+        if (!cancelled) setError("Couldn't reach this device.");
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [peerBase, gameId]);
+
+  // Fetch peer info (device name) from the local peer list.
+  useEffect(() => {
+    if (!base) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await fetch(`${base}/lan/peers`);
+        const peers = (await res.json()) as LanPeer[];
+        const found = peers.find(
+          (p) => p.addr === peerAddr && String(p.file_server_port) === peerPort,
+        ) ?? null;
+        if (!cancelled && found) setPeer(found);
+      } catch {
+        // device name is optional — fall back to addr
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [base, peerAddr, peerPort]);
+
+  async function startDownload() {
+    if (!base || !game || isDownloading) return;
+    setIsDownloading(true);
+    try {
+      const res = await fetch(`${base}/lan/install`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          peer_addr: peerAddr,
+          peer_port: Number(peerPort),
+          game_id: gameId,
+        }),
+      });
+      if (!res.ok) throw new Error();
+    } catch {
+      setIsDownloading(false);
+      return;
+    }
+    Navigation.NavigateBack();
+  }
+
+  const err = baseError ?? error;
+  if (err) return <div style={{ padding: "2rem", opacity: 0.8 }}>{err}</div>;
+  if (!game) return <div style={{ padding: "2rem", opacity: 0.7 }}>Loading…</div>;
+
+  const coverUrl = peerBase ? `${peerBase}/games/${game.id}/cover` : null;
+  const deviceName = peer?.device_name || peerAddr;
   const sizeLabel =
-    sizeMb > 0 ? fmtBytes(Math.round(sizeMb * 1024 * 1024)) : null;
-
-  const bgSrc = coverUrl;
+    game.install_size_mb > 0
+      ? fmtBytes(Math.round(game.install_size_mb * 1024 * 1024))
+      : null;
 
   return (
     <Focusable
@@ -34,17 +101,19 @@ export function PeerGameDetailPage({
       }}
     >
       {/* Full-bleed background */}
-      <div
-        style={{
-          position: "absolute",
-          inset: 0,
-          backgroundImage: `url(${bgSrc})`,
-          backgroundSize: "cover",
-          backgroundPosition: "center",
-          filter: "blur(3px) brightness(0.35)",
-          transform: "scale(1.08)",
-        }}
-      />
+      {coverUrl && (
+        <div
+          style={{
+            position: "absolute",
+            inset: 0,
+            backgroundImage: `url(${coverUrl})`,
+            backgroundSize: "cover",
+            backgroundPosition: "center",
+            filter: "blur(3px) brightness(0.35)",
+            transform: "scale(1.08)",
+          }}
+        />
+      )}
 
       {/* Gradient */}
       <div
@@ -68,23 +137,25 @@ export function PeerGameDetailPage({
         }}
       >
         {/* Portrait cover thumbnail */}
-        <div
-          style={{
-            width: "72px",
-            height: "96px",
-            borderRadius: "5px",
-            overflow: "hidden",
-            boxShadow: "0 4px 18px rgba(0,0,0,0.65)",
-            marginBottom: "0.65rem",
-            flexShrink: 0,
-          }}
-        >
-          <img
-            src={coverUrl}
-            alt={game.game_name}
-            style={{ width: "100%", height: "100%", objectFit: "cover" }}
-          />
-        </div>
+        {coverUrl && (
+          <div
+            style={{
+              width: "72px",
+              height: "96px",
+              borderRadius: "5px",
+              overflow: "hidden",
+              boxShadow: "0 4px 18px rgba(0,0,0,0.65)",
+              marginBottom: "0.65rem",
+              flexShrink: 0,
+            }}
+          >
+            <img
+              src={coverUrl}
+              alt={game.game_name}
+              style={{ width: "100%", height: "100%", objectFit: "cover" }}
+            />
+          </div>
+        )}
 
         <h2
           style={{
@@ -107,36 +178,35 @@ export function PeerGameDetailPage({
             marginBottom: "1rem",
           }}
         >
-          <span>{peer.device_name || peer.addr}</span>
+          <span>{deviceName}</span>
           {sizeLabel && <span>{sizeLabel}</span>}
           {!game.shareable && (
             <span style={{ color: "#f0a500" }}>Not shared</span>
           )}
         </div>
 
-        {/* Download / disabled button */}
         <Focusable
-          onActivate={() => {
-            if (game.shareable && !isDownloading) onDownload();
-          }}
+          onActivate={() => void startDownload()}
           style={{
             alignSelf: "flex-start",
             padding: "0.5rem 1.4rem",
             borderRadius: "5px",
-            background: !game.shareable
-              ? "#2a3a52"
-              : isDownloading
-                ? "#2a3a52"
-                : "#3d7ab5",
+            background:
+              !game.shareable || isDownloading ? "#2a3a52" : "#3d7ab5",
             fontWeight: 700,
             fontSize: "0.95rem",
-            cursor: game.shareable && !isDownloading ? "pointer" : "default",
+            cursor:
+              game.shareable && !isDownloading ? "pointer" : "default",
             border: "none",
             color: "#fff",
             opacity: !game.shareable || isDownloading ? 0.6 : 1,
           }}
         >
-          {isDownloading ? "Downloading…" : !game.shareable ? "Not available" : "⬇  Download"}
+          {isDownloading
+            ? "Starting…"
+            : !game.shareable
+              ? "Not available"
+              : "⬇  Download"}
         </Focusable>
       </div>
     </Focusable>
