@@ -353,6 +353,9 @@ pub fn add_game(
             lutris_slug: new_game.lutris_slug,
             manifest_install_dir: new_game.manifest_install_dir,
             save_paths: new_game.save_paths,
+            // Newly added games are shared on the LAN by default; the user can
+            // turn this off per-game in the editor.
+            lan_shared: true,
             ..GameEntry::default()
         };
         lib.entries.push(entry.clone());
