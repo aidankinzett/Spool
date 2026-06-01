@@ -100,14 +100,17 @@ fn quit_with_graceful_drain(app: &AppHandle) {
 /// the intro, which is a minor regression, not a crash).
 pub(crate) fn emit_tray_intro_once(app: &AppHandle) {
     let config = app.state::<SharedConfig>();
-    let needs_intro = match config.lock() {
-        Ok(cfg) => !cfg.data.tray_intro_seen,
-        Err(_) => false,
-    };
-    if !needs_intro {
-        return;
-    }
-    if let Ok(mut cfg) = config.lock() {
+    // One lock for the whole check-set-persist sequence: a poisoned lock or a
+    // failed save must not fall through to the emit, and the check-then-set
+    // can't race. The guard is dropped at the end of this block, before emit.
+    {
+        let mut cfg = match config.lock() {
+            Ok(cfg) => cfg,
+            Err(_) => return,
+        };
+        if cfg.data.tray_intro_seen {
+            return;
+        }
         cfg.data.tray_intro_seen = true;
         if cfg.save().is_err() {
             // Save failed — bail without emitting so we'll try again next
@@ -115,6 +118,7 @@ pub(crate) fn emit_tray_intro_once(app: &AppHandle) {
             return;
         }
     }
+    // Only reached once the flag is durably persisted.
     if let Err(e) = app.emit("tray:first-hide", &()) {
         tracing::warn!(error = %e, "failed to emit tray:first-hide");
     }
