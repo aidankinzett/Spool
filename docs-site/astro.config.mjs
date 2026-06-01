@@ -43,10 +43,6 @@ export default defineConfig({
           ],
         },
         {
-          label: 'Steam Deck (Decky Plugin)',
-          items: [{ autogenerate: { directory: 'decky' } }],
-        },
-        {
           label: 'Develop',
           items: [
             { label: 'Getting Started', slug: 'guides/getting-started' },
@@ -56,6 +52,10 @@ export default defineConfig({
         {
           label: 'Architecture',
           items: [{ autogenerate: { directory: 'architecture' } }],
+        },
+        {
+          label: 'Steam Deck (Decky Plugin)',
+          items: [{ autogenerate: { directory: 'decky' } }],
         },
       ],
       editLink: {
