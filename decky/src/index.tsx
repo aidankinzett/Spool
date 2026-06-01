@@ -263,8 +263,7 @@ function SpoolPlaytimeBadge({
 }) {
   const { game, loading } = useSpoolPlaytime(appid, base);
 
-  if (loading || !game) return null;
-  const displayMinutes = game.playtime_minutes > 0 ? game.playtime_minutes : 180;
+  if (loading || !game || game.playtime_minutes <= 0) return null;
   const lastPlayed = game.last_played_at ? formatRelativeTime(game.last_played_at) : null;
 
   const sep = <span style={{ opacity: 0.3, margin: "0 0.3rem" }}>·</span>;
@@ -283,7 +282,7 @@ function SpoolPlaytimeBadge({
       }}
     >
       <span style={{ opacity: 0.6, marginRight: "0.4rem" }}>💾</span>
-      {formatPlaytime(displayMinutes)} played
+      {formatPlaytime(game.playtime_minutes)} played
       {lastPlayed && <>{sep}Last played {lastPlayed}</>}
     </div>
   );
@@ -979,12 +978,7 @@ function PlaytimePatchWrapper() {
   const { appid: appidStr } = useParams<{ appid: string }>();
   const appid = parseInt(appidStr ?? "0", 10);
 
-  console.log("[Spool] PlaytimePatchWrapper render: appidStr=", appidStr, "appid=", appid, "base=", base);
-
-  if (!appid) {
-    console.log("[Spool] PlaytimePatchWrapper: no appid, returning null");
-    return null;
-  }
+  if (!appid) return null;
 
   return (
     <div style={{ padding: "0.5rem 0" }}>
@@ -994,7 +988,6 @@ function PlaytimePatchWrapper() {
 }
 
 export default definePlugin(() => {
-  console.log("[Spool] plugin initializing");
   // Register the full-screen route (Library | LAN). The QAM "Browse Library"
   // button navigates to it; we remove it on dismount to avoid duplicate
   // patches across hot-reloads.
@@ -1007,44 +1000,23 @@ export default definePlugin(() => {
   const playtimePatch = routerHook.addPatch(
     "/library/app/:appid",
     (tree: any) => {
-      console.log("[Spool] playtimePatch: route fired");
       const routeProps = findInReactTree(tree, (x: any) => x?.renderFunc);
-      if (!routeProps) {
-        console.log("[Spool] playtimePatch: no routeProps with renderFunc found");
-        return tree;
-      }
-      console.log("[Spool] playtimePatch: found routeProps, installing patchHandler");
+      if (!routeProps) return tree;
       const patchHandler = createReactTreePatcher(
         [
-          (t: any) => {
-            const found = findInReactTree(t, (x: any) => x?.props?.children?.props?.overview)
-              ?.props?.children;
-            console.log("[Spool] playtimePatch finder: overview node", found ? "found" : "not found");
-            return found;
-          },
+          (t: any) =>
+            findInReactTree(t, (x: any) => x?.props?.children?.props?.overview)
+              ?.props?.children,
         ],
         (_: Array<Record<string, unknown>>, ret?: ReactElement) => {
-          console.log("[Spool] playtimePatch patcher: ret type", typeof ret, Array.isArray(ret));
           const container = findInReactTree(
             ret,
-            (x: any) => {
-              const match =
-                Array.isArray(x?.props?.children) &&
-                x?.props?.className?.includes(appDetailsClasses.InnerContainer);
-              if (match) console.log("[Spool] playtimePatch: InnerContainer found");
-              return match;
-            },
+            (x: any) =>
+              Array.isArray(x?.props?.children) &&
+              x?.props?.className?.includes(appDetailsClasses.InnerContainer),
           );
-          if (typeof container !== "object") {
-            console.log("[Spool] playtimePatch: InnerContainer not found, skipping splice");
-            return ret;
-          }
-          console.log("[Spool] playtimePatch: splicing PlaytimePatchWrapper at index 1");
-          container.props.children.splice(
-            1,
-            0,
-            createElement(PlaytimePatchWrapper, null),
-          );
+          if (typeof container !== "object") return ret;
+          container.props.children.splice(1, 0, createElement(PlaytimePatchWrapper, null));
           return ret;
         },
       );
