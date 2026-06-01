@@ -31,6 +31,7 @@ import subprocess
 import sys
 from functools import partial
 from typing import Optional
+from urllib.parse import quote
 
 import decky
 
@@ -279,11 +280,14 @@ class Plugin:
         port = _read_port()
         return {"baseUrl": f"http://127.0.0.1:{port}" if port else None}
 
-    async def delete_game(self, id: str) -> dict:
+    async def delete_game(self, game_id: str) -> dict:
         """Delete a game's install folder from disk and remove its library
         entry. Forwards to the headless server's DELETE /games/<id>, which
         applies the same folder-safety guards as the desktop app."""
-        result = await _spool("DELETE", f"/games/{id}", timeout=120.0)
+        # URL-encode the id segment defensively — ids are UUIDs today, but this
+        # avoids any path misrouting should the id ever carry reserved chars.
+        path = f"/games/{quote(game_id, safe='')}"
+        result = await _spool("DELETE", path, timeout=120.0)
         if result is None:
             return {"ok": False, "reason": "server unavailable"}
         return result

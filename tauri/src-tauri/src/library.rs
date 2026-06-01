@@ -453,7 +453,8 @@ pub fn remove_game(
 /// On Linux it also deletes the game's per-game Proton/Wine prefix (the
 /// `wine_prefix_path` override, or `prefixes/<id>` under Spool's data dir) as
 /// a best-effort step — a failed or missing prefix delete doesn't abort the
-/// operation. On Windows that path doesn't exist, so it's a no-op.
+/// operation. On non-Linux platforms the prefix step is skipped entirely
+/// (Proton is Linux-only), so a populated override is never touched there.
 ///
 /// Refuses to run when the game has no known install folder, and rejects
 /// obviously-too-broad targets (filesystem root, the user's home dir, Spool's
@@ -479,7 +480,9 @@ pub async fn delete_game_from_disk(
 pub async fn delete_game_core(library: &SharedLibrary, id: &str) -> AppResult<()> {
     // Snapshot the folder + prefix paths under the lock, then drop the guard
     // before any blocking IO or await (lock discipline: never hold a std Mutex
-    // across await).
+    // across await). The Proton prefix is only ever managed on Linux, so its
+    // path is resolved (and later deleted) on Linux alone — a populated
+    // `wine_prefix_path` override on Windows/macOS must never be recurse-deleted.
     let (folder, prefix_root) = {
         let lib = library.lock().map_err(|_| AppError::LockPoisoned)?;
         let entry = lib
@@ -489,12 +492,17 @@ pub async fn delete_game_core(library: &SharedLibrary, id: &str) -> AppResult<()
             .ok_or_else(|| AppError::Other(format!("game with id {id} not found")))?;
         // Per-game Proton prefix: the override if set, else the default
         // `prefixes/<id>` under Spool's data dir.
-        let prefix_root = entry
-            .wine_prefix_path
-            .clone()
-            .filter(|p| !p.trim().is_empty())
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|| crate::proton::game_prefix_path(id));
+        #[cfg(target_os = "linux")]
+        let prefix_root = Some(
+            entry
+                .wine_prefix_path
+                .clone()
+                .filter(|p| !p.trim().is_empty())
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|| crate::proton::game_prefix_path(id)),
+        );
+        #[cfg(not(target_os = "linux"))]
+        let prefix_root: Option<std::path::PathBuf> = None;
         (entry.game_folder_path.clone(), prefix_root)
     };
 
@@ -510,17 +518,19 @@ pub async fn delete_game_core(library: &SharedLibrary, id: &str) -> AppResult<()
         .await
         .map_err(|e| AppError::Other(format!("delete task join failed: {e}")))??;
 
-    // Best-effort Proton prefix cleanup — never aborts the removal. A missing
-    // prefix (e.g. a never-launched game, or Windows) is a no-op.
-    let prefix_str = prefix_root.to_string_lossy().to_string();
-    match tokio::task::spawn_blocking(move || delete_install_dir(&prefix_str)).await {
-        Ok(Ok(())) => {}
-        Ok(Err(e)) => tracing::warn!(
-            prefix = %prefix_root.display(),
-            error = %e,
-            "couldn't delete Proton prefix; leaving it in place",
-        ),
-        Err(e) => tracing::warn!(error = %e, "prefix delete task join failed"),
+    // Best-effort Proton prefix cleanup (Linux only) — never aborts the
+    // removal. A missing prefix (e.g. a never-launched game) is a no-op.
+    if let Some(prefix_root) = prefix_root {
+        let prefix_str = prefix_root.to_string_lossy().to_string();
+        match tokio::task::spawn_blocking(move || delete_install_dir(&prefix_str)).await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => tracing::warn!(
+                prefix = %prefix_root.display(),
+                error = %e,
+                "couldn't delete Proton prefix; leaving it in place",
+            ),
+            Err(e) => tracing::warn!(error = %e, "prefix delete task join failed"),
+        }
     }
 
     // Folder gone (or already absent) — now forget the entry. Reuse the same
