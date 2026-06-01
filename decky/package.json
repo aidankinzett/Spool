@@ -8,7 +8,7 @@
     "build": "rollup -c",
     "watch": "rollup -c -w",
     "deploy": "rollup -c && rsync -av dist/ deck@192.168.86.113:/tmp/spool-backup-dist/ && ssh -t deck@192.168.86.113 'sudo rsync -av --delete /tmp/spool-backup-dist/ ~/homebrew/plugins/spool-backup/dist/ && sudo systemctl restart plugin_loader'",
-    "deploy:local": "rollup -c && sudo rsync -av --delete dist/ ~/homebrew/plugins/spool-backup/dist/ && sudo systemctl restart plugin_loader"
+    "deploy:local": "rollup -c && sudo mkdir -p ~/homebrew/plugins/spool-backup && sudo rsync -a --delete dist/ ~/homebrew/plugins/spool-backup/dist/ && sudo cp plugin.json package.json main.py ~/homebrew/plugins/spool-backup/ && sudo chown -R root:root ~/homebrew/plugins/spool-backup && sudo systemctl restart plugin_loader"
   },
   "license": "MIT",
   "dependencies": {
