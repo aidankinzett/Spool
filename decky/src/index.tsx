@@ -25,7 +25,9 @@ export default definePlugin(() => {
   // Register the full-screen route (Library | LAN). The QAM "Browse Library"
   // button navigates to it; we remove it on dismount to avoid duplicate
   // patches across hot-reloads.
-  routerHook.addRoute(SPOOL_ROUTE, SpoolPage);
+  // `/spool` must be exact, otherwise it prefix-matches `/spool/game/:id` and
+  // shadows the detail page (first matching <Route> in the Switch wins).
+  routerHook.addRoute(SPOOL_ROUTE, SpoolPage, { exact: true });
   routerHook.addRoute(SPOOL_GAME_ROUTE, GameDetailPage);
 
   // Patch the Steam game-detail page to inject Spool's cross-device playtime
