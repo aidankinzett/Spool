@@ -76,9 +76,9 @@ generation.
 ## Documentation
 
 User guides, the full feature list, the Decky plugin docs, and developer/architecture
-documentation live at **[the Spool docs site](https://aidankinzett.github.io/Spool/)**.
-Start with [Getting Started](https://aidankinzett.github.io/Spool/guides/getting-started/)
-to build from source.
+documentation live at **[the Spool docs site](https://spool.kinzett.io/)**.
+New here? Start with [Install Spool](https://spool.kinzett.io/guides/installing/).
+To build from source, see [Getting Started](https://spool.kinzett.io/guides/getting-started/).
 
 Spool is built with [Tauri 2](https://v2.tauri.app/) (Rust) and
 [SvelteKit 5](https://kit.svelte.dev/). Saves themselves are handled by

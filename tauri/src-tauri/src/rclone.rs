@@ -1083,6 +1083,37 @@ fn oauth_remote(provider: &str) -> Option<(&'static str, &'static str)> {
     }
 }
 
+/// OAuth scope requested for Google Drive. `drive.file` limits access to
+/// files this OAuth client created (i.e. Spool's own backup tree) rather
+/// than the user's entire Drive. It's a "sensitive" — not "restricted" —
+/// scope, so publishing the consent screen doesn't trigger Google's paid
+/// annual restricted-scope security assessment that the full `drive` scope
+/// would. It's persisted into the remote (so ludusavi's rclone calls inherit
+/// it) and requested during the authorize flow.
+const GDRIVE_SCOPE: &str = "drive.file";
+
+/// Spool's own Google Drive OAuth client, baked in at build time from the
+/// `SPOOL_GDRIVE_CLIENT_ID` / `SPOOL_GDRIVE_CLIENT_SECRET` env vars (set by
+/// CI from repo secrets — see `.github/workflows/release.yml`).
+///
+/// Google enforces Drive API quota per OAuth client, and rclone's built-in
+/// default client is shared by every rclone user worldwide, so it's
+/// permanently rate-limited. Shipping our own client gives Spool users a
+/// dedicated quota we can raise from the Google Cloud console.
+///
+/// Returns `None` when the env vars weren't present at compile time (local /
+/// dev builds), in which case the OAuth flow falls back to rclone's shared
+/// default client — same behaviour as before this was added.
+fn gdrive_oauth_client() -> Option<(&'static str, &'static str)> {
+    match (
+        option_env!("SPOOL_GDRIVE_CLIENT_ID"),
+        option_env!("SPOOL_GDRIVE_CLIENT_SECRET"),
+    ) {
+        (Some(id), Some(secret)) if !id.is_empty() && !secret.is_empty() => Some((id, secret)),
+        _ => None,
+    }
+}
+
 /// Holds the child process of an in-flight `rclone authorize` so that
 /// `cancel_cloud_oauth` can kill it while `connect_cloud_oauth` is waiting.
 #[derive(Default)]
@@ -1146,10 +1177,22 @@ pub async fn connect_cloud_oauth(
         }
     }
 
+    // Spool's baked-in Google Drive client, if this build has one. Applied
+    // only to the drive backend — other providers keep rclone's defaults.
+    let gdrive = (rclone_type == "drive").then(gdrive_oauth_client).flatten();
+
     // Build the authorize command WITHOUT base_command — base_command sets
     // CREATE_NO_WINDOW on Windows which would silently suppress the browser launch.
     let mut cmd = tokio::process::Command::new(&exe);
     cmd.arg("authorize").arg(rclone_type);
+    if let Some((id, secret)) = gdrive {
+        // Documented custom-client form: `rclone authorize drive <id> <secret>`.
+        cmd.arg(id).arg(secret);
+        // Request the narrower scope during authorization so the granted token
+        // is itself limited to Spool's files. rclone reads backend options from
+        // RCLONE_<BACKEND>_<OPTION> env vars on every command, authorize included.
+        cmd.env("RCLONE_DRIVE_SCOPE", GDRIVE_SCOPE);
+    }
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
     cmd.stdin(std::process::Stdio::null());
@@ -1231,10 +1274,24 @@ pub async fn connect_cloud_oauth(
         AppError::Other(format!("OAuth flow did not complete: {detail}"))
     })?;
 
-    // Register the remote in rclone.conf.
+    // Register the remote in rclone.conf. Persist the custom client + scope
+    // alongside the token so ludusavi's own rclone invocations (backup /
+    // restore / the reachability probe) use the same client and quota.
     let token_arg = format!("token={token}");
+    let mut create_args: Vec<String> = vec![
+        "config".into(),
+        "create".into(),
+        remote_name.into(),
+        rclone_type.into(),
+        token_arg,
+    ];
+    if let Some((id, secret)) = gdrive {
+        create_args.push(format!("client_id={id}"));
+        create_args.push(format!("client_secret={secret}"));
+        create_args.push(format!("scope={GDRIVE_SCOPE}"));
+    }
     let mut create_cmd = base_command(&exe);
-    create_cmd.args(["config", "create", remote_name, rclone_type, &token_arg]);
+    create_cmd.args(&create_args);
     let create_child = create_cmd.spawn()
         .map_err(|e| AppError::Other(format!("rclone config create spawn failed: {e}")))?;
     let create_out = tokio::time::timeout(

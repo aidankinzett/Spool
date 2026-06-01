@@ -5,10 +5,11 @@ import mermaid from 'astro-mermaid';
 
 // https://astro.build/config
 export default defineConfig({
-  // Deployed to GitHub Pages as a project site:
-  // https://aidankinzett.github.io/Spool/
-  site: 'https://aidankinzett.github.io',
-  base: '/Spool/',
+  // Deployed to GitHub Pages on the custom domain spool.kinzett.io
+  // (see docs-site/public/CNAME). Served from the domain root, so there's
+  // no project-subpath `base` — internal links are root-relative (`/...`).
+  site: 'https://spool.kinzett.io',
+  base: '/',
   integrations: [
     // Must come before starlight so its rehype plugin processes
     // ```mermaid``` code blocks first. Dark-only to match the app's UI.
@@ -16,8 +17,13 @@ export default defineConfig({
     starlight({
       title: 'Spool',
       description:
-        'Cross-platform game library + save-management wrapper built with Tauri 2 and SvelteKit.',
+        'A cross-platform game library that keeps your game saves in sync between your Steam Deck and your PC.',
       favicon: '/favicon.svg',
+      components: {
+        // Adds Privacy Policy / Terms of Service links beneath the default
+        // page footer on every page (homepage included).
+        Footer: './src/components/Footer.astro',
+      },
       social: [
         {
           icon: 'github',
@@ -26,9 +32,22 @@ export default defineConfig({
         },
       ],
       // Dark-only, to match the app's UI.
+      // User-facing guides come first; developer/architecture docs sit lower.
       sidebar: [
         {
-          label: 'Start Here',
+          label: 'Using Spool',
+          items: [
+            { label: 'Install Spool', slug: 'guides/installing' },
+            { label: 'Cloud Save Sync', slug: 'guides/cloud-saves' },
+            { label: 'LAN Transfers', slug: 'guides/lan-transfers' },
+          ],
+        },
+        {
+          label: 'Steam Deck (Decky Plugin)',
+          items: [{ autogenerate: { directory: 'decky' } }],
+        },
+        {
+          label: 'Develop',
           items: [
             { label: 'Getting Started', slug: 'guides/getting-started' },
             { label: 'Contributing', slug: 'guides/contributing' },
@@ -37,10 +56,6 @@ export default defineConfig({
         {
           label: 'Architecture',
           items: [{ autogenerate: { directory: 'architecture' } }],
-        },
-        {
-          label: 'Decky Plugin',
-          items: [{ autogenerate: { directory: 'decky' } }],
         },
       ],
       editLink: {
