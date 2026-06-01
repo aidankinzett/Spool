@@ -95,11 +95,24 @@ interface LaunchInfo {
 // appid; the setters are defensive (some Steam builds ignore AddShortcut's
 // extra args).
 interface SteamApps {
-  AddShortcut(appName: string, exe: string, dir: string, opts: string): Promise<number>;
+  // Order is (appName, exe, startDir, launchOptions) — matches the
+  // NonSteamLaunchers plugin's working createShortcut. The exe and startDir
+  // must be passed *quoted* (literal surrounding double-quotes), which is also
+  // how Spool's server computes `shortcut_app_id` (steam.rs compute_shortcut_app_id
+  // CRCs the quoted exe) — so Steam's returned appid matches the server's.
+  AddShortcut(appName: string, exe: string, startDir: string, launchOptions: string): Promise<number>;
   SetShortcutName?(appId: number, name: string): void;
   SetShortcutExe?(appId: number, path: string): void;
   SetShortcutStartDir?(appId: number, dir: string): void;
+  // NSL uses SetAppLaunchOptions; SetShortcutLaunchOptions appears to be a
+  // no-op on current Steam builds (left launch options empty → spool-launcher.sh
+  // ran with no `--run` args → nothing launched).
+  SetAppLaunchOptions?(appId: number, opts: string): void;
   SetShortcutLaunchOptions?(appId: number, opts: string): void;
+  RemoveShortcut?(appId: number): Promise<void> | void;
+  // Programmatic launch. gameId is the string gameid (the big number);
+  // signature used across Decky plugins: (gameId, "", -1, 100).
+  RunGame?(gameId: string, launchSource: string, a: number, b: number): void;
   // SetCustomArtworkForApp(appId, base64, 'png'|'jpg', assetType): the live,
   // no-restart way to set Steam library art. assetType is ELibraryAssetType.
   SetCustomArtworkForApp?(
@@ -306,11 +319,65 @@ function shortcutGameId(appid: number): string {
   return ((BigInt(appid) << 32n) | 0x02000000n).toString();
 }
 
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+// Steam's in-memory app store. `m_mapApps` maps appid -> overview, whose
+// `m_gameid` is the authoritative launch id (a string). Reading it also
+// confirms Steam has registered the shortcut.
+function appStore():
+  | { m_mapApps?: { get?(id: number): { m_gameid?: string | number } | undefined } }
+  | undefined {
+  return (window as unknown as { appStore?: ReturnType<typeof appStore> }).appStore;
+}
+
+// Resolve the gameid Steam assigned to a freshly-created shortcut. Mirrors the
+// NonSteamLaunchers approach: read `appStore.m_mapApps.get(appid).m_gameid`
+// rather than computing the bit-shift, polling briefly for the shortcut to
+// register. Falls back to the computed id if the store never surfaces it.
+async function resolveSteamGameId(appid: number): Promise<string> {
+  const store = appStore();
+  for (let i = 0; i < 25; i++) {
+    const details = store?.m_mapApps?.get?.(appid);
+    if (details?.m_gameid != null) {
+      console.log(`[Spool] resolved m_gameid=${details.m_gameid} for appid=${appid} (try ${i})`);
+      return String(details.m_gameid);
+    }
+    await sleep(100);
+  }
+  const computed = shortcutGameId(appid);
+  console.warn(`[Spool] m_gameid never appeared for appid=${appid}; using computed ${computed}`);
+  return computed;
+}
+
+// Actually trigger the launch of a registered shortcut by its gameid. Tries
+// the in-UI APIs in order of reliability:
+//   1. SteamClient.Apps.RunGame — the canonical programmatic launch.
+//   2. SteamClient.URL.ExecuteSteamURL — runs the steam:// protocol handler.
+//   3. Navigation.Navigate — last resort; mostly drives the SPA router, which
+//      is why it silently did nothing before.
+// Returns the method that was used (for logging).
+function runSteamGame(gameid: string): string {
+  const client = SteamClient as unknown as {
+    Apps?: { RunGame?: (g: string, s: string, a: number, b: number) => void };
+    URL?: { ExecuteSteamURL?: (url: string) => void };
+  };
+  if (typeof client.Apps?.RunGame === "function") {
+    client.Apps.RunGame(gameid, "", -1, 100);
+    return "Apps.RunGame";
+  }
+  if (typeof client.URL?.ExecuteSteamURL === "function") {
+    client.URL.ExecuteSteamURL(`steam://rungameid/${gameid}`);
+    return "URL.ExecuteSteamURL";
+  }
+  Navigation.Navigate(`steam://rungameid/${gameid}`);
+  return "Navigation.Navigate";
+}
+
 // Launch a local-library game in Game Mode: ensure it's a non-Steam shortcut
 // (created live via SteamClient.Apps — no Steam restart needed) then ask Steam
 // to run it. Steam runs `spool --run "Name" "Exe"`, which triggers the existing
 // attached-launch workflow (restore -> play -> backup).
-async function launchLibraryGame(base: string, gameId: string) {
+async function launchLibraryGame(base: string, gameId: string, shortcutAppId: number | null = null) {
   const apps = steamApps();
   if (!apps?.AddShortcut) {
     toaster.toast({ title: "Spool", body: "Launching needs Steam Game Mode." });
@@ -322,40 +389,76 @@ async function launchLibraryGame(base: string, gameId: string) {
     const res = await fetch(`${base}/games/${gameId}/steam-launch-info`);
     if (!res.ok) throw new Error("bad status");
     info = (await res.json()) as LaunchInfo;
-  } catch {
+  } catch (e) {
+    console.error("[Spool] steam-launch-info fetch failed", e);
     toaster.toast({ title: "Spool", body: "Couldn't prepare launch." });
     return;
   }
+  console.log("[Spool] launchLibraryGame", { gameId, shortcutAppId, info });
+
+  // Steam stores a shortcut's exe and start-dir *quoted*. Passing them quoted
+  // (matching NonSteamLaunchers, and Spool's server-side CRC) keeps Steam's
+  // returned appid in sync with `shortcut_app_id` and avoids the "browse button
+  // exe has arguments" mis-parse that blanked Game Mode.
+  const quote = (s: string) => `"${s.replace(/"/g, '\\"')}"`;
+  const exeQ = quote(info.exe);
+  const dirQ = quote(info.startDir);
 
   let appid: number | undefined = loadAppidMap()[gameId];
-  if (appid == null || !appStillExists(appid)) {
+  if (appid != null && !appStillExists(appid)) {
+    console.log(`[Spool] stored appid ${appid} no longer known to Steam; discarding`);
+    appid = undefined;
+  }
+  // If localStorage is stale or was cleared, fall back to the server-computed
+  // CRC id — built over the same quoted exe + name, so it matches the appid
+  // Steam assigns for this shortcut.
+  if (appid == null && shortcutAppId != null && appStillExists(shortcutAppId)) {
+    console.log(`[Spool] reusing server shortcut_app_id ${shortcutAppId}`);
+    appid = shortcutAppId;
+    rememberAppid(gameId, appid);
+  }
+
+  if (appid == null) {
     toaster.toast({ title: "Spool", body: `Adding ${info.appName} to Steam…` });
     try {
-      appid = await apps.AddShortcut(info.appName, info.exe, info.startDir, info.launchOptions);
-    } catch {
+      appid = await apps.AddShortcut(info.appName, exeQ, dirQ, info.launchOptions);
+      console.log(`[Spool] AddShortcut -> appid=${appid}`);
+    } catch (e) {
+      console.error("[Spool] AddShortcut failed", e);
       toaster.toast({ title: "Spool", body: "Couldn't add to Steam." });
       return;
     }
-    // Defensive: some Steam builds ignore AddShortcut's extra args.
-    try { apps.SetShortcutName?.(appid, info.appName); } catch { /* best-effort */ }
-    try { apps.SetShortcutExe?.(appid, info.exe); } catch { /* best-effort */ }
-    try { apps.SetShortcutStartDir?.(appid, info.startDir); } catch { /* best-effort */ }
-    try { apps.SetShortcutLaunchOptions?.(appid, info.launchOptions); } catch { /* best-effort */ }
+    // Reinforce every field via the explicit setters. SetAppLaunchOptions is
+    // the one that actually sticks — without it the launcher runs with no args.
+    try { apps.SetShortcutName?.(appid, info.appName); } catch (e) { console.warn("[Spool] SetShortcutName", e); }
+    try { apps.SetShortcutExe?.(appid, exeQ); } catch (e) { console.warn("[Spool] SetShortcutExe", e); }
+    try { apps.SetShortcutStartDir?.(appid, dirQ); } catch (e) { console.warn("[Spool] SetShortcutStartDir", e); }
+    try { apps.SetAppLaunchOptions?.(appid, info.launchOptions); } catch (e) { console.warn("[Spool] SetAppLaunchOptions", e); }
+    try { apps.SetShortcutLaunchOptions?.(appid, info.launchOptions); } catch { /* fallback, may not exist */ }
     rememberAppid(gameId, appid);
     // Set library artwork live (portrait/hero/logo/wide). Best-effort — never
     // blocks the launch.
     await applyArtwork(base, gameId, appid, apps);
-    // Give Steam a moment to register the new shortcut before launching it.
-    await new Promise((r) => setTimeout(r, 500));
   }
 
   if (appid == null) {
+    console.error("[Spool] could not resolve a Steam appid");
     toaster.toast({ title: "Spool", body: "Couldn't resolve Steam shortcut." });
     return;
   }
 
+  // Resolve the authoritative gameid from the app store (waits for Steam to
+  // register the shortcut) before navigating to launch it.
+  const gameid = await resolveSteamGameId(appid);
   toaster.toast({ title: "Spool", body: `Launching ${info.appName}…` });
-  Navigation.Navigate(`steam://rungameid/${shortcutGameId(appid)}`);
+  try {
+    const method = runSteamGame(gameid);
+    console.log(`[Spool] launched rungameid/${gameid} via ${method}`);
+  } catch (e) {
+    console.error("[Spool] launch failed", e);
+    toaster.toast({ title: "Spool", body: "Couldn't start the game." });
+    return;
+  }
   Navigation.CloseSideMenus();
 }
 
@@ -513,7 +616,10 @@ function LibraryGrid({ base }: { base: string }) {
 
   return (
     <CoverGrid
-      onActivate={(id) => void launchLibraryGame(base, id)}
+      onActivate={(id) => {
+        const g = games.find((g) => g.id === id);
+        void launchLibraryGame(base, id, g?.shortcut_app_id ?? null);
+      }}
       tiles={games.map((g) => ({
         key: g.id,
         name: g.game_name,
@@ -904,7 +1010,7 @@ function Content() {
         </PanelSectionRow>
       </PanelSection>
 
-      <PanelSection title="Spool Backup">
+      <PanelSection title="Spool">
         <PanelSectionRow>
           {status?.hasSession ? (
             <div style={{ fontSize: "0.8rem", opacity: 0.85 }}>
@@ -926,13 +1032,13 @@ function Content() {
               setBusy(true);
               if (status?.game) {
                 toaster.toast({
-                  title: "Spool Backup",
+                  title: "Spool",
                   body: `Backing up ${status.game}…`,
                 });
               }
               const r = await backupNow();
               toaster.toast({
-                title: "Spool Backup",
+                title: "Spool",
                 body: !r.acted
                   ? "Nothing to back up"
                   : r.ok
@@ -1043,7 +1149,7 @@ export default definePlugin(() => {
 
   const onBackupFinished = (game: string, ok: boolean, reason: string) => {
     toaster.toast({
-      title: "Spool Backup",
+      title: "Spool",
       body: ok ? `Backed up ${game} ✓` : `Backup failed: ${reason || "unknown error"}`,
     });
   };
