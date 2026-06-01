@@ -864,6 +864,7 @@ pub fn spawn_startup_fold(app: AppHandle) {
 /// config + library from disk, runs the cross-device fold, saves if anything
 /// changed, and returns whether the library was modified. Used by the plugin
 /// server's `POST /fold` so the Decky UI can refresh data on page navigation.
+#[cfg(unix)]
 pub async fn fold_devices_from_config() -> bool {
     let config = match crate::config::Config::load() {
         Ok(c) => c.data,

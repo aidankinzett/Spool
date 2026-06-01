@@ -148,6 +148,7 @@ pub fn upsert_spool_shortcut(
 /// shortcuts.vdf. Used by the plugin server to expose the appid in
 /// `/library` so the Decky UI can match game-detail pages without needing
 /// the localStorage inverse map.
+#[cfg(unix)]
 pub fn compute_shortcut_app_id(game_name: &str, spool_exe: &str) -> u32 {
     let quoted_exe = format!("\"{}\"", spool_exe.replace('"', "\\\""));
     calculate_app_id(&quoted_exe, game_name)
