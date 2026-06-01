@@ -14,9 +14,10 @@ import {
 } from "@decky/ui";
 import { createElement, type ReactElement } from "react";
 import { FaFloppyDisk } from "react-icons/fa6";
-import { SPOOL_ROUTE } from "./constants";
+import { SPOOL_ROUTE, SPOOL_GAME_ROUTE } from "./constants";
 import { onAppStop } from "./api/callables";
 import { Content } from "./components/content";
+import { GameDetailPage } from "./components/game-detail-panel";
 import { PlaytimePatchWrapper } from "./components/playtime-patch-wrapper";
 import { SpoolPage } from "./components/spool-page";
 
@@ -25,6 +26,7 @@ export default definePlugin(() => {
   // button navigates to it; we remove it on dismount to avoid duplicate
   // patches across hot-reloads.
   routerHook.addRoute(SPOOL_ROUTE, SpoolPage);
+  routerHook.addRoute(SPOOL_GAME_ROUTE, GameDetailPage);
 
   // Patch the Steam game-detail page to inject Spool's cross-device playtime
   // badge. Uses afterPatch + findInReactTree to splice into the InnerContainer
@@ -91,6 +93,7 @@ export default definePlugin(() => {
       sub.unregister();
       removeEventListener("spool_backup_finished", onBackupFinished);
       routerHook.removeRoute(SPOOL_ROUTE);
+      routerHook.removeRoute(SPOOL_GAME_ROUTE);
       routerHook.removePatch("/library/app/:appid", playtimePatch);
     },
   };

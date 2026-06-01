@@ -1,44 +1,77 @@
-import { Focusable } from "@decky/ui";
+import { Navigation, Focusable } from "@decky/ui";
+import { useEffect, useState } from "react";
 import type { LibraryGame } from "../types";
 import { launchLibraryGame } from "../lib/launch";
 import { formatPlaytime, formatRelativeTime } from "../lib/format";
+import { useServerBase } from "../hooks/use-server-base";
+import { useParams } from "../lib/steam";
 
-interface Props {
-  game: LibraryGame;
-  coverUrl: string | null;
-  base: string;
-  onBack: () => void;
+function coverUrl(base: string, g: LibraryGame): string | null {
+  if (!g.cover_image_path) return null;
+  const file = g.cover_image_path.split(/[/\\]/).pop();
+  return file ? `${base}/covers/${encodeURIComponent(file)}` : null;
 }
 
-export function GameDetailPanel({ game, coverUrl, base, onBack }: Props) {
+export function GameDetailPage() {
+  const { id } = useParams<{ id: string }>();
+  const { base, error: baseError } = useServerBase();
+  const [game, setGame] = useState<LibraryGame | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!base || !id) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await fetch(`${base}/library`);
+        const data = (await res.json()) as LibraryGame[];
+        const found = data.find((g) => g.id === id) ?? null;
+        if (!cancelled) {
+          if (found) setGame(found);
+          else setError("Game not found.");
+        }
+      } catch {
+        if (!cancelled) setError("Couldn't load game details.");
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [base, id]);
+
+  const err = baseError ?? error;
+  if (err) {
+    return (
+      <div style={{ padding: "2rem", opacity: 0.8 }}>{err}</div>
+    );
+  }
+  if (!game) {
+    return <div style={{ padding: "2rem", opacity: 0.7 }}>Loading…</div>;
+  }
+
+  const cover = base ? coverUrl(base, game) : null;
   const accent = game.accent_color ?? "#1a2330";
 
   return (
-    <div
+    <Focusable
       style={{
-        position: "absolute",
-        inset: 0,
-        background: "#0e1823",
         display: "flex",
         flexDirection: "column",
+        height: "100%",
+        background: "#0e1823",
         overflow: "hidden",
-        zIndex: 10,
       }}
     >
-      {/* Hero / cover strip */}
+      {/* Cover — fills the top portion of the screen */}
       <div
         style={{
           position: "relative",
-          width: "100%",
-          height: "220px",
-          flexShrink: 0,
+          flex: "0 0 55%",
           background: accent,
           overflow: "hidden",
         }}
       >
-        {coverUrl && (
+        {cover && (
           <img
-            src={coverUrl}
+            src={cover}
             alt={game.game_name}
             style={{
               position: "absolute",
@@ -50,60 +83,61 @@ export function GameDetailPanel({ game, coverUrl, base, onBack }: Props) {
             }}
           />
         )}
-        {/* Gradient so text below is legible against any cover */}
+        {/* Gradient into the details section */}
         <div
           style={{
             position: "absolute",
             bottom: 0,
             left: 0,
             right: 0,
-            height: "80px",
+            height: "120px",
             background: "linear-gradient(transparent, #0e1823)",
           }}
         />
       </div>
 
-      {/* Content */}
-      <div style={{ padding: "1rem 1.5rem", flex: 1, overflowY: "auto" }}>
-        {/* Title */}
-        <h2 style={{ margin: "0 0 0.5rem", fontSize: "1.3rem", fontWeight: 700, lineHeight: 1.2 }}>
+      {/* Details */}
+      <div
+        style={{
+          flex: 1,
+          padding: "0.75rem 1.75rem 1.5rem",
+          display: "flex",
+          flexDirection: "column",
+          gap: "0.75rem",
+          overflowY: "auto",
+        }}
+      >
+        <h2 style={{ margin: 0, fontSize: "1.5rem", fontWeight: 700, lineHeight: 1.2 }}>
           {game.game_name}
         </h2>
 
-        {/* Meta row */}
-        <div
-          style={{
-            display: "flex",
-            gap: "1.25rem",
-            opacity: 0.75,
-            fontSize: "0.85rem",
-            marginBottom: "1.25rem",
-          }}
-        >
+        <div style={{ display: "flex", gap: "1.25rem", opacity: 0.7, fontSize: "0.9rem" }}>
           {game.playtime_minutes > 0 && (
-            <span>⏱ {formatPlaytime(game.playtime_minutes)}</span>
+            <span>{formatPlaytime(game.playtime_minutes)} played</span>
           )}
           {game.last_played_at && (
-            <span>🕹 {formatRelativeTime(game.last_played_at)}</span>
+            <span>Last played {formatRelativeTime(game.last_played_at)}</span>
           )}
           {game.sync_badge && (
-            <span style={{ color: "#f0a500" }}>☁ {game.sync_badge}</span>
+            <span style={{ color: "#f0a500" }}>{game.sync_badge}</span>
           )}
         </div>
 
-        {/* Actions */}
-        <Focusable style={{ display: "flex", gap: "0.75rem" }}>
+        {/* Buttons */}
+        <Focusable style={{ display: "flex", gap: "0.75rem", marginTop: "auto" }}>
           <Focusable
             onActivate={() => {
-              onBack();
-              void launchLibraryGame(base, game.id, game.shortcut_app_id ?? null);
+              Navigation.NavigateBack();
+              if (base) void launchLibraryGame(base, game.id, game.shortcut_app_id ?? null);
             }}
             style={{
-              padding: "0.6rem 1.5rem",
+              flex: 1,
+              padding: "0.7rem 0",
               borderRadius: "6px",
               background: accent,
               fontWeight: 700,
               fontSize: "1rem",
+              textAlign: "center",
               cursor: "pointer",
               border: "none",
               color: "#fff",
@@ -112,13 +146,14 @@ export function GameDetailPanel({ game, coverUrl, base, onBack }: Props) {
             Play
           </Focusable>
           <Focusable
-            onActivate={onBack}
+            onActivate={() => Navigation.NavigateBack()}
             style={{
-              padding: "0.6rem 1.25rem",
+              padding: "0.7rem 1.5rem",
               borderRadius: "6px",
               background: "#2a3a52",
               fontWeight: 600,
               fontSize: "1rem",
+              textAlign: "center",
               cursor: "pointer",
               border: "none",
               color: "#fff",
@@ -128,6 +163,6 @@ export function GameDetailPanel({ game, coverUrl, base, onBack }: Props) {
           </Focusable>
         </Focusable>
       </div>
-    </div>
+    </Focusable>
   );
 }
