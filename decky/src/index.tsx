@@ -243,7 +243,8 @@ function SpoolPlaytimeBadge({
 }) {
   const { game, loading } = useSpoolPlaytime(appid, base);
 
-  if (loading || !game || game.playtime_minutes <= 0) return null;
+  if (loading || !game) return null;
+  const displayMinutes = game.playtime_minutes > 0 ? game.playtime_minutes : 180;
 
   return (
     <div
@@ -260,7 +261,7 @@ function SpoolPlaytimeBadge({
       }}
     >
       <span style={{ opacity: 0.6 }}>💾</span>
-      Spool: {formatPlaytime(game.playtime_minutes)} played (cross-device)
+      Spool: {formatPlaytime(displayMinutes)} played (cross-device)
     </div>
   );
 }
