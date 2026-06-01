@@ -124,6 +124,12 @@ jobs:
           # https://v2.tauri.app/plugin/updater for key generation.
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # Spool's own Google Drive OAuth client, baked into the binary via
+          # option_env! in rclone.rs so users get a dedicated Drive API quota
+          # instead of rclone's globally rate-limited shared default. Absent
+          # secrets fall back to rclone's shared client (no build failure).
+          SPOOL_GDRIVE_CLIENT_ID: ${{ secrets.SPOOL_GDRIVE_CLIENT_ID }}
+          SPOOL_GDRIVE_CLIENT_SECRET: ${{ secrets.SPOOL_GDRIVE_CLIENT_SECRET }}
         with:
           projectPath: tauri
           # NSIS installer + updater artifacts (.sig).
@@ -248,6 +254,9 @@ jobs:
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # See the Windows job above — bakes in Spool's Drive OAuth client.
+          SPOOL_GDRIVE_CLIENT_ID: ${{ secrets.SPOOL_GDRIVE_CLIENT_ID }}
+          SPOOL_GDRIVE_CLIENT_SECRET: ${{ secrets.SPOOL_GDRIVE_CLIENT_SECRET }}
         with:
           projectPath: tauri
           args: --bundles appimage
