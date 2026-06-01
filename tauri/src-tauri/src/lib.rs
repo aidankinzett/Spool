@@ -33,6 +33,7 @@ mod diagnostics;
 mod config;
 mod error;
 mod gamemode;
+mod headless;
 mod lan;
 mod launcher;
 mod library;
@@ -54,6 +55,7 @@ mod steamgriddb;
 mod streaming_host;
 mod suspend;
 mod system_open;
+mod tray;
 mod util;
 
 use cli::CliMode;
@@ -65,11 +67,7 @@ use ludusavi::LudusaviClient;
 use runner::RunState;
 use std::sync::{Arc, Mutex};
 use steamgriddb::SteamGridDbClient;
-use tauri::{
-    menu::{Menu, MenuItem, PredefinedMenuItem},
-    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Emitter, Manager, RunEvent, State, WindowEvent,
-};
+use tauri::{AppHandle, Manager, RunEvent, State, WindowEvent};
 
 /// Holds a game id queued for launch at startup. The cold-start path
 /// for `spool --run "Name" "Exe"` writes here; the frontend's library
@@ -150,13 +148,13 @@ pub fn run() {
     let initial_args: Vec<String> = std::env::args().collect();
     match cli::parse_args(&initial_args) {
         CliMode::Backup { ref game_name } => {
-            std::process::exit(run_backup_headless(game_name));
+            std::process::exit(headless::run_backup_headless(game_name));
         }
         CliMode::ReleaseLock { ref game_name } => {
-            std::process::exit(run_release_lock_headless(game_name));
+            std::process::exit(headless::run_release_lock_headless(game_name));
         }
         CliMode::HeadlessServer => {
-            std::process::exit(run_headless_server());
+            std::process::exit(headless::run_headless_server());
         }
         _ => {}
     }
@@ -331,180 +329,10 @@ pub fn run() {
         ])
         .setup(move |app| {
             if attached {
-                // ── Attached Game-Mode launch ────────────────────────────
-                // No tray, no pollers, no library window. Show a splash,
-                // launch the game from Rust, exit when the workflow ends.
-                let CliMode::Run { game_name, .. } = cli::parse_args(&initial_args) else {
-                    app.handle().exit(1);
-                    return Ok(());
-                };
-                let Some(id) = find_game_id_by_name(&app.state::<SharedLibrary>(), &game_name)
-                else {
-                    tracing::error!(name = %game_name, "attached --run: no library entry matches");
-                    app.handle().exit(1);
-                    return Ok(());
-                };
-
-                // Write the session record (appid matches the Steam shortcut).
-                if let Some(exe) = paths::spool_executable() {
-                    let appid =
-                        session::compute_steam_appid(&exe.to_string_lossy(), &game_name);
-                    if let Err(e) = session::write_start(&game_name, appid) {
-                        tracing::warn!(error = %e, "failed to write active-session record");
-                    }
-                }
-
-                // Make sure ludusavi config exists before the workflow runs.
-                if let Err(e) = ludusavi_config::ensure_config() {
-                    tracing::warn!(error = %e, "failed to initialise ludusavi config dir");
-                }
-
-                // Re-stamp the rclone path + fast-fail cloud-sync timeouts.
-                // The normal startup branch does this; the attached launch
-                // skipped it, leaving a stale AppImage-mount rclone path and
-                // (worse) unbounded rclone retries that wedged the restore
-                // phase forever when the cloud remote was unreachable at
-                // Game-Mode boot. Game Mode is exactly where that hang hurts
-                // most — there's no window to recover from, just a splash.
-                restamp_rclone(app.handle());
-
-                // Splash window (the `main` window stays hidden / unused).
-                if let Err(e) = tauri::WebviewWindowBuilder::new(
-                    app,
-                    "splash",
-                    tauri::WebviewUrl::App("splash".into()),
-                )
-                .title("Spool")
-                .decorations(false)
-                .fullscreen(true)
-                .resizable(false)
-                .build()
-                {
-                    tracing::warn!(error = %e, "failed to create splash window");
-                }
-
-                // Launch + exit when done. app.exit(0) lets Steam see the
-                // game stop (RunEvent::ExitRequested only blocks code.is_none()).
-                //
-                // Wait for the splash to wire its `run:phase` listener before
-                // starting the workflow — otherwise the restoring/launching/
-                // playing phases fire before the webview is listening and the
-                // splash sits on its default "Restoring saves…" label for the
-                // whole session. A timeout fallback keeps a webview that never
-                // loads from blocking the launch entirely.
-                let app_handle = app.handle().clone();
-                tauri::async_runtime::spawn(async move {
-                    {
-                        let ready = app_handle.state::<SplashReady>();
-                        let _ = tokio::time::timeout(
-                            std::time::Duration::from_secs(5),
-                            ready.notify.notified(),
-                        )
-                        .await;
-                    }
-                    if let Err(e) = runner::launch_game_inner(&app_handle, &id).await {
-                        tracing::error!(error = %e, "attached --run workflow failed");
-                        // The workflow already emitted an `error` phase the splash
-                        // is showing. Hold it on screen briefly so the user can read
-                        // the reason (e.g. a restore timeout) before we exit and hand
-                        // control back to Steam.
-                        if e.to_string().contains("Cloud sync conflict") {
-                            return;
-                        }
-                        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-                    }
-                    app_handle.exit(0);
-                });
-
-                return Ok(());
+                run_attached_launch(app, &initial_args)
+            } else {
+                run_normal_setup(app, &initial_args)
             }
-
-            // ── Normal tray-resident startup (unchanged behavior) ────────
-
-            // Mount tray icon + menu.
-            mount_tray(app.handle())?;
-
-            // Intercept the main window's close button → hide instead.
-            // First time the user does this, emit `tray:first-hide` so the
-            // library page can surface a sticky info toast explaining where
-            // Spool went. The toast survives the hide (it's in component
-            // state) so the user sees it next time they re-open the window.
-            if let Some(main) = app.get_webview_window("main") {
-                let win = main.clone();
-                let app_handle = app.handle().clone();
-                // `main` is now created hidden — show it explicitly (also
-                // removes the startup white-flash).
-                let _ = main.show();
-                main.on_window_event(move |event| {
-                    if let WindowEvent::CloseRequested { api, .. } = event {
-                        api.prevent_close();
-                        let _ = win.hide();
-                        emit_tray_intro_once(&app_handle);
-                    }
-                });
-            }
-
-            // Ensure Spool's owned ludusavi config dir + config.yaml exist and
-            // meet the required invariants (backup path, manifest enabled,
-            // simple format). Idempotent — fast no-op on subsequent launches.
-            if let Err(e) = ludusavi_config::ensure_config() {
-                tracing::warn!(error = %e, "failed to initialise ludusavi config dir");
-            }
-
-            // Re-stamp the rclone binary path + timeout args on every startup
-            // (see `restamp_rclone`). Keeps `apps.rclone.path` pointing at the
-            // sidecar that exists this session and guarantees the fast-fail
-            // cloud-sync flags are present.
-            restamp_rclone(app.handle());
-
-            // Kick off LAN peer discovery in the background. Logs and
-            // skips if the socket can't bind (port in use, firewall, etc.)
-            // — peer count stays at 0 in that case but everything else
-            // keeps working.
-            lan::spawn_discovery(app.handle().clone());
-
-            // Backfill accent colours for any legacy entries that have
-            // a cover but no extracted accent yet. Cheap no-op when
-            // every entry is already filled.
-            accent_backfill::spawn_backfill(app.handle().clone());
-
-            // Backfill install sizes for entries that have a folder on
-            // disk but no recorded size — legacy C# library entries land
-            // here with `install_size_mb: 0`. Walks the folder, sums file
-            // sizes, saves once at the end.
-            size_backfill::spawn_backfill(app.handle().clone());
-
-            // Backfill Steam Store metadata (description, developer,
-            // publisher, genres, release date) for entries that have a
-            // steam_id but empty metadata fields. Throttled to respect
-            // the store endpoint's rate limit.
-            metadata_backfill::spawn_backfill(app.handle().clone());
-
-            // Cloud reachability poll. Runs forever, every 60s — probes the
-            // rclone remote and emits `sync:status-changed` so the chrome
-            // cloud icon can tint itself. No-op (Unconfigured) when cloud
-            // saves aren't set up.
-            rclone::spawn_health_poller(app.handle().clone());
-
-            // One-shot cross-device fold: list per-device blobs in the remote,
-            // sum playtime / take max last-played / derive the badge, merge
-            // into the library. Runs ~4 s after launch so the reachability
-            // poll has a chance to confirm the remote first.
-            rclone::spawn_startup_fold(app.handle().clone());
-
-            // Startup --run dispatch: queue the game id so the frontend
-            // can pick it up once its listeners are ready.
-            if let CliMode::Run { ref game_name, .. } = cli::parse_args(&initial_args) {
-                let library = app.state::<SharedLibrary>();
-                let pending = app.state::<PendingRun>();
-                if let Some(id) = find_game_id_by_name(&library, game_name) {
-                    pending.set(id);
-                } else {
-                    tracing::warn!(name = %game_name, "startup --run: no library entry matches");
-                }
-            }
-
-            Ok(())
         })
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
@@ -519,221 +347,6 @@ pub fn run() {
                 api.prevent_exit();
             }
         }
-    });
-}
-
-/// Headless one-shot backup: load config + library, run ludusavi backup for
-/// the named game, mark the session record, then return a process exit code.
-/// No GUI / tray / single-instance. Used by `spool --backup "Name"` (the
-/// Decky plugin's forced-close fallback).
-fn run_backup_headless(game_name: &str) -> i32 {
-    let library = match Library::load() {
-        Ok(l) => l,
-        Err(e) => {
-            tracing::error!(error = %e, "--backup: failed to load library");
-            return 1;
-        }
-    };
-    let Some(game_id) = library
-        .entries
-        .iter()
-        .find(|e| e.game_name == game_name)
-        .map(|e| e.id.clone())
-    else {
-        tracing::error!(name = %game_name, "--backup: no library entry matches");
-        return 1;
-    };
-    let Some(ludusavi_exe) = paths::resolve_ludusavi_path() else {
-        tracing::error!("--backup: ludusavi sidecar not found");
-        return 1;
-    };
-
-    // Make sure Spool's ludusavi config (backup path, cloud remote) exists.
-    if let Err(e) = ludusavi_config::ensure_config() {
-        tracing::warn!(error = %e, "--backup: ensure_config failed");
-    }
-
-    let config_dir = paths::ludusavi_config_dir();
-    let lib_state: SharedLibrary = Arc::new(Mutex::new(library));
-    let client = LudusaviClient::new();
-
-    let rt = match tokio::runtime::Runtime::new() {
-        Ok(rt) => rt,
-        Err(e) => {
-            tracing::error!(error = %e, "--backup: failed to start tokio runtime");
-            return 1;
-        }
-    };
-    let result = rt.block_on(async {
-        runner::backup_game_core(&client, &ludusavi_exe, &config_dir, &lib_state, &game_id).await
-    });
-    let cfg_data = config::Config::load().map(|c| c.data).unwrap_or_default();
-
-    match result {
-        Ok(r) => {
-            tracing::info!(game_name, games = r.game_count, "--backup complete");
-            session::mark_backed_up();
-            // Only clear the unsynced-session marker when the cloud upload
-            // actually succeeded. If it failed, the marker must stay so peers
-            // keep warning until the saves genuinely reach the cloud.
-            if r.cloud_synced {
-                rt.block_on(async {
-                    rclone::complete_session_backup_from_config(&cfg_data, game_name).await;
-                });
-            } else {
-                tracing::warn!(game_name, "--backup: cloud upload failed — leaving session marker in place");
-            }
-            0
-        }
-        Err(e) => {
-            tracing::error!(error = %e, "--backup failed");
-            1
-        }
-    }
-}
-
-/// Headless one-shot: flip the named game's unsynced-session marker to
-/// `pending-backup`, then return a process exit code. No GUI / tray.
-///
-/// Used by `spool --release-lock "Name"` — the Decky plugin's forced-close
-/// fallback runs this *before* `--backup` so peers immediately see "this
-/// device has unsynced saves" the moment Steam kills Spool, independent of
-/// whether the subsequent backup succeeds. The follow-up `--backup` deletes
-/// the marker once the saves actually reach the cloud. No-op (success) when
-/// cloud saves aren't configured.
-fn run_release_lock_headless(game_name: &str) -> i32 {
-    let config = match Config::load() {
-        Ok(c) => c,
-        Err(e) => {
-            tracing::error!(error = %e, "--release-lock: failed to load config");
-            return 1;
-        }
-    };
-
-    let rt = match tokio::runtime::Runtime::new() {
-        Ok(rt) => rt,
-        Err(e) => {
-            tracing::error!(error = %e, "--release-lock: failed to start tokio runtime");
-            return 1;
-        }
-    };
-    rt.block_on(async {
-        rclone::mark_session_pending_backup_from_config(&config.data, game_name).await;
-    });
-    tracing::info!(game_name, "--release-lock complete");
-    0
-}
-
-/// Start the plugin Unix socket server and run until killed. No tray, no
-/// window, no single-instance registration.
-///
-/// Used by the Decky plugin (`spool --headless-server`) to get a persistent
-/// IPC endpoint for session/backup/library queries — replacing the old
-/// per-operation `--backup` / `--release-lock` subprocess spawns. The server
-/// is Linux/Unix-only; on other platforms this exits immediately with an error.
-fn run_headless_server() -> i32 {
-    #[cfg(unix)]
-    {
-        let rt = match tokio::runtime::Runtime::new() {
-            Ok(rt) => rt,
-            Err(e) => {
-                tracing::error!(error = %e, "--headless-server: failed to start tokio runtime");
-                return 1;
-            }
-        };
-        rt.block_on(async {
-            if let Err(e) = plugin_server::serve().await {
-                tracing::error!(error = %e, "--headless-server: exited with error");
-                1
-            } else {
-                0
-            }
-        })
-    }
-    #[cfg(not(unix))]
-    {
-        tracing::error!("--headless-server is only supported on Linux/Unix");
-        1
-    }
-}
-
-/// Builds the tray icon + context menu and registers click handlers.
-fn mount_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
-    let show_item = MenuItem::with_id(app, "tray:show", "Show Spool", true, None::<&str>)?;
-    let quit_item = MenuItem::with_id(app, "tray:quit", "Quit Spool", true, None::<&str>)?;
-    let menu = Menu::with_items(
-        app,
-        &[
-            &show_item,
-            &PredefinedMenuItem::separator(app)?,
-            &quit_item,
-        ],
-    )?;
-
-    let _tray = TrayIconBuilder::with_id("main")
-        .menu(&menu)
-        .show_menu_on_left_click(false)
-        .tooltip("Spool")
-        .icon(
-            app.default_window_icon()
-                .cloned()
-                .ok_or("missing default window icon")?,
-        )
-        .on_menu_event(|app, event| match event.id.as_ref() {
-            "tray:show" => show_library(app),
-            "tray:quit" => quit_with_graceful_drain(app),
-            _ => {}
-        })
-        .on_tray_icon_event(|tray, event| {
-            // Left-click = toggle library; right-click is reserved for
-            // the OS-rendered context menu.
-            if let TrayIconEvent::Click {
-                button: MouseButton::Left,
-                button_state: MouseButtonState::Up,
-                ..
-            } = event
-            {
-                toggle_library(tray.app_handle());
-            }
-        })
-        .build(app)?;
-
-    Ok(())
-}
-
-fn show_library(app: &AppHandle) {
-    if let Some(win) = app.get_webview_window("main") {
-        let _ = win.show();
-        let _ = win.unminimize();
-        let _ = win.set_focus();
-    }
-}
-
-fn toggle_library(app: &AppHandle) {
-    if let Some(win) = app.get_webview_window("main") {
-        match win.is_visible() {
-            Ok(true) => {
-                let _ = win.hide();
-            }
-            _ => {
-                let _ = win.show();
-                let _ = win.unminimize();
-                let _ = win.set_focus();
-            }
-        }
-    }
-}
-
-/// Triggers a clean shutdown: signals the LAN HTTP server to stop
-/// accepting new connections, waits for in-flight responses to drain
-/// (bounded by `LanServerShutdown::shutdown`'s internal 2 s timeout),
-/// then calls `app.exit(0)`. Spawned on the runtime so the menu
-/// callback returns immediately.
-fn quit_with_graceful_drain(app: &AppHandle) {
-    let app = app.clone();
-    tauri::async_runtime::spawn(async move {
-        app.state::<LanServerShutdown>().shutdown().await;
-        app.exit(0);
     });
 }
 
@@ -822,39 +435,12 @@ fn init_tracing() -> tracing_appender::non_blocking::WorkerGuard {
     guard
 }
 
-/// Fires `tray:first-hide` the first time the user hides Spool to the
-/// tray, then marks the flag in Config so it never fires again. No-op on
-/// subsequent hides. All-or-nothing — if either the flag read or the save
-/// fails we just skip the event (the worst case is the user never sees
-/// the intro, which is a minor regression, not a crash).
-fn emit_tray_intro_once(app: &AppHandle) {
-    let config = app.state::<SharedConfig>();
-    let needs_intro = match config.lock() {
-        Ok(cfg) => !cfg.data.tray_intro_seen,
-        Err(_) => false,
-    };
-    if !needs_intro {
-        return;
-    }
-    if let Ok(mut cfg) = config.lock() {
-        cfg.data.tray_intro_seen = true;
-        if cfg.save().is_err() {
-            // Save failed — bail without emitting so we'll try again next
-            // close (rather than emitting now and never marking seen).
-            return;
-        }
-    }
-    if let Err(e) = app.emit("tray:first-hide", &()) {
-        tracing::warn!(error = %e, "failed to emit tray:first-hide");
-    }
-}
-
 /// Dispatches a forwarded secondary-launch's argv. Either focuses the
 /// library (no args) or queues a game launch (`--run "Name" "Exe"`).
 fn handle_forwarded_launch(app: &AppHandle, argv: &[String]) {
     match cli::parse_args(argv) {
         CliMode::Run { game_name, .. } => {
-            show_library(app); // bring the window up so the user sees the workflow run
+            tray::show_library(app); // bring the window up so the user sees the workflow run
             let Some(id) = find_game_id_by_name(&app.state::<SharedLibrary>(), &game_name) else {
                 tracing::warn!(name = %game_name, "forwarded --run: no library entry matches");
                 return;
@@ -866,7 +452,7 @@ fn handle_forwarded_launch(app: &AppHandle, argv: &[String]) {
                 }
             });
         }
-        CliMode::Normal => show_library(app),
+        CliMode::Normal => tray::show_library(app),
         CliMode::Backup { game_name } => {
             tracing::warn!(name = %game_name, "forwarded --backup: ignored (use --headless-server)");
         }
@@ -880,3 +466,188 @@ fn handle_forwarded_launch(app: &AppHandle, argv: &[String]) {
     }
 }
 
+
+/// Attached Game-Mode launch: no tray, no pollers, no library window. Show a
+/// splash, launch the game from Rust, then exit when the workflow ends so the
+/// host (SteamOS gamescope / Apollo / Sunshine) sees the game stop with Spool.
+fn run_attached_launch(
+    app: &tauri::App,
+    initial_args: &[String],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let CliMode::Run { game_name, .. } = cli::parse_args(initial_args) else {
+        app.handle().exit(1);
+        return Ok(());
+    };
+    let Some(id) = find_game_id_by_name(&app.state::<SharedLibrary>(), &game_name) else {
+        tracing::error!(name = %game_name, "attached --run: no library entry matches");
+        app.handle().exit(1);
+        return Ok(());
+    };
+
+    // Write the session record (appid matches the Steam shortcut).
+    if let Some(exe) = paths::spool_executable() {
+        let appid = session::compute_steam_appid(&exe.to_string_lossy(), &game_name);
+        if let Err(e) = session::write_start(&game_name, appid) {
+            tracing::warn!(error = %e, "failed to write active-session record");
+        }
+    }
+
+    // Make sure ludusavi config exists before the workflow runs.
+    if let Err(e) = ludusavi_config::ensure_config() {
+        tracing::warn!(error = %e, "failed to initialise ludusavi config dir");
+    }
+
+    // Re-stamp the rclone path + fast-fail cloud-sync timeouts. The normal
+    // startup branch does this; the attached launch skipped it, leaving a stale
+    // AppImage-mount rclone path and (worse) unbounded rclone retries that
+    // wedged the restore phase forever when the cloud remote was unreachable at
+    // Game-Mode boot. Game Mode is exactly where that hang hurts most — there's
+    // no window to recover from, just a splash.
+    restamp_rclone(app.handle());
+
+    // Splash window (the `main` window stays hidden / unused).
+    if let Err(e) = tauri::WebviewWindowBuilder::new(
+        app,
+        "splash",
+        tauri::WebviewUrl::App("splash".into()),
+    )
+    .title("Spool")
+    .decorations(false)
+    .fullscreen(true)
+    .resizable(false)
+    .build()
+    {
+        tracing::warn!(error = %e, "failed to create splash window");
+    }
+
+    // Launch + exit when done. app.exit(0) lets Steam see the game stop
+    // (RunEvent::ExitRequested only blocks code.is_none()).
+    //
+    // Wait for the splash to wire its `run:phase` listener before starting the
+    // workflow — otherwise the restoring/launching/playing phases fire before
+    // the webview is listening and the splash sits on its default "Restoring
+    // saves…" label for the whole session. A timeout fallback keeps a webview
+    // that never loads from blocking the launch entirely.
+    let app_handle = app.handle().clone();
+    tauri::async_runtime::spawn(async move {
+        {
+            let ready = app_handle.state::<SplashReady>();
+            let _ = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                ready.notify.notified(),
+            )
+            .await;
+        }
+        if let Err(e) = runner::launch_game_inner(&app_handle, &id).await {
+            tracing::error!(error = %e, "attached --run workflow failed");
+            // The workflow already emitted an `error` phase the splash is
+            // showing. Hold it on screen briefly so the user can read the
+            // reason (e.g. a restore timeout) before we exit and hand control
+            // back to Steam.
+            if e.to_string().contains("Cloud sync conflict") {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        }
+        app_handle.exit(0);
+    });
+
+    Ok(())
+}
+
+/// Normal tray-resident startup: mount the tray, wire the window-close→hide
+/// behaviour, ensure the ludusavi config, kick off background pollers, and
+/// queue any startup `--run` for the frontend to pick up.
+fn run_normal_setup(
+    app: &tauri::App,
+    initial_args: &[String],
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Mount tray icon + menu.
+    tray::mount_tray(app.handle())?;
+
+    // Intercept the main window's close button → hide instead. First time the
+    // user does this, emit `tray:first-hide` so the library page can surface a
+    // sticky info toast explaining where Spool went. The toast survives the
+    // hide (it's in component state) so the user sees it next time they re-open
+    // the window.
+    if let Some(main) = app.get_webview_window("main") {
+        let win = main.clone();
+        let app_handle = app.handle().clone();
+        // `main` is now created hidden — show it explicitly (also removes the
+        // startup white-flash).
+        let _ = main.show();
+        main.on_window_event(move |event| {
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                let _ = win.hide();
+                tray::emit_tray_intro_once(&app_handle);
+            }
+        });
+    }
+
+    // Ensure Spool's owned ludusavi config dir + config.yaml exist and meet the
+    // required invariants (backup path, manifest enabled, simple format).
+    // Idempotent — fast no-op on subsequent launches.
+    if let Err(e) = ludusavi_config::ensure_config() {
+        tracing::warn!(error = %e, "failed to initialise ludusavi config dir");
+    }
+
+    // Re-stamp the rclone binary path + timeout args on every startup (see
+    // `restamp_rclone`). Keeps `apps.rclone.path` pointing at the sidecar that
+    // exists this session and guarantees the fast-fail cloud-sync flags are
+    // present.
+    restamp_rclone(app.handle());
+
+    // Background pollers + one-shot startup backfills.
+    spawn_startup_tasks(app.handle());
+
+    // Startup --run dispatch: queue the game id so the frontend can pick it up
+    // once its listeners are ready.
+    if let CliMode::Run { ref game_name, .. } = cli::parse_args(initial_args) {
+        let library = app.state::<SharedLibrary>();
+        let pending = app.state::<PendingRun>();
+        if let Some(id) = find_game_id_by_name(&library, game_name) {
+            pending.set(id);
+        } else {
+            tracing::warn!(name = %game_name, "startup --run: no library entry matches");
+        }
+    }
+
+    Ok(())
+}
+
+/// Spawns the long-lived background tasks and one-shot startup backfills: LAN
+/// discovery, accent/size/metadata backfills, the cloud reachability poller,
+/// and the cross-device device-blob fold. Each logs and degrades gracefully on
+/// its own; none block startup.
+fn spawn_startup_tasks(app: &AppHandle) {
+    // Kick off LAN peer discovery in the background. Logs and skips if the
+    // socket can't bind (port in use, firewall, etc.) — peer count stays at 0
+    // in that case but everything else keeps working.
+    lan::spawn_discovery(app.clone());
+
+    // Backfill accent colours for any legacy entries that have a cover but no
+    // extracted accent yet. Cheap no-op when every entry is already filled.
+    accent_backfill::spawn_backfill(app.clone());
+
+    // Backfill install sizes for entries that have a folder on disk but no
+    // recorded size — legacy C# library entries land here with
+    // `install_size_mb: 0`. Walks the folder, sums file sizes, saves once.
+    size_backfill::spawn_backfill(app.clone());
+
+    // Backfill Steam Store metadata (description, developer, publisher, genres,
+    // release date) for entries that have a steam_id but empty metadata fields.
+    // Throttled to respect the store endpoint's rate limit.
+    metadata_backfill::spawn_backfill(app.clone());
+
+    // Cloud reachability poll. Runs forever, every 60s — probes the rclone
+    // remote and emits `sync:status-changed` so the chrome cloud icon can tint
+    // itself. No-op (Unconfigured) when cloud saves aren't set up.
+    rclone::spawn_health_poller(app.clone());
+
+    // One-shot cross-device fold: list per-device blobs in the remote, sum
+    // playtime / take max last-played / derive the badge, merge into the
+    // library. Runs ~4 s after launch so the reachability poll has a chance to
+    // confirm the remote first.
+    rclone::spawn_startup_fold(app.clone());
+}
