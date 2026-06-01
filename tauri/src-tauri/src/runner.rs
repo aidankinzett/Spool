@@ -701,17 +701,9 @@ async fn get_local_active_save_details(
     let mut cmd = tokio::process::Command::new(ludusavi_exe);
     cmd.arg("--config").arg(config_dir);
     cmd.args(&args);
-    cmd.stdin(std::process::Stdio::null());
-    cmd.stdout(std::process::Stdio::piped());
-    cmd.stderr(std::process::Stdio::piped());
+    crate::capture_stdio!(cmd);
     cmd.kill_on_drop(true);
-    #[cfg(windows)]
-    {
-        #[allow(unused_imports)]
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-    }
-    
+
     let child = cmd.spawn().ok()?;
     let output = tokio::time::timeout(
         std::time::Duration::from_secs(6),
@@ -931,17 +923,9 @@ async fn query_rclone_details(
         .arg("--no-mimetype")
         .arg("--recursive")
         .arg(&target);
-    cmd.stdin(std::process::Stdio::null());
-    cmd.stdout(std::process::Stdio::piped());
-    cmd.stderr(std::process::Stdio::piped());
+    crate::capture_stdio!(cmd);
     cmd.kill_on_drop(true);
-    #[cfg(windows)]
-    {
-        #[allow(unused_imports)]
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-    }
-    
+
     let child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => {

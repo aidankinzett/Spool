@@ -54,6 +54,7 @@ mod steamgriddb;
 mod streaming_host;
 mod suspend;
 mod system_open;
+mod util;
 
 use cli::CliMode;
 use config::{Config, SharedConfig};

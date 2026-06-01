@@ -242,17 +242,9 @@ fn device_identity(app: &AppHandle) -> (String, String) {
 
 fn base_command(exe: &Path) -> tokio::process::Command {
     let mut cmd = tokio::process::Command::new(exe);
-    cmd.stdin(std::process::Stdio::null());
-    cmd.stdout(std::process::Stdio::piped());
-    cmd.stderr(std::process::Stdio::piped());
+    crate::capture_stdio!(cmd);
     cmd.kill_on_drop(true);
     cmd.args(FAST_FLAGS);
-    #[cfg(windows)]
-    {
-        #[allow(unused_imports)]
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-    }
     cmd
 }
 

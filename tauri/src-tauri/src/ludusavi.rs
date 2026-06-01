@@ -484,8 +484,7 @@ async fn run_find(ludusavi_exe: &Path, config_dir: &Path, query: &str) -> AppRes
         // ludusavi exits non-zero on no matches; surface an empty set.
         return Ok(FindOutput { games: HashMap::new() });
     }
-    serde_json::from_str(&stdout)
-        .map_err(|e| AppError::Other(format!("failed to parse ludusavi find output: {e}")))
+    crate::util::parse_json(stdout.as_bytes(), "ludusavi find output")
 }
 
 /// Runs `ludusavi backups --api <name>` and parses the result. A game with no
@@ -508,8 +507,7 @@ async fn run_backups(
         // ludusavi can exit non-zero with no output for an unknown game.
         return Ok(BackupsOutput::default());
     }
-    serde_json::from_str(&stdout)
-        .map_err(|e| AppError::Other(format!("failed to parse ludusavi backups output: {e}")))
+    crate::util::parse_json(stdout.as_bytes(), "ludusavi backups output")
 }
 
 /// Generic runner for ludusavi subcommands that emit the `--api` envelope
@@ -543,14 +541,7 @@ async fn run_api(ludusavi_exe: &Path, config_dir: &Path, args: &[&str]) -> AppRe
     let mut cmd = std::process::Command::new(&exe);
     cmd.arg("--config").arg(&cfg);
     cmd.args(&owned_args);
-    cmd.stdin(std::process::Stdio::null());
-    cmd.stdout(std::process::Stdio::piped());
-    cmd.stderr(std::process::Stdio::piped());
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-    }
+    crate::capture_stdio!(cmd);
 
     let mut child = match cmd.spawn() {
         Ok(child) => child,
@@ -624,8 +615,7 @@ async fn run_api(ludusavi_exe: &Path, config_dir: &Path, args: &[&str]) -> AppRe
     if stdout.trim().is_empty() {
         return Ok(ApiOutput::default());
     }
-    serde_json::from_str(&stdout)
-        .map_err(|e| AppError::Other(format!("failed to parse ludusavi output: {e}")))
+    crate::util::parse_json(stdout.as_bytes(), "ludusavi output")
 }
 
 async fn load_manifest(ludusavi_exe: &Path, config_dir: &Path) -> AppResult<HashMap<String, ManifestEntry>> {
@@ -642,8 +632,7 @@ async fn load_manifest(ludusavi_exe: &Path, config_dir: &Path) -> AppResult<Hash
     }
     let stdout = String::from_utf8(output.stdout)
         .map_err(|e| AppError::Other(format!("ludusavi manifest output not utf-8: {e}")))?;
-    serde_json::from_str(&stdout)
-        .map_err(|e| AppError::Other(format!("failed to parse ludusavi manifest: {e}")))
+    crate::util::parse_json(stdout.as_bytes(), "ludusavi manifest")
 }
 
 // ── Enrichment + helpers ────────────────────────────────────────────────────
