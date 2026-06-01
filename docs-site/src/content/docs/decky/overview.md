@@ -13,7 +13,7 @@ The plugin does three things in Game Mode, where the desktop Spool window isn't 
 2. **A full-screen library + LAN browser** — browse your Spool library, launch games, and download games from LAN peers, all from the Quick Access Menu. See [Library & launching](./library-and-launch) and [LAN browsing](./lan-browsing).
 3. **A cross-device playtime badge** — injects Spool's playtime and last-played onto Steam's own game pages. See [Playtime badge](./playtime-badge).
 
-## The two processes
+## The three processes
 
 A Decky plugin has a Python backend (runs in the Decky service context) and a frontend (runs in Steam's UI / CEF context). Spool's plugin is a thin adapter over a third process — `spool --headless-server`, a loopback HTTP server inside the main Spool process that owns all the real logic (backups, session state, library, LAN, art).
 
