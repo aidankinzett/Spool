@@ -956,22 +956,34 @@ async fn poll_once(app: &AppHandle) {
     let prev = app.state::<SyncStatusState>().snapshot();
 
     let new_status = match resolve_remote(app) {
-        None => SyncStatus {
-            reachability: SyncReachability::Unconfigured,
-            ..Default::default()
-        },
-        Some(remote) => match lsd(&remote.exe, &remote.remote).await {
-            Ok(()) => SyncStatus {
-                reachability: SyncReachability::Online,
-                last_ok_ago_secs: Some(0),
+        None => {
+            tracing::info!("sync probe: no remote configured (resolve_remote returned None)");
+            SyncStatus {
+                reachability: SyncReachability::Unconfigured,
                 ..Default::default()
-            },
-            Err(e) => SyncStatus {
-                reachability: SyncReachability::Offline,
-                error: Some(e),
-                ..Default::default()
-            },
-        },
+            }
+        }
+        Some(remote) => {
+            tracing::info!(remote = %remote.remote, exe = ?remote.exe, "sync probe: running lsd");
+            match lsd(&remote.exe, &remote.remote).await {
+                Ok(()) => {
+                    tracing::info!(remote = %remote.remote, "sync probe: online");
+                    SyncStatus {
+                        reachability: SyncReachability::Online,
+                        last_ok_ago_secs: Some(0),
+                        ..Default::default()
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(remote = %remote.remote, error = %e, "sync probe: offline");
+                    SyncStatus {
+                        reachability: SyncReachability::Offline,
+                        error: Some(e),
+                        ..Default::default()
+                    }
+                }
+            }
+        }
     };
 
     if new_status.reachability == SyncReachability::Online {
@@ -1059,12 +1071,21 @@ pub async fn connect_cloud_oauth(
     let exe = crate::paths::resolve_rclone_path()
         .ok_or_else(|| AppError::Other("rclone binary not found".into()))?;
 
+    // Kill any authorize child left over from a previous attempt so the port
+    // rclone binds (127.0.0.1:53682) isn't already in use.
+    {
+        let mut slot = state.child.lock().await;
+        if let Some(mut child) = slot.take() {
+            let _ = child.kill().await;
+        }
+    }
+
     // Build the authorize command WITHOUT base_command — base_command sets
     // CREATE_NO_WINDOW on Windows which would silently suppress the browser launch.
     let mut cmd = tokio::process::Command::new(&exe);
     cmd.arg("authorize").arg(rclone_type);
     cmd.stdout(std::process::Stdio::piped());
-    cmd.stderr(std::process::Stdio::null());
+    cmd.stderr(std::process::Stdio::piped());
     cmd.stdin(std::process::Stdio::null());
     cmd.kill_on_drop(true);
 
@@ -1073,28 +1094,54 @@ pub async fn connect_cloud_oauth(
 
     let stdout = child.stdout.take()
         .ok_or_else(|| AppError::Other("could not open rclone stdout".into()))?;
+    let stderr = child.stderr.take()
+        .ok_or_else(|| AppError::Other("could not open rclone stderr".into()))?;
 
     // Park the child so cancel_cloud_oauth can kill it.
     *state.child.lock().await = Some(child);
 
-    // Scan stdout line-by-line for the JSON token between the arrow markers.
-    let mut reader = tokio::io::BufReader::new(stdout).lines();
+    // Scan both stdout and stderr for the token — different rclone builds (and
+    // versions) write the "Paste the following --->" block to different streams.
+    // Non-token stderr lines are collected so we can surface them in the error
+    // if the flow never produces a token.
+    let mut stdout_reader = tokio::io::BufReader::new(stdout).lines();
+    let mut stderr_reader = tokio::io::BufReader::new(stderr).lines();
     let mut in_token = false;
     let mut token_json: Option<String> = None;
+    let mut stderr_diag: Vec<String> = Vec::new();
+    let mut stdout_done = false;
+    let mut stderr_done = false;
 
     // Five-minute wall-clock budget for the user to complete browser auth.
-    // EOF or broken pipe (child killed by cancel_cloud_oauth) exits the while let.
-    let _ = tokio::time::timeout(Duration::from_secs(300), async {
-        while let Ok(Some(line)) = reader.next_line().await {
-            if line.contains("--->") {
-                in_token = true;
-                continue;
-            }
-            if in_token && line.trim_start().starts_with('{') {
-                token_json = Some(line.trim().to_string());
-            }
-            if line.contains("<---End paste") {
+    let timed_out = tokio::time::timeout(Duration::from_secs(300), async {
+        loop {
+            if token_json.is_some() || (stdout_done && stderr_done) {
                 break;
+            }
+            tokio::select! {
+                line = stdout_reader.next_line(), if !stdout_done => {
+                    match line {
+                        Ok(Some(line)) => {
+                            if line.contains("--->") { in_token = true; }
+                            else if in_token && line.trim_start().starts_with('{') {
+                                token_json = Some(line.trim().to_string());
+                            } else if line.contains("<---End paste") { break; }
+                        }
+                        _ => { stdout_done = true; }
+                    }
+                }
+                line = stderr_reader.next_line(), if !stderr_done => {
+                    match line {
+                        Ok(Some(line)) => {
+                            if line.contains("--->") { in_token = true; }
+                            else if in_token && line.trim_start().starts_with('{') {
+                                token_json = Some(line.trim().to_string());
+                            } else if line.contains("<---End paste") { break; }
+                            else { stderr_diag.push(line); }
+                        }
+                        _ => { stderr_done = true; }
+                    }
+                }
             }
         }
     })
@@ -1103,8 +1150,20 @@ pub async fn connect_cloud_oauth(
     // Release the child slot regardless of outcome.
     *state.child.lock().await = None;
 
-    let token = token_json
-        .ok_or_else(|| AppError::Other("OAuth flow was cancelled or did not complete".into()))?;
+    if timed_out.is_err() {
+        return Err(AppError::Other(
+            "OAuth flow timed out after 300s — the browser window was not completed in time".to_string(),
+        ));
+    }
+
+    let token = token_json.ok_or_else(|| {
+        let detail = if stderr_diag.is_empty() {
+            "no output from rclone — check that the bundled rclone binary is executable".to_string()
+        } else {
+            stderr_diag.join(" | ")
+        };
+        AppError::Other(format!("OAuth flow did not complete: {detail}"))
+    })?;
 
     // Register the remote in rclone.conf.
     let token_arg = format!("token={token}");
@@ -1123,6 +1182,36 @@ pub async fn connect_cloud_oauth(
     if !create_out.status.success() {
         let stderr = String::from_utf8_lossy(&create_out.stderr).trim().to_string();
         return Err(AppError::Other(format!("rclone config create failed: {stderr}")));
+    }
+
+    // Write the provider into ludusavi's config.yaml so the reachability probe
+    // can resolve the remote. Without this the probe returns Unconfigured and
+    // the pill stays "Offline" until the user separately triggers a settings
+    // save. This mirrors what update_config does when the user changes the
+    // provider dropdown, making the OAuth button idempotent on that path.
+    // Use the provider/remote we just authorised — the authoritative values for
+    // this flow — rather than config's cloud_provider/cloud_remote, which may be
+    // stale or blank if the user hasn't committed the settings change yet.
+    let cloud_snapshot = {
+        let cfg = app.state::<crate::config::SharedConfig>();
+        cfg.lock().ok().map(|g| (
+            g.data.rclone_args.clone(),
+            base_path(&g.data),
+        ))
+    };
+    if let Some((rclone_args, base)) = cloud_snapshot {
+        let ludusavi_remote_path = format!("{}/ludusavi-backup", base);
+        let rclone_val = crate::paths::resolve_rclone_path()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default();
+        crate::ludusavi_config::set_cloud(
+            Some(&provider),
+            Some(remote_name),
+            Some(&ludusavi_remote_path),
+            Some(&rclone_val),
+            Some(&rclone_args),
+        )
+        .map_err(|e| AppError::Other(format!("failed to write cloud config: {e}")))?;
     }
 
     // Immediately probe the new remote so the frontend badge updates.
