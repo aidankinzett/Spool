@@ -1,0 +1,38 @@
+---
+// Overrides Starlight's page footer. Renders the built-in footer (pagination,
+// edit link, last-updated) and appends site-wide legal links so the Privacy
+// Policy and Terms of Service are reachable from every page — including the
+// homepage, which Google's OAuth consent-screen review requires.
+import Default from '@astrojs/starlight/components/Footer.astro';
+---
+
+<Default />
+
+<footer class="legal-footer">
+  <a href="/legal/privacy/">Privacy Policy</a>
+  <span aria-hidden="true">·</span>
+  <a href="/legal/terms/">Terms of Service</a>
+  <span aria-hidden="true">·</span>
+  <a href="https://github.com/aidankinzett/Spool/blob/master/LICENSE">MIT License</a>
+</footer>
+
+<style>
+  .legal-footer {
+    margin-top: 1.5rem;
+    padding-top: 1rem;
+    border-top: 1px solid var(--sl-color-gray-5);
+    display: flex;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+    font-size: var(--sl-text-xs);
+    color: var(--sl-color-gray-3);
+  }
+  .legal-footer a {
+    color: var(--sl-color-gray-2);
+    text-decoration: none;
+  }
+  .legal-footer a:hover {
+    color: var(--sl-color-text-accent);
+    text-decoration: underline;
+  }
+</style>

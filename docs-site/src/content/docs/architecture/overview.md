@@ -34,11 +34,11 @@ there's no cold-start cost on game launch.
 
 ## The two halves
 
-- **[Rust backend](/Spool/architecture/backend/)** — `tauri/src-tauri/src/`.
+- **[Rust backend](/architecture/backend/)** — `tauri/src-tauri/src/`.
   Persistence, external integrations (ludusavi, SteamGridDB, Steam, sync
   server), LAN sharing, platform-specific OS integration, and the run-workflow
   state machine.
-- **[SvelteKit frontend](/Spool/architecture/frontend/)** — `tauri/src/`.
+- **[SvelteKit frontend](/architecture/frontend/)** — `tauri/src/`.
   Routes (library, add, edit, splash, settings) plus shared `lib/` code,
   including the single typed `api.ts` IPC wrapper.
 

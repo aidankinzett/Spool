@@ -105,5 +105,5 @@ bun run test:e2e  # builds the app then runs the WebDriver suite
 | `decky/` | Companion Decky Loader plugin |
 | `docs-site/` | This documentation site |
 
-See [Architecture → Overview](/Spool/architecture/overview/) for the full
+See [Architecture → Overview](/architecture/overview/) for the full
 module map.

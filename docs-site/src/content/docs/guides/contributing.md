@@ -5,7 +5,7 @@ description: Branching, checks, and what CI expects before you open a PR.
 
 Thanks for helping out! This page covers the mechanics of getting a change
 merged. For how the code is organised, read the
-[Architecture overview](/Spool/architecture/overview/) first.
+[Architecture overview](/architecture/overview/) first.
 
 ## Branching
 

@@ -15,7 +15,7 @@ and back to Linux again after that.
 This page explains how Spool makes that work. The core logic lives in
 [`redirects.rs`](https://github.com/aidankinzett/Spool/blob/master/tauri/src-tauri/src/redirects.rs),
 driven by the [`runner.rs`](https://github.com/aidankinzett/Spool/blob/master/tauri/src-tauri/src/runner.rs)
-workflow. For how Spool owns ludusavi's config, see [Ludusavi Config](/Spool/architecture/ludusavi/).
+workflow. For how Spool owns ludusavi's config, see [Ludusavi Config](/architecture/ludusavi/).
 
 ## The problem
 
