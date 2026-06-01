@@ -860,6 +860,80 @@ pub fn spawn_startup_fold(app: AppHandle) {
     });
 }
 
+/// Headless variant of the startup fold — no `AppHandle` required. Loads
+/// config + library from disk, runs the cross-device fold, saves if anything
+/// changed, and returns whether the library was modified. Used by the plugin
+/// server's `POST /fold` so the Decky UI can refresh data on page navigation.
+#[cfg(unix)]
+pub async fn fold_devices_from_config() -> bool {
+    let config = match crate::config::Config::load() {
+        Ok(c) => c.data,
+        Err(_) => return false,
+    };
+    let Some(remote) = resolve_remote_from_config(&config) else {
+        return false;
+    };
+    let our_device_id = config.device_id.clone();
+
+    let Some(entries) = lsjson(&remote.exe, &remote.devices_dir()).await else {
+        return false;
+    };
+    let mut blobs: Vec<(String, DeviceBlob)> = Vec::new();
+    for e in entries {
+        if e.is_dir || !e.name.ends_with(".json") {
+            continue;
+        }
+        let device_id = e.name.trim_end_matches(".json").to_string();
+        let target = remote.device_target(&device_id);
+        if let Some(body) = cat(&remote.exe, &target).await {
+            if let Ok(blob) = serde_json::from_str::<DeviceBlob>(&body) {
+                blobs.push((device_id, blob));
+            }
+        }
+    }
+    if blobs.is_empty() {
+        return false;
+    }
+
+    let folded = fold_blobs(&blobs);
+    let mut library = match crate::library::Library::load() {
+        Ok(l) => l,
+        Err(_) => return false,
+    };
+    let mut applied = 0usize;
+    for entry in library.entries.iter_mut() {
+        let Some(f) = folded.get(&entry.game_name) else {
+            continue;
+        };
+        let total = f.playtime.min(i32::MAX as i64) as i32;
+        if entry.playtime_minutes != total {
+            entry.playtime_minutes = total;
+            applied += 1;
+        }
+        if let Some(raw) = &f.last_played_raw {
+            if let Ok(parsed) = DateTime::parse_from_rfc3339(raw) {
+                let parsed = parsed.with_timezone(&Utc);
+                if entry.last_played_at.map(|t| parsed > t).unwrap_or(true) {
+                    entry.last_played_at = Some(parsed);
+                    applied += 1;
+                }
+            }
+        }
+        let badge = compute_badge(&our_device_id, f.latest_backer.as_deref());
+        if entry.sync_badge.as_deref() != Some(badge) {
+            entry.sync_badge = Some(badge.to_string());
+            applied += 1;
+        }
+    }
+    if applied > 0 {
+        if let Err(e) = library.save() {
+            tracing::warn!(error = %e, "headless fold: library save failed");
+        }
+    }
+    tracing::info!(applied, devices = blobs.len(), "headless fold: done");
+    applied > 0
+}
+
 async fn run_startup_fold(app: &AppHandle) {
     let Some(remote) = resolve_remote(app) else {
         return;

@@ -94,6 +94,12 @@ pub fn read_shortcuts(path: &Path) -> AppResult<Vec<ShortcutOwned>> {
     Ok(parsed.iter().map(|s| s.to_owned()).collect())
 }
 
+/// Quotes a path the way Steam stores exe paths in shortcuts.vdf:
+/// wrap in double-quotes and escape any embedded double-quotes.
+fn quote_exe(path: &str) -> String {
+    format!("\"{}\"", path.replace('"', "\\\""))
+}
+
 /// Adds (or updates by `app_name`) a Spool-managed entry. Returns the
 /// computed Steam appid so callers can place grid art with the right
 /// filename prefix.
@@ -105,7 +111,7 @@ pub fn upsert_spool_shortcut(
     launch_options: &str,
 ) -> u32 {
     // Steam stores exe / start_dir with their own quoting.
-    let quoted_exe = format!("\"{}\"", spool_exe.replace('"', "\\\""));
+    let quoted_exe = quote_exe(spool_exe);
     let quoted_start = format!("\"{}\"", spool_start_dir.replace('"', "\\\""));
     let app_id = calculate_app_id(&quoted_exe, app_name);
 
@@ -141,6 +147,16 @@ pub fn upsert_spool_shortcut(
     entry.order = shortcuts.len().to_string();
     shortcuts.push(entry);
     app_id
+}
+
+/// Computes the Steam non-Steam shortcut appid for a Spool-managed game —
+/// the same CRC32-based value that `upsert_spool_shortcut` stamps into
+/// shortcuts.vdf. Used by the plugin server to expose the appid in
+/// `/library` so the Decky UI can match game-detail pages without needing
+/// the localStorage inverse map.
+#[cfg(unix)]
+pub fn compute_shortcut_app_id(game_name: &str, spool_exe: &str) -> u32 {
+    calculate_app_id(&quote_exe(spool_exe), game_name)
 }
 
 /// Serialises + writes atomically (write `.tmp`, rename). Keeps a `.bak`
