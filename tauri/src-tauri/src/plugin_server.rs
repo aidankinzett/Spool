@@ -229,7 +229,22 @@ async fn post_backup_now(AxState(state): AxState<PluginState>) -> Json<Value> {
 
 async fn get_library() -> Json<Value> {
     let library = Library::load().unwrap_or_default();
-    Json(serde_json::to_value(&library.entries).unwrap_or(json!([])))
+    let spool_exe = crate::paths::spool_executable()
+        .or_else(|| std::env::current_exe().ok())
+        .map(|p| p.to_string_lossy().to_string());
+    let entries: Vec<Value> = library
+        .entries
+        .iter()
+        .map(|entry| {
+            let mut v = serde_json::to_value(entry).unwrap_or(Value::Null);
+            if let (Some(map), Some(exe)) = (v.as_object_mut(), &spool_exe) {
+                let app_id = crate::steam::compute_shortcut_app_id(&entry.game_name, exe);
+                map.insert("shortcut_app_id".to_string(), json!(app_id));
+            }
+            v
+        })
+        .collect();
+    Json(json!(entries))
 }
 
 /// Fields the UI needs to create a non-Steam shortcut (live, via

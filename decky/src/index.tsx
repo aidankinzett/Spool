@@ -77,6 +77,7 @@ interface LibraryGame {
   accent_color: string | null;
   steam_id: number | null;
   playtime_minutes: number;
+  shortcut_app_id: number | null;
 }
 
 // Shortcut fields from the backend (mirrors what desktop "Add to Steam" writes).
@@ -176,8 +177,15 @@ function formatPlaytime(minutes: number): string {
 //   1. game.steam_id matches — native Steam game Spool also tracks
 //   2. localStorage inverse map — non-Steam shortcut created via Spool
 function findSpoolGame(games: LibraryGame[], appid: number): LibraryGame | null {
+  // 1. Native Steam game Spool also tracks (steam_id from SteamGridDB lookup).
   const direct = games.find((g) => g.steam_id != null && g.steam_id === appid);
   if (direct) return direct;
+  // 2. Non-Steam shortcut created via desktop-mode "Add to Steam" — appid
+  //    computed server-side with the same CRC formula Steam uses.
+  const byShortcut = games.find((g) => g.shortcut_app_id != null && g.shortcut_app_id === appid);
+  if (byShortcut) return byShortcut;
+  // 3. Non-Steam shortcut created via Decky launchLibraryGame — appid stored
+  //    in localStorage when Steam returned it from AddShortcut.
   const inverseMap = buildInverseAppidMap();
   const gameId = inverseMap[appid];
   if (gameId) return games.find((g) => g.id === gameId) ?? null;
@@ -201,13 +209,18 @@ function useSpoolPlaytime(
     void (async () => {
       try {
         const res = await fetch(`${base}/library`);
-        if (!res.ok) throw new Error("bad status");
+        if (!res.ok) throw new Error(`bad status ${res.status}`);
         const data = (await res.json()) as LibraryGame[];
+        console.log("[Spool] useSpoolPlaytime: library fetched, count=", data.length, "appid=", appid);
+        console.log("[Spool] useSpoolPlaytime: steam_ids in library=", data.map(g => g.steam_id));
+        const match = findSpoolGame(data, appid);
+        console.log("[Spool] useSpoolPlaytime: match=", match?.game_name ?? "null", "playtime=", match?.playtime_minutes);
         if (!cancelled) {
-          setGame(findSpoolGame(data, appid));
+          setGame(match);
           setLoading(false);
         }
-      } catch {
+      } catch (e) {
+        console.log("[Spool] useSpoolPlaytime: fetch error", e);
         if (!cancelled) setLoading(false);
       }
     })();
@@ -941,7 +954,12 @@ function PlaytimePatchWrapper() {
   const { appid: appidStr } = useParams<{ appid: string }>();
   const appid = parseInt(appidStr ?? "0", 10);
 
-  if (!appid) return null;
+  console.log("[Spool] PlaytimePatchWrapper render: appidStr=", appidStr, "appid=", appid, "base=", base);
+
+  if (!appid) {
+    console.log("[Spool] PlaytimePatchWrapper: no appid, returning null");
+    return null;
+  }
 
   return (
     <div style={{ padding: "0.5rem 0" }}>
@@ -951,6 +969,7 @@ function PlaytimePatchWrapper() {
 }
 
 export default definePlugin(() => {
+  console.log("[Spool] plugin initializing");
   // Register the full-screen route (Library | LAN). The QAM "Browse Library"
   // button navigates to it; we remove it on dismount to avoid duplicate
   // patches across hot-reloads.
@@ -963,32 +982,48 @@ export default definePlugin(() => {
   const playtimePatch = routerHook.addPatch(
     "/library/app/:appid",
     (tree: any) => {
+      console.log("[Spool] playtimePatch: route fired");
       const routeProps = findInReactTree(tree, (x: any) => x?.renderFunc);
-      if (routeProps) {
-        const patchHandler = createReactTreePatcher(
-          [
-            (t: any) =>
-              findInReactTree(t, (x: any) => x?.props?.children?.props?.overview)
-                ?.props?.children,
-          ],
-          (_: Array<Record<string, unknown>>, ret?: ReactElement) => {
-            const container = findInReactTree(
-              ret,
-              (x: any) =>
-                Array.isArray(x?.props?.children) &&
-                x?.props?.className?.includes(appDetailsClasses.InnerContainer),
-            );
-            if (typeof container !== "object") return ret;
-            container.props.children.splice(
-              1,
-              0,
-              createElement(PlaytimePatchWrapper, null),
-            );
-            return ret;
-          },
-        );
-        afterPatch(routeProps, "renderFunc", patchHandler);
+      if (!routeProps) {
+        console.log("[Spool] playtimePatch: no routeProps with renderFunc found");
+        return tree;
       }
+      console.log("[Spool] playtimePatch: found routeProps, installing patchHandler");
+      const patchHandler = createReactTreePatcher(
+        [
+          (t: any) => {
+            const found = findInReactTree(t, (x: any) => x?.props?.children?.props?.overview)
+              ?.props?.children;
+            console.log("[Spool] playtimePatch finder: overview node", found ? "found" : "not found");
+            return found;
+          },
+        ],
+        (_: Array<Record<string, unknown>>, ret?: ReactElement) => {
+          console.log("[Spool] playtimePatch patcher: ret type", typeof ret, Array.isArray(ret));
+          const container = findInReactTree(
+            ret,
+            (x: any) => {
+              const match =
+                Array.isArray(x?.props?.children) &&
+                x?.props?.className?.includes(appDetailsClasses.InnerContainer);
+              if (match) console.log("[Spool] playtimePatch: InnerContainer found");
+              return match;
+            },
+          );
+          if (typeof container !== "object") {
+            console.log("[Spool] playtimePatch: InnerContainer not found, skipping splice");
+            return ret;
+          }
+          console.log("[Spool] playtimePatch: splicing PlaytimePatchWrapper at index 1");
+          container.props.children.splice(
+            1,
+            0,
+            createElement(PlaytimePatchWrapper, null),
+          );
+          return ret;
+        },
+      );
+      afterPatch(routeProps, "renderFunc", patchHandler);
       return tree;
     },
   );

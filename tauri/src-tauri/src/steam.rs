@@ -143,6 +143,16 @@ pub fn upsert_spool_shortcut(
     app_id
 }
 
+/// Computes the Steam non-Steam shortcut appid for a Spool-managed game —
+/// the same CRC32-based value that `upsert_spool_shortcut` stamps into
+/// shortcuts.vdf. Used by the plugin server to expose the appid in
+/// `/library` so the Decky UI can match game-detail pages without needing
+/// the localStorage inverse map.
+pub fn compute_shortcut_app_id(game_name: &str, spool_exe: &str) -> u32 {
+    let quoted_exe = format!("\"{}\"", spool_exe.replace('"', "\\\""));
+    calculate_app_id(&quoted_exe, game_name)
+}
+
 /// Serialises + writes atomically (write `.tmp`, rename). Keeps a `.bak`
 /// of the previous file so a corrupted Steam can be restored manually.
 pub fn write_shortcuts(path: &Path, shortcuts: &[ShortcutOwned]) -> AppResult<()> {
