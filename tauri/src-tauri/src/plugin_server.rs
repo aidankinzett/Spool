@@ -87,6 +87,7 @@ pub async fn serve() -> AppResult<()> {
         .route("/session/game-stopped", post(post_game_stopped))
         .route("/session/backup-now", post(post_backup_now))
         .route("/library", get(get_library))
+        .route("/games/:id", delete(delete_game))
         .route("/fold", post(post_fold))
         // Steam-shortcut launch info: the UI uses this to create a non-Steam
         // shortcut live (via SteamClient.Apps) and launch it, reusing the
@@ -254,6 +255,22 @@ async fn get_library() -> Json<Value> {
         })
         .collect();
     Json(json!(entries))
+}
+
+/// Deletes a game's install folder from disk and removes its library entry.
+/// Mirrors the desktop `delete_game_from_disk` command. Loads the library
+/// fresh (the GUI may also be running), applies the same folder-safety guards,
+/// and saves atomically. Returns `{ ok: true }` on success.
+async fn delete_game(AxPath(id): AxPath<String>) -> Result<Json<Value>, StatusCode> {
+    let library: crate::library::SharedLibrary =
+        Arc::new(Mutex::new(Library::load().unwrap_or_default()));
+    match crate::library::delete_game_core(&library, &id).await {
+        Ok(()) => Ok(Json(json!({ "ok": true }))),
+        Err(e) => {
+            tracing::warn!(game_id = %id, error = %e, "plugin: delete_game failed");
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
 }
 
 /// Fields the UI needs to create a non-Steam shortcut (live, via

@@ -31,3 +31,11 @@ export const setSettings = callable<
 export const getServerBase = callable<[], { baseUrl: string | null }>(
   "get_server_base",
 );
+
+// Deletes a game's install folder from disk and removes its library entry.
+// `ok` is false (with a `reason`) when the server is unavailable or the
+// game has no known install folder.
+export const deleteGame = callable<
+  [id: string],
+  { ok: boolean; reason?: string }
+>("delete_game");

@@ -14,7 +14,7 @@
    * non-danger rows, red hover for Remove.
    */
   import { onMount, onDestroy } from 'svelte';
-  import { ArrowDownToLine, ArrowUpFromLine, Cast, Folder, Package, Pencil, Play, Trash2 } from '@lucide/svelte';
+  import { ArrowDownToLine, ArrowUpFromLine, Cast, Folder, FolderX, Package, Pencil, Play, Trash2 } from '@lucide/svelte';
   import { openView } from '$lib/nav';
   import { api, assetUrl } from '$lib/api';
   import { fmtCatalog } from '$lib/format';
@@ -307,6 +307,33 @@
       });
     }
   }
+
+  async function deleteFromDisk() {
+    onclose();
+    if (
+      !confirm(
+        `Delete "${game.game_name}" from disk?\n\nThis permanently removes the install folder` +
+          `${game.game_folder_path ? `\n${game.game_folder_path}` : ''}\nand its library entry. This can't be undone.`,
+      )
+    )
+      return;
+    try {
+      await api.deleteGameFromDisk(game.id);
+      toasts.show({
+        kind: 'ok',
+        label: 'DELETE · DONE',
+        title: 'Deleted from disk',
+        sub: game.game_name,
+      });
+    } catch (e) {
+      toasts.show({
+        kind: 'bad',
+        label: 'DELETE · FAILED',
+        title: "Couldn't delete from disk",
+        sub: String(e),
+      });
+    }
+  }
 </script>
 
 <div
@@ -413,9 +440,17 @@
   {#snippet restoreIcon()}<ArrowDownToLine size={13} />{/snippet}
   {#snippet pencilIcon()}<Pencil size={13} />{/snippet}
   {#snippet trashIcon()}<Trash2 size={13} />{/snippet}
+  {#snippet diskIcon()}<FolderX size={13} />{/snippet}
 
   <div class="border-t border-dashed border-line-1 py-1">
     {@render item('Edit…', pencilIcon, openEdit)}
     {@render item('Remove from library…', trashIcon, remove, false, true)}
+    {@render item(
+      'Delete from disk…',
+      diskIcon,
+      deleteFromDisk,
+      !game.game_folder_path,
+      true,
+    )}
   </div>
 </div>

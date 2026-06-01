@@ -442,6 +442,123 @@ pub fn remove_game(
     Ok(removed)
 }
 
+/// Deletes a game's install folder from disk, then removes its library entry.
+///
+/// Unlike [`remove_game`] (which only forgets the entry), this reclaims the
+/// disk space by deleting the folder recorded in `game_folder_path`. The
+/// folder is removed first; only if that succeeds is the library entry
+/// dropped, so a failed delete leaves the library pointing at a folder that
+/// still exists rather than orphaning files the UI can no longer find.
+///
+/// Refuses to run when the game has no known install folder, and rejects
+/// obviously-too-broad targets (filesystem root, the user's home dir, Spool's
+/// own data dir, or any path fewer than two components deep) so a bad
+/// `game_folder_path` can't wipe out unrelated files. A folder that's already
+/// gone is treated as success.
+#[tauri::command]
+pub async fn delete_game_from_disk(
+    state: State<'_, SharedLibrary>,
+    app: AppHandle,
+    id: String,
+) -> AppResult<()> {
+    delete_game_core(state.inner(), &id).await?;
+    if let Err(e) = app.emit("library:changed", &id) {
+        tracing::warn!(error = %e, "failed to emit library:changed after delete_game_from_disk");
+    }
+    Ok(())
+}
+
+/// Folder-delete + entry-removal shared by the [`delete_game_from_disk`]
+/// command and the Decky plugin server's `DELETE /games/:id`. Does not emit
+/// `library:changed` — the caller does that where a Tauri `AppHandle` exists.
+pub async fn delete_game_core(library: &SharedLibrary, id: &str) -> AppResult<()> {
+    // Snapshot the folder path under the lock, then drop the guard before any
+    // blocking IO or await (lock discipline: never hold a std Mutex across await).
+    let folder = {
+        let lib = library.lock().map_err(|_| AppError::LockPoisoned)?;
+        let entry = lib
+            .entries
+            .iter()
+            .find(|e| e.id == id)
+            .ok_or_else(|| AppError::Other(format!("game with id {id} not found")))?;
+        entry.game_folder_path.clone()
+    };
+
+    let Some(folder) = folder.filter(|f| !f.trim().is_empty()) else {
+        return Err(AppError::Other(
+            "This game has no known install folder to delete.".to_string(),
+        ));
+    };
+
+    // Recursive delete can be slow for a large game — run it off the async
+    // runtime's worker threads.
+    tokio::task::spawn_blocking(move || delete_install_dir(&folder))
+        .await
+        .map_err(|e| AppError::Other(format!("delete task join failed: {e}")))??;
+
+    // Folder gone (or already absent) — now forget the entry. Reuse the same
+    // retain + save path as remove_game.
+    let id = id.to_string();
+    let mut lib = library.lock().map_err(|_| AppError::LockPoisoned)?;
+    lib.entries.retain(|e| e.id != id);
+    lib.save()?;
+    Ok(())
+}
+
+/// Recursively deletes `folder` after validating it's a safe target. A path
+/// that doesn't exist is treated as already-deleted (`Ok`). See
+/// [`delete_game_from_disk`] for the guard rationale.
+fn delete_install_dir(folder: &str) -> AppResult<()> {
+    let path = std::path::Path::new(folder);
+    if !path.exists() {
+        // Already gone — nothing to reclaim, and removing the entry is still
+        // the right outcome.
+        return Ok(());
+    }
+    if !path.is_dir() {
+        return Err(AppError::Other(format!(
+            "Install path is not a folder: {folder}"
+        )));
+    }
+    // Resolve symlinks / `..` so the safety check sees the real target.
+    let canonical = std::fs::canonicalize(path)
+        .map_err(|e| AppError::Other(format!("couldn't resolve {folder}: {e}")))?;
+    if is_unsafe_delete_target(&canonical) {
+        return Err(AppError::Other(format!(
+            "Refusing to delete '{}' — it looks too broad to be a single game folder.",
+            canonical.display()
+        )));
+    }
+    std::fs::remove_dir_all(&canonical)
+        .map_err(|e| AppError::Other(format!("couldn't delete {}: {e}", canonical.display())))?;
+    Ok(())
+}
+
+/// True when `path` is too dangerous to recursively delete: fewer than two
+/// path components below root, the user's home directory, or an ancestor of
+/// (or equal to) Spool's own data directory.
+fn is_unsafe_delete_target(path: &std::path::Path) -> bool {
+    use std::path::Component;
+    let normals = path
+        .components()
+        .filter(|c| matches!(c, Component::Normal(_)))
+        .count();
+    if normals < 2 {
+        return true;
+    }
+    if let Some(home) = dirs::home_dir() {
+        if path == home {
+            return true;
+        }
+    }
+    // Never delete Spool's data dir, nor any ancestor that contains it.
+    let app_data = paths::app_data_dir();
+    if app_data.starts_with(path) {
+        return true;
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -460,5 +577,33 @@ mod tests {
         // Non-ASCII characters get dropped — same behaviour as the C#
         // version, intended to keep legacy non-Unicode tools happy.
         assert_eq!(make_safe_filename("Tëst Gämé"), "Tst Gm");
+    }
+
+    #[test]
+    fn unsafe_delete_target_rejects_shallow_paths() {
+        // Root and one-component paths are too broad to be a game folder.
+        assert!(is_unsafe_delete_target(std::path::Path::new("/")));
+        assert!(is_unsafe_delete_target(std::path::Path::new("/games")));
+        // Two components or deeper is fine.
+        assert!(!is_unsafe_delete_target(std::path::Path::new(
+            "/games/Hades"
+        )));
+        assert!(!is_unsafe_delete_target(std::path::Path::new(
+            "/home/user/Games/Hades"
+        )));
+    }
+
+    #[test]
+    fn unsafe_delete_target_rejects_home_dir() {
+        if let Some(home) = dirs::home_dir() {
+            assert!(is_unsafe_delete_target(&home));
+        }
+    }
+
+    #[test]
+    fn delete_install_dir_noop_when_missing() {
+        // A path that doesn't exist is treated as already-deleted.
+        let missing = std::env::temp_dir().join("spool-delete-test-does-not-exist-xyz");
+        assert!(delete_install_dir(&missing.to_string_lossy()).is_ok());
     }
 }

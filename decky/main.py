@@ -279,6 +279,15 @@ class Plugin:
         port = _read_port()
         return {"baseUrl": f"http://127.0.0.1:{port}" if port else None}
 
+    async def delete_game(self, id: str) -> dict:
+        """Delete a game's install folder from disk and remove its library
+        entry. Forwards to the headless server's DELETE /games/<id>, which
+        applies the same folder-safety guards as the desktop app."""
+        result = await _spool("DELETE", f"/games/{id}", timeout=120.0)
+        if result is None:
+            return {"ok": False, "reason": "server unavailable"}
+        return result
+
     async def get_settings(self) -> dict:
         s = _load_settings()
         return {

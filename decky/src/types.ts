@@ -17,6 +17,7 @@ export interface LibraryGame {
   shortcut_app_id: number | null;
   last_played_at: string | null;
   sync_badge: string | null;
+  game_folder_path: string | null;
 }
 
 // Shortcut fields from the backend (mirrors what desktop "Add to Steam" writes).
