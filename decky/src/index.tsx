@@ -213,6 +213,7 @@ function useSpoolPlaytime(
         const data = (await res.json()) as LibraryGame[];
         console.log("[Spool] useSpoolPlaytime: library fetched, count=", data.length, "appid=", appid);
         console.log("[Spool] useSpoolPlaytime: steam_ids in library=", data.map(g => g.steam_id));
+        console.log("[Spool] useSpoolPlaytime: shortcut_app_ids in library=", data.map(g => g.shortcut_app_id));
         const match = findSpoolGame(data, appid);
         console.log("[Spool] useSpoolPlaytime: match=", match?.game_name ?? "null", "playtime=", match?.playtime_minutes);
         if (!cancelled) {
