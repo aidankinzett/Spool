@@ -27,6 +27,11 @@ export type ConfigData = {
   /** True after the close-to-tray intro toast has been shown once. */
   tray_intro_seen: boolean;
 
+  /** True once the first-run onboarding flow has been finished or dismissed.
+   * Pre-existing configs are migrated to true on load (returning users skip
+   * the flow); a fresh install starts false so onboarding shows. */
+  onboarding_completed: boolean;
+
   cloud_provider: string;
   cloud_remote: string;
   /** Base folder on the remote. Saves → `<base>/ludusavi-backup`; Spool's
