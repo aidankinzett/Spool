@@ -285,10 +285,12 @@ async fn get_steam_launch_info(
 }
 
 /// Returns `{ imageType: "png"|"jpeg", base64: "<data>" }` for the requested
-/// art kind (`capsule`, `hero`, `logo`, `header`). Portraits are served from
-/// the on-disk cover cache; other kinds are fetched live from SteamGridDB.
-/// WebP images are transcoded to PNG because `SetCustomArtworkForApp` rejects
-/// them. Returns 404 if there is no art or SteamGridDB is not configured.
+/// art kind (`capsule`, `hero`, `logo`, `header`). Portrait and hero are served
+/// from Spool's on-disk art (downloaded at add time, so they work with
+/// SteamGridDB disabled); logo and the wide `header` capsule are fetched live
+/// from SteamGridDB since Spool keeps no local copy of those. WebP images are
+/// transcoded to PNG because `SetCustomArtworkForApp` rejects them. Returns 404
+/// if there is no art or SteamGridDB is not configured.
 async fn get_steam_art(
     AxState(state): AxState<PluginState>,
     AxPath((id, kind)): AxPath<(String, String)>,
@@ -296,34 +298,44 @@ async fn get_steam_art(
     let library = Library::load().unwrap_or_default();
     let entry = library.find(&id).ok_or(StatusCode::NOT_FOUND)?;
 
-    // Portrait / capsule: reuse the on-disk cover already downloaded during
-    // "Add game" — no extra network call needed.
-    if kind == "capsule" {
-        if let Some(path_str) = &entry.cover_image_path {
-            let path = std::path::Path::new(path_str);
-            if let Ok(bytes) = std::fs::read(path) {
-                let mime = mime_from_path(path);
-                let (image_type, bytes) = transcode_webp_to_png(mime, bytes);
-                let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
-                return Ok(Json(json!({ "imageType": image_type, "base64": b64 })));
-            }
+    // Portrait/capsule and hero are kept on disk (downloaded during "Add game"
+    // / LAN install), so serve them straight from the file — no SteamGridDB
+    // round-trip, and they work even when SteamGridDB is disabled.
+    let local_path = match kind.as_str() {
+        "capsule" => entry.cover_image_path.as_deref(),
+        "hero" => entry.hero_image_path.as_deref(),
+        _ => None,
+    };
+    if let Some(path_str) = local_path {
+        let path = std::path::Path::new(path_str);
+        if let Ok(bytes) = std::fs::read(path) {
+            let mime = mime_from_path(path);
+            let (image_type, bytes) = transcode_webp_to_png(mime, bytes);
+            let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+            return Ok(Json(json!({ "imageType": image_type, "base64": b64 })));
         }
-        return Err(StatusCode::NOT_FOUND);
     }
 
-    // Other kinds (hero, logo, header): fetch from SteamGridDB.
+    // Anything without a local copy (logo, wide `header`, or a hero we never
+    // downloaded) comes from SteamGridDB. Map the plugin's Steam-assetType
+    // vocabulary onto SteamGridDB's endpoints: the wide capsule is a landscape
+    // "grid" there.
     let config = crate::config::Config::load().unwrap_or_default();
     if !config.data.steamgriddb_enabled || config.data.steamgriddb_api_key.is_empty() {
         return Err(StatusCode::NOT_FOUND);
     }
 
+    let sgdb_kind = match kind.as_str() {
+        "header" => "grid",
+        other => other,
+    };
     let steam_id = entry.steam_id;
     let art = crate::steamgriddb::fetch_art_bytes(
         &state.http,
         &config.data.steamgriddb_api_key,
         steam_id,
         &entry.game_name,
-        &kind,
+        sgdb_kind,
     )
     .await
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
