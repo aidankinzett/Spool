@@ -13,8 +13,8 @@
 ---
 
 Spool is a game library and launcher for Windows and Linux handhelds. It launches
-your games, and around each session it restores your saves before play and backs
-them up on exit — using [ludusavi](https://github.com/mtkennerly/ludusavi) under
+your games, and for each session it will restore your saves before play and back
+them up on exit. It uses [ludusavi](https://github.com/mtkennerly/ludusavi) under
 the hood. The point is to make moving between a desktop and a Steam Deck painless:
 your saves follow you, and you can copy game installs straight across your network.
 
@@ -60,9 +60,7 @@ lost. Install it in one click from Spool's settings.
 Grab the latest build from the [Releases](../../releases) page:
 
 * **Windows** — the `Spool_<version>_x64-setup.exe` installer.
-* **Linux** — the `Spool_<version>_amd64.AppImage`. Mark it executable
-  (`chmod +x`) and run it. It's patched to run on Wayland sessions with modern
-  Mesa (Bazzite, CachyOS, SteamOS, recent Fedora).
+* **Linux** — the `Spool_amd64.AppImage`. 
 
 Both platforms auto-update in place.
 
