@@ -131,8 +131,8 @@ async fn run_discovery(app: AppHandle) -> AppResult<()> {
         (
             cfg.data.device_id.clone(),
             cfg.data.device_name.clone(),
-            cfg.data.lan_share_port,
-            cfg.data.lan_share_enabled,
+            cfg.data.lan.share_port,
+            cfg.data.lan.share_enabled,
         )
     };
 

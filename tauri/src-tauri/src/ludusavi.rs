@@ -851,9 +851,9 @@ pub async fn set_cloud_webdav(
     // Manual WebDAV (Nextcloud, ownCloud, …) expects the plaintext password.
     apply_webdav_remote(&url, &username, &password, &provider, false).await?;
     let mut cfg = config.lock().map_err(|_| AppError::LockPoisoned)?;
-    cfg.data.cloud_provider = "webdav".to_string();
-    cfg.data.cloud_webdav_url = url;
-    cfg.data.cloud_webdav_username = username;
+    cfg.data.cloud.provider = "webdav".to_string();
+    cfg.data.cloud.webdav_url = url;
+    cfg.data.cloud.webdav_username = username;
     cfg.save()?;
     Ok(())
 }

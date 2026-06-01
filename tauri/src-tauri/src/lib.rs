@@ -380,7 +380,7 @@ fn restamp_rclone(app: &AppHandle) {
         .state::<SharedConfig>()
         .lock()
         .ok()
-        .map(|g| g.data.rclone_args.clone())
+        .map(|g| g.data.cloud.rclone_args.clone())
         .unwrap_or_default();
     if let Some(rclone) = paths::resolve_rclone_path() {
         if let Err(e) = ludusavi_config::set_cloud(

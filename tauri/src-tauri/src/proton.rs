@@ -342,8 +342,8 @@ pub async fn install_proton_deps(
         let config = app.state::<SharedConfig>();
         let cfg = config.lock().map_err(|_| AppError::LockPoisoned)?;
         (
-            cfg.data.umu_run_path.clone(),
-            cfg.data.default_proton_path.clone(),
+            cfg.data.launch.umu_run_path.clone(),
+            cfg.data.launch.default_proton_path.clone(),
         )
     };
 

@@ -215,7 +215,7 @@ pub fn resolve_remote_from_config(cfg: &ConfigData) -> Option<RcloneRemote> {
 /// `cloud_base_path` can never split saves and `_spool` state across different
 /// remote roots.
 pub(crate) fn base_path(cfg: &ConfigData) -> String {
-    let b = cfg.cloud_base_path.trim().trim_end_matches('/');
+    let b = cfg.cloud.base_path.trim().trim_end_matches('/');
     if b.is_empty() { "Spool".to_string() } else { b.to_string() }
 }
 
