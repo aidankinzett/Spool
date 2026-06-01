@@ -87,6 +87,7 @@ pub async fn serve() -> AppResult<()> {
         .route("/session/game-stopped", post(post_game_stopped))
         .route("/session/backup-now", post(post_backup_now))
         .route("/library", get(get_library))
+        .route("/fold", post(post_fold))
         // Steam-shortcut launch info: the UI uses this to create a non-Steam
         // shortcut live (via SteamClient.Apps) and launch it, reusing the
         // exact exe/launch-options the desktop "Add to Steam" would write.
@@ -225,6 +226,14 @@ async fn post_backup_now(AxState(state): AxState<PluginState>) -> Json<Value> {
         return Json(json!({ "acted": false, "ok": false, "reason": "no active session" }));
     };
     run_backup(&state, &rec.game, &rec.session_id).await
+}
+
+/// Triggers a cross-device rclone fold and waits for it to complete. The
+/// Decky UI calls this on game-page navigation so playtime and last-played
+/// are fresh without requiring the full Spool GUI to be running.
+async fn post_fold() -> Json<Value> {
+    let changed = crate::rclone::fold_devices_from_config().await;
+    Json(json!({ "changed": changed }))
 }
 
 async fn get_library() -> Json<Value> {

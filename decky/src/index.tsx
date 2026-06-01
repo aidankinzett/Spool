@@ -78,6 +78,8 @@ interface LibraryGame {
   steam_id: number | null;
   playtime_minutes: number;
   shortcut_app_id: number | null;
+  last_played_at: string | null;
+  sync_badge: string | null;
 }
 
 // Shortcut fields from the backend (mirrors what desktop "Add to Steam" writes).
@@ -172,6 +174,20 @@ function formatPlaytime(minutes: number): string {
   return m > 0 ? `${h}h ${m}m` : `${h}h`;
 }
 
+function formatRelativeTime(iso: string): string {
+  const diff = Date.now() - new Date(iso).getTime();
+  const mins = Math.floor(diff / 60000);
+  if (mins < 60) return "just now";
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 7) return `${days}d ago`;
+  const weeks = Math.floor(days / 7);
+  if (weeks < 5) return `${weeks}w ago`;
+  const months = Math.floor(days / 30);
+  return `${months}mo ago`;
+}
+
 // Returns the Spool game matching a Steam appid, or null if not found.
 // Checks two sources:
 //   1. game.steam_id matches — native Steam game Spool also tracks
@@ -208,20 +224,24 @@ function useSpoolPlaytime(
     let cancelled = false;
     void (async () => {
       try {
-        const res = await fetch(`${base}/library`);
-        if (!res.ok) throw new Error(`bad status ${res.status}`);
-        const data = (await res.json()) as LibraryGame[];
-        console.log("[Spool] useSpoolPlaytime: library fetched, count=", data.length, "appid=", appid);
-        console.log("[Spool] useSpoolPlaytime: steam_ids in library=", data.map(g => g.steam_id));
-        console.log("[Spool] useSpoolPlaytime: shortcut_app_ids in library=", data.map(g => g.shortcut_app_id));
-        const match = findSpoolGame(data, appid);
-        console.log("[Spool] useSpoolPlaytime: match=", match?.game_name ?? "null", "playtime=", match?.playtime_minutes);
+        // Fetch current library immediately so the badge appears fast.
+        const first = await fetch(`${base}/library`);
+        if (!first.ok) throw new Error(`bad status ${first.status}`);
+        const initial = (await first.json()) as LibraryGame[];
+        if (!cancelled) setGame(findSpoolGame(initial, appid));
+
+        // Trigger a cross-device fold in the background, then refresh.
+        await fetch(`${base}/fold`, { method: "POST" }).catch(() => undefined);
+        if (cancelled) return;
+
+        const second = await fetch(`${base}/library`);
+        if (!second.ok) throw new Error(`bad status ${second.status}`);
+        const fresh = (await second.json()) as LibraryGame[];
         if (!cancelled) {
-          setGame(match);
+          setGame(findSpoolGame(fresh, appid));
           setLoading(false);
         }
-      } catch (e) {
-        console.log("[Spool] useSpoolPlaytime: fetch error", e);
+      } catch {
         if (!cancelled) setLoading(false);
       }
     })();
@@ -245,13 +265,15 @@ function SpoolPlaytimeBadge({
 
   if (loading || !game) return null;
   const displayMinutes = game.playtime_minutes > 0 ? game.playtime_minutes : 180;
+  const lastPlayed = game.last_played_at ? formatRelativeTime(game.last_played_at) : null;
+
+  const sep = <span style={{ opacity: 0.3, margin: "0 0.3rem" }}>·</span>;
 
   return (
     <div
       style={{
         display: "inline-flex",
         alignItems: "center",
-        gap: "0.4rem",
         padding: "0.3rem 0.75rem",
         borderRadius: "4px",
         background: "rgba(255,255,255,0.08)",
@@ -260,8 +282,9 @@ function SpoolPlaytimeBadge({
         marginBottom: "0.5rem",
       }}
     >
-      <span style={{ opacity: 0.6 }}>💾</span>
-      Spool: {formatPlaytime(displayMinutes)} played (cross-device)
+      <span style={{ opacity: 0.6, marginRight: "0.4rem" }}>💾</span>
+      {formatPlaytime(displayMinutes)} played
+      {lastPlayed && <>{sep}Last played {lastPlayed}</>}
     </div>
   );
 }
