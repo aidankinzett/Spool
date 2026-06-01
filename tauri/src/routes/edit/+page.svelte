@@ -18,7 +18,7 @@
    *   - Cancel → close without saving (form state is discarded)
    */
   import { onMount } from 'svelte';
-  import { Download, Folder, RefreshCw, Trash2 } from '@lucide/svelte';
+  import { Download, Folder, FolderX, RefreshCw, Trash2 } from '@lucide/svelte';
   import { open as openDialog } from '@tauri-apps/plugin-dialog';
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import { api, assetUrl } from '$lib/api';
@@ -260,6 +260,28 @@
         kind: 'bad',
         label: 'REMOVE · FAILED',
         title: "Couldn't remove",
+        sub: String(e),
+      });
+    }
+  }
+
+  async function deleteFromDisk() {
+    if (!form) return;
+    if (
+      !confirm(
+        `Delete "${form.game_name}" from disk?\n\nThis permanently removes the install folder` +
+          `${form.game_folder_path ? `\n${form.game_folder_path}` : ''}\nand its library entry. This can't be undone.`,
+      )
+    )
+      return;
+    try {
+      await api.deleteGameFromDisk(form.id);
+      await getCurrentWindow().close();
+    } catch (e) {
+      toasts.show({
+        kind: 'bad',
+        label: 'DELETE · FAILED',
+        title: "Couldn't delete from disk",
         sub: String(e),
       });
     }
@@ -544,6 +566,10 @@
         <Btn variant="danger" onclick={removeGame}>
           {#snippet icon()}<Trash2 size={14} />{/snippet}
           Remove from library
+        </Btn>
+        <Btn variant="danger" onclick={deleteFromDisk} disabled={!hasFolder}>
+          {#snippet icon()}<FolderX size={14} />{/snippet}
+          Delete from disk
         </Btn>
         <div class="flex-1"></div>
         <Btn variant="ghost" onclick={cancel}>Cancel</Btn>

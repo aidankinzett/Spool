@@ -45,6 +45,8 @@ export const api = {
   addGame: (newGame: NewGame): Promise<GameEntry> => invoke('add_game', { newGame }),
   updateGame: (entry: GameEntry): Promise<GameEntry> => invoke('update_game', { entry }),
   removeGame: (id: string): Promise<boolean> => invoke('remove_game', { id }),
+  /** Removes the library entry AND deletes its install folder from disk. */
+  deleteGameFromDisk: (id: string): Promise<void> => invoke('delete_game_from_disk', { id }),
 
   // Config
   getConfig: (): Promise<ConfigData> => invoke('get_config'),

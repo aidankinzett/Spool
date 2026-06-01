@@ -1,10 +1,12 @@
-import { Navigation, Focusable } from "@decky/ui";
+import { Navigation, Focusable, showModal, ConfirmModal } from "@decky/ui";
+import { toaster } from "@decky/api";
 import { useEffect, useState } from "react";
 import type { LibraryGame } from "../types";
 import { launchLibraryGame } from "../lib/launch";
 import { formatPlaytime, formatRelativeTime } from "../lib/format";
 import { useServerBase } from "../hooks/use-server-base";
 import { useParams } from "../lib/steam";
+import { deleteGame } from "../api/callables";
 
 function coverUrl(base: string, g: LibraryGame): string | null {
   if (!g.cover_image_path) return null;
@@ -62,8 +64,42 @@ export function GameDetailPage() {
   if (err) return <div style={{ padding: "2rem", opacity: 0.8 }}>{err}</div>;
   if (!game) return <div style={{ padding: "2rem", opacity: 0.7 }}>Loading…</div>;
 
+  const confirmDelete = () => {
+    showModal(
+      <ConfirmModal
+        strTitle={`Delete ${game.game_name} from disk?`}
+        strDescription={
+          "This permanently removes the install folder" +
+          (game.game_folder_path ? `\n${game.game_folder_path}` : "") +
+          "\nand its library entry. This can't be undone."
+        }
+        strOKButtonText="Delete from disk"
+        strCancelButtonText="Cancel"
+        bDestructiveWarning
+        onOK={() => {
+          void (async () => {
+            const res = await deleteGame(game.id);
+            if (res.ok) {
+              toaster.toast({
+                title: "Spool",
+                body: `Deleted ${game.game_name} from disk`,
+              });
+              Navigation.NavigateBack();
+            } else {
+              toaster.toast({
+                title: "Spool",
+                body: `Couldn't delete: ${res.reason ?? "unknown error"}`,
+              });
+            }
+          })();
+        }}
+      />,
+    );
+  };
+
   const cover = base ? coverUrl(base, game) : null;
   const accent = game.accent_color ?? "#3d7ab5";
+  const canDelete = !!game.game_folder_path;
   // Prefer hero (landscape) for background; fall back to portrait cover
   const bgSrc = heroDataUrl ?? cover;
 
@@ -165,25 +201,44 @@ export function GameDetailPage() {
           )}
         </div>
 
-        {/* Play button — compact, accent-coloured */}
-        <Focusable
-          onActivate={() => {
-            Navigation.NavigateBack();
-            if (base) void launchLibraryGame(base, game.id, game.shortcut_app_id ?? null);
-          }}
-          style={{
-            alignSelf: "flex-start",
-            padding: "0.5rem 1.4rem",
-            borderRadius: "5px",
-            background: accent,
-            fontWeight: 700,
-            fontSize: "0.95rem",
-            cursor: "pointer",
-            border: "none",
-            color: "#fff",
-          }}
-        >
-          ▶  Play
+        {/* Action buttons — Play (accent) + Delete (destructive) */}
+        <Focusable style={{ display: "flex", gap: "0.6rem", alignItems: "center" }}>
+          <Focusable
+            onActivate={() => {
+              Navigation.NavigateBack();
+              if (base) void launchLibraryGame(base, game.id, game.shortcut_app_id ?? null);
+            }}
+            style={{
+              padding: "0.5rem 1.4rem",
+              borderRadius: "5px",
+              background: accent,
+              fontWeight: 700,
+              fontSize: "0.95rem",
+              cursor: "pointer",
+              border: "none",
+              color: "#fff",
+            }}
+          >
+            ▶  Play
+          </Focusable>
+
+          {canDelete && (
+            <Focusable
+              onActivate={confirmDelete}
+              style={{
+                padding: "0.5rem 1.2rem",
+                borderRadius: "5px",
+                background: "transparent",
+                fontWeight: 600,
+                fontSize: "0.9rem",
+                cursor: "pointer",
+                border: "1px solid rgba(255,107,107,0.6)",
+                color: "#ff8a8a",
+              }}
+            >
+              Delete from disk
+            </Focusable>
+          )}
         </Focusable>
       </div>
     </Focusable>
