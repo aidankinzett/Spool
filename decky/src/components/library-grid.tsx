@@ -1,12 +1,13 @@
 import { useEffect, useState } from "react";
 import type { LibraryGame } from "../types";
-import { launchLibraryGame } from "../lib/launch";
 import { CoverGrid } from "./cover-grid";
+import { GameDetailPanel } from "./game-detail-panel";
 
 // ── Local library grid ─────────────────────────────────────────────────────
 export function LibraryGrid({ base }: { base: string }) {
   const [games, setGames] = useState<LibraryGame[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [selected, setSelected] = useState<LibraryGame | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -36,17 +37,27 @@ export function LibraryGrid({ base }: { base: string }) {
     return <div style={{ opacity: 0.7 }}>No games in your library yet.</div>;
 
   return (
-    <CoverGrid
-      onActivate={(id) => {
-        const g = games.find((g) => g.id === id);
-        void launchLibraryGame(base, id, g?.shortcut_app_id ?? null);
-      }}
-      tiles={games.map((g) => ({
-        key: g.id,
-        name: g.game_name,
-        coverUrl: coverUrl(g),
-        accentColor: g.accent_color,
-      }))}
-    />
+    <div style={{ position: "relative" }}>
+      <CoverGrid
+        onActivate={(id) => {
+          const g = games.find((g) => g.id === id);
+          if (g) setSelected(g);
+        }}
+        tiles={games.map((g) => ({
+          key: g.id,
+          name: g.game_name,
+          coverUrl: coverUrl(g),
+          accentColor: g.accent_color,
+        }))}
+      />
+      {selected && (
+        <GameDetailPanel
+          game={selected}
+          coverUrl={coverUrl(selected)}
+          base={base}
+          onBack={() => setSelected(null)}
+        />
+      )}
+    </div>
   );
 }
