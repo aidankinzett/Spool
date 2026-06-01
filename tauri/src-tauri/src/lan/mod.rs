@@ -267,9 +267,10 @@ pub struct PeerGame {
 impl PeerGame {
     fn from_entry(g: &GameEntry) -> Self {
         // Shareable iff the user opted the game in AND we have a real
-        // folder on disk to stream from. `lan_shared` is set via the
-        // Edit dialog's Sharing tab; default is `false` so newly-added
-        // games are private until the user explicitly flips them on.
+        // folder on disk to stream from. `lan_shared` defaults to `true`
+        // for games added through the Add flow (which also auto-detects
+        // game_folder_path); the user can flip it off in the Edit dialog's
+        // Sharing tab.
         let has_folder = g
             .game_folder_path
             .as_ref()
