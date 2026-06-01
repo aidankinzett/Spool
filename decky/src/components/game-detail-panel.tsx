@@ -101,28 +101,7 @@ export function GameDetailPage() {
         }}
       />
 
-      {/* Back button — top-left */}
-      <Focusable
-        onActivate={() => Navigation.NavigateBack()}
-        style={{
-          position: "absolute",
-          top: "0.75rem",
-          left: "0.75rem",
-          zIndex: 10,
-          padding: "0.35rem 0.75rem",
-          borderRadius: "5px",
-          background: "rgba(0,0,0,0.55)",
-          border: "1px solid rgba(255,255,255,0.18)",
-          color: "#fff",
-          fontSize: "0.8rem",
-          fontWeight: 600,
-          cursor: "pointer",
-        }}
-      >
-        ‹ Back
-      </Focusable>
-
-      {/* Content anchored to bottom */}
+{/* Content anchored to bottom */}
       <div
         style={{
           position: "absolute",
@@ -130,7 +109,7 @@ export function GameDetailPage() {
           display: "flex",
           flexDirection: "column",
           justifyContent: "flex-end",
-          padding: "1rem 1.5rem 1.5rem",
+          padding: "1rem 1.5rem calc(42px + 1.5rem)",
         }}
       >
         {/* Portrait cover thumbnail */}
