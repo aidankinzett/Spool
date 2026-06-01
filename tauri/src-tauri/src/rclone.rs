@@ -1113,7 +1113,7 @@ pub async fn connect_cloud_oauth(
     let mut stderr_done = false;
 
     // Five-minute wall-clock budget for the user to complete browser auth.
-    let _ = tokio::time::timeout(Duration::from_secs(300), async {
+    let timed_out = tokio::time::timeout(Duration::from_secs(300), async {
         loop {
             if token_json.is_some() || (stdout_done && stderr_done) {
                 break;
@@ -1149,6 +1149,12 @@ pub async fn connect_cloud_oauth(
 
     // Release the child slot regardless of outcome.
     *state.child.lock().await = None;
+
+    if timed_out.is_err() {
+        return Err(AppError::Other(
+            "OAuth flow timed out after 300s — the browser window was not completed in time".to_string(),
+        ));
+    }
 
     let token = token_json.ok_or_else(|| {
         let detail = if stderr_diag.is_empty() {
