@@ -332,7 +332,7 @@ jobs:
       # Node 22: pnpm 11 (pinned via decky/package.json packageManager) needs
       # Node >= 22.13, else corepack crashes on the node:sqlite builtin.
       - name: Setup Node for Decky plugin
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: 22
       - name: pnpm store cache
