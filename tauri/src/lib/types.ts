@@ -7,7 +7,6 @@ export type ConfigData = {
   steamgriddb_enabled: boolean;
   steamgriddb_api_key: string;
   spool_exe: string;
-  theme: string;
 
   device_id: string;
   device_name: string;

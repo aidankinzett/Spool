@@ -41,9 +41,6 @@ pub struct ConfigData {
     pub steamgriddb_enabled: bool,
     pub steamgriddb_api_key: String,
     pub spool_exe: String,
-    /// `"system"`, `"dark"`, or `"light"`. The new design is dark-only but
-    /// the field is preserved for compatibility with the C# config.
-    pub theme: String,
 
     // ── Identity (assigned once at first run) ────────────────────────────
     pub device_id: String,
@@ -84,7 +81,6 @@ impl Default for ConfigData {
             steamgriddb_enabled: false,
             steamgriddb_api_key: String::new(),
             spool_exe: String::new(),
-            theme: "system".to_string(),
             device_id: String::new(),
             device_name: String::new(),
             ui_mode: UiMode::default(),
