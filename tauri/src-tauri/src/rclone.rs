@@ -1187,7 +1187,7 @@ pub async fn connect_cloud_oauth(
     let cloud_snapshot = {
         let cfg = app.state::<crate::config::SharedConfig>();
         cfg.lock().ok().map(|g| (
-            g.data.rclone_args.clone(),
+            g.data.cloud.rclone_args.clone(),
             base_path(&g.data),
         ))
     };
