@@ -46,7 +46,7 @@ pub struct GameEntry {
     /// `library.json` files round-trip unchanged; nothing sets or consults it.
     pub use_proton: bool,
     /// Override the Proton build directory. `None` = use the global default
-    /// (`ConfigData.default_proton_path`) or auto-pick the newest.
+    /// (`ConfigData.launch.default_proton_path`) or auto-pick the newest.
     pub proton_version_path: Option<String>,
     /// Override the Wine prefix ROOT. `None` = `paths::proton_prefixes_dir()/<id>`.
     pub wine_prefix_path: Option<String>,

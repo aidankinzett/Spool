@@ -43,7 +43,7 @@ pub struct DepStatus {
 pub fn check_dependencies(config: State<'_, crate::config::SharedConfig>) -> Vec<DepStatus> {
     let umu_run_cfg = {
         let cfg = config.lock().unwrap_or_else(|e| e.into_inner());
-        cfg.data.umu_run_path.clone()
+        cfg.data.launch.umu_run_path.clone()
     };
 
     let distro = detect_distro();

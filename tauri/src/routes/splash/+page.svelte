@@ -5,7 +5,7 @@
   import type { RunPhaseEvent, GameEntry, SyncStatus, RawConflictDetails } from '$lib/types';
   import SpoolMark from '$lib/components/SpoolMark.svelte';
   import CloudConflictModal from '$lib/components/CloudConflictModal.svelte';
-  import { getCurrentWindow } from '@tauri-apps/api/window';
+  import { exit } from '@tauri-apps/plugin-process';
   import { absDateTime, relDate, fmtSize as formatFmtSize } from '$lib/format';
 
   let conflictDetails = $state<RawConflictDetails | null>(null);
@@ -583,7 +583,12 @@
         await api.resolveCloudConflict(game!.id, side);
       }}
       onCancel={async () => {
-        await getCurrentWindow().close();
+        // The splash only ever runs in an attached (Game-Mode / streaming)
+        // launch, so dismissing the conflict has to exit the whole app — not
+        // just close this window. The hidden `main` window (and the exit guard
+        // in lib.rs) would otherwise keep the process alive after the splash
+        // closed, so the host (gamescope / Moonlight) never sees Spool stop.
+        await exit(0);
       }}
       onContinue={async () => {
         const priorPhase = phase;
@@ -593,7 +598,9 @@
           message = 'Syncing + restoring saves…';
           startRamp();
           await api.launchGame(game!.id);
-          await getCurrentWindow().close();
+          // Retry workflow finished (game played + backed up) — exit so the
+          // attached host sees Spool stop, mirroring the normal launch path.
+          await exit(0);
         } catch (e) {
           console.error('[splash] retry launch failed:', e);
           phase = priorPhase;
@@ -606,7 +613,7 @@
         api.openLudusaviGui().catch(() => {});
       }}
       onClose={async () => {
-        await getCurrentWindow().close();
+        await exit(0);
       }}
     />
   {/if}

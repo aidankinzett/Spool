@@ -429,14 +429,14 @@ async fn post_lan_install(
         .unwrap_or_default();
 
     let install_root = {
-        let dir = &config.lan_install_dir;
+        let dir = &config.lan.install_dir;
         if dir.is_empty() {
             crate::paths::app_data_dir().join("lan-games")
         } else {
             std::path::PathBuf::from(dir)
         }
     };
-    let max_bps = config.lan_download_max_mbps * 1_000_000.0 / 8.0;
+    let max_bps = config.lan.download_max_mbps * 1_000_000.0 / 8.0;
 
     // Load the library fresh for this install; the install task writes back
     // via its own Arc<Mutex<Library>> clone and saves atomically.

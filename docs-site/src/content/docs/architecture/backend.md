@@ -23,8 +23,13 @@ that owns all state and side effects. This page is a map of the modules.
 
 ## Persistence
 
-- **`config.rs`** — app-wide settings persisted to `config.json`.
-  `#[serde(default)]` on every field means older files load without migration.
+- **`config.rs`** — app-wide settings persisted to `config.json`. The cloud /
+  LAN / Proton-launch fields are grouped into `CloudConfig` / `LanConfig` /
+  `LaunchConfig` sub-structs, `#[serde(flatten)]`ed so the JSON stays flat. A
+  container-level `#[serde(default)]` on each config struct means missing keys
+  fall back to the struct's `Default`, so older files load without migration
+  (apply it at the struct level, not per-field). Unused fields are removed, not
+  retained for legacy compatibility.
 - **`library.rs`** — `GameEntry` + `Library` CRUD with atomic JSON saves to
   `library.json`. Emits `library:changed` on every mutation.
 

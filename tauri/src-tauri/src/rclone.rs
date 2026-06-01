@@ -215,7 +215,7 @@ pub fn resolve_remote_from_config(cfg: &ConfigData) -> Option<RcloneRemote> {
 /// `cloud_base_path` can never split saves and `_spool` state across different
 /// remote roots.
 pub(crate) fn base_path(cfg: &ConfigData) -> String {
-    let b = cfg.cloud_base_path.trim().trim_end_matches('/');
+    let b = cfg.cloud.base_path.trim().trim_end_matches('/');
     if b.is_empty() { "Spool".to_string() } else { b.to_string() }
 }
 
@@ -242,17 +242,9 @@ fn device_identity(app: &AppHandle) -> (String, String) {
 
 fn base_command(exe: &Path) -> tokio::process::Command {
     let mut cmd = tokio::process::Command::new(exe);
-    cmd.stdin(std::process::Stdio::null());
-    cmd.stdout(std::process::Stdio::piped());
-    cmd.stderr(std::process::Stdio::piped());
+    crate::capture_stdio!(cmd);
     cmd.kill_on_drop(true);
     cmd.args(FAST_FLAGS);
-    #[cfg(windows)]
-    {
-        #[allow(unused_imports)]
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-    }
     cmd
 }
 
@@ -1195,7 +1187,7 @@ pub async fn connect_cloud_oauth(
     let cloud_snapshot = {
         let cfg = app.state::<crate::config::SharedConfig>();
         cfg.lock().ok().map(|g| (
-            g.data.rclone_args.clone(),
+            g.data.cloud.rclone_args.clone(),
             base_path(&g.data),
         ))
     };
