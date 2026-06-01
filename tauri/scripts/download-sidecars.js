@@ -25,20 +25,6 @@ const targets = {
       extractFile: `rclone-v${RCLONE_VER}-linux-amd64/rclone`
     }
   ],
-  'linux-arm64': [
-    {
-      name: 'ludusavi-aarch64-unknown-linux-gnu',
-      url: `https://github.com/mtkennerly/ludusavi/releases/download/v${LUDUSAVI_VER}/ludusavi-v${LUDUSAVI_VER}-linux-arm64.tar.gz`,
-      archiveType: 'tar.gz',
-      extractFile: 'ludusavi'
-    },
-    {
-      name: 'rclone-aarch64-unknown-linux-gnu',
-      url: `https://github.com/rclone/rclone/releases/download/v${RCLONE_VER}/rclone-v${RCLONE_VER}-linux-arm64.zip`,
-      archiveType: 'zip',
-      extractFile: `rclone-v${RCLONE_VER}-linux-arm64/rclone`
-    }
-  ],
   win32: [
     {
       name: 'ludusavi-x86_64-pc-windows-msvc.exe',
@@ -105,9 +91,7 @@ const extractArchive = (archivePath, tempExtractDir, archiveType) => {
 async function main() {
   const args = process.argv.slice(2);
 
-  const hostPlatformKey = process.platform === 'linux'
-    ? (process.arch === 'arm64' ? 'linux-arm64' : 'linux-x64')
-    : process.platform;
+  const hostPlatformKey = process.platform === 'linux' ? 'linux-x64' : process.platform;
 
   let platformKey = hostPlatformKey;
 
@@ -120,7 +104,7 @@ async function main() {
     }
   }
 
-  const platformsToDownload = platformKey === 'all' ? ['linux-x64', 'linux-arm64', 'win32'] : [platformKey];
+  const platformsToDownload = platformKey === 'all' ? ['linux-x64', 'win32'] : [platformKey];
   const binariesDir = path.join(__dirname, '../src-tauri/binaries');
   
   if (!fs.existsSync(binariesDir)) {
