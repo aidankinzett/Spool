@@ -4,27 +4,45 @@ import { useEffect, useRef, useState } from "react";
 import type { DownloadProgress, LanPeer, PeerGame } from "../types";
 import { fmtBytes } from "../lib/format";
 import { CoverGrid } from "./cover-grid";
+import { useServerBase } from "../hooks/use-server-base";
+import { useParams } from "../lib/steam";
 
-// A selected peer's shared games, fetched through the server-side proxy.
-// Activating a tile navigates to the LAN game detail page (router-based so
-// the hardware B button navigates back here).
-export function PeerGames({
-  base,
-  peer,
-  onBack,
-}: {
-  base: string;
-  peer: LanPeer;
-  onBack: () => void;
-}) {
+// A single peer's shared game grid. Registered as its own route so the B
+// button naturally navigates back to the peers list (/spool/lan).
+export function PeerGamesPage() {
+  const { peerAddr, peerPort } =
+    useParams<{ peerAddr: string; peerPort: string }>();
+  const { base, error: baseError } = useServerBase();
+
+  const [peer, setPeer] = useState<LanPeer | null>(null);
   const [games, setGames] = useState<PeerGame[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [download, setDownload] = useState<DownloadProgress | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const peerBase = `${base}/lan/peers/${peer.addr}/${peer.file_server_port}`;
 
-  // Fetch the game list once on mount.
+  const peerBase = base ? `${base}/lan/peers/${peerAddr}/${peerPort}` : null;
+
+  // Fetch peer info (device name) from the local peers list.
   useEffect(() => {
+    if (!base) return;
+    let cancelled = false;
+    void fetch(`${base}/lan/peers`)
+      .then((r) => r.json() as Promise<LanPeer[]>)
+      .then((peers) => {
+        const found =
+          peers.find(
+            (p) =>
+              p.addr === peerAddr && String(p.file_server_port) === peerPort,
+          ) ?? null;
+        if (!cancelled && found) setPeer(found);
+      })
+      .catch(() => undefined);
+    return () => { cancelled = true; };
+  }, [base, peerAddr, peerPort]);
+
+  // Fetch the game list.
+  useEffect(() => {
+    if (!peerBase) return;
     let cancelled = false;
     void (async () => {
       try {
@@ -36,13 +54,12 @@ export function PeerGames({
         if (!cancelled) setError("Couldn't reach this device.");
       }
     })();
-    return () => {
-      cancelled = true;
-    };
+    return () => { cancelled = true; };
   }, [peerBase]);
 
-  // On mount, pick up any in-flight download (e.g. navigated away and back).
+  // Pick up any in-flight download on mount (e.g. returned via B button).
   useEffect(() => {
+    if (!base) return;
     void fetch(`${base}/lan/download`)
       .then((r) => r.json() as Promise<DownloadProgress | null>)
       .then((p) => {
@@ -59,10 +76,10 @@ export function PeerGames({
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [base]);
 
   function startPolling() {
-    if (pollRef.current) return;
+    if (!base || pollRef.current) return;
     pollRef.current = setInterval(() => {
       void fetch(`${base}/lan/download`)
         .then((r) => r.json() as Promise<DownloadProgress | null>)
@@ -84,7 +101,7 @@ export function PeerGames({
   }
 
   async function cancelDownload() {
-    if (!download) return;
+    if (!base || !download) return;
     await fetch(`${base}/lan/download`, {
       method: "DELETE",
       headers: { "Content-Type": "application/json" },
@@ -99,15 +116,13 @@ export function PeerGames({
     download && download.bytes_total > 0
       ? Math.round((download.bytes_done / download.bytes_total) * 100)
       : 0;
+  const deviceName = peer?.device_name || peerAddr;
+
+  const err = baseError ?? error;
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
-      <Focusable>
-        <ButtonItem layout="below" onClick={onBack}>
-          ← Back to devices
-        </ButtonItem>
-      </Focusable>
-      <h2 style={{ margin: 0 }}>{peer.device_name || peer.addr}</h2>
+    <div style={{ padding: "2rem", display: "flex", flexDirection: "column", gap: "1rem" }}>
+      <h2 style={{ margin: 0 }}>{deviceName}</h2>
 
       {/* Download progress row */}
       {download !== null && (
@@ -182,8 +197,8 @@ export function PeerGames({
         </div>
       )}
 
-      {error && <div style={{ opacity: 0.8 }}>{error}</div>}
-      {!error && !games && <div style={{ opacity: 0.7 }}>Loading…</div>}
+      {err && <div style={{ opacity: 0.8 }}>{err}</div>}
+      {!err && !games && <div style={{ opacity: 0.7 }}>Loading…</div>}
       {games && games.length === 0 && (
         <div style={{ opacity: 0.7 }}>This device isn't sharing any games.</div>
       )}
@@ -191,7 +206,7 @@ export function PeerGames({
         <CoverGrid
           onActivate={(id) =>
             Navigation.Navigate(
-              `/spool/lan-game/${peer.addr}/${peer.file_server_port}/${id}`,
+              `/spool/lan-game/${peerAddr}/${peerPort}/${id}`,
             )
           }
           tiles={games.map((g) => ({
