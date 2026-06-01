@@ -1,5 +1,10 @@
 {
   "features": {
+    "ghcr.io/anthropics/devcontainer-features/claude-code:1.0": {
+      "version": "1.0.5",
+      "resolved": "ghcr.io/anthropics/devcontainer-features/claude-code@sha256:cfc2e7d3e9fd3b9b01f8d5cb158508a884c8c0ede2e23ed10f32dea5d4ffe69a",
+      "integrity": "sha256:cfc2e7d3e9fd3b9b01f8d5cb158508a884c8c0ede2e23ed10f32dea5d4ffe69a"
+    },
     "ghcr.io/devcontainers/features/node:2": {
       "version": "2.0.0",
       "resolved": "ghcr.io/devcontainers/features/node@sha256:fedd4c11f7adfb64283b578dddc7da906728daa25fa293351c9d913231acf12f",
@@ -15,6 +20,10 @@
       "resolved": "ghcr.io/devcontainers/features/rust@sha256:0c55e65f2e3df736e478f26ee4d5ed41bae6b54dac1318c443e31444c8ed283c",
       "integrity": "sha256:0c55e65f2e3df736e478f26ee4d5ed41bae6b54dac1318c443e31444c8ed283c"
     },
-    "ghcr.io/oven-sh/features/bun:1": {}
+    "ghcr.io/rails/devcontainer/features/bun:1.0.2": {
+      "version": "1.0.2",
+      "resolved": "ghcr.io/rails/devcontainer/features/bun@sha256:08057c197a8cde49b08749681607bf0d69aed79e280225cf43ca5d1782028789",
+      "integrity": "sha256:08057c197a8cde49b08749681607bf0d69aed79e280225cf43ca5d1782028789"
+    }
   }
 }
