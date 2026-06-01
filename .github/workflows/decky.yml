@@ -39,10 +39,10 @@ jobs:
       # pnpm 11 requires Node >= 22.13 (it imports the node:sqlite builtin), so
       # Node must be 22 or setup-node's pnpm store probe crashes with
       # ERR_UNKNOWN_BUILTIN_MODULE.
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           version: 11.5.0
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: 22
           cache: pnpm
@@ -62,7 +62,7 @@ jobs:
           cp dist/index.js package/spool-backup/dist/
           cp main.py plugin.json package.json package/spool-backup/
           cd package && zip -r ../spool-backup.zip spool-backup
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: spool-backup-plugin
           path: decky/spool-backup.zip

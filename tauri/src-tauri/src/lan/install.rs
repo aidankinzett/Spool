@@ -283,10 +283,10 @@ struct TransferCtx {
 /// `<app_data>/lan-games` when the user hasn't set `lan_install_dir`
 /// in config — matches the convention of every other Spool path.
 fn install_root_from(config: &ConfigData) -> AppResult<PathBuf> {
-    if config.lan_install_dir.is_empty() {
+    if config.lan.install_dir.is_empty() {
         Ok(paths::app_data_dir().join("lan-games"))
     } else {
-        Ok(PathBuf::from(&config.lan_install_dir))
+        Ok(PathBuf::from(&config.lan.install_dir))
     }
 }
 
@@ -434,7 +434,7 @@ pub async fn start_peer_install(
         let cfg = app.state::<crate::config::SharedConfig>();
         let data = cfg.lock().map_err(|_| AppError::LockPoisoned)?.data.clone();
         let root = install_root_from(&data)?;
-        let bps = data.lan_download_max_mbps * 1_000_000.0 / 8.0;
+        let bps = data.lan.download_max_mbps * 1_000_000.0 / 8.0;
         (bps, root)
     };
 

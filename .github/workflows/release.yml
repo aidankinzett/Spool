@@ -30,7 +30,7 @@ jobs:
           bun-version: "1.x"
 
       - name: Bun cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ${{ github.workspace }}/.bun-cache
           key: bun-${{ runner.os }}-${{ hashFiles('tauri/bun.lock') }}
@@ -57,10 +57,10 @@ jobs:
           }
 
       - name: Setup sccache
-        uses: mozilla-actions/sccache-action@v0.0.6
+        uses: mozilla-actions/sccache-action@v0.0.10
 
       - name: Sccache cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ${{ github.workspace }}/.sccache
           key: sccache-${{ runner.os }}-${{ github.ref_name }}-${{ github.sha }}
@@ -106,7 +106,7 @@ jobs:
 
       - name: Cache sidecars
         id: cache-sidecars
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: tauri/src-tauri/binaries
           key: sidecars-${{ runner.os }}-${{ hashFiles('tauri/scripts/download-sidecars.js') }}
@@ -135,7 +135,7 @@ jobs:
         run: sccache --show-stats
 
       - name: Upload Windows bundle
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: windows-bundle
           path: |
@@ -163,10 +163,10 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Setup sccache
-        uses: mozilla-actions/sccache-action@v0.0.6
+        uses: mozilla-actions/sccache-action@v0.0.10
 
       - name: Sccache cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ${{ github.workspace }}/.sccache
           key: sccache-${{ runner.os }}-${{ github.ref_name }}-${{ github.sha }}
@@ -199,11 +199,11 @@ jobs:
       # build.rs placeholder. Node 22: pnpm 11 (pinned via decky/package.json
       # packageManager) needs Node >= 22.13 or corepack crashes on node:sqlite.
       - name: Setup Node for Decky plugin
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: 22
       - name: pnpm store cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ${{ github.workspace }}/.pnpm-store
           key: pnpm-${{ runner.os }}-${{ hashFiles('decky/pnpm-lock.yaml') }}
@@ -217,7 +217,7 @@ jobs:
           corepack pnpm build
 
       - name: Bun cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ${{ github.workspace }}/.bun-cache
           key: bun-${{ runner.os }}-${{ hashFiles('tauri/bun.lock') }}
@@ -230,7 +230,7 @@ jobs:
 
       - name: Cache sidecars
         id: cache-sidecars
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: tauri/src-tauri/binaries
           key: sidecars-${{ runner.os }}-${{ hashFiles('tauri/scripts/download-sidecars.js') }}
@@ -311,7 +311,7 @@ jobs:
         run: sccache --show-stats
 
       - name: Upload Linux bundle
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: linux-bundle
           path: |

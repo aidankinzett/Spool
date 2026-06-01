@@ -29,37 +29,22 @@ pub enum UiMode {
 
 /// On-disk shape. Every field has a default so older config.json files
 /// without newer fields parse cleanly via `#[serde(default)]`.
+///
+/// The cloud / LAN / Proton-launch settings are grouped into sub-structs for
+/// clarity in Rust, but `#[serde(flatten)]` keeps the on-disk JSON flat — the
+/// historical `cloud_*` / `lan_*` / `umu_run_path` keys are unchanged, so
+/// existing config.json files and the frontend's flat `ConfigData` mirror load
+/// without migration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ConfigData {
     pub steamgriddb_enabled: bool,
     pub steamgriddb_api_key: String,
     pub spool_exe: String,
-    /// `"system"`, `"dark"`, or `"light"`. The new design is dark-only but
-    /// the field is preserved for compatibility with the C# config.
-    pub theme: String,
 
     // ── Identity (assigned once at first run) ────────────────────────────
     pub device_id: String,
     pub device_name: String,
-
-    pub lan_share_enabled: bool,
-    pub lan_share_port: u16,
-    pub lan_install_dir: String,
-    /// Max aggregate LAN download throughput in Mbps (megabits/s,
-    /// decimal). `0` = unlimited. Applied across all parallel file
-    /// fetches by the throttle in `download_one_file` — convergent
-    /// rather than precise, so brief bursts can exceed the cap before
-    /// the next sleep brings the average back.
-    pub lan_download_max_mbps: f64,
-
-    // ── Proton / Linux launch ────────────────────────────────────────────
-    /// Path to the `umu-run` launcher. `""` = autodetect (`/usr/bin/umu-run`
-    /// then PATH). Linux-only; ignored on Windows.
-    pub umu_run_path: String,
-    /// Default Proton build directory used when a game doesn't override it.
-    /// `""` = auto-pick the newest discovered Proton.
-    pub default_proton_path: String,
 
     /// Touch-optimised UI mode (handheld). Resolved to a concrete
     /// desktop/touch density at boot by `lib/uiMode.svelte.ts`.
@@ -70,32 +55,24 @@ pub struct ConfigData {
     /// new installs) so the toast appears on the first close-to-tray.
     pub tray_intro_seen: bool,
 
-    // ── Cloud / rclone settings ──────────────────────────────────────────
-    pub cloud_provider: String,
-    pub cloud_remote: String,
-    /// Base folder on the remote. Ludusavi saves go to
-    /// `<cloud_base_path>/ludusavi-backup`; Spool's cross-device control plane
-    /// (session markers, per-device blobs) lives under `<cloud_base_path>/_spool`.
-    pub cloud_base_path: String,
-    /// Legacy: the exact ludusavi remote subpath. Superseded by
-    /// `cloud_base_path` (the ludusavi path is now derived). Kept for JSON
-    /// round-trip with older config files; no longer read.
-    pub cloud_path: String,
-    pub rclone_args: String,
-    /// WebDAV connection details for the `webdav` provider. Written when the
-    /// user connects a WebDAV remote (manually or via the self-hosted Spool
-    /// server). The password is never stored here — ludusavi obscures it into
-    /// rclone.conf; these two fields only let the settings form re-display the
-    /// active connection.
-    pub cloud_webdav_url: String,
-    pub cloud_webdav_username: String,
-
     /// Number of full save revisions ludusavi retains per game (the
     /// `backup.retention.full` knob). More revisions = more rollback points,
     /// at the cost of more disk + cloud upload per game. Differentials stay at
     /// 0 (see `ludusavi_config::ensure_config`). Default 3; clamped to 1–10
     /// when applied.
     pub save_retention_full: u32,
+
+    /// Cloud-save / rclone settings (flattened to the flat `cloud_*` JSON keys).
+    #[serde(flatten)]
+    pub cloud: CloudConfig,
+
+    /// LAN game-sharing settings (flattened to the flat `lan_*` JSON keys).
+    #[serde(flatten)]
+    pub lan: LanConfig,
+
+    /// Proton / Linux launch settings (flattened; field names match their keys).
+    #[serde(flatten)]
+    pub launch: LaunchConfig,
 }
 
 impl Default for ConfigData {
@@ -104,27 +81,105 @@ impl Default for ConfigData {
             steamgriddb_enabled: false,
             steamgriddb_api_key: String::new(),
             spool_exe: String::new(),
-            theme: "system".to_string(),
             device_id: String::new(),
             device_name: String::new(),
-            lan_share_enabled: true,
-            lan_share_port: 47632,
-            lan_install_dir: String::new(),
-            lan_download_max_mbps: 0.0,
-            umu_run_path: String::new(),
-            default_proton_path: String::new(),
             ui_mode: UiMode::default(),
             tray_intro_seen: false,
-            cloud_provider: String::new(),
-            cloud_remote: String::new(),
-            cloud_base_path: "Spool".to_string(),
-            cloud_path: "Spool/ludusavi-backup".to_string(),
-            rclone_args: "--fast-list --ignore-checksum".to_string(),
-            cloud_webdav_url: String::new(),
-            cloud_webdav_username: String::new(),
             save_retention_full: 3,
+            cloud: CloudConfig::default(),
+            lan: LanConfig::default(),
+            launch: LaunchConfig::default(),
         }
     }
+}
+
+/// Cloud-save + rclone settings. Flattened into [`ConfigData`], so each field
+/// maps to its historical flat JSON key (`cloud_provider`, …) — existing
+/// config.json files and the frontend's flat mirror round-trip unchanged.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CloudConfig {
+    #[serde(rename = "cloud_provider")]
+    pub provider: String,
+    #[serde(rename = "cloud_remote")]
+    pub remote: String,
+    /// Base folder on the remote. Ludusavi saves go to
+    /// `<base_path>/ludusavi-backup`; Spool's cross-device control plane
+    /// (session markers, per-device blobs) lives under `<base_path>/_spool`.
+    #[serde(rename = "cloud_base_path")]
+    pub base_path: String,
+    /// Legacy: the exact ludusavi remote subpath. Superseded by `base_path`
+    /// (the ludusavi path is now derived). Kept for JSON round-trip with older
+    /// config files; no longer read.
+    #[serde(rename = "cloud_path")]
+    pub path: String,
+    pub rclone_args: String,
+    /// WebDAV connection details for the `webdav` provider. Written when the
+    /// user connects a WebDAV remote (manually or via the self-hosted Spool
+    /// server). The password is never stored here — ludusavi obscures it into
+    /// rclone.conf; these two fields only let the settings form re-display the
+    /// active connection.
+    #[serde(rename = "cloud_webdav_url")]
+    pub webdav_url: String,
+    #[serde(rename = "cloud_webdav_username")]
+    pub webdav_username: String,
+}
+
+impl Default for CloudConfig {
+    fn default() -> Self {
+        Self {
+            provider: String::new(),
+            remote: String::new(),
+            base_path: "Spool".to_string(),
+            path: "Spool/ludusavi-backup".to_string(),
+            rclone_args: "--fast-list --ignore-checksum".to_string(),
+            webdav_url: String::new(),
+            webdav_username: String::new(),
+        }
+    }
+}
+
+/// LAN game-sharing settings. Flattened into [`ConfigData`] with the historical
+/// flat `lan_*` JSON keys.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LanConfig {
+    #[serde(rename = "lan_share_enabled")]
+    pub share_enabled: bool,
+    #[serde(rename = "lan_share_port")]
+    pub share_port: u16,
+    #[serde(rename = "lan_install_dir")]
+    pub install_dir: String,
+    /// Max aggregate LAN download throughput in Mbps (megabits/s, decimal).
+    /// `0` = unlimited. Applied across all parallel file fetches by the throttle
+    /// in `download_one_file` — convergent rather than precise, so brief bursts
+    /// can exceed the cap before the next sleep brings the average back.
+    #[serde(rename = "lan_download_max_mbps")]
+    pub download_max_mbps: f64,
+}
+
+impl Default for LanConfig {
+    fn default() -> Self {
+        Self {
+            share_enabled: true,
+            share_port: 47632,
+            install_dir: String::new(),
+            download_max_mbps: 0.0,
+        }
+    }
+}
+
+/// Proton / Linux launch settings. Flattened into [`ConfigData`]; the field
+/// names already match their JSON keys, so no renames are needed.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LaunchConfig {
+    /// Path to the `umu-run` launcher. `""` = autodetect (`/usr/bin/umu-run`
+    /// then PATH). Linux-only; ignored on Windows.
+    pub umu_run_path: String,
+    /// Default Proton build directory used when a game doesn't override it.
+    /// `""` = auto-pick the newest discovered Proton.
+    pub default_proton_path: String,
 }
 
 /// Wrapper around [`ConfigData`] handling persistence and one-time setup
@@ -227,11 +282,11 @@ fn auto_detect_umu_run(data: &mut ConfigData) -> bool {
     if cfg!(windows) {
         return false;
     }
-    if !data.umu_run_path.is_empty() && PathBuf::from(&data.umu_run_path).is_file() {
+    if !data.launch.umu_run_path.is_empty() && PathBuf::from(&data.launch.umu_run_path).is_file() {
         return false;
     }
     if let Ok(p) = crate::proton::resolve_umu_run(None) {
-        data.umu_run_path = p.to_string_lossy().to_string();
+        data.launch.umu_run_path = p.to_string_lossy().to_string();
         return true;
     }
     false
@@ -267,8 +322,8 @@ fn stamp_current_exe(data: &mut ConfigData) -> bool {
 /// `cloud_path` already canonical). Returns true if anything changed.
 fn migrate_cloud_base_path(data: &mut ConfigData) -> bool {
     const DEFAULT_BASE: &str = "Spool";
-    let old_path = data.cloud_path.trim().trim_end_matches('/').to_string();
-    if old_path.is_empty() || data.cloud_base_path.trim() != DEFAULT_BASE {
+    let old_path = data.cloud.path.trim().trim_end_matches('/').to_string();
+    if old_path.is_empty() || data.cloud.base_path.trim() != DEFAULT_BASE {
         // No legacy path to migrate, or the base was already set explicitly
         // (new-scheme config) — leave it alone.
         return false;
@@ -285,8 +340,8 @@ fn migrate_cloud_base_path(data: &mut ConfigData) -> bool {
     if base.is_empty() || base == DEFAULT_BASE {
         return false;
     }
-    data.cloud_base_path = base.to_string();
-    data.cloud_path = format!("{base}/ludusavi-backup");
+    data.cloud.base_path = base.to_string();
+    data.cloud.path = format!("{base}/ludusavi-backup");
     tracing::info!(base, "migrated legacy cloud_path to cloud_base_path");
     true
 }
@@ -331,11 +386,11 @@ pub fn update_config(
     // `/ludusavi-backup` while `_spool` falls back to `Spool/_spool`.
     let ludusavi_remote_path = format!("{}/ludusavi-backup", crate::rclone::base_path(&cfg.data));
     let _ = crate::ludusavi_config::set_cloud(
-        Some(&cfg.data.cloud_provider),
-        Some(&cfg.data.cloud_remote),
+        Some(&cfg.data.cloud.provider),
+        Some(&cfg.data.cloud.remote),
         Some(&ludusavi_remote_path),
         Some(&rclone_val),
-        Some(&cfg.data.rclone_args),
+        Some(&cfg.data.cloud.rclone_args),
     );
 
     // Push the save-revision retention knob into the owned config.yaml.
@@ -359,5 +414,83 @@ pub fn detect_umu_run(state: State<'_, SharedConfig>) -> AppResult<String> {
     if auto_detect_umu_run(&mut cfg.data) {
         cfg.save()?;
     }
-    Ok(cfg.data.umu_run_path.clone())
+    Ok(cfg.data.launch.umu_run_path.clone())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A pre-grouping config.json (a subset of the flat keys) must still load:
+    /// present keys map into their sub-structs, missing keys fall back to each
+    /// sub-struct's defaults. This is the `#[serde(flatten)]` + `default`
+    /// contract the on-disk + frontend compatibility relies on.
+    #[test]
+    fn old_flat_config_loads_into_subgroups() {
+        let json = r#"{
+            "cloud_provider": "dropbox",
+            "cloud_webdav_url": "https://dav.example.com",
+            "lan_share_port": 12345,
+            "umu_run_path": "/usr/bin/umu-run"
+        }"#;
+        let data: ConfigData = serde_json::from_str(json).unwrap();
+        assert_eq!(data.cloud.provider, "dropbox");
+        assert_eq!(data.cloud.webdav_url, "https://dav.example.com");
+        assert_eq!(data.lan.share_port, 12345);
+        assert_eq!(data.launch.umu_run_path, "/usr/bin/umu-run");
+        // Everything absent from the JSON gets its sub-struct default.
+        assert_eq!(data.cloud.base_path, "Spool");
+        assert_eq!(data.cloud.rclone_args, "--fast-list --ignore-checksum");
+        assert!(data.lan.share_enabled);
+        assert_eq!(data.lan.download_max_mbps, 0.0);
+        assert_eq!(data.save_retention_full, 3);
+    }
+
+    /// The grouping is internal: the serialized JSON stays flat (the historical
+    /// `cloud_*` / `lan_*` / `umu_run_path` keys), and the Rust sub-struct names
+    /// (`cloud`, `lan`, `launch`) never appear on the wire.
+    #[test]
+    fn serializes_to_flat_keys() {
+        let json = serde_json::to_value(ConfigData::default()).unwrap();
+        let obj = json.as_object().unwrap();
+        for key in [
+            "cloud_provider", "cloud_remote", "cloud_base_path", "cloud_path",
+            "rclone_args", "cloud_webdav_url", "cloud_webdav_username",
+            "lan_share_enabled", "lan_share_port", "lan_install_dir",
+            "lan_download_max_mbps", "umu_run_path", "default_proton_path",
+        ] {
+            assert!(obj.contains_key(key), "missing flat key: {key}");
+        }
+        assert!(!obj.contains_key("cloud"));
+        assert!(!obj.contains_key("lan"));
+        assert!(!obj.contains_key("launch"));
+    }
+
+    #[test]
+    fn round_trips_through_json() {
+        let original = ConfigData {
+            cloud: CloudConfig {
+                provider: "gdrive".to_string(),
+                base_path: "Games/Spool".to_string(),
+                ..CloudConfig::default()
+            },
+            lan: LanConfig {
+                share_port: 50000,
+                download_max_mbps: 12.5,
+                ..LanConfig::default()
+            },
+            launch: LaunchConfig {
+                default_proton_path: "/opt/proton".to_string(),
+                ..LaunchConfig::default()
+            },
+            ..ConfigData::default()
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        let parsed: ConfigData = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.cloud.provider, "gdrive");
+        assert_eq!(parsed.cloud.base_path, "Games/Spool");
+        assert_eq!(parsed.lan.share_port, 50000);
+        assert_eq!(parsed.lan.download_max_mbps, 12.5);
+        assert_eq!(parsed.launch.default_proton_path, "/opt/proton");
+    }
 }

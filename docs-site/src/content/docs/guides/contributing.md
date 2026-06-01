@@ -50,9 +50,13 @@ GitHub Actions workflows live in `.github/workflows/`:
 
 ## Conventions worth knowing
 
-- **JSON shape compatibility:** every field on the `library.json` and
-  `config.json` structs carries `#[serde(default)]`, so older files load
-  without migration — keep it that way when adding fields.
+- **JSON shape compatibility:** the `library.json` and `config.json` structs
+  carry a container-level `#[serde(default)]`, so missing keys fall back to the
+  struct's `Default` and older files load without migration — keep it that way
+  when adding fields. Apply the attribute at the struct (container) level, not
+  per-field: a per-field `#[serde(default)]` shadows the struct's custom
+  `Default` values with the field-type default. Fields the app no longer uses
+  are removed, not retained for legacy round-trip.
 - **Lock discipline:** never hold a `std::sync::Mutex` guard across `.await`.
   Snapshot what you need, drop the guard, then await.
 - **Add a command, add a wrapper:** when you add a Rust `#[tauri::command]`,
