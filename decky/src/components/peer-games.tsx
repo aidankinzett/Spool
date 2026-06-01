@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import type { DownloadProgress, LanPeer, PeerGame } from "../types";
 import { fmtBytes } from "../lib/format";
 import { CoverGrid } from "./cover-grid";
+import { PeerGameDetailPage } from "./peer-game-detail-panel";
 
 // A selected peer’s shared games, fetched through the server-side proxy.
 // Activating a tile kicks off a download; a progress row appears above the
@@ -20,6 +21,7 @@ export function PeerGames({
   const [games, setGames] = useState<PeerGame[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [download, setDownload] = useState<DownloadProgress | null>(null);
+  const [selectedGame, setSelectedGame] = useState<PeerGame | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const peerBase = `${base}/lan/peers/${peer.addr}/${peer.file_server_port}`;
 
@@ -211,13 +213,31 @@ export function PeerGames({
       )}
       {games && games.length > 0 && (
         <CoverGrid
-          onActivate={(id) => void startDownload(id)}
+          onActivate={(id) => {
+            const g = games.find((x) => x.id === id) ?? null;
+            if (g) setSelectedGame(g);
+          }}
           tiles={games.map((g) => ({
             key: g.id,
             name: g.game_name,
             coverUrl: `${peerBase}/games/${g.id}/cover`,
           }))}
         />
+      )}
+
+      {selectedGame && (
+        <div style={{ position: "fixed", inset: 0, zIndex: 100 }}>
+          <PeerGameDetailPage
+            base={base}
+            peer={peer}
+            game={selectedGame}
+            onDownload={() => {
+              void startDownload(selectedGame.id);
+              setSelectedGame(null);
+            }}
+            isDownloading={isActive}
+          />
+        </div>
       )}
     </div>
   );

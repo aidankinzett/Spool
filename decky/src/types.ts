@@ -70,10 +70,12 @@ export interface LanPeer {
   last_seen_ago_secs: number;
 }
 
-// Mirror of the Rust `PeerGame` (lan/server.rs) — only the fields the grid uses.
+// Mirror of the Rust `PeerGame` (lan/server.rs).
 export interface PeerGame {
   id: string;
   game_name: string;
+  install_size_mb: number;
+  shareable: boolean;
 }
 
 // Mirror of the Rust `DownloadProgress` (lan/install.rs).
