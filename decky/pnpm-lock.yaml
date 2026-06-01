@@ -28,11 +28,11 @@ importers:
         specifier: ^4.53.3
         version: 4.60.4
       '@types/react':
-        specifier: 19.1.1
-        version: 19.1.1
+        specifier: 19.2.15
+        version: 19.2.15
       '@types/react-dom':
         specifier: 19.1.1
-        version: 19.1.1(@types/react@19.1.1)
+        version: 19.1.1(@types/react@19.2.15)
       rollup:
         specifier: ^4.53.3
         version: 4.60.4
@@ -238,6 +238,7 @@ packages:
     resolution: {integrity: sha512-+qfSY27qIrFfI/Hom04KYFw3GKZSGU4lXus51wsb5EuySfFlWRwjkKWoE9emgRw/ukoT4Udsj4W/+xxG8VbPKg==}
     cpu: [x64]
     os: [linux]
+    libc: [musl]
 
   '@rollup/rollup-openbsd-x64@4.60.4':
     resolution: {integrity: sha512-VpTfOPHgVXEBeeR8hZ2O0F3aSso+JDWqTWmTmzcQKted54IAdUVbxE+j/MVxUsKa8L20HJhv3vUezVPoquqWjA==}
@@ -280,8 +281,8 @@ packages:
     peerDependencies:
       '@types/react': ^19.0.0
 
-  '@types/react@19.1.1':
-    resolution: {integrity: sha512-ePapxDL7qrgqSF67s0h9m412d9DbXyC1n59O2st+9rjuuamWsZuD2w55rqY12CbzsZ7uVXb5Nw0gEp9Z8MMutQ==}
+  '@types/react@19.2.15':
+    resolution: {integrity: sha512-eRwcGNHve+E8qtEQSSRl6urh+rFop4v8gm6O8rGv25CodbvFdLjA1vVQ1KkiFE0w0UPOnb8tDiFKL5lp0rtY5Q==}
 
   '@types/resolve@1.20.2':
     resolution: {integrity: sha512-60BCwRFOZCQhDncwQdxxeOEEkbc5dIMccYLwbxsS4TUNeVECQ/pBJ0j09mrHOl/JJvpRPGwO9SvE4nR2Nb/a4Q==}
@@ -855,11 +856,11 @@ snapshots:
 
   '@types/estree@1.0.9': {}
 
-  '@types/react-dom@19.1.1(@types/react@19.1.1)':
+  '@types/react-dom@19.1.1(@types/react@19.2.15)':
     dependencies:
-      '@types/react': 19.1.1
+      '@types/react': 19.2.15
 
-  '@types/react@19.1.1':
+  '@types/react@19.2.15':
     dependencies:
       csstype: 3.2.3
 
