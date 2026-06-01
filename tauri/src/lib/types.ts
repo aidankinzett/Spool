@@ -372,6 +372,7 @@ export type NewGame = {
   lutris_slug?: string | null;
   manifest_install_dir?: string | null;
   save_paths?: string[];
+  game_folder_path?: string | null;
 };
 
 /**

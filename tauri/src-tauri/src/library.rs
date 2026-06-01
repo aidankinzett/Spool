@@ -194,6 +194,11 @@ pub struct NewGame {
     pub manifest_install_dir: Option<String>,
     #[serde(default)]
     pub save_paths: Vec<String>,
+    /// Install folder on disk (defaults to the exe's parent directory in the
+    /// Add flow, confirmed by the user). Required for LAN sharing to have
+    /// something to stream — see `PeerGame::from_entry` in `lan/mod.rs`.
+    #[serde(default)]
+    pub game_folder_path: Option<String>,
 }
 
 /// In-memory library, loaded once at startup and held behind a [`Mutex`] in
@@ -353,8 +358,10 @@ pub fn add_game(
             lutris_slug: new_game.lutris_slug,
             manifest_install_dir: new_game.manifest_install_dir,
             save_paths: new_game.save_paths,
+            game_folder_path: new_game.game_folder_path,
             // Newly added games are shared on the LAN by default; the user can
-            // turn this off per-game in the editor.
+            // turn this off per-game in the editor. Sharing only actually
+            // streams when game_folder_path is set (auto-detected on add).
             lan_shared: true,
             ..GameEntry::default()
         };
