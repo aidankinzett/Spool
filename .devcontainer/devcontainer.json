@@ -3,7 +3,7 @@
 {
 	"name": "Ubuntu",
 	// Or use a Dockerfile or Docker Compose file. More info: https://containers.dev/guide/dockerfile
-	"image": "mcr.microsoft.com/devcontainers/base:noble",
+	"build": { "dockerfile": "Dockerfile" },
 	"features": {
 		"ghcr.io/devcontainers/features/node:2": {},
 		"ghcr.io/devcontainers/features/python:1": {},
@@ -20,7 +20,7 @@
 	// "forwardPorts": [],
 
 	// Install Tauri's required Linux system libraries, frontend deps, and sidecar binaries.
-	"postCreateCommand": "sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev unzip && cd tauri && bun install && bun run download-sidecars",
+	"postCreateCommand": "cd tauri && bun install && bun run download-sidecars",
 
 	// Configure tool-specific properties.
 	// "customizations": {},
