@@ -1189,27 +1189,29 @@ pub async fn connect_cloud_oauth(
     // the pill stays "Offline" until the user separately triggers a settings
     // save. This mirrors what update_config does when the user changes the
     // provider dropdown, making the OAuth button idempotent on that path.
+    // Use the provider/remote we just authorised — the authoritative values for
+    // this flow — rather than config's cloud_provider/cloud_remote, which may be
+    // stale or blank if the user hasn't committed the settings change yet.
     let cloud_snapshot = {
         let cfg = app.state::<crate::config::SharedConfig>();
         cfg.lock().ok().map(|g| (
-            g.data.cloud_provider.clone(),
-            g.data.cloud_remote.clone(),
             g.data.rclone_args.clone(),
             base_path(&g.data),
         ))
     };
-    if let Some((cloud_provider, cloud_remote, rclone_args, base)) = cloud_snapshot {
+    if let Some((rclone_args, base)) = cloud_snapshot {
         let ludusavi_remote_path = format!("{}/ludusavi-backup", base);
         let rclone_val = crate::paths::resolve_rclone_path()
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_default();
-        let _ = crate::ludusavi_config::set_cloud(
-            Some(&cloud_provider),
-            Some(&cloud_remote),
+        crate::ludusavi_config::set_cloud(
+            Some(&provider),
+            Some(remote_name),
             Some(&ludusavi_remote_path),
             Some(&rclone_val),
             Some(&rclone_args),
-        );
+        )
+        .map_err(|e| AppError::Other(format!("failed to write cloud config: {e}")))?;
     }
 
     // Immediately probe the new remote so the frontend badge updates.
