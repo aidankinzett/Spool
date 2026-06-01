@@ -39,7 +39,7 @@ jobs:
       # pnpm 11 requires Node >= 22.13 (it imports the node:sqlite builtin), so
       # Node must be 22 or setup-node's pnpm store probe crashes with
       # ERR_UNKNOWN_BUILTIN_MODULE.
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           version: 11.5.0
       - uses: actions/setup-node@v4
