@@ -30,7 +30,7 @@ jobs:
           bun-version: "1.x"
 
       - name: Bun cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ${{ github.workspace }}/.bun-cache
           key: bun-${{ runner.os }}-${{ hashFiles('tauri/bun.lock') }}
@@ -60,7 +60,7 @@ jobs:
         uses: mozilla-actions/sccache-action@v0.0.6
 
       - name: Sccache cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ${{ github.workspace }}/.sccache
           key: sccache-${{ runner.os }}-${{ github.ref_name }}-${{ github.sha }}
@@ -106,7 +106,7 @@ jobs:
 
       - name: Cache sidecars
         id: cache-sidecars
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: tauri/src-tauri/binaries
           key: sidecars-${{ runner.os }}-${{ hashFiles('tauri/scripts/download-sidecars.js') }}
@@ -166,7 +166,7 @@ jobs:
         uses: mozilla-actions/sccache-action@v0.0.6
 
       - name: Sccache cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ${{ github.workspace }}/.sccache
           key: sccache-${{ runner.os }}-${{ github.ref_name }}-${{ github.sha }}
@@ -203,7 +203,7 @@ jobs:
         with:
           node-version: 22
       - name: pnpm store cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ${{ github.workspace }}/.pnpm-store
           key: pnpm-${{ runner.os }}-${{ hashFiles('decky/pnpm-lock.yaml') }}
@@ -217,7 +217,7 @@ jobs:
           corepack pnpm build
 
       - name: Bun cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ${{ github.workspace }}/.bun-cache
           key: bun-${{ runner.os }}-${{ hashFiles('tauri/bun.lock') }}
@@ -230,7 +230,7 @@ jobs:
 
       - name: Cache sidecars
         id: cache-sidecars
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: tauri/src-tauri/binaries
           key: sidecars-${{ runner.os }}-${{ hashFiles('tauri/scripts/download-sidecars.js') }}
