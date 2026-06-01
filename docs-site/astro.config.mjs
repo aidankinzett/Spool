@@ -38,6 +38,10 @@ export default defineConfig({
           label: 'Architecture',
           items: [{ autogenerate: { directory: 'architecture' } }],
         },
+        {
+          label: 'Decky Plugin',
+          items: [{ autogenerate: { directory: 'decky' } }],
+        },
       ],
       editLink: {
         baseUrl: 'https://github.com/aidankinzett/Spool/edit/master/docs-site/',
