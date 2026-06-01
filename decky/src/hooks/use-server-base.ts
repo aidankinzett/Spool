@@ -11,10 +11,15 @@ export function useServerBase(): { base: string | null; error: string | null } {
   useEffect(() => {
     let cancelled = false;
     void (async () => {
-      const { baseUrl } = await getServerBase();
-      if (cancelled) return;
-      if (baseUrl) setBase(baseUrl);
-      else setError("Spool isn’t running. Launch Spool, then try again.");
+      try {
+        const { baseUrl } = await getServerBase();
+        if (cancelled) return;
+        if (baseUrl) setBase(baseUrl);
+        else setError("Spool isn’t running. Launch Spool, then try again.");
+      } catch (e) {
+        if (!cancelled)
+          setError(`Couldn’t reach Spool: ${e instanceof Error ? e.message : String(e)}`);
+      }
     })();
     return () => {
       cancelled = true;

@@ -17,12 +17,16 @@ export function Content() {
     null,
   );
   const [settings, setLocalSettings] = useState<Settings | null>(null);
+  const [spoolCommand, setSpoolCommand] = useState("");
   const [busy, setBusy] = useState(false);
 
   const refresh = async () => setStatus(await getStatus());
   useEffect(() => {
     void refresh();
-    void getSettings().then(setLocalSettings);
+    void getSettings().then((s) => {
+      setLocalSettings(s);
+      setSpoolCommand(s.spool_command);
+    });
   }, []);
 
   const save = async (patch: Partial<Settings>) => {
@@ -104,8 +108,9 @@ export function Content() {
           <TextField
             label="Spool command"
             description="Override the auto-detected spool / spool-launcher.sh path."
-            value={settings?.spool_command ?? ""}
-            onChange={(e) => void save({ spool_command: e.target.value })}
+            value={spoolCommand}
+            onChange={(e) => setSpoolCommand(e.target.value)}
+            onBlur={() => void save({ spool_command: spoolCommand })}
           />
         </PanelSectionRow>
       </PanelSection>

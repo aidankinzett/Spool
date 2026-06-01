@@ -13,8 +13,11 @@ export function LibraryGrid({ base }: { base: string }) {
     void (async () => {
       try {
         const res = await fetch(`${base}/library`);
-        const data = (await res.json()) as LibraryGame[];
-        if (!cancelled) setGames(data);
+        const data: unknown = await res.json();
+        if (!cancelled) {
+          if (res.ok && Array.isArray(data)) setGames(data as LibraryGame[]);
+          else setError("Couldn't load your library.");
+        }
       } catch {
         if (!cancelled) setError("Couldn't load your library.");
       }

@@ -85,17 +85,21 @@ export async function launchLibraryGame(base: string, gameId: string, shortcutAp
       toaster.toast({ title: "Spool", body: "Couldn't add to Steam." });
       return;
     }
-    // Reinforce every field via the explicit setters. SetAppLaunchOptions is
-    // the one that actually sticks — without it the launcher runs with no args.
+    rememberAppid(gameId, appid);
+  }
+
+  if (appid != null) {
+    // Reinforce every field via the explicit setters for both new and reused
+    // appids. SetAppLaunchOptions is the one that actually sticks — without it
+    // the launcher runs with no args even on a reused shortcut.
     try { apps.SetShortcutName?.(appid, info.appName); } catch (e) { console.warn("[Spool] SetShortcutName", e); }
     try { apps.SetShortcutExe?.(appid, exeQ); } catch (e) { console.warn("[Spool] SetShortcutExe", e); }
     try { apps.SetShortcutStartDir?.(appid, dirQ); } catch (e) { console.warn("[Spool] SetShortcutStartDir", e); }
     try { apps.SetAppLaunchOptions?.(appid, info.launchOptions); } catch (e) { console.warn("[Spool] SetAppLaunchOptions", e); }
     try { apps.SetShortcutLaunchOptions?.(appid, info.launchOptions); } catch { /* fallback, may not exist */ }
-    rememberAppid(gameId, appid);
-    // Set library artwork live (portrait/hero/logo/wide). Best-effort — never
-    // blocks the launch.
-    await applyArtwork(base, gameId, appid, apps);
+    // Set library artwork live (portrait/hero/logo/wide). Fired in the
+    // background so a slow or stalled loopback server cannot delay launch.
+    void applyArtwork(base, gameId, appid, apps);
   }
 
   if (appid == null) {

@@ -73,9 +73,8 @@ function appStore():
 // rather than computing the bit-shift, polling briefly for the shortcut to
 // register. Falls back to the computed id if the store never surfaces it.
 export async function resolveSteamGameId(appid: number): Promise<string> {
-  const store = appStore();
   for (let i = 0; i < 25; i++) {
-    const details = store?.m_mapApps?.get?.(appid);
+    const details = appStore()?.m_mapApps?.get?.(appid);
     if (details?.m_gameid != null) {
       console.log(`[Spool] resolved m_gameid=${details.m_gameid} for appid=${appid} (try ${i})`);
       return String(details.m_gameid);
