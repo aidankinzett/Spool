@@ -540,13 +540,18 @@ fn run_attached_launch(
         }
         if let Err(e) = runner::launch_game_inner(&app_handle, &id).await {
             tracing::error!(error = %e, "attached --run workflow failed");
-            // The workflow already emitted an `error` phase the splash is
-            // showing. Hold it on screen briefly so the user can read the
-            // reason (e.g. a restore timeout) before we exit and hand control
-            // back to Steam.
+            // A cloud-sync conflict is interactive: the workflow emitted an
+            // `error` phase and the splash is now showing CloudConflictModal.
+            // Return WITHOUT exiting so the app stays alive for the user to
+            // resolve/retry/cancel — the splash's modal handlers call
+            // `exit(0)` themselves once the user is done (see splash/+page.svelte).
+            // Exiting here would tear the modal down before they can act.
             if e.to_string().contains("Cloud sync conflict") {
                 return;
             }
+            // Any other error is terminal and non-interactive: hold it on the
+            // splash briefly so the user can read the reason (e.g. a restore
+            // timeout) before we exit and hand control back to the host.
             tokio::time::sleep(std::time::Duration::from_secs(5)).await;
         }
         app_handle.exit(0);
