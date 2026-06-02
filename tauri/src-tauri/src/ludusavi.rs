@@ -871,7 +871,7 @@ fn title_case(s: &str) -> String {
             let mut chars = word.chars();
             match chars.next() {
                 Some(first) => {
-                    first.to_uppercase().collect::<String>() + chars.as_str()
+                    first.to_uppercase().collect::<String>() + &chars.as_str().to_lowercase()
                 }
                 None => String::new(),
             }
@@ -990,9 +990,11 @@ fn pick_name_from_version_info(
         .copied()?;
 
     // ProductName first; skip if it's a junk/engine string.
+    // title_case normalises all-caps values (e.g. "PRAGMATA" → "Pragmata")
+    // so they score well against the mixed-case names in the ludusavi manifest.
     let product = vi
         .value(lang, "ProductName")
-        .map(|s| sanitize_pe_string(&s))
+        .map(|s| title_case(&sanitize_pe_string(&s)))
         .filter(|s| !s.is_empty() && !is_junk_product_name(s));
 
     if product.is_some() {
@@ -1001,7 +1003,7 @@ fn pick_name_from_version_info(
 
     // FileDescription as the fallback.
     vi.value(lang, "FileDescription")
-        .map(|s| sanitize_pe_string(&s))
+        .map(|s| title_case(&sanitize_pe_string(&s)))
         .filter(|s| !s.is_empty() && !is_junk_product_name(s))
 }
 
@@ -1219,6 +1221,9 @@ mod tests {
             "Hades 2"
         );
         assert_eq!(infer_name_from_exe(Path::new("")), "");
+        // All-caps exe names normalise to title case so fuzzy scores are good.
+        assert_eq!(infer_name_from_exe(Path::new("PRAGMATA.exe")), "Pragmata");
+        assert_eq!(infer_name_from_exe(Path::new("DOOM.exe")), "Doom");
     }
 
     #[test]
@@ -1287,6 +1292,16 @@ mod tests {
         assert_eq!(sanitize_pe_string("Doom © 2023"), "Doom 2023");
         // Multiple spaces collapsed.
         assert_eq!(sanitize_pe_string("  Hades  "), "Hades");
+    }
+
+    #[test]
+    fn pe_name_normalised_to_title_case() {
+        // Simulates pick_name_from_version_info's sanitize → title_case pipeline.
+        assert_eq!(title_case(&sanitize_pe_string("PRAGMATA")), "Pragmata");
+        assert_eq!(title_case(&sanitize_pe_string("ELDEN RING™")), "Elden Ring");
+        assert_eq!(title_case(&sanitize_pe_string("DOOM")), "Doom");
+        // Already title-cased values pass through unchanged.
+        assert_eq!(title_case(&sanitize_pe_string("Hades")), "Hades");
     }
 
     #[test]
