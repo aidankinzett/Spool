@@ -646,14 +646,18 @@ fn spawn_startup_tasks(app: &AppHandle) {
     // Throttled to respect the store endpoint's rate limit.
     metadata_backfill::spawn_backfill(app.clone());
 
-    // Cloud reachability poll. Runs forever, every 60s — probes the rclone
-    // remote and emits `sync:status-changed` so the chrome cloud icon can tint
-    // itself. No-op (Unconfigured) when cloud saves aren't set up.
-    rclone::spawn_health_poller(app.clone());
+    // Register the health sink so real control-plane ops can report cloud
+    // reachability passively, then run a single startup probe. After this there's
+    // no periodic poll — the chrome cloud icon is kept current from the
+    // success/failure of claim/heartbeat/backup/fold ops (and the Settings
+    // refresh button), so an idle tray-resident Spool doesn't draw on the
+    // shared, quota-limited rclone remote once a minute. No-op (Unconfigured)
+    // when cloud saves aren't set up.
+    rclone::init_health_sink(app.clone());
+    rclone::spawn_initial_sync_probe(app.clone());
 
     // One-shot cross-device fold: list per-device blobs in the remote, sum
     // playtime / take max last-played / derive the badge, merge into the
-    // library. Runs ~4 s after launch so the reachability poll has a chance to
-    // confirm the remote first.
+    // library. Runs ~4 s after launch, after the startup reachability probe.
     rclone::spawn_startup_fold(app.clone());
 }
