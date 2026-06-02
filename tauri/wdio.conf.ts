@@ -78,6 +78,14 @@ export const config: Options.Testrunner = {
       join(spoolDataDir, 'library.json'),
       JSON.stringify(SEED_GAMES, null, 2),
     );
+    // Seed a config marking onboarding complete. Without a config.json the
+    // app treats this as a genuine fresh install and shows the first-run
+    // onboarding modal over the library, whose overlay intercepts clicks on
+    // the seeded game rows.
+    writeFileSync(
+      join(spoolDataDir, 'config.json'),
+      JSON.stringify({ onboarding_completed: true }, null, 2),
+    );
   },
 
   onComplete: () => {

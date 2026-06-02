@@ -55,6 +55,13 @@ pub struct ConfigData {
     /// new installs) so the toast appears on the first close-to-tray.
     pub tray_intro_seen: bool,
 
+    /// Set to true once the first-run onboarding flow has been finished (or
+    /// dismissed). Defaults to false so it shows on a fresh install. A
+    /// pre-existing config that predates this field is migrated to `true` on
+    /// load (see `migrate_onboarding_completed`) so upgrading users don't get
+    /// the first-run flow thrown at them.
+    pub onboarding_completed: bool,
+
     /// Number of full save revisions ludusavi retains per game (the
     /// `backup.retention.full` knob). More revisions = more rollback points,
     /// at the cost of more disk + cloud upload per game. Differentials stay at
@@ -85,6 +92,7 @@ impl Default for ConfigData {
             device_name: String::new(),
             ui_mode: UiMode::default(),
             tray_intro_seen: false,
+            onboarding_completed: false,
             save_retention_full: 3,
             cloud: CloudConfig::default(),
             lan: LanConfig::default(),
@@ -195,9 +203,11 @@ impl Config {
     /// touched the data so the on-disk file matches in-memory state.
     pub fn load() -> AppResult<Self> {
         let path = paths::config_file();
-        let mut data = if path.exists() {
-            let json = std::fs::read_to_string(&path)?;
-            match serde_json::from_str::<ConfigData>(&json) {
+        // Keep the raw JSON so the onboarding migration can tell a key that
+        // was absent (legacy file) from one explicitly set to false.
+        let raw_json = path.exists().then(|| std::fs::read_to_string(&path).ok()).flatten();
+        let mut data = if let Some(json) = raw_json.as_deref() {
+            match serde_json::from_str::<ConfigData>(json) {
                 Ok(d) => d,
                 Err(e) => {
                     tracing::warn!(error = %e, "config.json is malformed; attempting .bak recovery");
@@ -228,6 +238,7 @@ impl Config {
         changed |= auto_detect_umu_run(&mut data);
         changed |= stamp_current_exe(&mut data);
         changed |= migrate_cloud_base_path(&mut data);
+        changed |= migrate_onboarding_completed(raw_json.as_deref(), &mut data);
 
         let cfg = Self { data };
         if changed {
@@ -343,6 +354,39 @@ fn migrate_cloud_base_path(data: &mut ConfigData) -> bool {
     data.cloud.base_path = base.to_string();
     data.cloud.path = format!("{base}/ludusavi-backup");
     tracing::info!(base, "migrated legacy cloud_path to cloud_base_path");
+    true
+}
+
+/// Marks a pre-existing config as having finished onboarding.
+///
+/// The first-run onboarding flow shows whenever `onboarding_completed` is
+/// false. A fresh install has no config file at all, so it correctly starts
+/// false and the flow runs. But a config written by a Spool build that predates
+/// this field would also deserialize to `false` (via the container-level
+/// `#[serde(default)]`) — and we don't want to throw the first-run flow at a
+/// returning user. Such legacy files are recognised by the
+/// `onboarding_completed` key being *absent* from the raw JSON; when it's
+/// missing we flip the flag to true. Brand-new installs write the key
+/// explicitly (as false), so it's present on every subsequent load and this
+/// never fires for them. Returns true if it changed anything.
+fn migrate_onboarding_completed(raw_json: Option<&str>, data: &mut ConfigData) -> bool {
+    if data.onboarding_completed {
+        return false;
+    }
+    let Some(json) = raw_json else {
+        // No file on disk — a genuine first run. Leave it false so the flow shows.
+        return false;
+    };
+    let key_present = serde_json::from_str::<serde_json::Value>(json)
+        .ok()
+        .and_then(|v| v.as_object().map(|o| o.contains_key("onboarding_completed")))
+        .unwrap_or(false);
+    if key_present {
+        return false;
+    }
+    // Legacy config without the key — a returning user. Skip onboarding.
+    data.onboarding_completed = true;
+    tracing::info!("marked pre-existing config as onboarding-completed");
     true
 }
 
@@ -464,6 +508,35 @@ mod tests {
         assert!(!obj.contains_key("cloud"));
         assert!(!obj.contains_key("lan"));
         assert!(!obj.contains_key("launch"));
+    }
+
+    #[test]
+    fn legacy_config_without_onboarding_key_is_marked_completed() {
+        // A config that predates the onboarding flag (key absent) is a
+        // returning user — migrate to completed so the flow doesn't reappear.
+        let json = r#"{ "device_id": "abc", "tray_intro_seen": true }"#;
+        let mut data: ConfigData = serde_json::from_str(json).unwrap();
+        assert!(!data.onboarding_completed); // serde default before migration
+        assert!(migrate_onboarding_completed(Some(json), &mut data));
+        assert!(data.onboarding_completed);
+    }
+
+    #[test]
+    fn fresh_install_keeps_onboarding_pending() {
+        // No file on disk (None) → genuine first run, flag stays false.
+        let mut data = ConfigData::default();
+        assert!(!migrate_onboarding_completed(None, &mut data));
+        assert!(!data.onboarding_completed);
+    }
+
+    #[test]
+    fn explicit_onboarding_false_is_left_pending() {
+        // A new-scheme config that wrote the key as false (e.g. relaunched
+        // mid-onboarding) keeps showing the flow — the key is present.
+        let json = r#"{ "device_id": "abc", "onboarding_completed": false }"#;
+        let mut data: ConfigData = serde_json::from_str(json).unwrap();
+        assert!(!migrate_onboarding_completed(Some(json), &mut data));
+        assert!(!data.onboarding_completed);
     }
 
     #[test]

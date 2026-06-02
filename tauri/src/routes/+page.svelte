@@ -5,13 +5,29 @@
   import LibraryTouch from '$lib/components/LibraryTouch.svelte';
   import CloudConflictModal from '$lib/components/CloudConflictModal.svelte';
   import SuspendedLockModal from '$lib/components/SuspendedLockModal.svelte';
+  import OnboardingModal from '$lib/components/OnboardingModal.svelte';
   import { api, assetUrl } from '$lib/api';
+  import { toasts } from '$lib/toasts.svelte';
   import { absDateTime, relDate, fmtSize } from '$lib/format';
   import type { RawConflictDetails } from '$lib/types';
+  import { onMount } from 'svelte';
 
   const lib = createLibrary();
 
   let conflictDetails = $state<RawConflictDetails | null>(null);
+
+  // First-run onboarding — show the flow over the library when a fresh config
+  // hasn't completed it yet. Returning users (pre-existing configs) are
+  // migrated to completed on the backend, so this only fires on a new install.
+  let showOnboarding = $state(false);
+  onMount(async () => {
+    try {
+      const cfg = await api.getConfig();
+      if (!cfg.onboarding_completed) showOnboarding = true;
+    } catch (e) {
+      console.error('[library] onboarding check failed:', e);
+    }
+  });
 
   $effect(() => {
     const id = lib.conflictGameId;
@@ -65,6 +81,20 @@
   <LibraryTouch {lib} />
 {:else}
   <LibraryDesktop {lib} />
+{/if}
+
+{#if showOnboarding}
+  <OnboardingModal
+    onfinish={() => {
+      showOnboarding = false;
+      toasts.show({
+        kind: 'ok',
+        label: 'SETUP',
+        title: "You're all set",
+        sub: 'Welcome to Spool — add your first game to get started.',
+      });
+    }}
+  />
 {/if}
 
 {#if lib.conflictGameId}
