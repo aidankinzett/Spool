@@ -8,7 +8,7 @@
   A game library that keeps your saves in sync between your Steam Deck and your PC.
 </p>
 
-<!-- SCREENSHOT: main library window (desktop layout) — the hero shot for the top of the README -->
+<img width="1282" height="936" alt="image" src="https://github.com/user-attachments/assets/cf168909-4668-4769-8691-167f1b28d222" />
 
 ---
 
@@ -30,7 +30,8 @@ pushed after you quit, so you can stop on the Deck and pick up on the PC without
 overwriting yourself. If both sides changed, Spool shows a conflict picker instead
 of guessing.
 
-<!-- SCREENSHOT: cloud save conflict picker (CloudConflictModal) -->
+<img width="649" height="523" alt="image" src="https://github.com/user-attachments/assets/f0595c7b-94a1-4f39-883a-adb08cad27ea" />
+
 
 ### LAN transfers between devices
 
@@ -41,7 +42,8 @@ This makes getting a game onto the Steam Deck much faster than downloading it ag
 Transfers verify every file, resume if interrupted, and add the game to your library
 automatically when done.
 
-<!-- SCREENSHOT: LAN tab / peer games available to transfer, with a transfer in progress -->
+<img width="342" height="221" alt="image" src="https://github.com/user-attachments/assets/435503f6-9623-433a-959f-8d18dbef1138" />
+
 
 ### Decky plugin for Game Mode
 
