@@ -5,7 +5,16 @@
  * helper returns a fully-populated object so stories override only the
  * fields they care about.
  */
-import type { ConfigData, GameEntry, SearchCandidate, DepStatus } from '../src/lib/types';
+import type {
+  ConfigData,
+  GameEntry,
+  SearchCandidate,
+  DepStatus,
+  DownloadProgress,
+  UploadSnapshot,
+  LanPeer,
+  PeerGame,
+} from '../src/lib/types';
 
 /** A fully-populated GameEntry. Matches the fixture in GameDetail.test.ts. */
 export function makeGame(over: Partial<GameEntry> = {}): GameEntry {
@@ -110,4 +119,150 @@ export const SAMPLE_DEPS: DepStatus[] = [
   { name: 'umu-run', found: true, path: '/usr/bin/umu-run', source: 'system', install_hint: '' },
   { name: 'ludusavi', found: true, path: '/opt/spool/ludusavi', source: 'bundled', install_hint: '' },
   { name: 'rclone', found: true, path: '/opt/spool/rclone', source: 'bundled', install_hint: '' },
+];
+
+/** An in-flight LAN download. */
+export function makeDownload(over: Partial<DownloadProgress> = {}): DownloadProgress {
+  return {
+    install_token: 'tok-1',
+    source_device_id: 'dev-deck',
+    source_device_name: 'Steam Deck',
+    source_game_id: 'pg1',
+    game_name: 'Celeste',
+    bytes_done: 620 * 1024 * 1024,
+    bytes_total: 1280 * 1024 * 1024,
+    current_file: 'Celeste/Content/textures.bank',
+    status: 'transferring',
+    message: null,
+    new_game_id: null,
+    bytes_per_second: 48 * 1024 * 1024,
+    cover_image_path: null,
+    ...over,
+  };
+}
+
+/** A couple of in-flight uploads (this device serving peers). */
+export const SAMPLE_UPLOADS: UploadSnapshot[] = [
+  {
+    session_id: 'up-1',
+    game_id: 'g1',
+    game_name: 'Hollow Knight',
+    peer_addr: '192.168.1.42',
+    last_seen_ago_secs: 1,
+    cancelled: false,
+    bytes_total: 9216 * 1024 * 1024,
+    bytes_sent: 3100 * 1024 * 1024,
+  },
+  {
+    session_id: 'up-2',
+    game_id: 'g2',
+    game_name: 'Stardew Valley',
+    peer_addr: '192.168.1.51',
+    last_seen_ago_secs: 4,
+    cancelled: false,
+    bytes_total: 520 * 1024 * 1024,
+    bytes_sent: 480 * 1024 * 1024,
+  },
+];
+
+/** LAN peers on the network. */
+export const SAMPLE_PEERS: LanPeer[] = [
+  {
+    device_id: 'dev-deck',
+    device_name: 'Steam Deck',
+    addr: '192.168.1.42',
+    game_count: 14,
+    version: 1,
+    file_server_port: 47632,
+    last_seen_ago_secs: 2,
+  },
+  {
+    device_id: 'dev-ally',
+    device_name: 'ROG Ally',
+    addr: '192.168.1.51',
+    game_count: 7,
+    version: 1,
+    file_server_port: 47632,
+    last_seen_ago_secs: 5,
+  },
+];
+
+/** Games served by a peer. */
+export const SAMPLE_PEER_GAMES: PeerGame[] = [
+  {
+    id: 'pg1',
+    catalog_number: 3,
+    game_name: 'Celeste',
+    developer: 'Maddy Makes Games',
+    publisher: 'Maddy Makes Games',
+    genres: ['Platformer'],
+    install_size_mb: 1280,
+    release_date: '2018-01-25',
+    steam_id: 504230,
+    gog_id: null,
+    lutris_slug: null,
+    shareable: true,
+  },
+  {
+    id: 'pg2',
+    catalog_number: 8,
+    game_name: 'Stardew Valley',
+    developer: 'ConcernedApe',
+    publisher: 'ConcernedApe',
+    genres: ['Simulation', 'RPG'],
+    install_size_mb: 520,
+    release_date: '2016-02-26',
+    steam_id: 413150,
+    gog_id: null,
+    lutris_slug: null,
+    shareable: true,
+  },
+];
+
+/** A multi-entry library for the main-window stories. */
+export const SAMPLE_LIBRARY: GameEntry[] = [
+  makeGame(),
+  makeGame({
+    id: 'g2',
+    catalog_number: 2,
+    game_name: 'Stardew Valley',
+    safe_name: 'stardew-valley',
+    developer: 'ConcernedApe',
+    publisher: 'ConcernedApe',
+    genres: ['Simulation', 'RPG'],
+    accent_color: '#8bbf5a',
+    steam_id: 413150,
+    playtime_minutes: 9042,
+    install_size_mb: 520,
+    last_played_at: '2026-06-01T19:30:00Z',
+    sync_badge: 'cloud-newer',
+  }),
+  makeGame({
+    id: 'g3',
+    catalog_number: 3,
+    game_name: 'Celeste',
+    safe_name: 'celeste',
+    developer: 'Maddy Makes Games',
+    genres: ['Platformer'],
+    accent_color: '#c95ec0',
+    steam_id: 504230,
+    playtime_minutes: 0,
+    last_played_at: null,
+    save_backup_count: 0,
+    save_last_backed_up_at: null,
+    sync_badge: null,
+  }),
+  makeGame({
+    id: 'g4',
+    catalog_number: 4,
+    game_name: 'Hades',
+    safe_name: 'hades',
+    developer: 'Supergiant Games',
+    genres: ['Roguelike', 'Action'],
+    accent_color: '#e0703a',
+    steam_id: 1145360,
+    playtime_minutes: 3120,
+    last_played_at: '2026-05-20T12:00:00Z',
+    sync_badge: 'local-newer',
+  }),
 ];

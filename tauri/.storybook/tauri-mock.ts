@@ -30,6 +30,8 @@ function defaultHandlers(): TauriHandlers {
     list_proton_versions: [],
     check_dependencies: [],
     list_lan_peers: [],
+    list_active_uploads: [],
+    take_pending_run: null,
     decky_plugin_status: { supported: false },
     current_sync_status: {
       reachability: 'unconfigured',
