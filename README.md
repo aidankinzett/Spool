@@ -54,8 +54,10 @@ transfers, and see cross-device playtime on Steam's own game pages. It also back
 your saves if Steam force-closes Spool when you quit a game, so a session is never
 lost. Install it in one click from Spool's settings.
 
-<!-- SCREENSHOT: Decky plugin in the Steam Deck Quick Access menu — library/launch view -->
-<!-- SCREENSHOT: Decky plugin LAN browsing view -->
+<img width="1029" height="580" alt="Screenshot 2026-06-02 at 10 04 32 PM" src="https://github.com/user-attachments/assets/e1a1ade7-6c59-4521-a11d-5cb2243535ec" />
+
+<img width="1029" height="583" alt="Screenshot 2026-06-02 at 10 04 49 PM" src="https://github.com/user-attachments/assets/3c1e9660-8c5e-4e5b-9f8d-50a6082bc3cb" />
+
 
 ## Download
 
