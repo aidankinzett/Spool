@@ -64,7 +64,10 @@ export function installTauriMock(handlers: TauriHandlers = {}): void {
   mockWindows('main');
   mockIPC(
     (cmd, args) => {
-      if (cmd in merged) return resolve(merged[cmd], (args ?? {}) as Record<string, unknown>);
+      // Own-property check so a command literally named `toString`/`constructor`
+      // can't false-match an inherited Object.prototype member.
+      if (Object.prototype.hasOwnProperty.call(merged, cmd))
+        return resolve(merged[cmd], (args ?? {}) as Record<string, unknown>);
       return undefined;
     },
     { shouldMockEvents: true },

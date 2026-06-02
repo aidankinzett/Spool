@@ -3,6 +3,7 @@
   import { defineMeta } from '@storybook/addon-svelte-csf';
   import { mockIPC } from '@tauri-apps/api/mocks';
   import type { GameEntry } from '$lib/types';
+  import { makeGame as makePlayedGame } from '../../../.storybook/fixtures';
   import GameDetail from './GameDetail.svelte';
 
   // GameDetail reaches into Tauri on mount (app_platform + detect_streaming_host,
@@ -41,52 +42,26 @@
     }
   });
 
-  // Mirrors the fixture in GameDetail.test.ts — a fully-populated GameEntry so
-  // stories only override the fields they care about.
+  // GameDetail's stories explore the *fresh* baseline (no playtime, no backups,
+  // brand-accent fallback), whereas the shared fixture defaults to a populated
+  // "played" entry. Derive from the shared fixture (single source of truth for
+  // the GameEntry shape) with the played-only fields reset, so individual
+  // stories still only override what they care about.
+  const FRESH: Partial<GameEntry> = {
+    last_played_at: null,
+    playtime_minutes: 0,
+    save_backup_count: 0,
+    save_last_backed_up_at: null,
+    save_backup_size_mb: 0,
+    save_paths: [],
+    accent_color: null,
+    sync_badge: null,
+    steam_id: null,
+    install_source: 'Manual',
+  };
+
   function makeGame(over: Partial<GameEntry> = {}): GameEntry {
-    return {
-      id: 'g1',
-      catalog_number: 1,
-      game_name: 'Hollow Knight',
-      exe_path: 'C:/Games/HollowKnight/hollow_knight.exe',
-      safe_name: 'hollow-knight',
-      cover_image_path: null,
-      hero_image_path: null,
-      added_at: '2026-01-12T09:00:00Z',
-      last_played_at: null,
-      launcher_exe_path: null,
-      game_folder_path: 'C:/Games/HollowKnight',
-      run_as_admin: false,
-      use_proton: false,
-      proton_version_path: null,
-      wine_prefix_path: null,
-      launch_args: null,
-      description:
-        'A 2D action-adventure through a vast, ruined kingdom of insects and heroes. Explore twisting caverns, battle tainted creatures and escape ancient labyrinths.',
-      developer: 'Team Cherry',
-      publisher: 'Team Cherry',
-      genres: ['Metroidvania', 'Action', 'Adventure'],
-      release_date: '2017-02-24',
-      install_size_mb: 9216,
-      playtime_minutes: 0,
-      lan_shared: false,
-      lan_share_folder: null,
-      save_backup_count: 0,
-      save_last_backed_up_at: null,
-      save_backup_size_mb: 0,
-      install_source: 'Manual',
-      lan_install_source_device_name: null,
-      lan_install_source_device_id: null,
-      steam_id: null,
-      gog_id: null,
-      lutris_slug: null,
-      manifest_install_dir: null,
-      save_paths: [],
-      accent_color: null,
-      sync_badge: null,
-      cloud_sync_baseline: null,
-      ...over,
-    };
+    return makePlayedGame({ ...FRESH, ...over });
   }
 
   const { Story } = defineMeta({
