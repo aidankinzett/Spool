@@ -5,12 +5,29 @@
   import type { GameEntry } from '$lib/types';
   import GameDetail from './GameDetail.svelte';
 
-  // GameDetail only reaches into Tauri from its action handlers (Play,
-  // Add to Steam, Armoury Crate, Remove) — nothing fires on mount. Re-`mockIPC`
-  // here (overriding preview.ts's no-op default) so those buttons resolve with
-  // plausible payloads instead of throwing if clicked while exploring.
+  // GameDetail reaches into Tauri on mount (app_platform + detect_streaming_host,
+  // which gate the conditional toolbar buttons) and from its action handlers
+  // (Play, Add to Steam, Armoury Crate, Add to Apollo/Sunshine, Remove).
+  // Re-`mockIPC` here (overriding preview.ts's no-op default) so the platform
+  // probes report a Windows host with a detected streaming host — that surfaces
+  // every action button at once — and the handlers resolve with plausible
+  // payloads instead of throwing if clicked while exploring.
   mockIPC((cmd) => {
     switch (cmd) {
+      // Pretend we're on Windows so the "Armoury Crate" button renders. (It's
+      // the only Windows-gated action; everything else shows on all platforms.)
+      case 'app_platform':
+        return 'windows';
+      // Report a detected Apollo host so the "Add to Apollo" button renders.
+      case 'detect_streaming_host':
+        return { detected: true, kind: 'apollo', apps_path: '/home/you/.config/Apollo/apps.json' };
+      case 'add_to_streaming_host':
+        return {
+          host_kind: 'apollo',
+          apps_path: '/home/you/.config/Apollo/apps.json',
+          app_name: 'Hollow Knight',
+          image_set: true,
+        };
       case 'add_to_steam':
         return { extras_placed: ['cover', 'hero'] };
       case 'generate_armoury_launcher':
@@ -18,7 +35,8 @@
       case 'remove_game':
         return true;
       default:
-        // launch_game, open_path, … — fire-and-forget, void is fine.
+        // launch_game, open_path, refresh_save_metadata, … — fire-and-forget,
+        // void is fine.
         return undefined;
     }
   });

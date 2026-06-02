@@ -5,6 +5,10 @@ import { mockIPC, mockConvertFileSrc } from '@tauri-apps/api/mocks';
 // stylesheet the real app loads from `routes/+layout.svelte`.
 import '../src/app.css';
 
+// Mirrors the global `<ConfirmHost />` in `routes/+layout.svelte` so any story
+// whose component calls `confirmDialog()` has somewhere to render the modal.
+import ConfirmHostDecorator from './ConfirmHostDecorator.svelte';
+
 /**
  * Stub the Tauri boundary so components that reach for it render in the
  * browser instead of throwing.
@@ -25,6 +29,9 @@ mockIPC(() => undefined);
 const preview: Preview = {
   // Generate a Docs page for every component from its argTypes + stories.
   tags: ['autodocs'],
+  // Mount ConfirmHost around every story (the story renders into the
+  // decorator's `children` snippet) so confirmDialog()-driven modals appear.
+  decorators: [(story) => ({ Component: ConfirmHostDecorator, props: { children: story } })],
   parameters: {
     layout: 'centered',
     backgrounds: {
