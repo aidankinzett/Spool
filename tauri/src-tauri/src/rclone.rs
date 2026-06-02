@@ -271,18 +271,18 @@ enum Reach {
     Offline,
 }
 
-/// Map an rclone exit code to a reachability verdict. `None` = inconclusive
-/// (leave the current status untouched). rclone's documented codes: 0 ok,
-/// 3 dir-not-found, 4 file-not-found, 9 no-files-transferred all mean the remote
-/// *answered* (a missing session marker is the common, healthy case); 5
-/// (temporary error / retries exhausted) and 7 (fatal — includes a connection
-/// failure once our `--retries 1` is spent) mean it didn't. Other codes (usage
-/// errors, signal kills) are left inconclusive.
-fn reach_from_code(code: Option<i32>) -> Option<Reach> {
+/// Map an rclone exit code to a reachability verdict. Codes where the remote
+/// *answered* — 0 ok, 3 dir-not-found, 4 file-not-found, 9 no-files-transferred
+/// (a missing session marker is the common, healthy case) — are Online. Every
+/// other exit code means we couldn't get a clear answer from the remote
+/// (connection refused, DNS failure, auth error, rclone's temporary/fatal
+/// codes), so it's Offline. Erring toward Offline is safe for an advisory icon:
+/// a false Offline self-corrects on the next successful op, whereas a false
+/// Online would tell the user sync works when it doesn't.
+fn reach_from_code(code: Option<i32>) -> Reach {
     match code {
-        Some(0) | Some(3) | Some(4) | Some(9) => Some(Reach::Online),
-        Some(5) | Some(7) => Some(Reach::Offline),
-        _ => None,
+        Some(0) | Some(3) | Some(4) | Some(9) => Reach::Online,
+        _ => Reach::Offline,
     }
 }
 
@@ -297,11 +297,8 @@ fn stderr_tail(stderr: &[u8]) -> Option<String> {
 }
 
 /// Fold a leaf op's observed reachability into the shared status. No-op when the
-/// verdict is inconclusive or the health sink isn't registered (headless).
-fn report_reach(reach: Option<Reach>, err: Option<String>) {
-    let Some(reach) = reach else {
-        return;
-    };
+/// health sink isn't registered (headless subprocesses).
+fn report_reach(reach: Reach, err: Option<String>) {
     let Some(app) = HEALTH_SINK.get() else {
         return;
     };
@@ -348,92 +345,97 @@ fn base_command(exe: &Path) -> tokio::process::Command {
     cmd
 }
 
+/// Run a prepared control-plane rclone `cmd` to completion under `OP_TIMEOUT`,
+/// optionally writing `stdin_body` first, and fold the observed reachability
+/// into the shared status. `label` names the op for logs/diagnostics.
+///
+/// Returns the process output when rclone ran to completion (any exit code), or
+/// `None` on spawn failure, stdin-write failure, or our timeout — all reported
+/// as Offline, since a leaf op that can't get an answer from the remote can't
+/// confirm it's reachable. The one case left untouched is a process-management
+/// error (couldn't reap the child): not a remote signal, so reachability is
+/// unchanged. Shared by every leaf helper so the timeout + exit-code
+/// classification lives in exactly one place.
+async fn run_op(
+    mut cmd: tokio::process::Command,
+    label: &str,
+    stdin_body: Option<&[u8]>,
+) -> Option<std::process::Output> {
+    use tokio::io::AsyncWriteExt;
+    if stdin_body.is_some() {
+        cmd.stdin(std::process::Stdio::piped());
+    }
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(error = %e, op = label, "rclone spawn failed");
+            report_reach(Reach::Offline, Some(format!("rclone {label}: spawn failed")));
+            return None;
+        }
+    };
+    if let Some(body) = stdin_body {
+        if let Some(mut stdin) = child.stdin.take() {
+            if let Err(e) = stdin.write_all(body).await {
+                tracing::warn!(error = %e, op = label, "rclone stdin write failed");
+                report_reach(Reach::Offline, Some(format!("rclone {label}: stdin write failed")));
+                return None;
+            }
+            drop(stdin); // close so rclone sees EOF
+        }
+    }
+    match tokio::time::timeout(OP_TIMEOUT, child.wait_with_output()).await {
+        Ok(Ok(out)) => {
+            report_reach(reach_from_code(out.status.code()), stderr_tail(&out.stderr));
+            Some(out)
+        }
+        Ok(Err(e)) => {
+            tracing::warn!(error = %e, op = label, "rclone run error");
+            None
+        }
+        Err(_) => {
+            tracing::warn!(op = label, "rclone op timed out");
+            report_reach(Reach::Offline, Some(format!("rclone {label} timed out")));
+            None
+        }
+    }
+}
+
 /// `rclone cat <target>` → stdout as a String. `None` on any failure (missing
 /// file, network error, timeout).
 pub async fn cat(exe: &Path, target: &str) -> Option<String> {
     let mut cmd = base_command(exe);
     cmd.arg("cat").arg(target);
-    let child = cmd.spawn().ok()?;
-    let out = match tokio::time::timeout(OP_TIMEOUT, child.wait_with_output()).await {
-        Ok(Ok(out)) => out,
-        Ok(Err(_)) => return None,
-        Err(_) => {
-            report_reach(Some(Reach::Offline), Some("rclone cat timed out".into()));
-            return None;
-        }
-    };
-    report_reach(reach_from_code(out.status.code()), stderr_tail(&out.stderr));
-    if !out.status.success() {
-        return None;
-    }
-    Some(String::from_utf8_lossy(&out.stdout).into_owned())
+    let out = run_op(cmd, "cat", None).await?;
+    out.status
+        .success()
+        .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
 /// `rclone rcat <target>` reading `body` from stdin → object. rclone creates
 /// intermediate dirs. Returns `true` on success.
 async fn rcat(exe: &Path, target: &str, body: &[u8]) -> bool {
-    use tokio::io::AsyncWriteExt;
     let mut cmd = base_command(exe);
     cmd.arg("rcat").arg(target);
-    cmd.stdin(std::process::Stdio::piped());
-    let mut child = match cmd.spawn() {
-        Ok(c) => c,
-        Err(e) => {
-            tracing::warn!(error = %e, target, "rclone rcat spawn failed");
-            return false;
-        }
+    let Some(out) = run_op(cmd, "rcat", Some(body)).await else {
+        return false;
     };
-    if let Some(mut stdin) = child.stdin.take() {
-        if let Err(e) = stdin.write_all(body).await {
-            tracing::warn!(error = %e, "rclone rcat: write stdin failed");
-            return false;
-        }
-        drop(stdin); // close so rclone sees EOF
+    if !out.status.success() {
+        tracing::warn!(
+            target,
+            stderr = %String::from_utf8_lossy(&out.stderr),
+            "rclone rcat non-zero exit"
+        );
     }
-    match tokio::time::timeout(OP_TIMEOUT, child.wait_with_output()).await {
-        Ok(Ok(out)) => {
-            report_reach(reach_from_code(out.status.code()), stderr_tail(&out.stderr));
-            if out.status.success() {
-                true
-            } else {
-                tracing::warn!(
-                    target,
-                    stderr = %String::from_utf8_lossy(&out.stderr),
-                    "rclone rcat non-zero exit"
-                );
-                false
-            }
-        }
-        Ok(Err(e)) => {
-            tracing::warn!(error = %e, "rclone rcat run error");
-            false
-        }
-        Err(_) => {
-            report_reach(Some(Reach::Offline), Some("rclone rcat timed out".into()));
-            tracing::warn!(target, "rclone rcat timed out");
-            false
-        }
-    }
+    out.status.success()
 }
 
 /// `rclone deletefile <target>`. Best-effort; a missing file is fine.
 async fn deletefile(exe: &Path, target: &str) -> bool {
     let mut cmd = base_command(exe);
     cmd.arg("deletefile").arg(target);
-    let Ok(child) = cmd.spawn() else {
-        return false;
-    };
-    match tokio::time::timeout(OP_TIMEOUT, child.wait_with_output()).await {
-        Ok(Ok(out)) => {
-            report_reach(reach_from_code(out.status.code()), stderr_tail(&out.stderr));
-            out.status.success()
-        }
-        Ok(Err(_)) => false,
-        Err(_) => {
-            report_reach(Some(Reach::Offline), Some("rclone deletefile timed out".into()));
-            false
-        }
-    }
+    run_op(cmd, "deletefile", None)
+        .await
+        .is_some_and(|out| out.status.success())
 }
 
 /// One entry from `rclone lsjson`.
@@ -449,16 +451,7 @@ struct LsEntry {
 async fn lsjson(exe: &Path, target: &str) -> Option<Vec<LsEntry>> {
     let mut cmd = base_command(exe);
     cmd.arg("lsjson").arg("--no-mimetype").arg(target);
-    let child = cmd.spawn().ok()?;
-    let out = match tokio::time::timeout(OP_TIMEOUT, child.wait_with_output()).await {
-        Ok(Ok(out)) => out,
-        Ok(Err(_)) => return None,
-        Err(_) => {
-            report_reach(Some(Reach::Offline), Some("rclone lsjson timed out".into()));
-            return None;
-        }
-    };
-    report_reach(reach_from_code(out.status.code()), stderr_tail(&out.stderr));
+    let out = run_op(cmd, "lsjson", None).await?;
     if !out.status.success() {
         return None;
     }
@@ -1620,18 +1613,18 @@ cloud:
 
     #[test]
     fn reach_from_code_classifies() {
-        // Success and the "not found" family prove the remote answered.
-        assert_eq!(reach_from_code(Some(0)), Some(Reach::Online));
-        assert_eq!(reach_from_code(Some(3)), Some(Reach::Online)); // dir not found
-        assert_eq!(reach_from_code(Some(4)), Some(Reach::Online)); // file not found
-        assert_eq!(reach_from_code(Some(9)), Some(Reach::Online)); // no files transferred
-        // Temporary / fatal errors mean it didn't.
-        assert_eq!(reach_from_code(Some(5)), Some(Reach::Offline));
-        assert_eq!(reach_from_code(Some(7)), Some(Reach::Offline));
-        // Usage errors and signal kills are inconclusive — leave status as-is.
-        assert_eq!(reach_from_code(Some(1)), None);
-        assert_eq!(reach_from_code(Some(2)), None);
-        assert_eq!(reach_from_code(None), None);
+        // The remote answered: success, or a definite "not found".
+        assert_eq!(reach_from_code(Some(0)), Reach::Online);
+        assert_eq!(reach_from_code(Some(3)), Reach::Online); // dir not found
+        assert_eq!(reach_from_code(Some(4)), Reach::Online); // file not found
+        assert_eq!(reach_from_code(Some(9)), Reach::Online); // no files transferred
+        // Every other code — temporary/fatal/usage errors, connection failures,
+        // signal kills (None) — means we couldn't confirm the remote: Offline.
+        assert_eq!(reach_from_code(Some(5)), Reach::Offline);
+        assert_eq!(reach_from_code(Some(7)), Reach::Offline);
+        assert_eq!(reach_from_code(Some(1)), Reach::Offline);
+        assert_eq!(reach_from_code(Some(2)), Reach::Offline);
+        assert_eq!(reach_from_code(None), Reach::Offline);
     }
 
     #[test]
