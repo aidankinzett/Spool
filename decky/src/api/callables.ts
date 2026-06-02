@@ -39,3 +39,12 @@ export const deleteGame = callable<
   [id: string],
   { ok: boolean; reason?: string }
 >("delete_game");
+
+// Installs Windows runtime deps (winetricks verbs, e.g. "vcrun2022 dotnet48")
+// into a game's Proton prefix. Long-running — the caller shows a spinner and
+// the Python side uses a generous timeout. `ok` is false (with a `reason`)
+// when the server is unavailable, no UMU/GE Proton is set, or winetricks fails.
+export const installDeps = callable<
+  [game_id: string, verbs: string],
+  { ok: boolean; message?: string; reason?: string }
+>("install_deps");
