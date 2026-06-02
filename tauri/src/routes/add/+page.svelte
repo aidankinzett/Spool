@@ -373,11 +373,10 @@
             {/if}
           </div>
           <div class="min-h-0 flex-1 overflow-y-auto rounded-sm border border-line-1 bg-bg-1">
-            {#each candidates as cand, i (cand.name)}
+            {#each candidates as cand (cand.name)}
               <div class="border-b border-line-1 last:border-b-0">
                 <CandidateRow
                   {cand}
-                  index={i}
                   picked={picked?.name === cand.name}
                   onpick={() => (picked = cand)}
                 />

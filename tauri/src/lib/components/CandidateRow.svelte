@@ -13,12 +13,10 @@
 
   let {
     cand,
-    index,
     picked,
     onpick,
   }: {
     cand: SearchCandidate;
-    index: number;
     picked: boolean;
     onpick: () => void;
   } = $props();
