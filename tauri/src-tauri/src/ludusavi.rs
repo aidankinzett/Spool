@@ -965,12 +965,14 @@ pub fn read_exe_product_name(path: &Path) -> Option<String> {
 }
 
 fn pe_product_name_64(bytes: &[u8]) -> Option<String> {
+    use pelite::pe64::Pe;
     let pe = pelite::pe64::PeFile::from_bytes(bytes).ok()?;
     let vi = pe.resources().ok()?.version_info().ok()?;
     pick_name_from_version_info(&vi)
 }
 
 fn pe_product_name_32(bytes: &[u8]) -> Option<String> {
+    use pelite::pe32::Pe;
     let pe = pelite::pe32::PeFile::from_bytes(bytes).ok()?;
     let vi = pe.resources().ok()?.version_info().ok()?;
     pick_name_from_version_info(&vi)
