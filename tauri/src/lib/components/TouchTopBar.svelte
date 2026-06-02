@@ -26,7 +26,7 @@
     peers?: number;
     /** Number of active transfers (for the badge). */
     transfers?: number;
-    /** True when sync server is configured but unreachable (amber alert). */
+    /** True when cloud remote is configured but unreachable (amber alert). */
     conflict?: boolean;
     /** Optional center-slot content (search, catalog id, etc.). */
     children?: import('svelte').Snippet;

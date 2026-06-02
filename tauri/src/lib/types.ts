@@ -4,18 +4,12 @@ export type UiMode = 'auto' | 'desktop' | 'touch';
 // Mirror of the Rust `ConfigData` struct in src-tauri/src/config.rs.
 // Keep field names in lockstep — serde uses these exact snake_case names.
 export type ConfigData = {
-  ludusavi_path: string;
   steamgriddb_enabled: boolean;
   steamgriddb_api_key: string;
   spool_exe: string;
-  theme: string;
 
   device_id: string;
   device_name: string;
-
-  sync_server_enabled: boolean;
-  sync_server_url: string;
-  sync_server_api_key: string;
 
   lan_share_enabled: boolean;
   lan_share_port: number;
@@ -33,13 +27,41 @@ export type ConfigData = {
   /** True after the close-to-tray intro toast has been shown once. */
   tray_intro_seen: boolean;
 
+  /** True once the first-run onboarding flow has been finished or dismissed.
+   * Pre-existing configs are migrated to true on load (returning users skip
+   * the flow); a fresh install starts false so onboarding shows. */
+  onboarding_completed: boolean;
+
   cloud_provider: string;
   cloud_remote: string;
+  /** Base folder on the remote. Saves → `<base>/ludusavi-backup`; Spool's
+   * cross-device control plane → `<base>/_spool`. */
+  cloud_base_path: string;
+  /** Legacy: exact ludusavi remote subpath, superseded by `cloud_base_path`.
+   * Kept for JSON round-trip with older configs; no longer read. */
   cloud_path: string;
-  rclone_path: string;
   rclone_args: string;
   cloud_webdav_url: string;
   cloud_webdav_username: string;
+
+  /**
+   * Number of full save revisions ludusavi keeps per game
+   * (`backup.retention.full`). More = more rollback points, more disk +
+   * cloud upload. Clamped to 1–10 by the backend. Default 3.
+   */
+  save_retention_full: number;
+};
+
+// Mirror of the Rust `SaveRevision` struct in src-tauri/src/ludusavi.rs.
+// A single restorable save backup, surfaced by the "restore an earlier save"
+// picker.
+export type SaveRevision = {
+  /** ludusavi's backup id (the token passed to `restore --backup`). */
+  name: string;
+  /** RFC3339 timestamp of when the backup was taken. */
+  when: string;
+  /** True for the tip — the revision a normal pre-launch restore lands. */
+  is_current: boolean;
 };
 
 // Mirror of the Rust `GameEntry` struct in src-tauri/src/library.rs.
@@ -105,18 +127,17 @@ export type GameEntry = {
   accent_color: string | null;
 
   /**
-   * Cross-device save-sync status. Set by the sync server's
-   * `/events/:game/latest-backup` probe; refreshed at startup +
-   * after each successful backup.
+   * Cross-device save-sync status. Derived from rclone device blobs
+   * at startup and updated after each successful backup.
    *
-   *   "synced"       most recent server event came from this device
+   *   "synced"       this device holds the most recent backup
    *   "cloud-newer"  another device backed up more recently than us
-   *   "local-newer"  we backed up locally but the event didn't reach
-   *                  the server (offline / sync disabled)
+   *   "local-newer"  we backed up locally but the cloud hasn't
+   *                  confirmed it yet (offline / sync disabled)
    *
-   * `null` means we don't have enough info to badge — sync off,
-   * no backup history, or we never queried. The sidebar shows a
-   * small coloured dot on the cover when this is set.
+   * `null` means not enough info to badge — cloud not configured or
+   * no backup history. The sidebar shows a small coloured dot on
+   * the cover when this is set.
    */
   sync_badge: string | null;
 
@@ -241,20 +262,20 @@ export type UploadSnapshot = {
 };
 
 /**
- * Reachability state for the configured sync server. Mirrors the
- * Rust `SyncReachability` in sync.rs.
+ * Reachability state for the configured cloud remote. Mirrors the
+ * Rust `SyncReachability` in rclone.rs.
  *
- *   unconfigured → no URL / API key set → icon dimmed
- *   online       → /health returned 200 within timeout → green
- *   offline      → network error, non-200, or timeout → red
+ *   unconfigured → no cloud remote set → icon dimmed
+ *   online       → `rclone lsd` succeeded within timeout → green
+ *   offline      → rclone error or timeout → red
  */
 export type SyncReachability = 'unconfigured' | 'online' | 'offline';
 
 /**
- * Snapshot of the sync-server health poll. Mirrors `SyncStatus` in
- * sync.rs. Emitted as `sync:status-changed` events whenever any
- * field changes, also available via `currentSyncStatus()` for
- * mount-time catch-up.
+ * Snapshot of the cloud-remote reachability poll. Mirrors `SyncStatus` in
+ * rclone.rs. Emitted as `sync:status-changed` events whenever any field
+ * changes, also available via `currentSyncStatus()` for mount-time catch-up.
+ * `server_version` is retained for shape compatibility but is always null.
  */
 export type SyncStatus = {
   reachability: SyncReachability;
@@ -270,6 +291,24 @@ export type AddToSteamResult = {
   shortcuts_path: string;
   portrait_placed: boolean;
   extras_placed: string[];
+};
+
+/**
+ * A detected Apollo/Sunshine streaming host. Mirrors `StreamingHostInfo` in
+ * streaming_host.rs. `kind` is "apollo" | "sunshine" | "".
+ */
+export type StreamingHostInfo = {
+  detected: boolean;
+  kind: string;
+  apps_path: string;
+};
+
+/** Result returned by `add_to_streaming_host`. Mirrors the Rust struct. */
+export type AddToStreamingHostResult = {
+  host_kind: string;
+  apps_path: string;
+  app_name: string;
+  image_set: boolean;
 };
 
 /**
@@ -311,12 +350,11 @@ export type RunPhaseEvent = {
  */
 /**
  * Resolution source for a dependency, from `check_dependencies`.
- *   config   — path set explicitly by the user in Settings
  *   bundled  — sidecar shipped alongside the Spool executable
- *   system   — found on the system PATH
+ *   system   — found on the system PATH or a well-known path
  *   missing  — not found anywhere
  */
-export type DepSource = 'config' | 'bundled' | 'system' | 'missing';
+export type DepSource = 'bundled' | 'system' | 'missing';
 
 /**
  * Status of a single runtime dependency (umu-run, ludusavi, rclone).
@@ -339,6 +377,7 @@ export type NewGame = {
   lutris_slug?: string | null;
   manifest_install_dir?: string | null;
   save_paths?: string[];
+  game_folder_path?: string | null;
 };
 
 /**

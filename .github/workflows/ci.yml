@@ -10,18 +10,14 @@ on:
       - master
     paths:
       - 'tauri/**'
-      - 'server/**'
       - 'decky/**'
-      - 'launcher_stub.*'
       - '.github/workflows/ci.yml'
   pull_request:
     branches:
       - master
     paths:
       - 'tauri/**'
-      - 'server/**'
       - 'decky/**'
-      - 'launcher_stub.*'
       - '.github/workflows/ci.yml'
 
 jobs:
@@ -73,7 +69,7 @@ jobs:
           }
 
       - name: Bun cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ${{ github.workspace }}/.bun-cache
           key: bun-${{ runner.os }}-${{ hashFiles('tauri/bun.lock') }}
@@ -81,10 +77,10 @@ jobs:
             bun-${{ runner.os }}-
 
       - name: Setup sccache
-        uses: mozilla-actions/sccache-action@v0.0.6
+        uses: mozilla-actions/sccache-action@v0.0.10
 
       - name: Sccache cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ${{ github.workspace }}/.sccache
           key: sccache-${{ runner.os }}-${{ github.ref_name }}-${{ github.sha }}
@@ -108,7 +104,7 @@ jobs:
 
       - name: Cache sidecars
         id: cache-sidecars
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: tauri/src-tauri/binaries
           key: sidecars-${{ runner.os }}-${{ hashFiles('tauri/scripts/download-sidecars.js') }}
@@ -133,7 +129,7 @@ jobs:
       # tests).
       - name: Cargo clippy
         working-directory: tauri/src-tauri
-        run: cargo clippy --all-targets
+        run: cargo clippy --all-targets -- -D warnings
 
       - name: Tauri build (no bundle)
         # master pushes only. This is the slow release-profile compile —
@@ -161,7 +157,7 @@ jobs:
           bun-version: "1.x"
 
       - name: Bun cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ${{ github.workspace }}/.bun-cache
           key: bun-${{ runner.os }}-${{ hashFiles('tauri/bun.lock') }}
@@ -184,34 +180,14 @@ jobs:
         working-directory: tauri
         run: bun run test
 
-  # Sync-server unit tests. Lightweight and platform-independent, so it
-  # runs on Ubuntu in its own job rather than bloating the Windows build.
-  server:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: "1.x"
-
-      - name: Install server dependencies
-        working-directory: server
-        run: bun install --frozen-lockfile
-
-      - name: Server tests
-        working-directory: server
-        run: bun run test
-
   # Backend lint + unit tests on a fast Ubuntu runner. Dev-profile clippy
   # compiles far quicker than the release-profile Windows job, so PRs get
   # their first green backend signal here while build-windows runs in
   # parallel as the cfg(windows) backstop. This is also the only job that
-  # lints the cfg(target_os = "linux") code (the Decky installer) — the
-  # Windows clippy never compiles it. The platform-independent test suite
-  # runs here too (it has no cfg(windows) tests), off the slow Windows path.
-  # Runs on PRs and master.
+  # lints the cfg(target_os = "linux") code (proton.rs, gamemode.rs,
+  # session.rs, decky_install.rs) — the Windows clippy never compiles it.
+  # The platform-independent test suite runs here too (it has no
+  # cfg(windows) tests), off the slow Windows path. Runs on PRs and master.
   clippy-linux:
     runs-on: ubuntu-22.04
     env:
@@ -234,16 +210,10 @@ jobs:
           components: clippy
 
       - name: Setup sccache
-        uses: mozilla-actions/sccache-action@v0.0.6
+        uses: mozilla-actions/sccache-action@v0.0.10
 
       - name: Sccache cache
-        # Restore the shared sccache-Linux- objects build-linux populated, but
-        # save under a distinct -clippy- key so this job doesn't collide with
-        # build-linux's or e2e-linux's save on master pushes (same key =
-        # first-to-save wins, dropping the others' objects). These are
-        # dev-profile objects, distinct from the release builds' — the shared
-        # registry cache below is the real cross-job win.
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ${{ github.workspace }}/.sccache
           key: sccache-${{ runner.os }}-clippy-${{ github.ref_name }}-${{ github.sha }}
@@ -265,7 +235,7 @@ jobs:
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev
 
       - name: Bun cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ${{ github.workspace }}/.bun-cache
           key: bun-${{ runner.os }}-${{ hashFiles('tauri/bun.lock') }}
@@ -278,24 +248,19 @@ jobs:
 
       - name: Cache sidecars
         id: cache-sidecars
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: tauri/src-tauri/binaries
           key: sidecars-${{ runner.os }}-${{ hashFiles('tauri/scripts/download-sidecars.js') }}
 
       - name: Download sidecars
-        # tauri_build validates the externalBin sidecar exists at compile time,
-        # so it must be present even for clippy/test (no bundle).
         if: steps.cache-sidecars.outputs.cache-hit != 'true'
         working-directory: tauri
         run: bun run download-sidecars
 
-      # Lints the cfg(linux) Decky installer the Windows job never sees.
-      # build.rs writes a placeholder decky/dist/index.js when missing, so the
-      # genuine plugin bundle isn't needed just to compile and lint.
       - name: Cargo clippy
         working-directory: tauri/src-tauri
-        run: cargo clippy --all-targets
+        run: cargo clippy --all-targets -- -D warnings
 
       - name: Cargo test
         working-directory: tauri/src-tauri
@@ -327,10 +292,10 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Setup sccache
-        uses: mozilla-actions/sccache-action@v0.0.6
+        uses: mozilla-actions/sccache-action@v0.0.10
 
       - name: Sccache cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ${{ github.workspace }}/.sccache
           key: sccache-${{ runner.os }}-${{ github.ref_name }}-${{ github.sha }}
@@ -351,7 +316,7 @@ jobs:
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
 
       - name: Bun cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ${{ github.workspace }}/.bun-cache
           key: bun-${{ runner.os }}-${{ hashFiles('tauri/bun.lock') }}
@@ -367,11 +332,11 @@ jobs:
       # Node 22: pnpm 11 (pinned via decky/package.json packageManager) needs
       # Node >= 22.13, else corepack crashes on the node:sqlite builtin.
       - name: Setup Node for Decky plugin
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: 22
       - name: pnpm store cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ${{ github.workspace }}/.pnpm-store
           key: pnpm-${{ runner.os }}-${{ hashFiles('decky/pnpm-lock.yaml') }}
@@ -386,7 +351,7 @@ jobs:
 
       - name: Cache sidecars
         id: cache-sidecars
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: tauri/src-tauri/binaries
           key: sidecars-${{ runner.os }}-${{ hashFiles('tauri/scripts/download-sidecars.js') }}
@@ -398,8 +363,6 @@ jobs:
 
       - name: Tauri build (no bundle)
         working-directory: tauri
-        # Same as the Windows job — release-profile compile populates the
-        # cache with the artifacts release.yml will actually reuse.
         run: bun run tauri build --no-bundle
 
   # WebDriver end-to-end smoke tests against the real Tauri window via
@@ -436,15 +399,10 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Setup sccache
-        uses: mozilla-actions/sccache-action@v0.0.6
+        uses: mozilla-actions/sccache-action@v0.0.10
 
       - name: Sccache cache
-        # Restore via the shared `sccache-Linux-` keys so the release-profile
-        # objects build-linux compiled are reused here. Save under a distinct
-        # `-e2e-` key so this job doesn't collide with build-linux's save on
-        # master pushes (same key = first-to-save wins, dropping the other's
-        # extra objects).
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ${{ github.workspace }}/.sccache
           key: sccache-${{ runner.os }}-e2e-${{ github.ref_name }}-${{ github.sha }}
@@ -468,8 +426,6 @@ jobs:
             echo "sccache backend reachable."
           else
             echo "::warning::sccache backend unreachable; building without the compiler cache."
-            # Empty RUSTC_WRAPPER disables the wrapper so cargo compiles
-            # directly.
             echo "RUSTC_WRAPPER=" >> "$GITHUB_ENV"
           fi
 
@@ -497,7 +453,7 @@ jobs:
       # once and restores instantly thereafter.
       - name: Cache tauri-driver
         id: cache-tauri-driver
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.cargo/bin/tauri-driver
           key: tauri-driver-${{ runner.os }}-2.0.5
@@ -506,7 +462,7 @@ jobs:
         run: cargo install tauri-driver --version 2.0.5 --locked
 
       - name: Bun cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ${{ github.workspace }}/.bun-cache
           key: bun-${{ runner.os }}-${{ hashFiles('tauri/bun.lock') }}
@@ -519,7 +475,7 @@ jobs:
 
       - name: Cache sidecars
         id: cache-sidecars
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: tauri/src-tauri/binaries
           key: sidecars-${{ runner.os }}-${{ hashFiles('tauri/scripts/download-sidecars.js') }}

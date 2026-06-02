@@ -17,18 +17,23 @@
    * it up later is a one-liner.
    */
   import {
+    Cast,
+    ChevronDown,
     Cloud,
     Copy,
     Folder,
     Pencil,
     Play,
+    RotateCcw,
     Sparkles,
     Trash2,
   } from '@lucide/svelte';
+  import { onMount } from 'svelte';
   import { openView } from '$lib/nav';
-  import { api } from '$lib/api';
+  import { api, assetUrl } from '$lib/api';
   import { toasts } from '$lib/toasts.svelte';
-  import type { GameEntry, RunPhase } from '$lib/types';
+  import { confirmDialog } from '$lib/confirm.svelte';
+  import type { GameEntry, RunPhase, SaveRevision, StreamingHostInfo } from '$lib/types';
   import {
     absDate,
     absDateTime,
@@ -41,6 +46,7 @@
   import CatalogId from './CatalogId.svelte';
   import Btn from './Btn.svelte';
   import DetailCard from './DetailCard.svelte';
+  import RemoveGameModal, { type RemoveChoice } from './RemoveGameModal.svelte';
 
   let {
     game,
@@ -50,6 +56,16 @@
     /** Current Run-workflow phase for *this* game (null if idle). */
     runPhase?: RunPhase | null;
   } = $props();
+
+  // When the selected game changes, refresh its save-backup stats from
+  // ludusavi's real backup store. Fire-and-forget — the backend emits
+  // `library:changed` (which re-feeds `game`) only if a value actually moved,
+  // so this can't loop. Tracks `game.id` alone so it doesn't re-run on every
+  // unrelated field update.
+  $effect(() => {
+    const id = game.id;
+    void api.refreshSaveMetadata(id).catch(() => {});
+  });
 
   const isRunning = $derived(runPhase != null);
   const playLabel = $derived.by(() => {
@@ -113,11 +129,133 @@
     }
   }
 
-  async function removeGame() {
-    if (!confirm(`Remove "${game.game_name}" from your library?`)) return;
-    await api.removeGame(game.id);
+  // ── Remove / delete ─────────────────────────────────────────────────────
+  // The Remove button opens a chooser: forget the entry (leaving files +
+  // backups), or delete the install folder from disk. The modal calls back
+  // into `runRemoval` for the chosen action; on success `library:changed`
+  // clears the parent page's selection.
+  let removeOpen = $state(false);
+
+  async function runRemoval(choice: RemoveChoice) {
+    if (choice === 'disk') {
+      await api.deleteGameFromDisk(game.id);
+      toasts.show({
+        kind: 'ok',
+        label: 'DELETE · DONE',
+        title: 'Deleted from disk',
+        sub: game.game_name,
+        catalog: fmtCatalog(game.catalog_number),
+      });
+    } else {
+      await api.removeGame(game.id);
+    }
     // library:changed event will cause the parent page to clear selection.
   }
+
+  // Reset the chooser when switching games so it never carries over.
+  $effect(() => {
+    void game.id;
+    removeOpen = false;
+  });
+
+  // ── Restore an earlier save (rollback) ──────────────────────────────────
+  // Lazily loaded when the user expands the picker. The backend lists
+  // ludusavi's local revisions newest-first with the tip flagged.
+  let revisionsOpen = $state(false);
+  let revisions = $state<SaveRevision[] | null>(null);
+  let revisionsLoading = $state(false);
+  let rollingBack = $state<string | null>(null);
+
+  async function toggleRevisions() {
+    revisionsOpen = !revisionsOpen;
+    if (revisionsOpen && revisions == null && !revisionsLoading) {
+      revisionsLoading = true;
+      try {
+        revisions = await api.listSaveRevisions(game.id);
+      } catch (e) {
+        toasts.show({
+          kind: 'bad',
+          label: 'LUDUSAVI',
+          title: "Couldn't load save revisions",
+          sub: String(e),
+          catalog: fmtCatalog(game.catalog_number),
+        });
+        revisionsOpen = false;
+      } finally {
+        revisionsLoading = false;
+      }
+    }
+  }
+
+  async function rollBackTo(rev: SaveRevision) {
+    if (rev.is_current || isRunning || rollingBack) return;
+    const when = absDateTime(rev.when);
+    if (
+      !(await confirmDialog({
+        label: 'LUDUSAVI · RESTORE',
+        title: 'Restore this earlier save?',
+        body:
+          `Restore the backup from ${when} for "${game.game_name}". ` +
+          `This replaces your current save files. Spool snapshots the ` +
+          `restored save as the newest revision so it sticks (this uses one ` +
+          `retention slot, dropping the oldest backup).`,
+        confirmLabel: 'Restore save',
+        accent: accentHex,
+        catalog: fmtCatalog(game.catalog_number),
+      }))
+    )
+      return;
+    rollingBack = rev.name;
+    try {
+      await api.restoreSaveRevision(game.id, rev.name);
+      toasts.show({
+        kind: 'ok',
+        label: 'LUDUSAVI · RESTORE',
+        title: 'Earlier save restored',
+        sub: `${game.game_name} · backup from ${when}`,
+        catalog: fmtCatalog(game.catalog_number),
+      });
+      // The revision list changed (a new tip was pinned) — reload it.
+      revisions = await api.listSaveRevisions(game.id).catch(() => revisions);
+    } catch (e) {
+      toasts.show({
+        kind: 'bad',
+        label: 'LUDUSAVI · RESTORE',
+        title: "Couldn't restore",
+        sub: String(e),
+        catalog: fmtCatalog(game.catalog_number),
+      });
+    } finally {
+      rollingBack = null;
+    }
+  }
+
+  // Reset the picker when switching games so we don't show a stale list.
+  $effect(() => {
+    void game.id;
+    revisionsOpen = false;
+    revisions = null;
+  });
+
+  let isWindows = $state(false);
+  let streamingHost = $state<StreamingHostInfo | null>(null);
+  onMount(async () => {
+    isWindows = (await api.appPlatform()) === 'windows';
+    try {
+      streamingHost = await api.detectStreamingHost();
+    } catch {
+      streamingHost = null;
+    }
+  });
+
+  // "Apollo" | "Sunshine" | "Apollo/Sunshine" — for button text + toasts.
+  const hostLabel = $derived(
+    streamingHost?.kind === 'apollo'
+      ? 'Apollo'
+      : streamingHost?.kind === 'sunshine'
+        ? 'Sunshine'
+        : 'Apollo/Sunshine',
+  );
 
   let generatingArmoury = $state(false);
   async function generateArmouryLauncher() {
@@ -178,6 +316,31 @@
       });
     } finally {
       addingToSteam = false;
+    }
+  }
+
+  let addingToHost = $state(false);
+  async function addToStreamingHost() {
+    addingToHost = true;
+    try {
+      const result = await api.addToStreamingHost(game.id);
+      const label = result.host_kind === 'apollo' ? 'Apollo' : 'Sunshine';
+      toasts.show({
+        kind: 'ok',
+        label: label.toUpperCase(),
+        title: `Added to ${label}`,
+        sub: `"${game.game_name}" is now streamable from ${label}.`,
+        catalog: fmtCatalog(game.catalog_number),
+      });
+    } catch (e) {
+      toasts.show({
+        kind: 'bad',
+        label: `${hostLabel.toUpperCase()} · FAILED`,
+        title: `Couldn't add to ${hostLabel}`,
+        sub: String(e),
+      });
+    } finally {
+      addingToHost = false;
     }
   }
 </script>
@@ -319,7 +482,9 @@
         ? `${game.save_backup_count} backup${game.save_backup_count === 1 ? '' : 's'}`
         : '—',
       game.save_backup_count > 0
-        ? `${fmtSize(game.save_backup_size_mb)} · ${relDate(game.save_last_backed_up_at)}`
+        ? game.save_backup_size_mb > 0
+          ? `${fmtSize(game.save_backup_size_mb)} · ${relDate(game.save_last_backed_up_at)}`
+          : relDate(game.save_last_backed_up_at)
         : 'no backups yet',
     )}
   </div>
@@ -330,14 +495,16 @@
       {#snippet icon()}<Folder size={14} />{/snippet}
       Open folder
     </Btn>
-    <Btn
-      variant="ghost"
-      onclick={generateArmouryLauncher}
-      disabled={!game.exe_path || generatingArmoury}
-    >
-      {#snippet icon()}<Sparkles size={14} />{/snippet}
-      {generatingArmoury ? 'Generating…' : 'Armoury Crate'}
-    </Btn>
+    {#if isWindows}
+      <Btn
+        variant="ghost"
+        onclick={generateArmouryLauncher}
+        disabled={!game.exe_path || generatingArmoury}
+      >
+        {#snippet icon()}<Sparkles size={14} />{/snippet}
+        {generatingArmoury ? 'Generating…' : 'Armoury Crate'}
+      </Btn>
+    {/if}
     <Btn
       variant="ghost"
       onclick={addToSteam}
@@ -346,12 +513,22 @@
       {#snippet icon()}<Play size={14} />{/snippet}
       {addingToSteam ? 'Adding…' : 'Add to Steam'}
     </Btn>
+    {#if streamingHost?.detected}
+      <Btn
+        variant="ghost"
+        onclick={addToStreamingHost}
+        disabled={!game.exe_path || addingToHost}
+      >
+        {#snippet icon()}<Cast size={14} />{/snippet}
+        {addingToHost ? 'Adding…' : `Add to ${hostLabel}`}
+      </Btn>
+    {/if}
     <div class="flex-1"></div>
     <Btn variant="ghost" onclick={() => openView('edit', { id: game.id })}>
       {#snippet icon()}<Pencil size={14} />{/snippet}
       Edit
     </Btn>
-    <Btn variant="danger" onclick={removeGame}>
+    <Btn variant="danger" onclick={() => (removeOpen = true)}>
       {#snippet icon()}<Trash2 size={14} />{/snippet}
       Remove
     </Btn>
@@ -384,7 +561,8 @@
           {/if}
         {:else}
           <p class="m-0 text-[12.5px] text-ink-3">
-            No description on file. Spool will populate this when metadata fetching ships.
+            No description on file. Spool fills this in from the Steam store when a game is
+            identified.
           </p>
         {/if}
       </DetailCard>
@@ -410,8 +588,12 @@
               </div>
             {/snippet}
             {@render stat('LAST BACKUP', relDate(game.save_last_backed_up_at), absDateTime(game.save_last_backed_up_at))}
-            {@render stat('REVISIONS', `${game.save_backup_count}`, 'across all profiles')}
-            {@render stat('TOTAL SIZE', fmtSize(game.save_backup_size_mb), 'compressed')}
+            {@render stat('REVISIONS', `${game.save_backup_count}`, 'kept by ludusavi')}
+            {@render stat(
+              'SAVE SIZE',
+              game.save_backup_size_mb > 0 ? fmtSize(game.save_backup_size_mb) : '—',
+              game.save_backup_size_mb > 0 ? 'latest backup' : 'not measured yet',
+            )}
           </div>
           <div
             class="mt-3 flex items-center gap-2 rounded-sm border px-3 py-2 text-[11.5px] text-ink-1"
@@ -421,6 +603,72 @@
             <Cloud size={12} class="text-ok" />
             Saves restore before launch and back up on exit automatically.
           </div>
+
+          {#if game.save_backup_count > 1}
+            <div class="mt-3 border-t border-dashed border-line-1 pt-3">
+              <button
+                type="button"
+                onclick={toggleRevisions}
+                class="flex items-center gap-1.5 text-[11.5px] text-ink-2 transition-colors hover:text-ink-0"
+                aria-expanded={revisionsOpen}
+              >
+                <RotateCcw size={12} />
+                Restore an earlier save
+                <ChevronDown
+                  size={12}
+                  class="transition-transform {revisionsOpen ? 'rotate-180' : ''}"
+                />
+              </button>
+
+              {#if revisionsOpen}
+                <div class="mt-2 flex flex-col gap-1">
+                  {#if revisionsLoading}
+                    <div class="text-[11px] text-ink-3">Loading revisions…</div>
+                  {:else if revisions && revisions.length > 0}
+                    {#each revisions as rev (rev.name)}
+                      <div
+                        class="flex items-center justify-between gap-2 rounded-sm border border-line-1 bg-bg-2 px-2.5 py-1.5"
+                      >
+                        <div class="min-w-0">
+                          <div class="truncate text-[12px] text-ink-0">
+                            {absDateTime(rev.when)}
+                          </div>
+                          <div class="font-mono text-[10px] tracking-[0.02em] text-ink-3">
+                            {relDate(rev.when)}
+                          </div>
+                        </div>
+                        {#if rev.is_current}
+                          <span
+                            class="font-mono shrink-0 text-[9.5px] uppercase tracking-[0.08em] text-ok"
+                          >
+                            Current
+                          </span>
+                        {:else}
+                          <button
+                            type="button"
+                            onclick={() => rollBackTo(rev)}
+                            disabled={isRunning || rollingBack != null}
+                            class="shrink-0 rounded-sm border border-line-2 px-2 py-1 text-[11px] text-ink-1 transition-colors hover:border-line-3 hover:text-ink-0 disabled:cursor-not-allowed disabled:opacity-40"
+                            title={isRunning
+                              ? 'Stop the game before restoring an earlier save'
+                              : `Restore the backup from ${absDateTime(rev.when)}`}
+                          >
+                            {rollingBack === rev.name ? 'Restoring…' : 'Restore'}
+                          </button>
+                        {/if}
+                      </div>
+                    {/each}
+                    <div class="font-mono mt-0.5 text-[10px] leading-relaxed text-ink-3">
+                      Restoring snapshots the chosen save as the newest
+                      revision, so it survives the next launch.
+                    </div>
+                  {:else}
+                    <div class="text-[11px] text-ink-3">No earlier revisions.</div>
+                  {/if}
+                </div>
+              {/if}
+            </div>
+          {/if}
         {:else if game.save_paths.length > 0}
           <div class="flex items-start gap-2.5 text-[12.5px] text-ink-2">
             <Cloud size={14} class="mt-0.5 shrink-0 text-ink-3" />
@@ -507,3 +755,15 @@
     </div>
   </div>
 </div>
+
+{#if removeOpen}
+  <RemoveGameModal
+    gameName={game.game_name}
+    catalogId={fmtCatalog(game.catalog_number)}
+    accent={accentHex}
+    coverUrl={assetUrl(game.cover_image_path)}
+    folderPath={folderForGame(game)}
+    perform={runRemoval}
+    onClose={() => (removeOpen = false)}
+  />
+{/if}

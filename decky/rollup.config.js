@@ -1,1 +1,3 @@
-export { default } from "@decky/rollup";
+import deckyPlugin from "@decky/rollup";
+
+export default deckyPlugin();

@@ -18,12 +18,13 @@
    *   - Cancel → close without saving (form state is discarded)
    */
   import { onMount } from 'svelte';
-  import { Download, Folder, RefreshCw, Trash2 } from '@lucide/svelte';
+  import { Download, Folder, FolderX, RefreshCw, Trash2 } from '@lucide/svelte';
   import { open as openDialog } from '@tauri-apps/plugin-dialog';
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import { api, assetUrl } from '$lib/api';
   import { fmtCatalog, absDateTime } from '$lib/format';
   import { toasts } from '$lib/toasts.svelte';
+  import { confirmDialog } from '$lib/confirm.svelte';
   import type { GameEntry, ProtonVersion } from '$lib/types';
   import AppChrome from '$lib/components/AppChrome.svelte';
   import MonoLabel from '$lib/components/MonoLabel.svelte';
@@ -251,7 +252,17 @@
 
   async function removeGame() {
     if (!form) return;
-    if (!confirm(`Remove "${form.game_name}" from your library?`)) return;
+    if (
+      !(await confirmDialog({
+        label: 'REMOVE · ENTRY',
+        title: 'Remove from library?',
+        body: `"${form.game_name}" will be forgotten. Your files on disk and save backups are left untouched — you can add it again later.`,
+        confirmLabel: 'Remove',
+        accent,
+        catalog: fmtCatalog(form.catalog_number),
+      }))
+    )
+      return;
     try {
       await api.removeGame(form.id);
       await getCurrentWindow().close();
@@ -260,6 +271,34 @@
         kind: 'bad',
         label: 'REMOVE · FAILED',
         title: "Couldn't remove",
+        sub: String(e),
+      });
+    }
+  }
+
+  async function deleteFromDisk() {
+    if (!form) return;
+    if (
+      !(await confirmDialog({
+        label: 'DELETE · DISK',
+        title: 'Delete from disk?',
+        body:
+          `This permanently removes the install folder` +
+          `${form.game_folder_path ? ` (${form.game_folder_path})` : ''} and the library entry for "${form.game_name}". This can't be undone.`,
+        confirmLabel: 'Delete from disk',
+        danger: true,
+        catalog: fmtCatalog(form.catalog_number),
+      }))
+    )
+      return;
+    try {
+      await api.deleteGameFromDisk(form.id);
+      await getCurrentWindow().close();
+    } catch (e) {
+      toasts.show({
+        kind: 'bad',
+        label: 'DELETE · FAILED',
+        title: "Couldn't delete from disk",
         sub: String(e),
       });
     }
@@ -544,6 +583,10 @@
         <Btn variant="danger" onclick={removeGame}>
           {#snippet icon()}<Trash2 size={14} />{/snippet}
           Remove from library
+        </Btn>
+        <Btn variant="danger" onclick={deleteFromDisk} disabled={!hasFolder}>
+          {#snippet icon()}<FolderX size={14} />{/snippet}
+          Delete from disk
         </Btn>
         <div class="flex-1"></div>
         <Btn variant="ghost" onclick={cancel}>Cancel</Btn>

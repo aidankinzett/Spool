@@ -31,7 +31,7 @@ tauri-plugin-notification = "2"
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
 tauri-plugin-window-state = "2"
-tokio = { version = "1", features = ["process", "io-util", "rt", "macros", "sync", "time"] }
+tokio = { version = "1", features = ["process", "io-util", "rt", "macros", "sync", "time", "net"] }
 uuid = { version = "1.23.1", features = ["v4"] }
 reqwest = { version = "0.12", features = ["json", "stream"] }
 steamlocate = "2"
@@ -42,13 +42,23 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-appender = "0.2"
 socket2 = "0.5"
 axum = { version = "0.7", default-features = false, features = ["json", "tokio", "http1", "query"] }
+hyper = { version = "1", features = ["http1", "server"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+tower-service = "0.3"
+tower-http = { version = "0.5", features = ["fs", "cors"] }
 walkdir = "2"
 tokio-util = { version = "0.7", features = ["io"] }
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 urlencoding = "2"
 blake3 = "1"
+base64 = "0.22"
 filetime = "0.2"
 serde_yaml = "0.9"
+
+# Linux-only: systemd-logind D-Bus client (zbus) for the suspend watcher
+# that keeps the play-state lock alive across a Steam Deck sleep.
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus = { version = "5", default-features = false, features = ["tokio"] }
 
 # Windows-only: registry probe for the per-exe Run-As-Admin
 # compatibility flag, and ShellExecuteExW-based elevated launch.

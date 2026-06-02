@@ -1,12 +1,14 @@
 {
   "name": "spool-backup",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Forced-close save-backup safety net for Spool-managed games.",
   "type": "module",
   "packageManager": "pnpm@11.5.0",
   "scripts": {
     "build": "rollup -c",
-    "watch": "rollup -c -w"
+    "watch": "rollup -c -w",
+    "deploy": "rollup -c && rsync -av dist/ deck@192.168.86.113:/tmp/spool-backup-dist/ && ssh -t deck@192.168.86.113 'sudo rsync -av --delete /tmp/spool-backup-dist/ ~/homebrew/plugins/spool-backup/dist/ && sudo systemctl restart plugin_loader'",
+    "deploy:local": "rollup -c && sudo mkdir -p ~/homebrew/plugins/spool-backup && sudo rsync -a --delete dist/ ~/homebrew/plugins/spool-backup/dist/ && sudo cp plugin.json package.json main.py ~/homebrew/plugins/spool-backup/ && sudo chown -R root:root ~/homebrew/plugins/spool-backup && sudo systemctl restart plugin_loader"
   },
   "license": "MIT",
   "dependencies": {

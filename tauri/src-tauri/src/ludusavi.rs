@@ -10,6 +10,7 @@
 
 use crate::config::SharedConfig;
 use crate::error::{AppError, AppResult};
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -111,6 +112,91 @@ struct FindHit {
     score: f64,
 }
 
+// ── DTOs: `ludusavi backups --api` output ───────────────────────────────────
+
+/// Parsed `ludusavi backups --api` output. Maps each game name to the list of
+/// backups ludusavi actually has on disk for it. This is the authoritative
+/// source for "how many save revisions exist" and "when was the last one" —
+/// it reflects ludusavi's real backup store, including backups Spool didn't
+/// make itself.
+#[derive(Debug, Deserialize, Default)]
+#[serde(default)]
+struct BackupsOutput {
+    games: HashMap<String, GameBackups>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(default)]
+struct GameBackups {
+    backups: Vec<ApiBackup>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ApiBackup {
+    /// ludusavi's unique id for the backup — this is exactly the token
+    /// `restore --backup <name>` accepts. The most-recent full is reported
+    /// as `"."`; older fulls carry a folder-derived name.
+    #[serde(default)]
+    name: String,
+    when: DateTime<Utc>,
+}
+
+/// Reduce a `ludusavi backups` response to authoritative stats: the total
+/// revision count and the most recent backup timestamp. ludusavi keys results
+/// by its own canonical game name, so we flatten whatever it returned rather
+/// than matching names — callers query a single game at a time.
+fn reduce_backups(out: BackupsOutput) -> BackupStats {
+    let backups: Vec<ApiBackup> = out.games.into_values().flat_map(|g| g.backups).collect();
+    BackupStats {
+        count: backups.len() as i32,
+        last_backed_up_at: backups.iter().map(|b| b.when).max(),
+    }
+}
+
+/// Authoritative save-backup stats for a game, derived from `ludusavi backups`.
+#[derive(Debug, Clone, Default)]
+pub struct BackupStats {
+    /// Number of backups (revisions) ludusavi currently retains for the game.
+    pub count: i32,
+    /// Timestamp of the most recent backup, if any.
+    pub last_backed_up_at: Option<DateTime<Utc>>,
+}
+
+/// A single restorable save revision, surfaced to the UI so the user can roll
+/// back to an earlier save. `name` is ludusavi's backup id (the token passed to
+/// `restore --backup`); `is_current` marks the tip (the revision a normal
+/// pre-launch restore would land).
+#[derive(Debug, Clone, Serialize)]
+pub struct SaveRevision {
+    pub name: String,
+    pub when: DateTime<Utc>,
+    pub is_current: bool,
+}
+
+/// Flatten a `ludusavi backups` response into a newest-first revision list.
+/// The single newest entry (by `when`) is flagged `is_current` — that's the
+/// tip a normal restore would land, so the UI can mark it and disable rollback
+/// to it. Since retention runs with `differential: 0`, every entry is a full,
+/// independently-restorable backup.
+fn revisions_from(out: BackupsOutput) -> Vec<SaveRevision> {
+    let mut revs: Vec<SaveRevision> = out
+        .games
+        .into_values()
+        .flat_map(|g| g.backups)
+        .map(|b| SaveRevision {
+            name: b.name,
+            when: b.when,
+            is_current: false,
+        })
+        .collect();
+    // Newest first.
+    revs.sort_by_key(|r| std::cmp::Reverse(r.when));
+    if let Some(tip) = revs.first_mut() {
+        tip.is_current = true;
+    }
+    revs
+}
+
 // ── DTOs: `ludusavi manifest show --api` output ─────────────────────────────
 
 /// One game's entry in the ludusavi manifest. All fields are best-effort;
@@ -172,8 +258,7 @@ pub struct SearchCandidate {
 // ── Client ──────────────────────────────────────────────────────────────────
 
 /// Ludusavi integration handle. Stateless apart from the lazy manifest
-/// cache — methods take the ludusavi exe path as a parameter so changes to
-/// `Config.ludusavi_path` are picked up immediately on the next call.
+/// cache — methods take the resolved sidecar path as a parameter.
 type ManifestCache = Arc<RwLock<Option<Arc<HashMap<String, ManifestEntry>>>>>;
 
 pub struct LudusaviClient {
@@ -235,6 +320,27 @@ impl LudusaviClient {
         run_api(ludusavi_exe, config_dir, &["restore", "--api", "--cloud-sync", "--force", game_name]).await
     }
 
+    /// Runs `ludusavi restore --api --backup <id> --force <name>` — a restore
+    /// of a *specific* revision. Deliberately omits `--cloud-sync`: this is a
+    /// local rollback, and the caller pins the result by following up with a
+    /// (cloud-syncing) backup so the rolled-back state becomes the new tip.
+    /// Pulling the cloud here would re-land the newest revision and defeat the
+    /// rollback.
+    pub async fn restore_backup(
+        &self,
+        ludusavi_exe: &Path,
+        config_dir: &Path,
+        game_name: &str,
+        backup_name: &str,
+    ) -> AppResult<ApiOutput> {
+        run_api(
+            ludusavi_exe,
+            config_dir,
+            &["restore", "--api", "--backup", backup_name, "--force", game_name],
+        )
+        .await
+    }
+
     /// Runs `ludusavi backup --api --cloud-sync --force <name>` and optionally
     /// passes `--wine-prefix <prefix>` for Proton games so ludusavi finds saves
     /// inside the prefix's drive_c tree.
@@ -282,6 +388,35 @@ impl LudusaviClient {
             &["cloud", op.subcommand(), "--api", "--force", game_name],
         )
         .await
+    }
+
+    /// Runs `ludusavi backups --api <name>` and reduces it to authoritative
+    /// stats: the real revision count and the latest backup timestamp. Unlike
+    /// the old Spool-maintained counters, this reflects ludusavi's actual
+    /// backup store, so it stays correct across externally-made backups,
+    /// pruned revisions, and freshly-added/migrated library entries.
+    pub async fn list_backups(
+        &self,
+        ludusavi_exe: &Path,
+        config_dir: &Path,
+        game_name: &str,
+    ) -> AppResult<BackupStats> {
+        let out = run_backups(ludusavi_exe, config_dir, game_name).await?;
+        Ok(reduce_backups(out))
+    }
+
+    /// Runs `ludusavi backups --api <name>` and returns the full, newest-first
+    /// revision list (rather than reducing to a count). Backs the in-app
+    /// "restore an earlier save" picker. Reflects ludusavi's local backup
+    /// store, so cloud-only revisions this device hasn't pulled aren't listed.
+    pub async fn list_revisions(
+        &self,
+        ludusavi_exe: &Path,
+        config_dir: &Path,
+        game_name: &str,
+    ) -> AppResult<Vec<SaveRevision>> {
+        let out = run_backups(ludusavi_exe, config_dir, game_name).await?;
+        Ok(revisions_from(out))
     }
 
     async fn manifest_or_load(
@@ -349,8 +484,30 @@ async fn run_find(ludusavi_exe: &Path, config_dir: &Path, query: &str) -> AppRes
         // ludusavi exits non-zero on no matches; surface an empty set.
         return Ok(FindOutput { games: HashMap::new() });
     }
-    serde_json::from_str(&stdout)
-        .map_err(|e| AppError::Other(format!("failed to parse ludusavi find output: {e}")))
+    crate::util::parse_json(stdout.as_bytes(), "ludusavi find output")
+}
+
+/// Runs `ludusavi backups --api <name>` and parses the result. A game with no
+/// backups (or unknown to ludusavi) produces empty/non-zero output, which we
+/// treat as "no backups" rather than an error — the detail card handles a zero
+/// count gracefully.
+async fn run_backups(
+    ludusavi_exe: &Path,
+    config_dir: &Path,
+    game_name: &str,
+) -> AppResult<BackupsOutput> {
+    let output = hidden_command(ludusavi_exe, config_dir)
+        .args(["backups", "--api", game_name])
+        .output()
+        .await
+        .map_err(|e| AppError::Other(format!("failed to spawn ludusavi backups: {e}")))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    if stdout.trim().is_empty() {
+        // ludusavi can exit non-zero with no output for an unknown game.
+        return Ok(BackupsOutput::default());
+    }
+    crate::util::parse_json(stdout.as_bytes(), "ludusavi backups output")
 }
 
 /// Generic runner for ludusavi subcommands that emit the `--api` envelope
@@ -384,14 +541,7 @@ async fn run_api(ludusavi_exe: &Path, config_dir: &Path, args: &[&str]) -> AppRe
     let mut cmd = std::process::Command::new(&exe);
     cmd.arg("--config").arg(&cfg);
     cmd.args(&owned_args);
-    cmd.stdin(std::process::Stdio::null());
-    cmd.stdout(std::process::Stdio::piped());
-    cmd.stderr(std::process::Stdio::piped());
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-    }
+    crate::capture_stdio!(cmd);
 
     let mut child = match cmd.spawn() {
         Ok(child) => child,
@@ -465,8 +615,7 @@ async fn run_api(ludusavi_exe: &Path, config_dir: &Path, args: &[&str]) -> AppRe
     if stdout.trim().is_empty() {
         return Ok(ApiOutput::default());
     }
-    serde_json::from_str(&stdout)
-        .map_err(|e| AppError::Other(format!("failed to parse ludusavi output: {e}")))
+    crate::util::parse_json(stdout.as_bytes(), "ludusavi output")
 }
 
 async fn load_manifest(ludusavi_exe: &Path, config_dir: &Path) -> AppResult<HashMap<String, ManifestEntry>> {
@@ -483,8 +632,7 @@ async fn load_manifest(ludusavi_exe: &Path, config_dir: &Path) -> AppResult<Hash
     }
     let stdout = String::from_utf8(output.stdout)
         .map_err(|e| AppError::Other(format!("ludusavi manifest output not utf-8: {e}")))?;
-    serde_json::from_str(&stdout)
-        .map_err(|e| AppError::Other(format!("failed to parse ludusavi manifest: {e}")))
+    crate::util::parse_json(stdout.as_bytes(), "ludusavi manifest")
 }
 
 // ── Enrichment + helpers ────────────────────────────────────────────────────
@@ -625,28 +773,20 @@ pub async fn open_ludusavi_gui(config: State<'_, SharedConfig>) -> AppResult<()>
 /// deobfuscation), so it too wants `false`. Only set `true` for a server that
 /// itself rclone-reveals the incoming password before validating it.
 pub async fn apply_webdav_remote(
-    config: &SharedConfig,
     url: &str,
     username: &str,
     password: &str,
     provider: &str,
     obscure_password: bool,
 ) -> AppResult<()> {
-    // Snapshot the configured ludusavi + rclone paths under one lock, then drop
-    // it before any await (lock discipline).
-    let (ludusavi_cfg, rclone_cfg) = {
-        let cfg = config.lock().map_err(|_| AppError::LockPoisoned)?;
-        (cfg.data.ludusavi_path.clone(), cfg.data.rclone_path.clone())
-    };
-
-    let ludusavi_exe = crate::paths::resolve_ludusavi_path(&ludusavi_cfg).ok_or_else(|| {
-        AppError::Other("Ludusavi is not configured. Place ludusavi in your PATH or configure it in Settings.".to_string())
+    let ludusavi_exe = crate::paths::resolve_ludusavi_path().ok_or_else(|| {
+        AppError::Other("Ludusavi sidecar not found — reinstall Spool.".to_string())
     })?;
 
     // ludusavi shells out to rclone to obscure the password, so the owned config
     // must point at a usable rclone before we invoke `cloud set`.
-    let rclone_exe = crate::paths::resolve_rclone_path(&rclone_cfg).ok_or_else(|| {
-        AppError::Other("rclone not found. Install rclone or set its path in Settings.".to_string())
+    let rclone_exe = crate::paths::resolve_rclone_path().ok_or_else(|| {
+        AppError::Other("rclone sidecar not found — reinstall Spool.".to_string())
     })?;
     crate::ludusavi_config::set_cloud(None, None, None, Some(&rclone_exe.to_string_lossy()), None)?;
 
@@ -709,11 +849,11 @@ pub async fn set_cloud_webdav(
     provider: String,
 ) -> AppResult<()> {
     // Manual WebDAV (Nextcloud, ownCloud, …) expects the plaintext password.
-    apply_webdav_remote(config.inner(), &url, &username, &password, &provider, false).await?;
+    apply_webdav_remote(&url, &username, &password, &provider, false).await?;
     let mut cfg = config.lock().map_err(|_| AppError::LockPoisoned)?;
-    cfg.data.cloud_provider = "webdav".to_string();
-    cfg.data.cloud_webdav_url = url;
-    cfg.data.cloud_webdav_username = username;
+    cfg.data.cloud.provider = "webdav".to_string();
+    cfg.data.cloud.webdav_url = url;
+    cfg.data.cloud.webdav_username = username;
     cfg.save()?;
     Ok(())
 }
@@ -736,12 +876,9 @@ pub async fn search_by_exe(
     ludusavi.search(&ludusavi_exe, &config_dir, &query).await
 }
 
-fn ludusavi_path_or_err(config: &State<'_, SharedConfig>) -> AppResult<PathBuf> {
-    let cfg = config.lock().map_err(|_| AppError::LockPoisoned)?;
-    let path = cfg.data.ludusavi_path.clone();
-    drop(cfg);
-    crate::paths::resolve_ludusavi_path(&path).ok_or_else(|| {
-        AppError::Other("Ludusavi is not configured. Place ludusavi in your PATH or configure it in Settings.".to_string())
+fn ludusavi_path_or_err(_config: &State<'_, SharedConfig>) -> AppResult<PathBuf> {
+    crate::paths::resolve_ludusavi_path().ok_or_else(|| {
+        AppError::Other("Ludusavi sidecar not found — reinstall Spool.".to_string())
     })
 }
 
@@ -763,6 +900,68 @@ mod tests {
             "Hades 2"
         );
         assert_eq!(infer_name_from_exe(Path::new("")), "");
+    }
+
+    #[test]
+    fn reduce_backups_counts_and_picks_latest() {
+        // Two backups for one game; latest `when` should win, count = 2.
+        let json = r#"{
+            "games": {
+                "Hades": {
+                    "backups": [
+                        { "name": "ftp", "when": "2024-01-02T10:00:00Z", "locked": false },
+                        { "name": ".", "when": "2024-03-15T18:30:00Z", "locked": false }
+                    ]
+                }
+            }
+        }"#;
+        let out: BackupsOutput = serde_json::from_str(json).unwrap();
+        let stats = reduce_backups(out);
+        assert_eq!(stats.count, 2);
+        assert_eq!(
+            stats.last_backed_up_at.unwrap().to_rfc3339(),
+            "2024-03-15T18:30:00+00:00"
+        );
+    }
+
+    #[test]
+    fn reduce_backups_empty_is_zero() {
+        let out: BackupsOutput = serde_json::from_str(r#"{"games":{}}"#).unwrap();
+        let stats = reduce_backups(out);
+        assert_eq!(stats.count, 0);
+        assert!(stats.last_backed_up_at.is_none());
+    }
+
+    #[test]
+    fn revisions_are_newest_first_with_tip_flagged() {
+        // Names survive parsing; the newest `when` is flagged is_current.
+        let json = r#"{
+            "games": {
+                "Hades": {
+                    "backups": [
+                        { "name": "backup-1", "when": "2024-01-02T10:00:00Z", "locked": false },
+                        { "name": ".", "when": "2024-03-15T18:30:00Z", "locked": false },
+                        { "name": "backup-2", "when": "2024-02-01T09:00:00Z", "locked": false }
+                    ]
+                }
+            }
+        }"#;
+        let out: BackupsOutput = serde_json::from_str(json).unwrap();
+        let revs = revisions_from(out);
+        assert_eq!(revs.len(), 3);
+        // Newest first.
+        assert_eq!(revs[0].name, ".");
+        assert!(revs[0].is_current);
+        assert_eq!(revs[1].name, "backup-2");
+        assert!(!revs[1].is_current);
+        assert_eq!(revs[2].name, "backup-1");
+        assert!(!revs[2].is_current);
+    }
+
+    #[test]
+    fn revisions_empty_is_empty() {
+        let out: BackupsOutput = serde_json::from_str(r#"{"games":{}}"#).unwrap();
+        assert!(revisions_from(out).is_empty());
     }
 
     #[test]

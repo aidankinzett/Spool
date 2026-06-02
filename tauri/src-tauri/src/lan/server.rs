@@ -162,7 +162,7 @@ async fn get_games_handler(
 
     let enabled = config
         .lock()
-        .map(|c| c.data.lan_share_enabled)
+        .map(|c| c.data.lan.share_enabled)
         .unwrap_or(false);
     if !enabled {
         return Ok(Json(Vec::new()));
@@ -209,7 +209,7 @@ async fn get_manifest_handler(
 
     let (enabled, device_id, device_name) = match config.lock() {
         Ok(cfg) => (
-            cfg.data.lan_share_enabled,
+            cfg.data.lan.share_enabled,
             cfg.data.device_id.clone(),
             cfg.data.device_name.clone(),
         ),
@@ -340,7 +340,7 @@ async fn get_file_handler(
 
     let enabled = config
         .lock()
-        .map(|c| c.data.lan_share_enabled)
+        .map(|c| c.data.lan.share_enabled)
         .unwrap_or(false);
     if !enabled {
         return Err(StatusCode::FORBIDDEN);
@@ -528,7 +528,7 @@ async fn serve_artwork_path(
 
     let enabled = config
         .lock()
-        .map(|c| c.data.lan_share_enabled)
+        .map(|c| c.data.lan.share_enabled)
         .unwrap_or(false);
     if !enabled {
         return Err(StatusCode::FORBIDDEN);

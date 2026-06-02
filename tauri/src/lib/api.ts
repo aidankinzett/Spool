@@ -6,6 +6,8 @@
 import { invoke, convertFileSrc } from '@tauri-apps/api/core';
 import type {
   AddToSteamResult,
+  AddToStreamingHostResult,
+  StreamingHostInfo,
   ConfigData,
   DownloadProgress,
   GameEntry,
@@ -18,6 +20,7 @@ import type {
   UploadSnapshot,
   SearchCandidate,
   RawConflictDetails,
+  SaveRevision,
 } from './types';
 
 /** Status of the companion Spool Backup Decky plugin (mirrors the Rust
@@ -42,11 +45,12 @@ export const api = {
   addGame: (newGame: NewGame): Promise<GameEntry> => invoke('add_game', { newGame }),
   updateGame: (entry: GameEntry): Promise<GameEntry> => invoke('update_game', { entry }),
   removeGame: (id: string): Promise<boolean> => invoke('remove_game', { id }),
+  /** Removes the library entry AND deletes its install folder from disk. */
+  deleteGameFromDisk: (id: string): Promise<void> => invoke('delete_game_from_disk', { id }),
 
   // Config
   getConfig: (): Promise<ConfigData> => invoke('get_config'),
   updateConfig: (data: ConfigData): Promise<ConfigData> => invoke('update_config', { data }),
-  detectLudusavi: (): Promise<string> => invoke('detect_ludusavi'),
   detectUmuRun: (): Promise<string> => invoke('detect_umu_run'),
   appPlatform: (): Promise<string> => invoke('app_platform'),
   checkDependencies: (): Promise<DepStatus[]> => invoke('check_dependencies'),
@@ -75,9 +79,19 @@ export const api = {
   // SteamGridDB
   fetchCover: (gameId: string): Promise<string | null> => invoke('fetch_cover', { gameId }),
 
+  // Steam Store metadata (description, developer, publisher, genres, release
+  // date). Resolves true when any empty field was populated.
+  fetchMetadata: (gameId: string): Promise<boolean> => invoke('fetch_metadata', { gameId }),
+
   // Steam shortcut
   addSpoolToSteam: (): Promise<AddToSteamResult> => invoke('add_spool_to_steam'),
   addToSteam: (gameId: string): Promise<AddToSteamResult> => invoke('add_to_steam', { gameId }),
+
+  // Apollo / Sunshine streaming host. detectStreamingHost resolves null when
+  // no host config is installed (used to gate the per-game "Add to" button).
+  detectStreamingHost: (): Promise<StreamingHostInfo | null> => invoke('detect_streaming_host'),
+  addToStreamingHost: (gameId: string): Promise<AddToStreamingHostResult> =>
+    invoke('add_to_streaming_host', { gameId }),
 
   // Open a file/folder with the OS default handler. Goes through Rust (not
   // the opener plugin) so it can strip the AppImage environment before
@@ -93,16 +107,16 @@ export const api = {
   getRunAsAdminInRegistry: (exePath: string): Promise<boolean> =>
     invoke('get_run_as_admin_in_registry', { exePath }),
 
-  // Sync server
+  // Cloud control-plane reachability (rclone remote probe)
   currentSyncStatus: (): Promise<SyncStatus> => invoke('current_sync_status'),
   refreshSyncStatus: (): Promise<SyncStatus> => invoke('refresh_sync_status'),
-  syncRegisterAccount: (
-    serverUrl: string,
-    adminSecret: string,
-    username: string,
-  ): Promise<string> =>
-    invoke('sync_register_account', { serverUrl, adminSecret, username }),
-  useServerSaveStorage: (): Promise<void> => invoke('use_server_save_storage'),
+
+  // Cloud OAuth authentication
+  checkCloudRemoteExists: (provider: string): Promise<boolean> =>
+    invoke('check_cloud_remote_exists', { provider }),
+  connectCloudOAuth: (provider: string): Promise<void> =>
+    invoke('connect_cloud_oauth', { provider }),
+  cancelCloudOAuth: (): Promise<void> => invoke('cancel_cloud_oauth'),
 
   // LAN
   listLanPeers: (): Promise<LanPeer[]> => invoke('list_lan_peers'),
@@ -123,13 +137,39 @@ export const api = {
     invoke('cancel_upload', { sessionId }),
 
   // Run workflow
-  launchGame: (gameId: string): Promise<void> => invoke('launch_game', { gameId }),
+  /**
+   * Launch a game through the run workflow. `steal` overrides a *suspended*
+   * play-state lock held by another sleeping device (the "Play here instead"
+   * path) — the server refuses to steal a live, actively-played lock.
+   */
+  launchGame: (gameId: string, steal = false): Promise<void> =>
+    invoke('launch_game', { gameId, steal }),
   manualBackup: (
     gameId: string,
   ): Promise<{ game_count: number; bytes_total: number }> =>
     invoke('manual_backup', { gameId }),
   manualRestore: (gameId: string): Promise<{ game_count: number }> =>
     invoke('manual_restore', { gameId }),
+  /** List the save revisions ludusavi retains for a game, newest first. */
+  listSaveRevisions: (gameId: string): Promise<SaveRevision[]> =>
+    invoke('list_save_revisions', { gameId }),
+  /**
+   * Roll back to an earlier save revision. Restores the chosen backup, then
+   * pins it as the new tip (immediate cloud-synced backup) so it isn't
+   * clobbered by the next pre-launch restore. Blocked while a game is running.
+   */
+  restoreSaveRevision: (
+    gameId: string,
+    backupName: string,
+  ): Promise<{ game_count: number }> =>
+    invoke('restore_save_revision', { gameId, backupName }),
+  /**
+   * Refresh a game's save-backup stats (revision count + latest-backup time)
+   * from ludusavi's real backup store. Fire-and-forget from the detail view;
+   * the backend emits `library:changed` only when something actually changed.
+   */
+  refreshSaveMetadata: (gameId: string): Promise<void> =>
+    invoke('refresh_save_metadata', { gameId }),
   /**
    * Resolve a cloud-sync conflict in-app by picking which copy wins, then
    * land the reconciled saves. `side` is `'local'` (keep this device, upload)

@@ -9,7 +9,7 @@ use crate::error::{AppError, AppResult};
 use crate::paths;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, State};
 
 /// One game in the library. Matches the C# `GameEntry` JSON shape exactly
@@ -46,7 +46,7 @@ pub struct GameEntry {
     /// `library.json` files round-trip unchanged; nothing sets or consults it.
     pub use_proton: bool,
     /// Override the Proton build directory. `None` = use the global default
-    /// (`ConfigData.default_proton_path`) or auto-pick the newest.
+    /// (`ConfigData.launch.default_proton_path`) or auto-pick the newest.
     pub proton_version_path: Option<String>,
     /// Override the Wine prefix ROOT. `None` = `paths::proton_prefixes_dir()/<id>`.
     pub wine_prefix_path: Option<String>,
@@ -97,19 +97,18 @@ pub struct GameEntry {
     /// view; falls back to the brand `spool` colour when None.
     pub accent_color: Option<String>,
 
-    /// Cross-device save-sync status, set by the sync server's
-    /// `/events/:game/latest-backup` probe. One of:
+    /// Cross-device save-sync status, derived from the rclone device blobs
+    /// at startup and updated after each backup. One of:
     ///
-    ///   "synced"        latest server event came from this device
-    ///                   and our local mtime matches
-    ///   "local-newer"   we backed up more recently than the server
-    ///                   knows (offline backup or sync was disabled)
+    ///   "synced"        this device holds the most recent backup
+    ///   "local-newer"   we backed up locally but the cloud hasn't
+    ///                   confirmed it yet (offline / sync disabled)
     ///   "cloud-newer"   another device backed up after us — our
     ///                   local saves are behind
     ///
-    /// `None` means we don't have enough info to badge (sync off,
-    /// no backup history, or never queried). The library sidebar
-    /// renders a small coloured dot on the cover when this is set.
+    /// `None` means not enough info to badge (cloud not configured,
+    /// no backup history). The library sidebar renders a small
+    /// coloured dot on the cover when this is set.
     pub sync_badge: Option<String>,
 
     /// Latest ludusavi backup name (the `mapping.yaml` tip) that was last
@@ -195,6 +194,11 @@ pub struct NewGame {
     pub manifest_install_dir: Option<String>,
     #[serde(default)]
     pub save_paths: Vec<String>,
+    /// Install folder on disk (defaults to the exe's parent directory in the
+    /// Add flow, confirmed by the user). Required for LAN sharing to have
+    /// something to stream — see `PeerGame::from_entry` in `lan/mod.rs`.
+    #[serde(default)]
+    pub game_folder_path: Option<String>,
 }
 
 /// In-memory library, loaded once at startup and held behind a [`Mutex`] in
@@ -273,9 +277,11 @@ impl Library {
     }
 }
 
-/// Shared library state. Wrapping in [`Mutex`] is fine here because every
-/// access is a quick read/clone — we never hold the guard across an `.await`.
-pub type SharedLibrary = Mutex<Library>;
+/// Shared library state. The outer [`Arc`] lets callers clone a handle into
+/// spawned tasks without touching Tauri's `State<'_, _>` lifetime — in
+/// particular `lan/install.rs`'s download task and the headless plugin
+/// server both need to push a new entry after the partial rename.
+pub type SharedLibrary = Arc<Mutex<Library>>;
 
 /// Filesystem-safe filename derived from a game name.
 ///
@@ -352,6 +358,11 @@ pub fn add_game(
             lutris_slug: new_game.lutris_slug,
             manifest_install_dir: new_game.manifest_install_dir,
             save_paths: new_game.save_paths,
+            game_folder_path: new_game.game_folder_path,
+            // Newly added games are shared on the LAN by default; the user can
+            // turn this off per-game in the editor. Sharing only actually
+            // streams when game_folder_path is set (auto-detected on add).
+            lan_shared: true,
             ..GameEntry::default()
         };
         lib.entries.push(entry.clone());
@@ -371,6 +382,17 @@ pub fn add_game(
         if let Err(e) = crate::steamgriddb::fetch_and_save_cover(&app_for_task, &id_for_task).await
         {
             tracing::warn!(game_id = %id_for_task, error = %e, "cover fetch failed");
+        }
+    });
+
+    // Fetch Steam Store metadata (description, developer, publisher,
+    // genres, release date) in parallel. Best-effort and only fills
+    // empty fields — a no-op when the game has no steam_id.
+    let app_for_meta = app.clone();
+    let id_for_meta = entry.id.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Err(e) = crate::metadata::fetch_and_save_metadata(&app_for_meta, &id_for_meta).await {
+            tracing::warn!(game_id = %id_for_meta, error = %e, "metadata fetch failed");
         }
     });
 
@@ -430,6 +452,160 @@ pub fn remove_game(
     Ok(removed)
 }
 
+/// Deletes a game's install folder from disk, then removes its library entry.
+///
+/// Unlike [`remove_game`] (which only forgets the entry), this reclaims the
+/// disk space by deleting the folder recorded in `game_folder_path`. The
+/// folder is removed first; only if that succeeds is the library entry
+/// dropped, so a failed delete leaves the library pointing at a folder that
+/// still exists rather than orphaning files the UI can no longer find.
+///
+/// On Linux it also deletes the game's per-game Proton/Wine prefix (the
+/// `wine_prefix_path` override, or `prefixes/<id>` under Spool's data dir) as
+/// a best-effort step — a failed or missing prefix delete doesn't abort the
+/// operation. On non-Linux platforms the prefix step is skipped entirely
+/// (Proton is Linux-only), so a populated override is never touched there.
+///
+/// Refuses to run when the game has no known install folder, and rejects
+/// obviously-too-broad targets (filesystem root, the user's home dir, Spool's
+/// own data dir, or any path fewer than two components deep) so a bad
+/// `game_folder_path` can't wipe out unrelated files. A folder that's already
+/// gone is treated as success.
+#[tauri::command]
+pub async fn delete_game_from_disk(
+    state: State<'_, SharedLibrary>,
+    app: AppHandle,
+    id: String,
+) -> AppResult<()> {
+    delete_game_core(state.inner(), &id).await?;
+    if let Err(e) = app.emit("library:changed", &id) {
+        tracing::warn!(error = %e, "failed to emit library:changed after delete_game_from_disk");
+    }
+    Ok(())
+}
+
+/// Folder-delete + entry-removal shared by the [`delete_game_from_disk`]
+/// command and the Decky plugin server's `DELETE /games/:id`. Does not emit
+/// `library:changed` — the caller does that where a Tauri `AppHandle` exists.
+pub async fn delete_game_core(library: &SharedLibrary, id: &str) -> AppResult<()> {
+    // Snapshot the folder + prefix paths under the lock, then drop the guard
+    // before any blocking IO or await (lock discipline: never hold a std Mutex
+    // across await). The Proton prefix is only ever managed on Linux, so its
+    // path is resolved (and later deleted) on Linux alone — a populated
+    // `wine_prefix_path` override on Windows/macOS must never be recurse-deleted.
+    let (folder, prefix_root) = {
+        let lib = library.lock().map_err(|_| AppError::LockPoisoned)?;
+        let entry = lib
+            .entries
+            .iter()
+            .find(|e| e.id == id)
+            .ok_or_else(|| AppError::Other(format!("game with id {id} not found")))?;
+        // Per-game Proton prefix: the override if set, else the default
+        // `prefixes/<id>` under Spool's data dir.
+        #[cfg(target_os = "linux")]
+        let prefix_root = Some(
+            entry
+                .wine_prefix_path
+                .clone()
+                .filter(|p| !p.trim().is_empty())
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|| crate::proton::game_prefix_path(id)),
+        );
+        #[cfg(not(target_os = "linux"))]
+        let prefix_root: Option<std::path::PathBuf> = None;
+        (entry.game_folder_path.clone(), prefix_root)
+    };
+
+    let Some(folder) = folder.filter(|f| !f.trim().is_empty()) else {
+        return Err(AppError::Other(
+            "This game has no known install folder to delete.".to_string(),
+        ));
+    };
+
+    // Recursive delete can be slow for a large game — run it off the async
+    // runtime's worker threads.
+    tokio::task::spawn_blocking(move || delete_install_dir(&folder))
+        .await
+        .map_err(|e| AppError::Other(format!("delete task join failed: {e}")))??;
+
+    // Best-effort Proton prefix cleanup (Linux only) — never aborts the
+    // removal. A missing prefix (e.g. a never-launched game) is a no-op.
+    if let Some(prefix_root) = prefix_root {
+        let prefix_str = prefix_root.to_string_lossy().to_string();
+        match tokio::task::spawn_blocking(move || delete_install_dir(&prefix_str)).await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => tracing::warn!(
+                prefix = %prefix_root.display(),
+                error = %e,
+                "couldn't delete Proton prefix; leaving it in place",
+            ),
+            Err(e) => tracing::warn!(error = %e, "prefix delete task join failed"),
+        }
+    }
+
+    // Folder gone (or already absent) — now forget the entry. Reuse the same
+    // retain + save path as remove_game.
+    let id = id.to_string();
+    let mut lib = library.lock().map_err(|_| AppError::LockPoisoned)?;
+    lib.entries.retain(|e| e.id != id);
+    lib.save()?;
+    Ok(())
+}
+
+/// Recursively deletes `folder` after validating it's a safe target. A path
+/// that doesn't exist is treated as already-deleted (`Ok`). See
+/// [`delete_game_from_disk`] for the guard rationale.
+fn delete_install_dir(folder: &str) -> AppResult<()> {
+    let path = std::path::Path::new(folder);
+    if !path.exists() {
+        // Already gone — nothing to reclaim, and removing the entry is still
+        // the right outcome.
+        return Ok(());
+    }
+    if !path.is_dir() {
+        return Err(AppError::Other(format!(
+            "Install path is not a folder: {folder}"
+        )));
+    }
+    // Resolve symlinks / `..` so the safety check sees the real target.
+    let canonical = std::fs::canonicalize(path)
+        .map_err(|e| AppError::Other(format!("couldn't resolve {folder}: {e}")))?;
+    if is_unsafe_delete_target(&canonical) {
+        return Err(AppError::Other(format!(
+            "Refusing to delete '{}' — it looks too broad to be a single game folder.",
+            canonical.display()
+        )));
+    }
+    std::fs::remove_dir_all(&canonical)
+        .map_err(|e| AppError::Other(format!("couldn't delete {}: {e}", canonical.display())))?;
+    Ok(())
+}
+
+/// True when `path` is too dangerous to recursively delete: fewer than two
+/// path components below root, the user's home directory, or an ancestor of
+/// (or equal to) Spool's own data directory.
+fn is_unsafe_delete_target(path: &std::path::Path) -> bool {
+    use std::path::Component;
+    let normals = path
+        .components()
+        .filter(|c| matches!(c, Component::Normal(_)))
+        .count();
+    if normals < 2 {
+        return true;
+    }
+    if let Some(home) = dirs::home_dir() {
+        if path == home {
+            return true;
+        }
+    }
+    // Never delete Spool's data dir, nor any ancestor that contains it.
+    let app_data = paths::app_data_dir();
+    if app_data.starts_with(path) {
+        return true;
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -448,5 +624,33 @@ mod tests {
         // Non-ASCII characters get dropped — same behaviour as the C#
         // version, intended to keep legacy non-Unicode tools happy.
         assert_eq!(make_safe_filename("Tëst Gämé"), "Tst Gm");
+    }
+
+    #[test]
+    fn unsafe_delete_target_rejects_shallow_paths() {
+        // Root and one-component paths are too broad to be a game folder.
+        assert!(is_unsafe_delete_target(std::path::Path::new("/")));
+        assert!(is_unsafe_delete_target(std::path::Path::new("/games")));
+        // Two components or deeper is fine.
+        assert!(!is_unsafe_delete_target(std::path::Path::new(
+            "/games/Hades"
+        )));
+        assert!(!is_unsafe_delete_target(std::path::Path::new(
+            "/home/user/Games/Hades"
+        )));
+    }
+
+    #[test]
+    fn unsafe_delete_target_rejects_home_dir() {
+        if let Some(home) = dirs::home_dir() {
+            assert!(is_unsafe_delete_target(&home));
+        }
+    }
+
+    #[test]
+    fn delete_install_dir_noop_when_missing() {
+        // A path that doesn't exist is treated as already-deleted.
+        let missing = std::env::temp_dir().join("spool-delete-test-does-not-exist-xyz");
+        assert!(delete_install_dir(&missing.to_string_lossy()).is_ok());
     }
 }

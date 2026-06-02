@@ -31,7 +31,15 @@ pub fn active_session_file() -> PathBuf {
     app_data_dir().join("active-session.json")
 }
 
-#[allow(dead_code)]
+/// File holding the loopback TCP port of the companion Decky plugin server
+/// (`spool --headless-server`). The server writes its resolved port here on
+/// startup; the Decky plugin (both the Python backend and the React UI, via a
+/// `callable`) reads it to build the `http://127.0.0.1:<port>` base URL.
+#[cfg(unix)]
+pub fn plugin_http_port_path() -> PathBuf {
+    app_data_dir().join("plugin-http-port")
+}
+
 pub fn covers_dir() -> PathBuf {
     app_data_dir().join("covers")
 }
@@ -247,24 +255,12 @@ pub fn resolve_sidecar_path(name: &str) -> Option<std::path::PathBuf> {
     None
 }
 
-pub fn resolve_ludusavi_path(configured_path: &str) -> Option<std::path::PathBuf> {
-    if !configured_path.is_empty() && std::path::PathBuf::from(configured_path).is_file() {
-        Some(std::path::PathBuf::from(configured_path))
-    } else if let Some(bundled) = resolve_sidecar_path("ludusavi") {
-        Some(bundled)
-    } else {
-        find_system_binary("ludusavi")
-    }
+pub fn resolve_ludusavi_path() -> Option<std::path::PathBuf> {
+    resolve_sidecar_path("ludusavi")
 }
 
-pub fn resolve_rclone_path(configured_path: &str) -> Option<std::path::PathBuf> {
-    if !configured_path.is_empty() && std::path::PathBuf::from(configured_path).is_file() {
-        Some(std::path::PathBuf::from(configured_path))
-    } else if let Some(bundled) = resolve_sidecar_path("rclone") {
-        Some(bundled)
-    } else {
-        find_system_binary("rclone")
-    }
+pub fn resolve_rclone_path() -> Option<std::path::PathBuf> {
+    resolve_sidecar_path("rclone")
 }
 
 pub fn find_system_binary(name: &str) -> Option<std::path::PathBuf> {
@@ -309,49 +305,6 @@ fn target_triple() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn resolve_ludusavi_prefers_a_valid_configured_path() {
-        // Phase 5 resolution order: config override → bundled → system.
-        // A configured path pointing at a real file must win outright.
-        let dir = tempfile::tempdir().unwrap();
-        let bin = dir.path().join("ludusavi-custom");
-        std::fs::write(&bin, b"#!/bin/sh\n").unwrap();
-
-        let resolved = resolve_ludusavi_path(&bin.to_string_lossy());
-        assert_eq!(resolved, Some(bin));
-    }
-
-    #[test]
-    fn resolve_ludusavi_ignores_a_configured_path_that_is_not_a_file() {
-        // A stale/non-existent override must fall through to bundled/system
-        // discovery rather than being returned as-is. We can't assert what
-        // gets found here, only that the bogus override is never returned.
-        let bogus = "/nonexistent/path/to/ludusavi";
-        let resolved = resolve_ludusavi_path(bogus);
-        assert_ne!(
-            resolved.as_deref(),
-            Some(std::path::Path::new(bogus)),
-            "a non-file override must not be returned verbatim",
-        );
-    }
-
-    #[test]
-    fn resolve_rclone_prefers_a_valid_configured_path() {
-        let dir = tempfile::tempdir().unwrap();
-        let bin = dir.path().join("rclone-custom");
-        std::fs::write(&bin, b"#!/bin/sh\n").unwrap();
-        assert_eq!(resolve_rclone_path(&bin.to_string_lossy()), Some(bin));
-    }
-
-    #[test]
-    fn resolve_rclone_ignores_a_configured_path_that_is_not_a_file() {
-        let bogus = "/nonexistent/path/to/rclone";
-        assert_ne!(
-            resolve_rclone_path(bogus).as_deref(),
-            Some(std::path::Path::new(bogus)),
-        );
-    }
 
     #[test]
     fn resolve_sidecar_returns_none_for_unknown_binary() {

@@ -8,9 +8,18 @@
 //!      us whether to focus the library or kick off a game launch.
 //!
 //! Format:
-//!   spool                            → normal library launch
-//!   spool --run "Game Name" "ExePath"→ launch this game's workflow
-//!   spool --backup "Game Name"       → headless one-shot backup, then exit
+//!   spool                              → normal library launch
+//!   spool --run "Game Name" "ExePath"  → launch this game's workflow
+//!   spool --run "Game Name" "ExePath" --attached
+//!                                      → as above, but force attached-launch
+//!                                        (fullscreen splash + exit on close),
+//!                                        used by Apollo/Sunshine streaming-host
+//!                                        shortcuts so the stream sees the same
+//!                                        flow as SteamOS Game Mode
+//!   spool --backup "Game Name"         → headless one-shot backup, then exit
+//!   spool --release-lock "Game Name"   → headless: flag this device's session
+//!                                        as unsynced (pending-backup), then exit
+//!   spool --headless-server            → start the plugin Unix socket server, run forever
 //!
 //! Anything else is treated as `Normal`. We can extend with more
 //! subcommands (--quit, --backup-all, etc.) as use cases arrive.
@@ -19,11 +28,35 @@
 pub enum CliMode {
     /// Open / focus the library window.
     Normal,
-    /// Find a game by name and run its launch workflow.
-    Run { game_name: String, exe_path: String },
-    /// Headless one-shot: back up a single game's saves, then exit. Used by
-    /// the Decky plugin's forced-close fallback. No GUI, no tray.
+    /// Find a game by name and run its launch workflow. `attached` is set by a
+    /// trailing `--attached` flag (Apollo/Sunshine shortcuts) to force the
+    /// fullscreen-splash, exit-on-close behavior regardless of gamescope.
+    Run {
+        game_name: String,
+        exe_path: String,
+        attached: bool,
+    },
+    /// Headless one-shot: back up a single game's saves (cloud-synced), then
+    /// exit. Used by the Decky plugin's forced-close fallback. On success it
+    /// also clears this game's unsynced-session marker in the remote (the saves
+    /// are now in the cloud). No GUI, no tray.
+    ///
+    /// Deliberately does NOT, on its own, flag the session as unsynced — that's
+    /// a separate concern (`ReleaseLock`) the Decky fallback invokes first.
     Backup { game_name: String },
+    /// Headless one-shot: flag this device's session for a game as unsynced
+    /// (pending-backup) in the cloud remote, then exit. Used by the Decky
+    /// plugin's forced-close fallback *before* `--backup` — Steam SIGKILLs
+    /// Spool before its run workflow can do this, so peers would otherwise not
+    /// know this device has saves that haven't reached the cloud yet. The
+    /// follow-up `--backup` clears the marker once the upload lands. No GUI.
+    ReleaseLock { game_name: String },
+    /// Start the plugin Unix socket server and run until killed. No tray, no
+    /// window, no single-instance registration. Used by the Decky plugin
+    /// (`spool --headless-server`) to get a persistent IPC endpoint it can
+    /// query for session state, library data, and backup operations — replacing
+    /// the old per-operation `--backup` / `--release-lock` subprocess spawns.
+    HeadlessServer,
 }
 
 /// Parses argv, skipping the program-name arg at position 0.
@@ -33,12 +66,21 @@ pub fn parse_args<S: AsRef<str>>(args: &[S]) -> CliMode {
         return CliMode::Run {
             game_name: rest[1].to_string(),
             exe_path: rest[2].to_string(),
+            attached: rest[3..].contains(&"--attached"),
         };
     }
     if rest.len() >= 2 && rest[0] == "--backup" {
         return CliMode::Backup {
             game_name: rest[1].to_string(),
         };
+    }
+    if rest.len() >= 2 && rest[0] == "--release-lock" {
+        return CliMode::ReleaseLock {
+            game_name: rest[1].to_string(),
+        };
+    }
+    if rest.len() == 1 && rest[0] == "--headless-server" {
+        return CliMode::HeadlessServer;
     }
     CliMode::Normal
 }
@@ -61,6 +103,26 @@ mod tests {
             CliMode::Run {
                 game_name: "Hades".to_string(),
                 exe_path: "C:/Games/Hades/Hades.exe".to_string(),
+                attached: false,
+            }
+        );
+    }
+
+    #[test]
+    fn run_with_attached_flag_sets_attached() {
+        let argv = [
+            "spool.exe",
+            "--run",
+            "Hades",
+            "C:/Games/Hades/Hades.exe",
+            "--attached",
+        ];
+        assert_eq!(
+            parse_args(&argv),
+            CliMode::Run {
+                game_name: "Hades".to_string(),
+                exe_path: "C:/Games/Hades/Hades.exe".to_string(),
+                attached: true,
             }
         );
     }
@@ -91,5 +153,37 @@ mod tests {
     #[test]
     fn backup_missing_name_falls_back_to_normal() {
         assert_eq!(parse_args::<&str>(&["spool.exe", "--backup"]), CliMode::Normal);
+    }
+
+    #[test]
+    fn release_lock_with_name_parses() {
+        let argv = ["spool.exe", "--release-lock", "Hades"];
+        assert_eq!(
+            parse_args(&argv),
+            CliMode::ReleaseLock {
+                game_name: "Hades".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn release_lock_missing_name_falls_back_to_normal() {
+        assert_eq!(
+            parse_args::<&str>(&["spool.exe", "--release-lock"]),
+            CliMode::Normal
+        );
+    }
+
+    #[test]
+    fn headless_server_parses() {
+        let argv = ["spool", "--headless-server"];
+        assert_eq!(parse_args(&argv), CliMode::HeadlessServer);
+    }
+
+    #[test]
+    fn headless_server_with_extra_args_falls_back_to_normal() {
+        // Extra args → unrecognised, fall through to Normal.
+        let argv = ["spool", "--headless-server", "--extra"];
+        assert_eq!(parse_args(&argv), CliMode::Normal);
     }
 }

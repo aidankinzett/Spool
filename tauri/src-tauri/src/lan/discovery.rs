@@ -87,7 +87,7 @@ impl LanState {
         }
     }
 
-    fn snapshot(&self) -> Vec<LanPeer> {
+    pub fn snapshot(&self) -> Vec<LanPeer> {
         let now = Instant::now();
         let peers = match self.peers.lock() {
             Ok(g) => g,
@@ -131,8 +131,8 @@ async fn run_discovery(app: AppHandle) -> AppResult<()> {
         (
             cfg.data.device_id.clone(),
             cfg.data.device_name.clone(),
-            cfg.data.lan_share_port,
-            cfg.data.lan_share_enabled,
+            cfg.data.lan.share_port,
+            cfg.data.lan.share_enabled,
         )
     };
 
@@ -171,6 +171,16 @@ async fn run_discovery(app: AppHandle) -> AppResult<()> {
 
     let lan_state = app.state::<LanState>().peers.clone();
 
+    // GUI side: notify the frontend via Tauri events whenever the peer set
+    // changes. The headless plugin server reuses these same loops with a
+    // no-op callback (it polls instead of pushing).
+    let on_change: Arc<dyn Fn() + Send + Sync> = {
+        let app = app.clone();
+        Arc::new(move || {
+            let _ = app.emit("lan:peers-changed", &());
+        })
+    };
+
     let announce_handle = {
         let socket = socket.clone();
         let app = app.clone();
@@ -183,18 +193,18 @@ async fn run_discovery(app: AppHandle) -> AppResult<()> {
     };
     let listen_handle = {
         let socket = socket.clone();
-        let app = app.clone();
         let device_id = device_id.clone();
         let peers = lan_state.clone();
+        let on_change = on_change.clone();
         tokio::spawn(async move {
-            listen_loop(socket, app, device_id, peers).await;
+            listen_loop(socket, device_id, peers, on_change).await;
         })
     };
     let reaper_handle = {
-        let app = app.clone();
         let peers = lan_state;
+        let on_change = on_change.clone();
         tokio::spawn(async move {
-            reaper_loop(app, peers).await;
+            reaper_loop(peers, on_change).await;
         })
     };
     let upload_reaper_handle = {
@@ -225,7 +235,7 @@ async fn run_discovery(app: AppHandle) -> AppResult<()> {
 /// `0.0.0.0:DISCOVERY_PORT`, and `device_id`-self-suppression in
 /// `listen_loop` drops our own announces. No explicit loopback toggle
 /// needed — that was a multicast-specific concern.
-fn make_discovery_socket() -> AppResult<UdpSocket> {
+pub(crate) fn make_discovery_socket() -> AppResult<UdpSocket> {
     let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))
         .map_err(|e| AppError::Other(format!("socket create: {e}")))?;
     socket
@@ -281,9 +291,9 @@ async fn announce_loop(
 
 async fn listen_loop(
     socket: Arc<UdpSocket>,
-    app: AppHandle,
     our_device_id: String,
     peers: Arc<Mutex<HashMap<String, PeerEntry>>>,
+    on_change: Arc<dyn Fn() + Send + Sync>,
 ) {
     let mut buf = vec![0u8; 4096];
     loop {
@@ -343,12 +353,15 @@ async fn listen_loop(
             is_new || count_changed || port_changed
         };
         if changed {
-            let _ = app.emit("lan:peers-changed", &());
+            on_change();
         }
     }
 }
 
-async fn reaper_loop(app: AppHandle, peers: Arc<Mutex<HashMap<String, PeerEntry>>>) {
+async fn reaper_loop(
+    peers: Arc<Mutex<HashMap<String, PeerEntry>>>,
+    on_change: Arc<dyn Fn() + Send + Sync>,
+) {
     loop {
         tokio::time::sleep(REAPER_INTERVAL).await;
         let removed = {
@@ -361,7 +374,7 @@ async fn reaper_loop(app: AppHandle, peers: Arc<Mutex<HashMap<String, PeerEntry>
             peers.len() != before
         };
         if removed {
-            let _ = app.emit("lan:peers-changed", &());
+            on_change();
         }
     }
 }
@@ -393,4 +406,36 @@ async fn upload_reaper_loop(app: AppHandle, uploads: Arc<Mutex<HashMap<String, U
 #[tauri::command]
 pub fn list_lan_peers(state: State<'_, LanState>) -> Vec<LanPeer> {
     state.snapshot()
+}
+
+/// Headless entry point: spawn just the discovery **listener** (no announce,
+/// no file server) so a consumer process — the Decky plugin's
+/// `--headless-server` — can list nearby peers without the full Tauri app
+/// running. Updates the shared `LanState` in place; callers read it via
+/// `LanState::snapshot`. There's no event bus in the headless server, so the
+/// change callback is a no-op (the Decky UI polls `/lan/peers`).
+///
+/// Unix-only: its sole caller is `plugin_server.rs`, which is itself
+/// `#![cfg(unix)]`. Without this gate it's dead code on Windows.
+#[cfg(unix)]
+pub fn spawn_peer_listener(state: Arc<LanState>, our_device_id: String) -> AppResult<()> {
+    let socket = Arc::new(make_discovery_socket()?);
+    let peers = state.peers.clone();
+    let noop: Arc<dyn Fn() + Send + Sync> = Arc::new(|| {});
+    {
+        let socket = socket.clone();
+        let peers = peers.clone();
+        let id = our_device_id;
+        let on_change = noop.clone();
+        tokio::spawn(async move {
+            listen_loop(socket, id, peers, on_change).await;
+        });
+    }
+    {
+        let on_change = noop;
+        tokio::spawn(async move {
+            reaper_loop(peers, on_change).await;
+        });
+    }
+    Ok(())
 }

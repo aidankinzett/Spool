@@ -4,6 +4,7 @@
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import { listen } from '@tauri-apps/api/event';
   import ToastStack from '$lib/components/ToastStack.svelte';
+  import ConfirmHost from '$lib/components/ConfirmHost.svelte';
   import { api } from '$lib/api';
   import { uiMode } from '$lib/uiMode.svelte';
 
@@ -53,3 +54,6 @@
 
 <!-- Global toast stack — overlaid on every route. -->
 <ToastStack />
+
+<!-- Global confirmation-dialog host — replaces the unreliable window.confirm(). -->
+<ConfirmHost />

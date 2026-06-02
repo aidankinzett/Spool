@@ -33,8 +33,8 @@ use tauri::{AppHandle, Emitter, State};
 
 /// The C# Spool launcher stub binary, embedded at compile time.
 ///
-/// Source: `launcher_stub.cs` at the repo root, compiled via:
-///   `csc.exe /target:winexe /out:launcher_stub.exe launcher_stub.cs`
+/// Source: `tauri/src-tauri/launcher_stub.cs`, compiled via:
+///   `csc.exe /target:winexe /win32icon:launcher_stub.ico /out:launcher_stub.exe launcher_stub.cs`
 ///
 /// Format the stub expects inside this .exe at runtime:
 ///   `\r\nLUDUSAVI_WRAP_CFG_START\r\n`
@@ -47,7 +47,7 @@ use tauri::{AppHandle, Emitter, State};
 /// to pick up the latest `spool_exe` path — falling back to the
 /// embedded value if config isn't there. So launchers keep working
 /// after the user updates Spool to a new location.
-const LAUNCHER_STUB: &[u8] = include_bytes!("../../../launcher_stub.exe");
+const LAUNCHER_STUB: &[u8] = include_bytes!("../launcher_stub.exe");
 
 /// Generates a launcher.exe for the given game. Returns the absolute
 /// path on success. Side effects: writes the file, updates the

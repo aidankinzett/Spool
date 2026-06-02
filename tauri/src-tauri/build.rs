@@ -26,5 +26,22 @@ fn main() {
         println!("cargo:rerun-if-changed=../../decky/dist/index.js");
     }
 
+    // tauri_build::build() validates that every externalBin entry exists on
+    // disk with the target-triple suffix (e.g. `ludusavi-aarch64-unknown-linux-gnu`).
+    // Real binaries are downloaded by `scripts/download-sidecars.js`; stub any
+    // that are missing so `cargo check` / `cargo clippy` work without them —
+    // the stubs are never executed, only bundled when doing a real `tauri build`.
+    let target = std::env::var("TARGET").unwrap_or_default();
+    let is_windows = target.contains("windows");
+    let ext = if is_windows { ".exe" } else { "" };
+    let sidecars = ["ludusavi", "rclone"];
+    for name in sidecars {
+        let stub = Path::new("binaries").join(format!("{name}-{target}{ext}"));
+        if !stub.exists() {
+            let _ = std::fs::create_dir_all("binaries");
+            let _ = std::fs::write(&stub, []);
+        }
+    }
+
     tauri_build::build()
 }

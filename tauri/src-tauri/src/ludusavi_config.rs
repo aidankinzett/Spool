@@ -40,6 +40,15 @@ pub struct Redirect {
 ///   * `restore.path` == `backup.path`  — they must match for cloud sync
 ///   * `backup.format.chosen: simple`   — plain dirs so Phase 3 can parse
 ///     mapping.yaml files
+///   * `backup.retention.differential: 0` — every retained revision is a
+///     self-contained *full* backup. Load-bearing: the redirect / `mapping.yaml`
+///     flow and the "restore an earlier save" rollback both assume each
+///     revision is independently restorable, with no differential chain to
+///     reconstruct. Always pinned to 0.
+///   * `backup.retention.full`           — how many revisions to keep. We seed
+///     a default (3) only when absent, so the user's Settings choice
+///     (`save_retention_full`, applied via [`set_retention`]) survives the next
+///     startup instead of being stomped back to 3.
 ///   * `cloud:` block present            — Phase 4 fills in the remote
 pub fn ensure_config() -> AppResult<()> {
     let dir = paths::ludusavi_config_dir();
@@ -63,18 +72,44 @@ pub fn ensure_config() -> AppResult<()> {
         &["backup", "format", "chosen"],
         Value::String("simple".into()),
     );
-    changed |= set_path(&mut v, &["backup", "retention", "full"], Value::Number(3.into()));
+    // Seed the revision count only if absent — the user's Settings value is
+    // applied via `set_retention` and must not be clobbered on every startup.
+    changed |= ensure_key_exists(&mut v, &["backup", "retention", "full"], Value::Number(3.into()));
+    // Differentials always off (see invariants above).
     changed |= set_path(&mut v, &["backup", "retention", "differential"], Value::Number(0.into()));
 
     // Ensure cloud block exists with at least a remote key; leave existing
     // values intact so a user-configured remote survives a restart.
-    ensure_key_exists(&mut v, &["cloud", "remote"], Value::Null);
+    changed |= ensure_key_exists(&mut v, &["cloud", "remote"], Value::Null);
 
     if changed || !file.exists() {
         write_value(&v)?;
     }
 
     Ok(())
+}
+
+/// Write the save-revision retention count (`backup.retention.full`) into the
+/// owned config.yaml. Called from `update_config` when the user changes the
+/// "save revisions to keep" setting. Clamped to 1–10 so a stray value can't
+/// disable backups (0) or balloon disk/cloud use. Differentials are left
+/// untouched (always 0 — see [`ensure_config`]). Lowering the count prunes on
+/// the next backup; raising it accumulates going forward.
+pub fn set_retention(full: u32) -> AppResult<()> {
+    let mut v = read_value_or_empty();
+    apply_retention(&mut v, full);
+    write_value(&v)
+}
+
+/// Pure value-mutation half of [`set_retention`] — no file IO, so it can be
+/// unit tested. Clamps `full` to 1–10 and writes `backup.retention.full`.
+fn apply_retention(v: &mut Value, full: u32) {
+    let clamped = full.clamp(1, 10);
+    set_path(
+        v,
+        &["backup", "retention", "full"],
+        Value::Number(clamped.into()),
+    );
 }
 
 /// Write cloud remote / path / rclone settings into the owned config.yaml.
@@ -150,7 +185,7 @@ fn apply_cloud(
 /// Connection / IO timeout + retry caps we always fold into rclone's arguments.
 ///
 /// `ludusavi {restore,backup} --cloud-sync` shells out to rclone. With rclone's
-/// defaults, an unreachable remote (e.g. the save-sync server at SteamOS
+/// defaults, an unreachable remote (e.g. the cloud remote at SteamOS
 /// Game-Mode boot, before Wi-Fi is up) blocks for *minutes* (long connect
 /// timeout × retries × low-level-retries) — which wedges the run workflow on
 /// the "restoring" phase and the game never launches. Capping these makes
@@ -286,27 +321,36 @@ fn set_path(root: &mut Value, path: &[&str], val: Value) -> bool {
 }
 
 /// Like `set_path` but only inserts when the key doesn't already exist.
-fn ensure_key_exists(root: &mut Value, path: &[&str], default: Value) {
+/// Insert `default` at `path` only if the key is absent. Returns `true` if it
+/// inserted anything (or had to coerce a non-map node into a map), so callers
+/// can fold the result into a `changed` flag and decide whether to write.
+fn ensure_key_exists(root: &mut Value, path: &[&str], default: Value) -> bool {
     let Some((&key, rest)) = path.split_first() else {
-        return;
+        return false;
     };
+    let mut changed = false;
     let map = match root {
         Value::Mapping(m) => m,
         other => {
             *other = Value::Mapping(Default::default());
+            changed = true;
             if let Value::Mapping(m) = other {
                 m
             } else {
-                return;
+                return changed;
             }
         }
     };
     if rest.is_empty() {
-        map.entry(k(key)).or_insert(default);
+        if !map.contains_key(k(key)) {
+            map.insert(k(key), default);
+            changed = true;
+        }
     } else {
         let child = map.entry(k(key)).or_insert(Value::Mapping(Default::default()));
-        ensure_key_exists(child, rest, default);
+        changed |= ensure_key_exists(child, rest, default);
     }
+    changed
 }
 
 fn k(s: &str) -> Value {
@@ -333,6 +377,35 @@ mod tests {
         assert!(set_path(&mut v, &["x"], Value::Bool(true)));
         assert!(!set_path(&mut v, &["x"], Value::Bool(true))); // unchanged
         assert!(set_path(&mut v, &["x"], Value::Bool(false))); // changed
+    }
+
+    #[test]
+    fn ensure_key_exists_only_inserts_when_absent() {
+        let mut v = Value::Mapping(Default::default());
+        assert!(ensure_key_exists(&mut v, &["a", "b"], Value::Number(3.into())));
+        // Present now — second call is a no-op and doesn't overwrite.
+        assert!(!ensure_key_exists(&mut v, &["a", "b"], Value::Number(9.into())));
+        assert_eq!(
+            v.get("a").and_then(|a| a.get("b")).and_then(|n| n.as_u64()),
+            Some(3)
+        );
+    }
+
+    #[test]
+    fn apply_retention_clamps_to_range() {
+        let mut v = Value::Mapping(Default::default());
+        let full = |v: &Value| {
+            v.get("backup")
+                .and_then(|b| b.get("retention"))
+                .and_then(|r| r.get("full"))
+                .and_then(|n| n.as_u64())
+        };
+        apply_retention(&mut v, 0); // below floor → 1
+        assert_eq!(full(&v), Some(1));
+        apply_retention(&mut v, 99); // above ceiling → 10
+        assert_eq!(full(&v), Some(10));
+        apply_retention(&mut v, 5); // in range → 5
+        assert_eq!(full(&v), Some(5));
     }
 
     #[test]

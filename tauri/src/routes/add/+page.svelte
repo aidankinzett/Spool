@@ -16,7 +16,7 @@
   import { onMount } from 'svelte';
   import { open as openDialog } from '@tauri-apps/plugin-dialog';
   import { getCurrentWindow } from '@tauri-apps/api/window';
-  import { FileWarning, Folder, Search, ExternalLink } from '@lucide/svelte';
+  import { FileWarning, Folder, Search, ExternalLink, Wifi } from '@lucide/svelte';
   import { api } from '$lib/api';
   import type { SearchCandidate } from '$lib/types';
   import AppChrome from '$lib/components/AppChrome.svelte';
@@ -32,6 +32,16 @@
   let searchQuery = $state('');
   let searchMode = $state(false); // true once the user types in the search box
   let error = $state<string | null>(null);
+  // Install folder for the game. Auto-detected from the exe's parent directory
+  // when a file is picked; the user can verify or override it before adding.
+  // A folder is what makes LAN sharing (on by default) actually streamable.
+  let gameFolder = $state<string | null>(null);
+
+  /** Parent directory of a file path, handling both `\` and `/` separators. */
+  function parentDir(path: string): string | null {
+    const idx = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
+    return idx > 0 ? path.slice(0, idx) : null;
+  }
 
   const stage = $derived.by((): 'no-exe' | 'identifying' | 'matches' | 'no-match' | 'search' => {
     if (!exePath) return 'no-exe';
@@ -78,7 +88,20 @@
       return;
     }
     exePath = result;
+    // Default the install folder to the exe's parent directory; the user
+    // confirms or changes it below before adding.
+    gameFolder = parentDir(result);
     await identify();
+  }
+
+  async function browseFolder() {
+    const result = await openDialog({
+      title: 'Pick the install folder',
+      directory: true,
+      multiple: false,
+      defaultPath: gameFolder ?? undefined,
+    });
+    if (typeof result === 'string') gameFolder = result;
   }
 
   async function identify() {
@@ -135,6 +158,7 @@
         lutris_slug: picked.lutris_slug,
         manifest_install_dir: picked.manifest_install_dir,
         save_paths: picked.save_paths,
+        game_folder_path: gameFolder,
       });
       await getCurrentWindow().close();
     } catch (e) {
@@ -150,6 +174,7 @@
         game_name: picked?.name ?? fallbackName,
         exe_path: exePath,
         save_paths: [],
+        game_folder_path: gameFolder,
       });
       await getCurrentWindow().close();
     } catch (e) {
@@ -209,6 +234,38 @@
           <Btn variant="ghost" onclick={pickExe}>
             {#snippet icon()}<Folder size={14} />{/snippet}
             Change file
+          </Btn>
+        </div>
+
+        <!-- Install folder — auto-detected from the exe, confirm or override.
+             Enables LAN sharing so peers can install this game from you. -->
+        <div
+          class="relative flex items-center gap-3.5 overflow-hidden rounded-md border border-line-1 bg-bg-1 px-3.5 py-3"
+        >
+          <div class="absolute inset-y-0 left-0 w-[3px]" style:background="var(--color-spool)"></div>
+          <div
+            class="flex size-[38px] shrink-0 items-center justify-center rounded-sm border border-line-2 bg-bg-2 text-ink-1"
+          >
+            <Folder size={18} strokeWidth={1.4} />
+          </div>
+          <div class="min-w-0 flex-1">
+            <div class="font-mono truncate text-[13px] font-medium">
+              {gameFolder ?? 'No install folder set'}
+            </div>
+            <div
+              class="font-mono mt-1 flex items-center gap-1.5 text-[10.5px] tracking-[0.04em] text-ink-3"
+            >
+              <Wifi size={11} />
+              <span class="min-w-0 truncate">
+                {gameFolder
+                  ? 'Install folder — shared on your LAN so nearby devices can install it.'
+                  : 'Set a folder to share this game on your LAN.'}
+              </span>
+            </div>
+          </div>
+          <Btn variant="ghost" onclick={browseFolder}>
+            {#snippet icon()}<Folder size={14} />{/snippet}
+            Change folder
           </Btn>
         </div>
       {/if}

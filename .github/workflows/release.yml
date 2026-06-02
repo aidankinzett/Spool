@@ -30,7 +30,7 @@ jobs:
           bun-version: "1.x"
 
       - name: Bun cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ${{ github.workspace }}/.bun-cache
           key: bun-${{ runner.os }}-${{ hashFiles('tauri/bun.lock') }}
@@ -57,10 +57,10 @@ jobs:
           }
 
       - name: Setup sccache
-        uses: mozilla-actions/sccache-action@v0.0.6
+        uses: mozilla-actions/sccache-action@v0.0.10
 
       - name: Sccache cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ${{ github.workspace }}/.sccache
           key: sccache-${{ runner.os }}-${{ github.ref_name }}-${{ github.sha }}
@@ -106,7 +106,7 @@ jobs:
 
       - name: Cache sidecars
         id: cache-sidecars
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: tauri/src-tauri/binaries
           key: sidecars-${{ runner.os }}-${{ hashFiles('tauri/scripts/download-sidecars.js') }}
@@ -124,6 +124,12 @@ jobs:
           # https://v2.tauri.app/plugin/updater for key generation.
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # Spool's own Google Drive OAuth client, baked into the binary via
+          # option_env! in rclone.rs so users get a dedicated Drive API quota
+          # instead of rclone's globally rate-limited shared default. Absent
+          # secrets fall back to rclone's shared client (no build failure).
+          SPOOL_GDRIVE_CLIENT_ID: ${{ secrets.SPOOL_GDRIVE_CLIENT_ID }}
+          SPOOL_GDRIVE_CLIENT_SECRET: ${{ secrets.SPOOL_GDRIVE_CLIENT_SECRET }}
         with:
           projectPath: tauri
           # NSIS installer + updater artifacts (.sig).
@@ -135,7 +141,7 @@ jobs:
         run: sccache --show-stats
 
       - name: Upload Windows bundle
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: windows-bundle
           path: |
@@ -163,10 +169,10 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Setup sccache
-        uses: mozilla-actions/sccache-action@v0.0.6
+        uses: mozilla-actions/sccache-action@v0.0.10
 
       - name: Sccache cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ${{ github.workspace }}/.sccache
           key: sccache-${{ runner.os }}-${{ github.ref_name }}-${{ github.sha }}
@@ -184,7 +190,7 @@ jobs:
       - name: Install Linux system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf zsync
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
 
       - name: Stamp version into Tauri config + Cargo.toml
         env:
@@ -199,11 +205,11 @@ jobs:
       # build.rs placeholder. Node 22: pnpm 11 (pinned via decky/package.json
       # packageManager) needs Node >= 22.13 or corepack crashes on node:sqlite.
       - name: Setup Node for Decky plugin
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: 22
       - name: pnpm store cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ${{ github.workspace }}/.pnpm-store
           key: pnpm-${{ runner.os }}-${{ hashFiles('decky/pnpm-lock.yaml') }}
@@ -217,7 +223,7 @@ jobs:
           corepack pnpm build
 
       - name: Bun cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ${{ github.workspace }}/.bun-cache
           key: bun-${{ runner.os }}-${{ hashFiles('tauri/bun.lock') }}
@@ -230,7 +236,7 @@ jobs:
 
       - name: Cache sidecars
         id: cache-sidecars
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: tauri/src-tauri/binaries
           key: sidecars-${{ runner.os }}-${{ hashFiles('tauri/scripts/download-sidecars.js') }}
@@ -248,6 +254,9 @@ jobs:
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # See the Windows job above — bakes in Spool's Drive OAuth client.
+          SPOOL_GDRIVE_CLIENT_ID: ${{ secrets.SPOOL_GDRIVE_CLIENT_ID }}
+          SPOOL_GDRIVE_CLIENT_SECRET: ${{ secrets.SPOOL_GDRIVE_CLIENT_SECRET }}
         with:
           projectPath: tauri
           args: --bundles appimage
@@ -276,7 +285,7 @@ jobs:
             https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
           chmod +x appimagetool
           rm "$APPIMAGE" "$APPIMAGE.sig"
-          ARCH=x86_64 ./appimagetool --appimage-extract-and-run -u "gh-releases-zsync|aidankinzett|Spool|latest|Spool_amd64.AppImage.zsync" squashfs-root Spool_amd64.AppImage
+          ARCH=x86_64 ./appimagetool --appimage-extract-and-run squashfs-root Spool_amd64.AppImage
           rm -rf squashfs-root appimagetool
 
       - name: Re-sign repacked AppImage
@@ -311,13 +320,12 @@ jobs:
         run: sccache --show-stats
 
       - name: Upload Linux bundle
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: linux-bundle
           path: |
             tauri/src-tauri/target/release/bundle/appimage/Spool_amd64.AppImage
             tauri/src-tauri/target/release/bundle/appimage/Spool_amd64.AppImage.sig
-            tauri/src-tauri/target/release/bundle/appimage/Spool_amd64.AppImage.zsync
             tauri/src-tauri/target/release/bundle/appimage/spool-*-x86_64.tar.gz
           if-no-files-found: error
 
@@ -377,12 +385,11 @@ jobs:
           WIN_SIG=$(ls artifacts/windows-bundle/Spool_*_x64-setup.exe.sig)
           LIN_APP=$(ls artifacts/linux-bundle/Spool_amd64.AppImage)
           LIN_SIG=$(ls artifacts/linux-bundle/Spool_amd64.AppImage.sig)
-          LIN_ZSYNC=$(ls artifacts/linux-bundle/Spool_amd64.AppImage.zsync)
           LIN_TAR=$(ls artifacts/linux-bundle/spool-*-x86_64.tar.gz)
           gh release create "$TAG_NAME" \
             --title "Spool $TAG_NAME" \
             --notes-file notes.md \
-            "$WIN_EXE" "$WIN_SIG" "$LIN_APP" "$LIN_SIG" "$LIN_ZSYNC" "$LIN_TAR"
+            "$WIN_EXE" "$WIN_SIG" "$LIN_APP" "$LIN_SIG" "$LIN_TAR"
 
       - name: Build and upload latest.json updater manifest
         # tauri-action only emits latest.json on its own release-creation

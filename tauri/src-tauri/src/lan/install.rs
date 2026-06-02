@@ -5,7 +5,7 @@
 //! cancel flag.
 
 use super::{PeerFile, PeerGame, PeerGameManifest};
-use crate::config::SharedConfig;
+use crate::config::ConfigData;
 use crate::error::{AppError, AppResult};
 use crate::library::{make_safe_filename, GameEntry, SharedLibrary};
 use crate::paths;
@@ -132,7 +132,7 @@ impl LanDownloadState {
     /// download loop will notice on its next poll and abort cleanly.
     /// Returns true if a cancel was actually requested (token matched
     /// an in-flight install).
-    fn request_cancel(&self, token: &str) -> bool {
+    pub fn request_cancel(&self, token: &str) -> bool {
         let guard = match self.current.lock() {
             Ok(g) => g,
             Err(_) => return false,
@@ -200,7 +200,7 @@ impl LanDownloadState {
         Some(Duration::from_millis((sleep_secs * 1000.0) as u64))
     }
 
-    fn snapshot(&self) -> Option<DownloadProgress> {
+    pub fn snapshot(&self) -> Option<DownloadProgress> {
         self.current.lock().ok().and_then(|g| g.clone())
     }
 
@@ -231,7 +231,7 @@ impl LanDownloadState {
     /// don't have to touch the private `current` field across a State
     /// deref (which the borrow checker objects to when the State is a
     /// temporary).
-    fn set(&self, value: Option<DownloadProgress>) {
+    pub fn set(&self, value: Option<DownloadProgress>) {
         if let Ok(mut g) = self.current.lock() {
             *g = value;
         }
@@ -241,7 +241,7 @@ impl LanDownloadState {
     /// guard against clearing the wrong install protects the case where
     /// the user kicked off a second install during the 2 s grace period
     /// after the first one finished.
-    fn clear_if_token(&self, token: &str) {
+    pub fn clear_if_token(&self, token: &str) {
         if let Ok(mut g) = self.current.lock() {
             if let Some(p) = g.as_ref() {
                 if p.install_token == token {
@@ -267,19 +267,26 @@ impl Drop for DownloadGuard<'_> {
     }
 }
 
+/// Context bundle passed to the download worker functions instead of
+/// `AppHandle`. Holds everything the hot-path needs to check cancellation,
+/// emit progress, and throttle bandwidth — without tying the code to the
+/// Tauri event bus. Both the GUI path (`start_peer_install`) and the
+/// headless plugin server (`begin_install`) build one of these; only the
+/// `on_progress` closure differs.
+struct TransferCtx {
+    http: reqwest::Client,
+    state: Arc<LanDownloadState>,
+    on_progress: Arc<dyn Fn(&DownloadProgress) + Send + Sync>,
+}
+
 /// Resolves where new LAN installs land. Defaults to
 /// `<app_data>/lan-games` when the user hasn't set `lan_install_dir`
 /// in config — matches the convention of every other Spool path.
-fn install_root_from(app: &AppHandle) -> AppResult<PathBuf> {
-    let config = app.state::<SharedConfig>();
-    let configured = {
-        let cfg = config.lock().map_err(|_| AppError::LockPoisoned)?;
-        cfg.data.lan_install_dir.clone()
-    };
-    if configured.is_empty() {
+fn install_root_from(config: &ConfigData) -> AppResult<PathBuf> {
+    if config.lan.install_dir.is_empty() {
         Ok(paths::app_data_dir().join("lan-games"))
     } else {
-        Ok(PathBuf::from(configured))
+        Ok(PathBuf::from(&config.lan.install_dir))
     }
 }
 
@@ -347,10 +354,8 @@ fn format_reqwest_error(e: &reqwest::Error) -> String {
     out
 }
 
-fn emit_progress(app: &AppHandle, progress: &DownloadProgress) {
-    if let Err(e) = app.emit("lan:download", progress) {
-        tracing::warn!(error = %e, "failed to emit lan:download");
-    }
+fn emit_progress(ctx: &TransferCtx, progress: &DownloadProgress) {
+    (ctx.on_progress)(progress);
 }
 
 /// Fetches the game catalogue from a peer's HTTP server. Frontend calls
@@ -386,7 +391,9 @@ pub async fn fetch_peer_games(app: AppHandle, addr: String, port: u16) -> AppRes
 /// on mount to catch up after a navigation that lost in-memory state —
 /// otherwise it tracks live via the `lan:download` event stream.
 #[tauri::command]
-pub fn current_peer_download(state: State<'_, LanDownloadState>) -> Option<DownloadProgress> {
+pub fn current_peer_download(
+    state: State<'_, Arc<LanDownloadState>>,
+) -> Option<DownloadProgress> {
     state.snapshot()
 }
 
@@ -396,22 +403,20 @@ pub fn current_peer_download(state: State<'_, LanDownloadState>) -> Option<Downl
 /// `true` if the token matched an active install, `false` if there was
 /// nothing to cancel (no in-flight transfer, or different token).
 #[tauri::command]
-pub fn cancel_peer_install(state: State<'_, LanDownloadState>, install_token: String) -> bool {
+pub fn cancel_peer_install(
+    state: State<'_, Arc<LanDownloadState>>,
+    install_token: String,
+) -> bool {
     state.request_cancel(&install_token)
 }
 
-/// Kicks off a peer install. Acquires the single-slot guard, fetches
-/// the manifest, streams every file to a `.partial` staging dir, then
-/// renames into place and registers a new library entry. Progress is
-/// emitted continuously as `lan:download` events.
-///
-/// Returns the install_token (uuid) once the transfer has been queued —
-/// the heavy work runs in a spawned task so the command returns
-/// immediately and the UI can render an in-flight row right away.
+/// Kicks off a peer install from the Tauri GUI. Delegates all shared
+/// logic to `begin_install`, wiring it with Tauri-specific callbacks
+/// (event emission and post-install artwork fetch).
 #[tauri::command]
 pub async fn start_peer_install(
     app: AppHandle,
-    state: State<'_, LanDownloadState>,
+    state: State<'_, Arc<LanDownloadState>>,
     peer_addr: String,
     peer_port: u16,
     game_id: String,
@@ -422,249 +427,80 @@ pub async fn start_peer_install(
         ));
     }
 
-    // Reserve the transfer-panel slot up front with a placeholder
-    // showing "Fetching manifest…" so the UI has a row to render
-    // immediately. The host blake3-hashes the whole game folder on
-    // first manifest request (~1 s/GB) — without this, the user sees
-    // nothing in the transfer panel until the response lands, which
-    // for a multi-GB game means tens of seconds of dead air after the
-    // Install button is clicked.
-    let install_token = uuid::Uuid::new_v4().to_string();
-    let return_token = install_token.clone();
-    let placeholder = DownloadProgress {
-        install_token: install_token.clone(),
-        source_device_id: String::new(),
-        source_device_name: peer_addr.clone(),
-        source_game_id: game_id.clone(),
-        game_name: String::new(),
-        bytes_done: 0,
-        bytes_total: 0,
-        current_file: "Fetching manifest…".into(),
-        status: "starting".into(),
-        message: None,
-        new_game_id: None,
-        bytes_per_second: 0.0,
-        cover_image_path: None,
-    };
-    let _check = state.try_start(placeholder.clone())?;
-    drop(_check);
-    emit_progress(&app, &placeholder);
+    let http = (*app.state::<reqwest::Client>()).clone();
+    let download_state = (*state).clone();
 
-    // Fetch the manifest. Uses MANIFEST_FETCH_TIMEOUT (not the snappy
-    // PEER_FETCH_TIMEOUT) because the host blake3-hashes the folder
-    // on first request. On any failure here we clear the slot so the
-    // placeholder row goes away before the error toast fires.
-    //
-    // Pass our session token so the sender can register the upload
-    // session immediately — before any file fetches arrive — and show
-    // the game name + a progress bar in their Transfers panel while
-    // we're still in the "Fetching manifest…" phase.
-    let manifest_url = format!(
-        "http://{peer_addr}:{peer_port}/games/{game_id}/manifest?session={}",
-        urlencoding::encode(&install_token),
-    );
-    let manifest_result: AppResult<PeerGameManifest> = async {
-        let resp = app
-            .state::<reqwest::Client>()
-            .get(&manifest_url)
-            .timeout(MANIFEST_FETCH_TIMEOUT)
-            .send()
-            .await
-            .map_err(|e| AppError::Other(format!("GET manifest: {}", format_reqwest_error(&e))))?;
-        if !resp.status().is_success() {
-            return Err(AppError::Other(format!(
-                "peer responded {} to /manifest",
-                resp.status()
-            )));
-        }
-        resp.json::<PeerGameManifest>()
-            .await
-            .map_err(|e| AppError::Other(format!("parse manifest: {e}")))
-    }
-    .await;
-    let manifest = match manifest_result {
-        Ok(m) => m,
-        Err(e) => {
-            // Emit a terminal error snapshot so the frontend stops showing
-            // "Fetching manifest…" before the slot is cleared.
-            if let Some(snap) = app.state::<LanDownloadState>().update(|p| {
-                p.status = "error".into();
-                p.message = Some(format!("{e}"));
-            }) {
-                emit_progress(&app, &snap);
+    let (max_bps, install_root) = {
+        let cfg = app.state::<crate::config::SharedConfig>();
+        let data = cfg.lock().map_err(|_| AppError::LockPoisoned)?.data.clone();
+        let root = install_root_from(&data)?;
+        let bps = data.lan.download_max_mbps * 1_000_000.0 / 8.0;
+        (bps, root)
+    };
+
+    let library = (*app.state::<SharedLibrary>()).clone();
+
+    let app_for_changed = app.clone();
+    let on_library_changed: Arc<dyn Fn(&str) + Send + Sync> =
+        Arc::new(move |id: &str| {
+            let _ = app_for_changed.emit("library:changed", id);
+        });
+
+    let app_for_progress = app.clone();
+    let on_progress: Arc<dyn Fn(&DownloadProgress) + Send + Sync> =
+        Arc::new(move |p: &DownloadProgress| {
+            if let Err(e) = app_for_progress.emit("lan:download", p) {
+                tracing::warn!(error = %e, "failed to emit lan:download");
             }
-            app.state::<LanDownloadState>()
-                .clear_if_token(&install_token);
-            return Err(e);
-        }
-    };
+        });
 
-    // Manifest in hand — update the panel row with the real game info
-    // and total size. Status stays "starting" until run_install flips
-    // it to "transferring".
-    let progress = DownloadProgress {
-        install_token: install_token.clone(),
-        source_device_id: manifest.source_device_id.clone(),
-        source_device_name: manifest.source_device_name.clone(),
-        source_game_id: manifest.game_id.clone(),
-        game_name: manifest.game_name.clone(),
-        bytes_done: 0,
-        bytes_total: manifest.total_bytes,
-        current_file: String::new(),
-        status: "starting".into(),
-        message: None,
-        new_game_id: None,
-        bytes_per_second: 0.0,
-        cover_image_path: None,
-    };
-    app.state::<LanDownloadState>().set(Some(progress.clone()));
-    emit_progress(&app, &progress);
-
-    // Prefetch the cover image from the peer in the background so the
-    // transfer-panel row has a thumbnail to render while files stream.
-    // The post-install fetch_peer_artwork pass overwrites this with the
-    // same filename, so there's no dual-storage concern. Best-effort:
-    // a 404 (older peer, no local cover) just leaves cover_image_path
-    // None and the panel falls back to the sleeve gradient.
-    let cover_app = app.clone();
-    let cover_token = install_token.clone();
-    let cover_safe_name = manifest.safe_name.clone();
-    let cover_peer_addr = peer_addr.clone();
-    let cover_source_id = manifest.game_id.clone();
-    tauri::async_runtime::spawn(async move {
-        let client: reqwest::Client = (*cover_app.state::<reqwest::Client>()).clone();
-        let covers_dir = paths::covers_dir();
-        if tokio::fs::create_dir_all(&covers_dir).await.is_err() {
-            return;
-        }
-        let url = format!("http://{cover_peer_addr}:{peer_port}/games/{cover_source_id}/cover");
-        let Some(path) =
-            fetch_and_save_peer_image(&client, &url, &covers_dir, &cover_safe_name, "").await
-        else {
-            return;
-        };
-        let path_str = path.to_string_lossy().to_string();
-        // Only update if the in-flight install still matches our
-        // token — otherwise a slow prefetch could leak into a
-        // freshly-started next install.
-        let state = cover_app.state::<LanDownloadState>();
-        let matched = state
-            .snapshot()
-            .map(|p| p.install_token == cover_token)
-            .unwrap_or(false);
-        if !matched {
-            return;
-        }
-        if let Some(snap) = state.update(|p| {
-            p.cover_image_path = Some(path_str.clone());
-        }) {
-            emit_progress(&cover_app, &snap);
-        }
-    });
-
-    let app_clone = app.clone();
-    let state_handle: tauri::State<'_, LanDownloadState> = app.state::<LanDownloadState>();
-    // We can't move a `State` across an `await`, but `LanDownloadState`
-    // lives on the AppHandle's managed map for the whole process — so
-    // re-fetching inside the task is the idiomatic move.
-    let _ = state_handle;
-
-    tauri::async_runtime::spawn(async move {
-        let result = run_install(
-            app_clone.clone(),
-            peer_addr.clone(),
-            peer_port,
-            manifest.clone(),
-        )
-        .await;
-        // Preserve the prefetched cover across the terminal event so
-        // the panel row keeps its thumbnail during the 2 s grace
-        // window before the slot clears.
-        let cover_carry = app_clone
-            .state::<LanDownloadState>()
-            .snapshot()
-            .and_then(|p| p.cover_image_path);
-        // Final event. On error, surface the message; on success, point
-        // at the freshly-created library entry.
-        let final_progress = match result {
-            Ok(new_id) => DownloadProgress {
-                install_token: install_token.clone(),
-                source_device_id: manifest.source_device_id.clone(),
-                source_device_name: manifest.source_device_name.clone(),
-                source_game_id: manifest.game_id.clone(),
-                game_name: manifest.game_name.clone(),
-                bytes_done: manifest.total_bytes,
-                bytes_total: manifest.total_bytes,
-                current_file: String::new(),
-                status: "done".into(),
-                message: None,
-                new_game_id: Some(new_id),
-                bytes_per_second: 0.0,
-                cover_image_path: cover_carry.clone(),
-            },
-            Err(e) => {
-                // Cancellation is a typed variant on `AppError` so this
-                // branch is exact rather than string-matched.
-                if e.is_canceled() {
-                    tracing::info!(
-                        game = %manifest.game_name,
-                        by_host = matches!(e, AppError::HostCanceled),
-                        "LAN install cancelled",
-                    );
-                    DownloadProgress {
-                        install_token: install_token.clone(),
-                        source_device_id: manifest.source_device_id.clone(),
-                        source_device_name: manifest.source_device_name.clone(),
-                        source_game_id: manifest.game_id.clone(),
-                        game_name: manifest.game_name.clone(),
-                        bytes_done: 0,
-                        bytes_total: manifest.total_bytes,
-                        current_file: String::new(),
-                        status: "canceled".into(),
-                        message: None,
-                        new_game_id: None,
-                        bytes_per_second: 0.0,
-                        cover_image_path: cover_carry.clone(),
-                    }
-                } else {
-                    tracing::warn!(game = %manifest.game_name, error = %e, "LAN install failed");
-                    DownloadProgress {
-                        install_token: install_token.clone(),
-                        source_device_id: manifest.source_device_id.clone(),
-                        source_device_name: manifest.source_device_name.clone(),
-                        source_game_id: manifest.game_id.clone(),
-                        game_name: manifest.game_name.clone(),
-                        bytes_done: 0,
-                        bytes_total: manifest.total_bytes,
-                        current_file: String::new(),
-                        status: "error".into(),
-                        message: Some(e.to_string()),
-                        new_game_id: None,
-                        bytes_per_second: 0.0,
-                        cover_image_path: cover_carry.clone(),
+    // Post-install artwork: fetch from the peer (cover + hero), then fall
+    // back to SteamGridDB. Runs in its own task so the UI gets the "done"
+    // event immediately and the cover just appears once it lands.
+    let peer_addr_for_art = peer_addr.clone();
+    let app_for_art = app.clone();
+    let on_success: Arc<dyn Fn(String, PeerGameManifest) + Send + Sync> =
+        Arc::new(move |new_id: String, manifest: PeerGameManifest| {
+            let app = app_for_art.clone();
+            let peer_addr = peer_addr_for_art.clone();
+            tauri::async_runtime::spawn(async move {
+                let got_cover = fetch_peer_artwork(
+                    &app,
+                    &new_id,
+                    &manifest.safe_name,
+                    &peer_addr,
+                    peer_port,
+                    &manifest.game_id,
+                )
+                .await;
+                if !got_cover {
+                    if let Err(e) =
+                        crate::steamgriddb::fetch_and_save_cover(&app, &new_id).await
+                    {
+                        tracing::warn!(
+                            game_id = %new_id,
+                            error = %e,
+                            "cover fetch failed (peer 404 + SteamGridDB fallback)"
+                        );
                     }
                 }
-            }
-        };
-        // Publish the final state. `State<'_, T>` is borrowed from
-        // `app_clone` and the lock guard's lifetime ties back to it —
-        // so we delegate to a method on the state that takes ownership
-        // of the lock internally and avoids holding the borrow.
-        app_clone
-            .state::<LanDownloadState>()
-            .set(Some(final_progress.clone()));
-        emit_progress(&app_clone, &final_progress);
-        // Brief grace period so the UI can pick up the terminal state
-        // via snapshot before we clear it. 2 s feels right — long enough
-        // for the toast to settle, short enough that a fresh popover
-        // open doesn't see stale data.
-        tokio::time::sleep(Duration::from_secs(2)).await;
-        app_clone
-            .state::<LanDownloadState>()
-            .clear_if_token(&install_token);
-    });
+            });
+        });
 
-    Ok(return_token)
+    begin_install(
+        peer_addr,
+        peer_port,
+        game_id,
+        http,
+        download_state,
+        on_progress,
+        max_bps,
+        install_root,
+        library,
+        on_library_changed,
+        Some(on_success),
+    )
+    .await
 }
 
 /// Returns true when a reqwest error is transient enough to retry —
@@ -694,8 +530,7 @@ async fn download_one_file(
     file: PeerFile,
     partial_dir: PathBuf,
     url: String,
-    client: reqwest::Client,
-    app: AppHandle,
+    ctx: Arc<TransferCtx>,
     bytes_done: Arc<AtomicU64>,
     last_emit: Arc<Mutex<Instant>>,
     max_bps: f64,
@@ -715,11 +550,8 @@ async fn download_one_file(
 
     for attempt in 0..=MAX_DOWNLOAD_RETRIES {
         // Cancel check at the top of every attempt.
-        {
-            let state = app.state::<LanDownloadState>();
-            if state.is_canceled() {
-                return Err(state.cancel_error());
-            }
+        if ctx.state.is_canceled() {
+            return Err(ctx.state.cancel_error());
         }
 
         if attempt > 0 {
@@ -739,20 +571,17 @@ async fn download_one_file(
                 "LAN install: retrying after network error"
             );
             let msg = format!("Reconnecting… (attempt {attempt}/{MAX_DOWNLOAD_RETRIES})");
-            if let Some(snap) = app.state::<LanDownloadState>().update(|p| {
+            if let Some(snap) = ctx.state.update(|p| {
                 p.current_file = msg.clone();
                 p.bytes_done = rolled_back;
             }) {
-                emit_progress(&app, &snap);
+                emit_progress(&ctx, &snap);
             }
 
             // Interruptible sleep — cancel still works during backoff.
             tokio::time::sleep(delay).await;
-            {
-                let state = app.state::<LanDownloadState>();
-                if state.is_canceled() {
-                    return Err(state.cancel_error());
-                }
+            if ctx.state.is_canceled() {
+                return Err(ctx.state.cancel_error());
             }
         }
 
@@ -790,7 +619,7 @@ async fn download_one_file(
                 let actual = hasher.finalize().to_hex().to_string();
                 if actual == file.hash {
                     bytes_done.fetch_add(file.size, Ordering::Relaxed);
-                    maybe_emit_progress(&app, &bytes_done, &last_emit, &file.path);
+                    maybe_emit_progress(&ctx, &bytes_done, &last_emit, &file.path);
                     return Ok(());
                 }
                 // Hash mismatch — truncate so the normal download path
@@ -805,7 +634,7 @@ async fn download_one_file(
                 // Fall through to the normal GET path with resume_from = 0.
             } else {
                 bytes_done.fetch_add(file.size, Ordering::Relaxed);
-                maybe_emit_progress(&app, &bytes_done, &last_emit, &file.path);
+                maybe_emit_progress(&ctx, &bytes_done, &last_emit, &file.path);
                 return Ok(());
             }
         }
@@ -815,7 +644,7 @@ async fn download_one_file(
             0
         };
 
-        let mut request = client.get(&url);
+        let mut request = ctx.http.get(&url);
         if resume_from > 0 {
             request = request.header(header::RANGE, format!("bytes={resume_from}-"));
         }
@@ -883,25 +712,22 @@ async fn download_one_file(
 
         // Surface "now starting this file" — racy with sibling tasks;
         // fine, the UI just shows one representative file name.
-        if let Some(snap) = app.state::<LanDownloadState>().update(|p| {
+        if let Some(snap) = ctx.state.update(|p| {
             p.status = "transferring".into();
             p.current_file = file.path.clone();
             p.bytes_done = bytes_done.load(Ordering::Relaxed);
         }) {
-            emit_progress(&app, &snap);
+            emit_progress(&ctx, &snap);
         }
 
         let mut stream = resp.bytes_stream();
         let mut stream_error: Option<reqwest::Error> = None;
         'chunks: while let Some(chunk_result) = stream.next().await {
-            {
-                let state = app.state::<LanDownloadState>();
-                if state.is_canceled() {
-                    // Drop the file before any directory cleanup —
-                    // Windows refuses to remove a dir with open handles.
-                    drop(out);
-                    return Err(state.cancel_error());
-                }
+            if ctx.state.is_canceled() {
+                // Drop the file before any directory cleanup —
+                // Windows refuses to remove a dir with open handles.
+                drop(out);
+                return Err(ctx.state.cancel_error());
             }
             let chunk = match chunk_result {
                 Ok(c) => c,
@@ -924,14 +750,11 @@ async fn download_one_file(
             let chunk_len = chunk.len() as u64;
             let bd_after = bytes_done.fetch_add(chunk_len, Ordering::Relaxed) + chunk_len;
             bytes_added += chunk_len;
-            maybe_emit_progress(&app, &bytes_done, &last_emit, &file.path);
+            maybe_emit_progress(&ctx, &bytes_done, &last_emit, &file.path);
 
             // Bandwidth throttle — shared counter keeps all parallel
             // tasks collectively under the cap.
-            if let Some(sleep) = app
-                .state::<LanDownloadState>()
-                .throttle_required(bd_after, max_bps)
-            {
+            if let Some(sleep) = ctx.state.throttle_required(bd_after, max_bps) {
                 tokio::time::sleep(sleep).await;
             }
         }
@@ -1013,7 +836,7 @@ async fn download_one_file(
 /// is dropped before any work — we never hold a sync mutex across an
 /// await.
 fn maybe_emit_progress(
-    app: &AppHandle,
+    ctx: &TransferCtx,
     bytes_done: &AtomicU64,
     last_emit: &Mutex<Instant>,
     current_file: &str,
@@ -1031,31 +854,37 @@ fn maybe_emit_progress(
         return;
     }
     let bd = bytes_done.load(Ordering::Relaxed);
-    if let Some(snap) = app.state::<LanDownloadState>().update(|p| {
+    if let Some(snap) = ctx.state.update(|p| {
         p.bytes_done = bd;
         p.current_file = current_file.to_string();
     }) {
-        emit_progress(app, &snap);
+        emit_progress(ctx, &snap);
     }
 }
 
-/// Heavy lifting for `start_peer_install` — runs in the spawned task.
-/// Returns the new library entry's id on success.
+/// Heavy lifting — runs in the spawned task.
+/// Streams all files, verifies hashes, renames partial → final, creates
+/// the library entry. Returns the new entry's id on success.
+#[allow(clippy::too_many_arguments)]
 async fn run_install(
-    app: AppHandle,
+    ctx: Arc<TransferCtx>,
     peer_addr: String,
     peer_port: u16,
     manifest: PeerGameManifest,
+    max_bps: f64,
+    install_root: PathBuf,
+    library: SharedLibrary,
+    on_library_changed: Arc<dyn Fn(&str) + Send + Sync>,
 ) -> AppResult<String> {
-    let root = install_root_from(&app)?;
-    tokio::fs::create_dir_all(&root)
+    tokio::fs::create_dir_all(&install_root)
         .await
         .map_err(|e| AppError::Other(format!("create install root: {e}")))?;
 
     // Resume detection: if a `.partial` exists at the preferred name
     // we pick up where we left off rather than allocating a fresh
     // `<name> (2)` install.
-    let (final_dir, partial_dir, resuming) = resolve_install_dirs(&root, &manifest.safe_name);
+    let (final_dir, partial_dir, resuming) =
+        resolve_install_dirs(&install_root, &manifest.safe_name);
     if resuming {
         tracing::info!(
             partial = %partial_dir.display(),
@@ -1068,70 +897,28 @@ async fn run_install(
     }
 
     // Flip the published status from "starting" to "transferring" as
-    // soon as the worker is actually running. Without this, an install
-    // where every file short-circuits (resume case where the partial
-    // dir already holds everything at the correct size) would stay at
-    // "Preparing transfer…" in the UI until the final "done" event
-    // arrived — no progress bar movement, no feedback at all. The
-    // per-file workers used to publish this transition, but they skip
-    // the update on the size-matches-skip-the-fetch path, which is
-    // the only path that runs for a fully-resumed install.
-    if let Some(snap) = app.state::<LanDownloadState>().update(|p| {
+    // soon as the worker is actually running.
+    if let Some(snap) = ctx.state.update(|p| {
         p.status = "transferring".into();
     }) {
-        emit_progress(&app, &snap);
+        emit_progress(&ctx, &snap);
     }
 
-    // Reuse the process-wide shared client. The shared client has no
-    // top-level timeout so multi-GB transfers can run as long as they
-    // need; the heartbeat uses RequestBuilder::timeout for the short
-    // poll. (Per `m07` + `domain-web`: one client per process, share
-    // its connection pool + DNS cache.)
-    let client: reqwest::Client = (*app.state::<reqwest::Client>()).clone();
-
-    // Shared counters for the parallel file downloads. `bytes_done`
-    // accumulates across all tasks; `last_emit` throttles the progress
-    // event firehose to ~5 Hz instead of the per-chunk rate (which on
-    // a gigabit transfer is thousands per second).
+    // Shared counters for the parallel file downloads.
     let bytes_done = Arc::new(AtomicU64::new(0));
     let last_emit = Arc::new(Mutex::new(Instant::now() - PROGRESS_EMIT_INTERVAL * 2));
 
-    // Build the per-file futures. We stream them through
-    // `buffer_unordered(LAN_PARALLEL_FILES)` so the slot keeps full
-    // even when individual files vary wildly in size. A first-error
-    // short-circuit drops the rest cooperatively.
     let manifest_game_id = manifest.game_id.clone();
-    // The install_token doubles as the upload session id seen by the
-    // source — its host UI groups all 4 of our parallel file fetches
-    // into a single row, and host-side cancel keys off it. Reach for
-    // it via the public `snapshot()` so we don't touch the private
-    // `current` field through a temporary `State<'_, _>`.
-    let session_id_for_url = app
-        .state::<LanDownloadState>()
+    let session_id_for_url = ctx
+        .state
         .snapshot()
         .map(|p| p.install_token)
         .unwrap_or_default();
     let game_name_for_url = manifest.game_name.clone();
 
-    // Snapshot the bandwidth cap once at install start. Mid-install
-    // setting changes won't take effect until the next install —
-    // simpler than threading config through every chunk loop. Convert
-    // Mbps (megabits/s, decimal — matching the speed shown in the
-    // transfers UI) → bytes/s here so the chunk loop doesn't repeat the
-    // math: 1 Mbit = 1_000_000 bits = 125_000 bytes.
-    let max_bps = {
-        let cfg = app.state::<SharedConfig>();
-        let mbps = cfg
-            .lock()
-            .map(|c| c.data.lan_download_max_mbps)
-            .unwrap_or(0.0);
-        mbps * 1_000_000.0 / 8.0
-    };
-
     let file_futures = manifest.files.clone().into_iter().map(|file| {
         let partial_dir = partial_dir.clone();
-        let client = client.clone();
-        let app = app.clone();
+        let ctx = ctx.clone();
         let bytes_done = bytes_done.clone();
         let last_emit = last_emit.clone();
         let peer_addr = peer_addr.clone();
@@ -1139,45 +926,30 @@ async fn run_install(
         let session = session_id_for_url.clone();
         let game_name = game_name_for_url.clone();
         async move {
-            // URL-encode each segment so spaces / special chars survive.
             let encoded = file
                 .path
                 .split('/')
                 .map(|seg| urlencoding::encode(seg).into_owned())
                 .collect::<Vec<_>>()
                 .join("/");
-            // Session + game_name query params let the source group us
-            // into a single "uploads" row and show a friendly title.
             let url = format!(
                 "http://{peer_addr}:{peer_port}/games/{game_id}/files/{encoded}?session={}&game_name={}",
                 urlencoding::encode(&session),
                 urlencoding::encode(&game_name),
             );
-            download_one_file(
-                file,
-                partial_dir,
-                url,
-                client,
-                app,
-                bytes_done,
-                last_emit,
-                max_bps,
-            )
-            .await
+            download_one_file(file, partial_dir, url, ctx, bytes_done, last_emit, max_bps).await
         }
     });
 
     // Heartbeat: poll the source's /cancel-check every ~3 s so a
     // host-initiated cancel takes effect promptly even between file
-    // fetches. On 410 we set the same cancel_flag the user-initiated
-    // path uses, so the rest of the code converges to a clean abort.
+    // fetches.
     let heartbeat = {
-        let app_for_hb = app.clone();
+        let ctx_hb = ctx.clone();
         let session = session_id_for_url.clone();
         let game_id = manifest_game_id.clone();
         let peer_addr = peer_addr.clone();
-        // Reuse the shared client; per-request timeout via RequestBuilder.
-        let hb_client: reqwest::Client = (*app.state::<reqwest::Client>()).clone();
+        let hb_client = ctx.http.clone();
         tokio::spawn(async move {
             let url = format!(
                 "http://{peer_addr}:{peer_port}/games/{game_id}/cancel-check?session={}",
@@ -1185,11 +957,9 @@ async fn run_install(
             );
             loop {
                 tokio::time::sleep(Duration::from_secs(3)).await;
-                let state = app_for_hb.state::<LanDownloadState>();
-                if state.is_canceled() {
+                if ctx_hb.state.is_canceled() {
                     return;
                 }
-                // GONE (410) is the "host cancelled" signal.
                 if let Ok(resp) = hb_client
                     .get(&url)
                     .timeout(Duration::from_secs(3))
@@ -1198,7 +968,7 @@ async fn run_install(
                 {
                     if resp.status() == reqwest::StatusCode::GONE {
                         tracing::info!("LAN install: host cancelled the upload");
-                        state.request_host_cancel();
+                        ctx_hb.state.request_host_cancel();
                         return;
                     }
                 }
@@ -1206,18 +976,13 @@ async fn run_install(
         })
     };
 
-    let mut stream = futures_util::stream::iter(file_futures).buffer_unordered(LAN_PARALLEL_FILES);
-    // Drain until cancel or first error. We capture the terminal state
-    // into `maybe_err` so we can finish cleanup (drop stream → cancel
-    // in-flight tasks; abort heartbeat) before propagating up.
+    let mut stream =
+        futures_util::stream::iter(file_futures).buffer_unordered(LAN_PARALLEL_FILES);
     let mut maybe_err: Option<AppError> = None;
     while let Some(result) = stream.next().await {
-        {
-            let state = app.state::<LanDownloadState>();
-            if state.is_canceled() {
-                maybe_err = Some(state.cancel_error());
-                break;
-            }
+        if ctx.state.is_canceled() {
+            maybe_err = Some(ctx.state.cancel_error());
+            break;
         }
         if let Err(e) = result {
             maybe_err = Some(e);
@@ -1227,22 +992,17 @@ async fn run_install(
     drop(stream);
     heartbeat.abort();
     if let Some(e) = maybe_err {
-        // Any flavour of cancel wipes the partial dir so a fresh
-        // attempt doesn't pick up half-written state. Other errors
-        // keep the partial dir so the user can retry with resume.
         if e.is_canceled() {
             let _ = tokio::fs::remove_dir_all(&partial_dir).await;
         }
         return Err(e);
     }
-    // Final progress flush — make sure the UI shows 100% before we
-    // emit the terminal "done" event.
+
+    // Final progress flush — make sure the UI shows 100% before the
+    // terminal "done" event.
     let final_bd = bytes_done.load(Ordering::Relaxed);
-    if let Some(snap) = app
-        .state::<LanDownloadState>()
-        .update(|p| p.bytes_done = final_bd)
-    {
-        emit_progress(&app, &snap);
+    if let Some(snap) = ctx.state.update(|p| p.bytes_done = final_bd) {
+        emit_progress(&ctx, &snap);
     }
 
     // All files landed — flip the staging dir into its real location.
@@ -1250,9 +1010,7 @@ async fn run_install(
         .await
         .map_err(|e| AppError::Other(format!("finalise install dir: {e}")))?;
 
-    // Build the library entry. exe_path is the manifest-supplied
-    // relative path joined to our final install dir; if the source
-    // didn't have one we leave it empty and the user wires it up.
+    // Build the library entry.
     let exe_path = manifest
         .exe_relative_path
         .as_ref()
@@ -1265,7 +1023,6 @@ async fn run_install(
         .unwrap_or_default();
 
     let new_id = uuid::Uuid::new_v4().to_string();
-    let library = app.state::<SharedLibrary>();
     let entry = {
         let mut lib = library.lock().map_err(|_| AppError::LockPoisoned)?;
         let entry = GameEntry {
@@ -1296,43 +1053,7 @@ async fn run_install(
         entry
     };
 
-    if let Err(e) = app.emit("library:changed", &entry.id) {
-        tracing::warn!(error = %e, "failed to emit library:changed after LAN install");
-    }
-
-    // Background artwork fetch. Try the peer's `/cover` and `/hero`
-    // first — that gives us pixel-identical art with no SteamGridDB
-    // API key requirement and works for games SGDB doesn't index.
-    // If the peer 404s the cover (older Spool, no local cover), fall
-    // back to the regular SteamGridDB fetch.
-    let app_for_art = app.clone();
-    let id_for_art = entry.id.clone();
-    let safe_name_for_art = entry.safe_name.clone();
-    let peer_addr_for_art = peer_addr.clone();
-    let source_id_for_art = manifest.game_id.clone();
-    tauri::async_runtime::spawn(async move {
-        let got_cover = fetch_peer_artwork(
-            &app_for_art,
-            &id_for_art,
-            &safe_name_for_art,
-            &peer_addr_for_art,
-            peer_port,
-            &source_id_for_art,
-        )
-        .await;
-        if !got_cover {
-            if let Err(e) =
-                crate::steamgriddb::fetch_and_save_cover(&app_for_art, &id_for_art).await
-            {
-                tracing::warn!(
-                    game_id = %id_for_art,
-                    error = %e,
-                    "cover fetch failed (peer 404 + SteamGridDB fallback)"
-                );
-            }
-        }
-    });
-
+    on_library_changed(&entry.id);
     Ok(new_id)
 }
 
@@ -1350,7 +1071,6 @@ async fn fetch_peer_artwork(
     peer_port: u16,
     source_game_id: &str,
 ) -> bool {
-    // Shared client; the 30s budget is applied per request below.
     let client: reqwest::Client = (*app.state::<reqwest::Client>()).clone();
 
     let covers_dir = paths::covers_dir();
@@ -1361,8 +1081,6 @@ async fn fetch_peer_artwork(
     let cover_url = format!("http://{peer_addr}:{peer_port}/games/{source_game_id}/cover");
     let hero_url = format!("http://{peer_addr}:{peer_port}/games/{source_game_id}/hero");
 
-    // Fetch both in parallel — they're tiny relative to the game
-    // bytes and there's no point serialising them.
     let (cover_path, hero_path) = tokio::join!(
         fetch_and_save_peer_image(&client, &cover_url, &covers_dir, safe_name, ""),
         fetch_and_save_peer_image(&client, &hero_url, &covers_dir, safe_name, "-hero"),
@@ -1372,11 +1090,6 @@ async fn fetch_peer_artwork(
         return false;
     }
 
-    // Accent extraction is best-effort and only meaningful from the
-    // portrait cover. Heroes are wide and would skew the colour.
-    // Image decode + histogram is sync CPU/disk work (~10ms for a
-    // typical cover), so per `m07-concurrency` it lives on
-    // `spawn_blocking` rather than blocking the async runtime.
     let accent = if let Some(p) = cover_path.as_ref() {
         let p = p.clone();
         tokio::task::spawn_blocking(move || crate::steamgriddb::extract_vibrant_color(&p))
@@ -1387,11 +1100,6 @@ async fn fetch_peer_artwork(
         None
     };
 
-    // Update the library entry. Same shape as the pattern in
-    // `run_install` above: bind State to a local first so the
-    // MutexGuard's borrow has a stable anchor — Tauri's
-    // `State<'_, T>` lifetime + a chained `.lock()` confuses the
-    // borrow checker otherwise.
     let library = app.state::<SharedLibrary>();
     if let Ok(mut lib) = library.lock() {
         if let Some(entry) = lib.entries.iter_mut().find(|e| e.id == new_game_id) {
@@ -1442,6 +1150,266 @@ async fn fetch_and_save_peer_image(
     let path = dir.join(format!("{safe_name}{suffix}.{ext}"));
     tokio::fs::write(&path, &bytes).await.ok()?;
     Some(path)
+}
+
+/// Orchestrates a full LAN install from any context — Tauri GUI or
+/// headless plugin server. Acquires the single-slot guard, fetches the
+/// manifest, prefetches the cover image, then spawns a task that streams
+/// every file with blake3 verification + resume, renames the staging dir,
+/// and registers the new library entry.
+///
+/// Progress is delivered via `on_progress`. In the GUI path this closure
+/// emits `lan:download` Tauri events; in the headless path it's a no-op
+/// and the plugin UI polls `GET /lan/download` instead.
+///
+/// `on_success` (optional) is called with the new game's id and the
+/// manifest once the install completes — the GUI path uses this to spawn
+/// a post-install artwork fetch.
+///
+/// Returns the `install_token` (UUID) once the transfer has been queued.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn begin_install(
+    peer_addr: String,
+    peer_port: u16,
+    game_id: String,
+    http: reqwest::Client,
+    download_state: Arc<LanDownloadState>,
+    on_progress: Arc<dyn Fn(&DownloadProgress) + Send + Sync>,
+    max_bps: f64,
+    install_root: PathBuf,
+    library: SharedLibrary,
+    on_library_changed: Arc<dyn Fn(&str) + Send + Sync>,
+    on_success: Option<Arc<dyn Fn(String, PeerGameManifest) + Send + Sync>>,
+) -> AppResult<String> {
+    if peer_port == 0 {
+        return Err(AppError::Other(
+            "peer is discovery-only (no file server)".into(),
+        ));
+    }
+
+    let install_token = uuid::Uuid::new_v4().to_string();
+    let return_token = install_token.clone();
+
+    let placeholder = DownloadProgress {
+        install_token: install_token.clone(),
+        source_device_id: String::new(),
+        source_device_name: peer_addr.clone(),
+        source_game_id: game_id.clone(),
+        game_name: String::new(),
+        bytes_done: 0,
+        bytes_total: 0,
+        current_file: "Fetching manifest…".into(),
+        status: "starting".into(),
+        message: None,
+        new_game_id: None,
+        bytes_per_second: 0.0,
+        cover_image_path: None,
+    };
+    // try_start acquires the slot. The returned guard's Drop clears it
+    // on panic, but we drop it manually here since the actual cleanup
+    // happens in the spawned task below.
+    let _check = download_state.try_start(placeholder.clone())?;
+    drop(_check);
+    on_progress(&placeholder);
+
+    // Fetch the manifest. Uses MANIFEST_FETCH_TIMEOUT because the host
+    // blake3-hashes the folder on first request (~1 s/GB). Pass our
+    // session token so the sender can register the upload session
+    // immediately and show the game in their Transfers panel while we
+    // are still in the "Fetching manifest…" phase.
+    let manifest_url = format!(
+        "http://{peer_addr}:{peer_port}/games/{game_id}/manifest?session={}",
+        urlencoding::encode(&install_token),
+    );
+    let manifest_result: AppResult<PeerGameManifest> = async {
+        let resp = http
+            .get(&manifest_url)
+            .timeout(MANIFEST_FETCH_TIMEOUT)
+            .send()
+            .await
+            .map_err(|e| {
+                AppError::Other(format!("GET manifest: {}", format_reqwest_error(&e)))
+            })?;
+        if !resp.status().is_success() {
+            return Err(AppError::Other(format!(
+                "peer responded {} to /manifest",
+                resp.status()
+            )));
+        }
+        resp.json::<PeerGameManifest>()
+            .await
+            .map_err(|e| AppError::Other(format!("parse manifest: {e}")))
+    }
+    .await;
+
+    let manifest = match manifest_result {
+        Ok(m) => m,
+        Err(e) => {
+            if let Some(snap) = download_state.update(|p| {
+                p.status = "error".into();
+                p.message = Some(format!("{e}"));
+            }) {
+                on_progress(&snap);
+            }
+            download_state.clear_if_token(&install_token);
+            return Err(e);
+        }
+    };
+
+    let progress = DownloadProgress {
+        install_token: install_token.clone(),
+        source_device_id: manifest.source_device_id.clone(),
+        source_device_name: manifest.source_device_name.clone(),
+        source_game_id: manifest.game_id.clone(),
+        game_name: manifest.game_name.clone(),
+        bytes_done: 0,
+        bytes_total: manifest.total_bytes,
+        current_file: String::new(),
+        status: "starting".into(),
+        message: None,
+        new_game_id: None,
+        bytes_per_second: 0.0,
+        cover_image_path: None,
+    };
+    download_state.set(Some(progress.clone()));
+    on_progress(&progress);
+
+    // Prefetch the cover image in the background so the transfer-panel
+    // row has a thumbnail to render while files stream. Best-effort.
+    {
+        let http_c = http.clone();
+        let ds = download_state.clone();
+        let op = on_progress.clone();
+        let cover_token = install_token.clone();
+        let safe_name = manifest.safe_name.clone();
+        let cover_peer_addr = peer_addr.clone();
+        let cover_source_id = manifest.game_id.clone();
+        tokio::spawn(async move {
+            let covers_dir = paths::covers_dir();
+            if tokio::fs::create_dir_all(&covers_dir).await.is_err() {
+                return;
+            }
+            let url = format!(
+                "http://{cover_peer_addr}:{peer_port}/games/{cover_source_id}/cover"
+            );
+            let Some(path) =
+                fetch_and_save_peer_image(&http_c, &url, &covers_dir, &safe_name, "").await
+            else {
+                return;
+            };
+            let path_str = path.to_string_lossy().to_string();
+            let matched = ds
+                .snapshot()
+                .map(|p| p.install_token == cover_token)
+                .unwrap_or(false);
+            if !matched {
+                return;
+            }
+            if let Some(snap) = ds.update(|p| {
+                p.cover_image_path = Some(path_str);
+            }) {
+                op(&snap);
+            }
+        });
+    }
+
+    let ctx = Arc::new(TransferCtx {
+        http,
+        state: download_state.clone(),
+        on_progress: on_progress.clone(),
+    });
+
+    // Spawn the heavy transfer + library-registration work.
+    tokio::spawn(async move {
+        let result = run_install(
+            ctx.clone(),
+            peer_addr,
+            peer_port,
+            manifest.clone(),
+            max_bps,
+            install_root,
+            library,
+            on_library_changed,
+        )
+        .await;
+
+        // Preserve the prefetched cover across the terminal event.
+        let cover_carry = ctx.state.snapshot().and_then(|p| p.cover_image_path);
+
+        let final_progress = match result {
+            Ok(ref new_id) => {
+                // Fire post-install artwork hook before emitting "done".
+                if let Some(hook) = &on_success {
+                    hook(new_id.clone(), manifest.clone());
+                }
+                DownloadProgress {
+                    install_token: install_token.clone(),
+                    source_device_id: manifest.source_device_id.clone(),
+                    source_device_name: manifest.source_device_name.clone(),
+                    source_game_id: manifest.game_id.clone(),
+                    game_name: manifest.game_name.clone(),
+                    bytes_done: manifest.total_bytes,
+                    bytes_total: manifest.total_bytes,
+                    current_file: String::new(),
+                    status: "done".into(),
+                    message: None,
+                    new_game_id: Some(new_id.clone()),
+                    bytes_per_second: 0.0,
+                    cover_image_path: cover_carry.clone(),
+                }
+            }
+            Err(e) => {
+                if e.is_canceled() {
+                    tracing::info!(
+                        game = %manifest.game_name,
+                        by_host = matches!(e, AppError::HostCanceled),
+                        "LAN install cancelled",
+                    );
+                    DownloadProgress {
+                        install_token: install_token.clone(),
+                        source_device_id: manifest.source_device_id.clone(),
+                        source_device_name: manifest.source_device_name.clone(),
+                        source_game_id: manifest.game_id.clone(),
+                        game_name: manifest.game_name.clone(),
+                        bytes_done: 0,
+                        bytes_total: manifest.total_bytes,
+                        current_file: String::new(),
+                        status: "canceled".into(),
+                        message: None,
+                        new_game_id: None,
+                        bytes_per_second: 0.0,
+                        cover_image_path: cover_carry.clone(),
+                    }
+                } else {
+                    tracing::warn!(game = %manifest.game_name, error = %e, "LAN install failed");
+                    DownloadProgress {
+                        install_token: install_token.clone(),
+                        source_device_id: manifest.source_device_id.clone(),
+                        source_device_name: manifest.source_device_name.clone(),
+                        source_game_id: manifest.game_id.clone(),
+                        game_name: manifest.game_name.clone(),
+                        bytes_done: 0,
+                        bytes_total: manifest.total_bytes,
+                        current_file: String::new(),
+                        status: "error".into(),
+                        message: Some(e.to_string()),
+                        new_game_id: None,
+                        bytes_per_second: 0.0,
+                        cover_image_path: cover_carry.clone(),
+                    }
+                }
+            }
+        };
+
+        ctx.state.set(Some(final_progress.clone()));
+        (ctx.on_progress)(&final_progress);
+        // Brief grace period so the UI can pick up the terminal state
+        // before the slot clears.
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        ctx.state.clear_if_token(&install_token);
+    });
+
+    Ok(return_token)
 }
 
 #[cfg(test)]

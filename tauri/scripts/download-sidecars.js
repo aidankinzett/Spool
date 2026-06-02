@@ -11,7 +11,7 @@ const LUDUSAVI_VER = '0.31.0';
 const RCLONE_VER = '1.74.2';
 
 const targets = {
-  linux: [
+  'linux-x64': [
     {
       name: 'ludusavi-x86_64-unknown-linux-gnu',
       url: `https://github.com/mtkennerly/ludusavi/releases/download/v${LUDUSAVI_VER}/ludusavi-v${LUDUSAVI_VER}-linux.tar.gz`,
@@ -90,18 +90,21 @@ const extractArchive = (archivePath, tempExtractDir, archiveType) => {
 
 async function main() {
   const args = process.argv.slice(2);
-  let platform = process.platform; // Default to host platform
-  
+
+  const hostPlatformKey = process.platform === 'linux' ? 'linux-x64' : process.platform;
+
+  let platformKey = hostPlatformKey;
+
   if (args.includes('--all')) {
-    platform = 'all';
+    platformKey = 'all';
   } else if (args.includes('--platform')) {
     const idx = args.indexOf('--platform');
     if (idx !== -1 && args[idx + 1]) {
-      platform = args[idx + 1];
+      platformKey = args[idx + 1];
     }
   }
 
-  const platformsToDownload = platform === 'all' ? ['linux', 'win32'] : [platform];
+  const platformsToDownload = platformKey === 'all' ? ['linux-x64', 'win32'] : [platformKey];
   const binariesDir = path.join(__dirname, '../src-tauri/binaries');
   
   if (!fs.existsSync(binariesDir)) {
@@ -120,7 +123,7 @@ async function main() {
       continue;
     }
 
-    console.log(`Downloading sidecars for platform: ${plat}...`);
+    console.log(`Downloading sidecars for: ${plat}...`);
     for (const item of list) {
       const ext = item.archiveType === 'zip' ? '.zip' : '.tar.gz';
       const archivePath = path.join(tempDir, `${item.name}${ext}`);
@@ -144,7 +147,7 @@ async function main() {
       fs.copyFileSync(srcFile, destFile);
       
       // On Unix-like systems, ensure the final binary is executable
-      if (process.platform !== 'win32' && plat === 'linux') {
+      if (process.platform !== 'win32' && plat.startsWith('linux')) {
         fs.chmodSync(destFile, 0o755);
       }
     }

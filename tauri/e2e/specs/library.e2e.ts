@@ -8,9 +8,9 @@ describe('Spool library window', () => {
     const settings = await $('[aria-label="Settings"]');
     await settings.waitForDisplayed({ timeout: 30_000 });
 
-    // Sync-status button is always present (unlike Browse, which is hidden
+    // Cloud-status button is always present (unlike Browse, which is hidden
     // when no download sources are configured).
-    const sync = await $('[aria-label="Sync server status"]');
+    const sync = await $('[aria-label="Cloud remote status"]');
     await expect(sync).toBeDisplayed();
   });
 
