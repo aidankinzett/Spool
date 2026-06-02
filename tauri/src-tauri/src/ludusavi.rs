@@ -959,9 +959,13 @@ fn sanitize_pe_string(raw: &str) -> String {
 /// Prefer English (lang_id 0x0409) when present; otherwise use the first
 /// available language from the translation table.
 pub fn read_exe_product_name(path: &Path) -> Option<String> {
-    let bytes = std::fs::read(path).ok()?;
+    // Memory-map rather than read the whole file — packed/protected game exes
+    // can be hundreds of MB, and PE parsing only touches the headers + resource
+    // section, so the OS pages in just what's read.
+    let map = pelite::FileMap::open(path).ok()?;
+    let bytes = map.as_ref();
     // Try PE32+ (64-bit) first, fall back to PE32 (32-bit).
-    pe_product_name_64(&bytes).or_else(|| pe_product_name_32(&bytes))
+    pe_product_name_64(bytes).or_else(|| pe_product_name_32(bytes))
 }
 
 fn pe_product_name_64(bytes: &[u8]) -> Option<String> {
