@@ -319,7 +319,8 @@ export type AddToStreamingHostResult = {
  *   restoring  → ludusavi restore is running
  *   launching  → game process is being spawned
  *   playing    → game is running; await its exit
- *   backing-up → ludusavi backup is running after the session
+ *   backing-up → ludusavi local backup is running after the session
+ *   uploading  → local backup done; mirroring the revision to the cloud remote
  *   done       → workflow completed successfully
  *   error      → workflow aborted; see `message`
  */
@@ -328,6 +329,7 @@ export type RunPhase =
   | 'launching'
   | 'playing'
   | 'backing-up'
+  | 'uploading'
   | 'done'
   | 'error';
 

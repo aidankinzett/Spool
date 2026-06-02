@@ -343,7 +343,8 @@ impl LudusaviClient {
 
     /// Runs `ludusavi backup --api --cloud-sync --force <name>` and optionally
     /// passes `--wine-prefix <prefix>` for Proton games so ludusavi finds saves
-    /// inside the prefix's drive_c tree.
+    /// inside the prefix's drive_c tree. The single call both writes the local
+    /// revision and mirrors it to the cloud remote.
     pub async fn backup(
         &self,
         ludusavi_exe: &Path,
@@ -351,7 +352,41 @@ impl LudusaviClient {
         game_name: &str,
         wine_prefix: Option<&Path>,
     ) -> AppResult<ApiOutput> {
-        let mut args = vec!["backup", "--api", "--cloud-sync", "--force", game_name];
+        self.run_backup(ludusavi_exe, config_dir, game_name, wine_prefix, true).await
+    }
+
+    /// Runs `ludusavi backup --api --force <name>` *without* `--cloud-sync`, so
+    /// it only writes the local revision and never touches the cloud remote.
+    /// The play workflow uses this to split the post-session backup into two
+    /// observable steps — local write, then a separate cloud upload — so the
+    /// splash can show real progress for each instead of one combined call that
+    /// blocks silently while it uploads.
+    pub async fn backup_local(
+        &self,
+        ludusavi_exe: &Path,
+        config_dir: &Path,
+        game_name: &str,
+        wine_prefix: Option<&Path>,
+    ) -> AppResult<ApiOutput> {
+        self.run_backup(ludusavi_exe, config_dir, game_name, wine_prefix, false).await
+    }
+
+    /// Shared backup invocation. `cloud_sync` toggles the `--cloud-sync` flag
+    /// that mirrors the freshly-written revision to the configured remote.
+    async fn run_backup(
+        &self,
+        ludusavi_exe: &Path,
+        config_dir: &Path,
+        game_name: &str,
+        wine_prefix: Option<&Path>,
+        cloud_sync: bool,
+    ) -> AppResult<ApiOutput> {
+        let mut args = vec!["backup", "--api"];
+        if cloud_sync {
+            args.push("--cloud-sync");
+        }
+        args.push("--force");
+        args.push(game_name);
         let prefix_str;
         if let Some(pfx) = wine_prefix {
             prefix_str = pfx.to_string_lossy().into_owned();

@@ -1,8 +1,15 @@
 //! Run workflow — the marquee feature.
 //!
-//! Orchestrates the five-phase game launch:
+//! Orchestrates the game launch:
 //!
-//!   restoring → launching → playing → backing-up → done
+//!   restoring → launching → playing → backing-up → uploading → done
+//!
+//! The post-session backup is split into two observable steps: `backing-up`
+//! writes the local ludusavi revision, then `uploading` mirrors it to the
+//! cloud remote (only when a remote is configured — otherwise the workflow
+//! goes straight from `backing-up` to `done`). Splitting the old combined
+//! `backup --cloud-sync` call gives the splash a real boundary to show an
+//! upload spinner instead of jumping from the local backup straight to done.
 //!
 //! Each transition emits a `run:phase` event so the UI can update the
 //! Play button label. Cloud-sync conflicts during restore are surfaced
@@ -1780,12 +1787,7 @@ async fn phase_backup(ctx: &WorkflowCtx<'_>, no_saves: bool, timing: &SessionTim
     let session_end = timing.end;
     let mut cloud_upload_failed = false;
     if !no_saves {
-        let backup_msg = if ctx.cloud_configured {
-            "Backing up + syncing saves…"
-        } else {
-            "Backing up locally…"
-        };
-        emit_phase(ctx.app, ctx.game_id, "backing-up", Some(backup_msg), ctx.cloud_configured, Some(session_minutes), false);
+        emit_phase(ctx.app, ctx.game_id, "backing-up", Some("Backing up saves…"), ctx.cloud_configured, Some(session_minutes), false);
         os_toast_if_hidden(
             ctx.app,
             "Backing up saves",
@@ -1825,9 +1827,9 @@ async fn phase_backup(ctx: &WorkflowCtx<'_>, no_saves: bool, timing: &SessionTim
             }
         }
 
-        tracing::info!(game_name = ctx.game_name, "ludusavi backup");
+        tracing::info!(game_name = ctx.game_name, "ludusavi backup (local)");
         let backup_outcome =
-            ctx.ludusavi_client.backup(ctx.ludusavi_exe, &ctx.config_dir, ctx.game_name, ctx.wine_prefix()).await;
+            ctx.ludusavi_client.backup_local(ctx.ludusavi_exe, &ctx.config_dir, ctx.game_name, ctx.wine_prefix()).await;
 
         // Clear backup redirects regenerated fresh next session — matches the
         // restore phase's clean-up so stale entries can never linger.
@@ -1837,43 +1839,6 @@ async fn phase_backup(ctx: &WorkflowCtx<'_>, no_saves: bool, timing: &SessionTim
 
         match backup_outcome {
             Ok(out) => {
-                // ludusavi reports a cloud-sync failure as a non-fatal field on
-                // an otherwise-successful backup (the local snapshot still
-                // landed). Surface it — silently swallowing this is what made a
-                // dead rclone path / bad WebDAV creds look like "backup
-                // succeeded" while nothing reached the remote.
-                if out
-                    .errors
-                    .as_ref()
-                    .and_then(|e| e.cloud_sync_failed.as_ref())
-                    .is_some()
-                {
-                    cloud_upload_failed = true;
-                    tracing::warn!(
-                        game_name = ctx.game_name,
-                        "post-session cloud sync failed — saves backed up locally but not uploaded"
-                    );
-                }
-                // A cloud conflict on the *post-play* backup means the cloud
-                // advanced while we held the play-state lock (lock unavailable
-                // or cloud remote unreachable). We just played, so local is
-                // authoritative — force an upload so the next device sees a
-                // clean fast-forward instead of a phantom conflict.
-                if out
-                    .errors
-                    .as_ref()
-                    .and_then(|e| e.cloud_conflict.as_ref())
-                    .is_some()
-                {
-                    tracing::warn!(game_name = ctx.game_name, "post-session backup hit cloud conflict — forcing upload (local is authoritative)");
-                    if let Err(e) = ctx.ludusavi_client
-                        .cloud_resolve(ctx.ludusavi_exe, &ctx.config_dir, crate::ludusavi::CloudOp::Upload, ctx.game_name)
-                        .await
-                    {
-                        cloud_upload_failed = true;
-                        tracing::warn!(game_name = ctx.game_name, error = %e, "forced post-session upload failed");
-                    }
-                }
                 if let Some(overall) = &out.overall {
                     if overall.total_games > 0 {
                         let library = ctx.app.state::<SharedLibrary>();
@@ -1888,6 +1853,53 @@ async fn phase_backup(ctx: &WorkflowCtx<'_>, no_saves: bool, timing: &SessionTim
                         )
                         .await?;
                         let _ = ctx.app.emit("library:changed", &ctx.game_id.to_string());
+                    }
+                }
+
+                // The local revision is written. Now mirror it to the cloud as
+                // a separate, observable step so the splash can show a live
+                // "uploading" spinner instead of jumping straight from the local
+                // backup to "done" — the combined `backup --cloud-sync` call
+                // blocked silently through the upload, which made the cloud step
+                // look skipped. We just played, so local is authoritative: a
+                // forced `cloud upload` overwrites the remote (the same
+                // resolution the old combined path applied on a cloud conflict),
+                // so a remote that advanced under us still fast-forwards cleanly.
+                if ctx.cloud_configured {
+                    emit_phase(
+                        ctx.app,
+                        ctx.game_id,
+                        "uploading",
+                        Some("Uploading saves to your cloud remote…"),
+                        true,
+                        Some(session_minutes),
+                        false,
+                    );
+                    tracing::info!(game_name = ctx.game_name, "ludusavi cloud upload");
+                    match ctx
+                        .ludusavi_client
+                        .cloud_resolve(ctx.ludusavi_exe, &ctx.config_dir, crate::ludusavi::CloudOp::Upload, ctx.game_name)
+                        .await
+                    {
+                        Ok(up) => {
+                            // ludusavi reports a sync failure as a non-fatal
+                            // field on an otherwise-successful op (the local
+                            // snapshot still landed). Surface it — silently
+                            // swallowing this is what made a dead rclone path /
+                            // bad WebDAV creds look like "synced" while nothing
+                            // reached the remote.
+                            if up.errors.as_ref().and_then(|e| e.cloud_sync_failed.as_ref()).is_some() {
+                                cloud_upload_failed = true;
+                                tracing::warn!(
+                                    game_name = ctx.game_name,
+                                    "post-session cloud upload failed — saves backed up locally but not uploaded"
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            cloud_upload_failed = true;
+                            tracing::warn!(game_name = ctx.game_name, error = %e, "post-session cloud upload failed");
+                        }
                     }
                 }
                 // Record this session in the cross-device blob and, when the

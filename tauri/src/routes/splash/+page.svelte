@@ -75,7 +75,7 @@
 
   // Determine flow from phase. Error can occur in either flow; we track
   // which flow was active when the error hit via a separate flag.
-  const EXIT_PHASES = new Set(['backing-up', 'done']);
+  const EXIT_PHASES = new Set(['backing-up', 'uploading', 'done']);
   let exitFlowReached = $state(false);
   let flow = $derived(EXIT_PHASES.has(phase) || (phase === 'error' && exitFlowReached) ? 'exit' : 'launch');
 
@@ -83,10 +83,10 @@
   let accent = $derived(game?.accent_color ?? '#d7c9a0');
 
   // True during phases where Spool is actively doing work (drives kicker dot pulse).
-  let working = $derived(phase === 'restoring' || phase === 'backing-up');
+  let working = $derived(phase === 'restoring' || phase === 'backing-up' || phase === 'uploading');
 
   // Active ramp phases drive an animated progress bar.
-  const RAMP_PHASES = new Set(['restoring', 'backing-up']);
+  const RAMP_PHASES = new Set(['restoring', 'backing-up', 'uploading']);
 
   function startRamp() {
     progress = 0;
@@ -111,6 +111,7 @@
     launching:     { kicker: 'SAVES RESTORED',  sub: (g) => g ? `Starting ${g.game_name}…` : 'Starting game…',        tone: 'ok'     },
     playing:       { kicker: 'STARTING',        sub: (g) => g ? `${g.game_name} is taking the screen` : 'Handing off to your game', tone: 'ok' },
     'backing-up':  { kicker: 'BACKING UP',      sub: (g) => g ? `You closed ${g.game_name} — saving your progress before you go` : 'Saving your progress before you go', tone: 'accent' },
+    uploading:     { kicker: 'UPLOADING',       sub: () => 'Mirroring this revision to your cloud remote',          tone: 'info'   },
     done:          { kicker: 'ALL SAVED',       sub: () => 'Returning you to Steam…',                              tone: 'ok'     },
     error:         { kicker: 'FAILED',          sub: () => '',                                                     tone: 'bad'    },
   };
@@ -190,8 +191,12 @@
     const backupState = isErr ? 'error' : phase === 'backing-up' ? 'active' : 'done';
     
     const offline = net === 'offline';
+    // During the dedicated upload phase the cloud step is genuinely in flight —
+    // show the spinner ('active') even if a passive earlier probe read offline,
+    // so the user sees the upload actually happening rather than a stale warn.
     const syncState = !cloudUsed ? 'skipped'
       : isErr ? 'pending'
+      : phase === 'uploading' ? 'active'
       : offline ? 'warn'
       : phase === 'backing-up' ? 'pending'
       : phase === 'done' ? 'done'
@@ -204,6 +209,7 @@
       ? 'No cloud remote configured'
       : syncState === 'warn'
         ? 'Couldn\'t reach your cloud remote · 1 revision queued · retries automatically'
+        : phase === 'uploading' ? 'Uploading this revision to your cloud remote…'
         : phase === 'done' ? 'Mirrors to your cloud remote · all devices in step'
         : 'Mirrors to your cloud remote after local backup completes';
 
@@ -508,18 +514,23 @@
     <!-- Cloud sync row -->
     {#if cloudUsed}
       {@const offline = net === 'offline'}
-      {@const cloudTone = offline ? '#f4b66c'
+      {@const uploading = phase === 'uploading'}
+      {@const cloudTone = uploading ? '#7ec6ff'
+        : offline ? '#f4b66c'
         : phase === 'error' ? '#ff7a7a'
         : phase === 'done' ? '#7ee2a4'
         : phase === 'backing-up' || phase === 'restoring' ? '#7ec6ff'
         : 'rgba(244,244,245,0.36)'}
-      {@const cloudLabel = offline ? 'CLOUD SYNC · OFFLINE'
+      {@const cloudLabel = uploading ? 'CLOUD SYNC · UPLOADING'
+        : offline ? 'CLOUD SYNC · OFFLINE'
         : phase === 'done' ? 'CLOUD SYNC · UP TO DATE'
         : phase === 'backing-up' ? 'CLOUD SYNC · WAITING'
         : phase === 'restoring' ? 'CLOUD SYNC · CHECKING'
         : phase === 'error' ? 'CLOUD SYNC · ON HOLD'
         : 'CLOUD SYNC'}
-      {@const cloudNote = offline
+      {@const cloudNote = uploading
+        ? 'Mirroring this revision to your cloud remote — your other devices pick it up next launch.'
+        : offline
         ? (flow === 'exit'
             ? 'Backup saved on this device. Spool will push it to your cloud remote the moment you reconnect.'
             : 'Couldn\'t reach your cloud remote — launched with this device\'s latest save. Newer remote saves (if any) merge when you reconnect.')
