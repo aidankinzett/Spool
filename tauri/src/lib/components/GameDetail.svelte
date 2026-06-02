@@ -32,6 +32,7 @@
   import { openView } from '$lib/nav';
   import { api, assetUrl } from '$lib/api';
   import { toasts } from '$lib/toasts.svelte';
+  import { confirmDialog } from '$lib/confirm.svelte';
   import type { GameEntry, RunPhase, SaveRevision, StreamingHostInfo } from '$lib/types';
   import {
     absDate,
@@ -190,12 +191,18 @@
     if (rev.is_current || isRunning || rollingBack) return;
     const when = absDateTime(rev.when);
     if (
-      !confirm(
-        `Restore the save backup from ${when} for "${game.game_name}"?\n\n` +
+      !(await confirmDialog({
+        label: 'LUDUSAVI · RESTORE',
+        title: 'Restore this earlier save?',
+        body:
+          `Restore the backup from ${when} for "${game.game_name}". ` +
           `This replaces your current save files. Spool snapshots the ` +
           `restored save as the newest revision so it sticks (this uses one ` +
           `retention slot, dropping the oldest backup).`,
-      )
+        confirmLabel: 'Restore save',
+        accent: accentHex,
+        catalog: fmtCatalog(game.catalog_number),
+      }))
     )
       return;
     rollingBack = rev.name;
