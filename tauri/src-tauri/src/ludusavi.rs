@@ -880,6 +880,129 @@ fn title_case(s: &str) -> String {
         .join(" ")
 }
 
+// ── PE VERSIONINFO name extraction ─────────────────────────────────────────
+
+/// `ProductName` / `FileDescription` strings that indicate a game engine or
+/// generic application rather than a game's own title. When the PE-derived
+/// name matches one of these (case-insensitive, after stripping trademark
+/// symbols), we skip it rather than feeding junk into the ludusavi query.
+const JUNK_PRODUCT_NAMES: &[&str] = &[
+    // Engines
+    "unreal engine",
+    "unity",
+    "unity technologies",
+    "gamemaker",
+    "gamemaker studio",
+    "godot",
+    "godot engine",
+    "cryengine",
+    "rpg maker",
+    "rpgmaker",
+    "renpy",
+    "ren'py",
+    "construct",
+    "monogame",
+    "defold",
+    // Generic/installer strings
+    "application",
+    "setup",
+    "installer",
+    "uninstaller",
+    "uninstall",
+    "launcher",
+    "redistributable",
+    // Runtime/middleware vendors (ProductName = company, not title)
+    "microsoft",
+    "visual c++",
+    "directx",
+    "electronic arts",
+    "ea games",
+    "ubisoft",
+    "activision",
+    "bethesda",
+    "2k games",
+    "rockstar games",
+    "square enix",
+    "denuvo",
+    "eac",
+    "easy anti-cheat",
+    "bink",
+    "bink video",
+    "miles sound system",
+    "steam",
+    "steamworks",
+];
+
+fn is_junk_product_name(s: &str) -> bool {
+    let lower = s.to_lowercase();
+    JUNK_PRODUCT_NAMES.iter().any(|&j| lower == j)
+}
+
+/// Strips trademark/copyright symbols and collapses whitespace.
+fn sanitize_pe_string(raw: &str) -> String {
+    raw.chars()
+        .filter(|&c| c != '™' && c != '®' && c != '©')
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Reads the embedded PE VERSIONINFO resource from `path` and returns the
+/// best name string: `ProductName` when it isn't a generic engine/junk value,
+/// otherwise `FileDescription`. Returns `None` when the file can't be parsed
+/// as a PE, has no version resource, or neither field yields a useful name.
+///
+/// This is pure byte-level PE parsing (via `pelite`) — it works on any host
+/// OS, so Linux + Proton installations of Windows games are covered too.
+///
+/// Prefer English (lang_id 0x0409) when present; otherwise use the first
+/// available language from the translation table.
+pub fn read_exe_product_name(path: &Path) -> Option<String> {
+    let bytes = std::fs::read(path).ok()?;
+    // Try PE32+ (64-bit) first, fall back to PE32 (32-bit).
+    pe_product_name_64(&bytes).or_else(|| pe_product_name_32(&bytes))
+}
+
+fn pe_product_name_64(bytes: &[u8]) -> Option<String> {
+    let pe = pelite::pe64::PeFile::from_bytes(bytes).ok()?;
+    let vi = pe.resources().ok()?.version_info().ok()?;
+    pick_name_from_version_info(&vi)
+}
+
+fn pe_product_name_32(bytes: &[u8]) -> Option<String> {
+    let pe = pelite::pe32::PeFile::from_bytes(bytes).ok()?;
+    let vi = pe.resources().ok()?.version_info().ok()?;
+    pick_name_from_version_info(&vi)
+}
+
+fn pick_name_from_version_info(
+    vi: &pelite::resources::version_info::VersionInfo<'_>,
+) -> Option<String> {
+    let translations = vi.translation();
+    // Prefer English (0x0409); fall back to the first available language.
+    let lang = translations
+        .iter()
+        .find(|l| l.lang_id == 0x0409)
+        .or_else(|| translations.first())
+        .copied()?;
+
+    // ProductName first; skip if it's a junk/engine string.
+    let product = vi
+        .value(lang, "ProductName")
+        .map(|s| sanitize_pe_string(&s))
+        .filter(|s| !s.is_empty() && !is_junk_product_name(s));
+
+    if product.is_some() {
+        return product;
+    }
+
+    // FileDescription as the fallback.
+    vi.value(lang, "FileDescription")
+        .map(|s| sanitize_pe_string(&s))
+        .filter(|s| !s.is_empty() && !is_junk_product_name(s))
+}
+
 // ── Tauri commands ──────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -1012,13 +1135,19 @@ pub async fn set_cloud_webdav(
     Ok(())
 }
 
-/// Identifies a game from its exe path by inferring search queries from the
-/// exe filename and its ancestor folder names (skipping structural ones like
-/// `Binaries/Win64`), running them through ludusavi and merging the results.
-/// Used by the Add Game flow's "identifying…" state. Querying the folders too
-/// catches games whose exe is generic (`Game/bin/start.exe`) but whose folder
-/// carries the title. Each candidate is then matched back against the exe's
-/// ancestors to detect its install root.
+/// Identifies a game from its exe path using three query sources, merged and
+/// ranked by ludusavi's fuzzy scorer:
+///
+/// 1. **PE VERSIONINFO** (`ProductName` / `FileDescription`) — highest signal;
+///    a generic launcher like `start_protected_game.exe` may embed the real
+///    title. Read in a blocking thread so the async executor isn't stalled.
+/// 2. **Exe filename stem** — `elden_ring.exe` → "Elden Ring".
+/// 3. **Ancestor folder names** — walks up to four levels, skipping structural
+///    ones like `Binaries/Win64`, so the title folder is found even when the
+///    exe is buried.
+///
+/// Each matched candidate is then checked against the exe's ancestor folders
+/// using the manifest's `installDir` names to auto-detect the install root.
 #[tauri::command]
 pub async fn search_by_exe(
     config: State<'_, SharedConfig>,
@@ -1029,10 +1158,30 @@ pub async fn search_by_exe(
     let config_dir = crate::paths::ludusavi_config_dir();
     let path = Path::new(&exe_path);
 
-    let queries = infer_queries_from_path(path);
+    // Read PE metadata off the async executor — file IO can block.
+    let exe_path_clone = exe_path.clone();
+    let pe_name = tokio::task::spawn_blocking(move || {
+        read_exe_product_name(Path::new(&exe_path_clone))
+    })
+    .await
+    .ok()
+    .flatten();
+
+    // Build the query list: PE name first (highest confidence), then the
+    // path-based heuristics, de-duped throughout.
+    let mut queries: Vec<String> = Vec::new();
+    if let Some(name) = pe_name {
+        queries.push(name);
+    }
+    for q in infer_queries_from_path(path) {
+        if !queries.contains(&q) {
+            queries.push(q);
+        }
+    }
     if queries.is_empty() {
         return Ok(Vec::new());
     }
+
     let mut candidates = ludusavi
         .search_multi(&ludusavi_exe, &config_dir, &queries)
         .await?;
@@ -1127,6 +1276,27 @@ mod tests {
         assert_eq!(normalize_dir("Elden Ring"), "eldenring");
         assert_eq!(normalize_dir("ELDEN_RING"), "eldenring");
         assert_eq!(normalize_dir("EldenRing"), "eldenring");
+    }
+
+    #[test]
+    fn sanitize_pe_string_strips_trademark_symbols() {
+        assert_eq!(sanitize_pe_string("ELDEN RING™"), "ELDEN RING");
+        assert_eq!(sanitize_pe_string("Half-Life® 2"), "Half-Life 2");
+        assert_eq!(sanitize_pe_string("Doom © 2023"), "Doom 2023");
+        // Multiple spaces collapsed.
+        assert_eq!(sanitize_pe_string("  Hades  "), "Hades");
+    }
+
+    #[test]
+    fn is_junk_product_name_matches_case_insensitively() {
+        assert!(is_junk_product_name("Unreal Engine"));
+        assert!(is_junk_product_name("UNITY"));
+        assert!(is_junk_product_name("unity technologies"));
+        assert!(is_junk_product_name("Easy Anti-Cheat"));
+        // Real game titles should not be filtered.
+        assert!(!is_junk_product_name("ELDEN RING"));
+        assert!(!is_junk_product_name("Hades"));
+        assert!(!is_junk_product_name("Hollow Knight"));
     }
 
     #[test]
