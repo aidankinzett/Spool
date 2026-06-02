@@ -374,10 +374,7 @@
           </div>
           <div class="min-h-0 flex-1 overflow-y-auto rounded-sm border border-line-1 bg-bg-1">
             {#each candidates as cand, i (cand.name)}
-              <div
-                class="border-b border-line-1 last:border-b-0"
-                style:border-bottom-style="dashed"
-              >
+              <div class="border-b border-line-1 last:border-b-0">
                 <CandidateRow
                   {cand}
                   index={i}
