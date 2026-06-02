@@ -1599,17 +1599,15 @@ async fn phase_restore(ctx: &WorkflowCtx<'_>) -> AppResult<bool> {
                 let _ = set_cloud_baseline(ctx.app, ctx.game_id, &tip.name);
             }
         }
-        // "No saves to restore" is fine — game just hasn't been played yet.
+        // "No saves to restore" is only true when ludusavi explicitly doesn't
+        // recognise the game (unknown_games non-empty). total_games == 0 on
+        // restore just means there's no existing backup yet (first session) —
+        // we still want to back up after that session.
         let no_saves = restore
             .errors
             .as_ref()
             .map(|e| !e.unknown_games.is_empty())
-            .unwrap_or(false)
-            || restore
-                .overall
-                .as_ref()
-                .map(|o| o.total_games == 0)
-                .unwrap_or(false);
+            .unwrap_or(false);
         Ok(no_saves)
     }
     .await;
