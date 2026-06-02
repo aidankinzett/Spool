@@ -1503,7 +1503,7 @@ async fn run_workflow(
     let no_saves = phase_restore(&ctx).await?;
     let timing = phase_launch(&ctx, &exe_pathbuf).await?;
     let cloud_upload_failed = phase_backup(&ctx, no_saves, &timing).await?;
-    finish(&ctx, cloud_upload_failed, timing.minutes);
+    finish(&ctx, no_saves, cloud_upload_failed, timing.minutes);
 
     tracing::info!(game_name, "run workflow complete");
     Ok(())
@@ -1973,7 +1973,7 @@ async fn phase_backup(ctx: &WorkflowCtx<'_>, no_saves: bool, timing: &SessionTim
 /// terminal `done` phase + native toast. When the cloud upload failed the
 /// `done` phase carries a warning so the frontend shows a sticky toast instead
 /// of a clean "synced".
-fn finish(ctx: &WorkflowCtx<'_>, cloud_upload_failed: bool, session_minutes: i32) {
+fn finish(ctx: &WorkflowCtx<'_>, no_saves: bool, cloud_upload_failed: bool, session_minutes: i32) {
     // Game Mode: flag the active-session record so the Decky plugin's
     // forced-close fallback knows this session already backed up. No-op
     // when there's no record (desktop / Windows launches).
@@ -1981,7 +1981,15 @@ fn finish(ctx: &WorkflowCtx<'_>, cloud_upload_failed: bool, session_minutes: i32
 
     // Final completion ping — the most useful native toast since the
     // user may have closed the game and walked away from the PC.
-    if cloud_upload_failed {
+    if no_saves {
+        // Ludusavi doesn't track saves for this game — don't claim a backup happened.
+        emit_phase(ctx.app, ctx.game_id, "done", None, ctx.cloud_configured, Some(session_minutes), false);
+        os_toast_if_hidden(
+            ctx.app,
+            "Session complete",
+            &format!("{} — no save data tracked", ctx.game_name),
+        );
+    } else if cloud_upload_failed {
         let warning = "Saves backed up locally, but cloud upload failed. Check your cloud save settings.";
         emit_phase(ctx.app, ctx.game_id, "done", Some(warning), ctx.cloud_configured, Some(session_minutes), true);
         os_toast_if_hidden(
