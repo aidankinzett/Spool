@@ -29,6 +29,18 @@
 //! far more backends than a listing (Drive/S3 list caches + `--fast-list` lag).
 //! `lsjson` is reserved for the device-file fold, where staleness only delays a
 //! stat sync, never correctness.
+//!
+//! ## Reachability is observed passively, not polled
+//!
+//! There's a single `rclone lsd` probe at startup; after that the cloud-icon
+//! status is maintained from the success/failure of the control-plane ops the
+//! app already runs (claim/heartbeat/backup/fold), reported through the
+//! [`init_health_sink`] handle. A leaf op that succeeds — or returns a definite
+//! "not found" (a session marker that simply doesn't exist) — proves the remote
+//! answered and marks it Online; a connection error or timeout marks it Offline.
+//! This avoids a 24/7 polling loop drawing on a (shared, quota-limited) remote
+//! while Spool sits idle in the tray. The Settings page can still force an
+//! immediate probe via `refresh_sync_status`.
 
 use crate::config::{ConfigData, SharedConfig};
 use crate::library::SharedLibrary;
@@ -36,12 +48,10 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, State};
 
-/// Background reachability poll interval.
-const POLL_INTERVAL: Duration = Duration::from_secs(60);
 /// Timeout for a control-plane op (cat / rcat / deletefile / lsjson). The
 /// blobs are tiny; this only needs to cover connect + a small transfer.
 const OP_TIMEOUT: Duration = Duration::from_secs(8);
@@ -238,6 +248,93 @@ fn device_identity(app: &AppHandle) -> (String, String) {
     result
 }
 
+// ── Passive reachability reporting ──────────────────────────────────────────
+
+/// Process-wide handle for passive reachability reporting. The leaf rclone
+/// helpers (`cat`/`rcat`/`deletefile`/`lsjson`) are shared by the GUI and the
+/// headless `spool --backup` / `--release-lock` subprocesses and don't carry an
+/// `AppHandle`; rather than thread `Option<&AppHandle>` through every layer, the
+/// GUI registers its handle here once at startup. Headless subprocesses never
+/// set it, so reporting is a no-op there — they have no status pill to update.
+static HEALTH_SINK: OnceLock<AppHandle> = OnceLock::new();
+
+/// Register the GUI's `AppHandle` so leaf ops can report reachability. Called
+/// once from `lib.rs::run`'s setup; later calls are ignored.
+pub fn init_health_sink(app: AppHandle) {
+    let _ = HEALTH_SINK.set(app);
+}
+
+/// Whether a completed control-plane op proves the remote was reachable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Reach {
+    Online,
+    Offline,
+}
+
+/// Map an rclone exit code to a reachability verdict. Codes where the remote
+/// *answered* — 0 ok, 3 dir-not-found, 4 file-not-found, 9 no-files-transferred
+/// (a missing session marker is the common, healthy case) — are Online. Every
+/// other exit code means we couldn't get a clear answer from the remote
+/// (connection refused, DNS failure, auth error, rclone's temporary/fatal
+/// codes), so it's Offline. Erring toward Offline is safe for an advisory icon:
+/// a false Offline self-corrects on the next successful op, whereas a false
+/// Online would tell the user sync works when it doesn't.
+fn reach_from_code(code: Option<i32>) -> Reach {
+    match code {
+        Some(0) | Some(3) | Some(4) | Some(9) => Reach::Online,
+        _ => Reach::Offline,
+    }
+}
+
+/// Last non-empty line of stderr, for the Offline status' diagnostic field.
+fn stderr_tail(stderr: &[u8]) -> Option<String> {
+    let s = String::from_utf8_lossy(stderr);
+    let trimmed = s.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(trimmed.lines().last().unwrap_or(trimmed).trim().to_string())
+}
+
+/// Fold a leaf op's observed reachability into the shared status. No-op when the
+/// health sink isn't registered (headless subprocesses).
+fn report_reach(reach: Reach, err: Option<String>) {
+    let Some(app) = HEALTH_SINK.get() else {
+        return;
+    };
+    let new_status = match reach {
+        Reach::Online => SyncStatus {
+            reachability: SyncReachability::Online,
+            ..Default::default()
+        },
+        Reach::Offline => SyncStatus {
+            reachability: SyncReachability::Offline,
+            error: err,
+            ..Default::default()
+        },
+    };
+    apply_status(app, new_status);
+}
+
+/// Store a freshly-observed status: mark last-ok on success, persist it, and emit
+/// `sync:status-changed` only when the reachability or error actually changed.
+/// Shared by the startup probe (`poll_once`) and passive reporting.
+fn apply_status(app: &AppHandle, new_status: SyncStatus) {
+    let state = app.state::<SyncStatusState>();
+    let prev = state.snapshot();
+    if new_status.reachability == SyncReachability::Online {
+        state.mark_ok();
+    }
+    let changed = prev.reachability != new_status.reachability || prev.error != new_status.error;
+    state.set(new_status);
+    if changed {
+        let snap = app.state::<SyncStatusState>().snapshot();
+        if let Err(e) = app.emit("sync:status-changed", &snap) {
+            tracing::warn!(error = %e, "failed to emit sync:status-changed");
+        }
+    }
+}
+
 // ── Low-level rclone helpers ────────────────────────────────────────────────
 
 fn base_command(exe: &Path) -> tokio::process::Command {
@@ -248,75 +345,97 @@ fn base_command(exe: &Path) -> tokio::process::Command {
     cmd
 }
 
+/// Run a prepared control-plane rclone `cmd` to completion under `OP_TIMEOUT`,
+/// optionally writing `stdin_body` first, and fold the observed reachability
+/// into the shared status. `label` names the op for logs/diagnostics.
+///
+/// Returns the process output when rclone ran to completion (any exit code), or
+/// `None` on spawn failure, stdin-write failure, or our timeout — all reported
+/// as Offline, since a leaf op that can't get an answer from the remote can't
+/// confirm it's reachable. The one case left untouched is a process-management
+/// error (couldn't reap the child): not a remote signal, so reachability is
+/// unchanged. Shared by every leaf helper so the timeout + exit-code
+/// classification lives in exactly one place.
+async fn run_op(
+    mut cmd: tokio::process::Command,
+    label: &str,
+    stdin_body: Option<&[u8]>,
+) -> Option<std::process::Output> {
+    use tokio::io::AsyncWriteExt;
+    if stdin_body.is_some() {
+        cmd.stdin(std::process::Stdio::piped());
+    }
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(error = %e, op = label, "rclone spawn failed");
+            report_reach(Reach::Offline, Some(format!("rclone {label}: spawn failed")));
+            return None;
+        }
+    };
+    if let Some(body) = stdin_body {
+        if let Some(mut stdin) = child.stdin.take() {
+            if let Err(e) = stdin.write_all(body).await {
+                tracing::warn!(error = %e, op = label, "rclone stdin write failed");
+                report_reach(Reach::Offline, Some(format!("rclone {label}: stdin write failed")));
+                return None;
+            }
+            drop(stdin); // close so rclone sees EOF
+        }
+    }
+    match tokio::time::timeout(OP_TIMEOUT, child.wait_with_output()).await {
+        Ok(Ok(out)) => {
+            report_reach(reach_from_code(out.status.code()), stderr_tail(&out.stderr));
+            Some(out)
+        }
+        Ok(Err(e)) => {
+            tracing::warn!(error = %e, op = label, "rclone run error");
+            None
+        }
+        Err(_) => {
+            tracing::warn!(op = label, "rclone op timed out");
+            report_reach(Reach::Offline, Some(format!("rclone {label} timed out")));
+            None
+        }
+    }
+}
+
 /// `rclone cat <target>` → stdout as a String. `None` on any failure (missing
 /// file, network error, timeout).
 pub async fn cat(exe: &Path, target: &str) -> Option<String> {
     let mut cmd = base_command(exe);
     cmd.arg("cat").arg(target);
-    let child = cmd.spawn().ok()?;
-    let out = tokio::time::timeout(OP_TIMEOUT, child.wait_with_output())
-        .await
-        .ok()?
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    Some(String::from_utf8_lossy(&out.stdout).into_owned())
+    let out = run_op(cmd, "cat", None).await?;
+    out.status
+        .success()
+        .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
 /// `rclone rcat <target>` reading `body` from stdin → object. rclone creates
 /// intermediate dirs. Returns `true` on success.
 async fn rcat(exe: &Path, target: &str, body: &[u8]) -> bool {
-    use tokio::io::AsyncWriteExt;
     let mut cmd = base_command(exe);
     cmd.arg("rcat").arg(target);
-    cmd.stdin(std::process::Stdio::piped());
-    let mut child = match cmd.spawn() {
-        Ok(c) => c,
-        Err(e) => {
-            tracing::warn!(error = %e, target, "rclone rcat spawn failed");
-            return false;
-        }
+    let Some(out) = run_op(cmd, "rcat", Some(body)).await else {
+        return false;
     };
-    if let Some(mut stdin) = child.stdin.take() {
-        if let Err(e) = stdin.write_all(body).await {
-            tracing::warn!(error = %e, "rclone rcat: write stdin failed");
-            return false;
-        }
-        drop(stdin); // close so rclone sees EOF
+    if !out.status.success() {
+        tracing::warn!(
+            target,
+            stderr = %String::from_utf8_lossy(&out.stderr),
+            "rclone rcat non-zero exit"
+        );
     }
-    match tokio::time::timeout(OP_TIMEOUT, child.wait_with_output()).await {
-        Ok(Ok(out)) if out.status.success() => true,
-        Ok(Ok(out)) => {
-            tracing::warn!(
-                target,
-                stderr = %String::from_utf8_lossy(&out.stderr),
-                "rclone rcat non-zero exit"
-            );
-            false
-        }
-        Ok(Err(e)) => {
-            tracing::warn!(error = %e, "rclone rcat run error");
-            false
-        }
-        Err(_) => {
-            tracing::warn!(target, "rclone rcat timed out");
-            false
-        }
-    }
+    out.status.success()
 }
 
 /// `rclone deletefile <target>`. Best-effort; a missing file is fine.
 async fn deletefile(exe: &Path, target: &str) -> bool {
     let mut cmd = base_command(exe);
     cmd.arg("deletefile").arg(target);
-    match cmd.spawn() {
-        Ok(child) => matches!(
-            tokio::time::timeout(OP_TIMEOUT, child.wait_with_output()).await,
-            Ok(Ok(out)) if out.status.success()
-        ),
-        Err(_) => false,
-    }
+    run_op(cmd, "deletefile", None)
+        .await
+        .is_some_and(|out| out.status.success())
 }
 
 /// One entry from `rclone lsjson`.
@@ -332,11 +451,7 @@ struct LsEntry {
 async fn lsjson(exe: &Path, target: &str) -> Option<Vec<LsEntry>> {
     let mut cmd = base_command(exe);
     cmd.arg("lsjson").arg("--no-mimetype").arg(target);
-    let child = cmd.spawn().ok()?;
-    let out = tokio::time::timeout(OP_TIMEOUT, child.wait_with_output())
-        .await
-        .ok()?
-        .ok()?;
+    let out = run_op(cmd, "lsjson", None).await?;
     if !out.status.success() {
         return None;
     }
@@ -1007,20 +1122,20 @@ async fn run_startup_fold(app: &AppHandle) {
 
 // ── Background reachability poll ─────────────────────────────────────────────
 
-/// Kicks off the reachability poll task. Called once from `lib.rs::run`'s setup.
-pub fn spawn_health_poller(app: AppHandle) {
+/// Run the single startup reachability probe. Called once from `lib.rs::run`'s
+/// setup, after [`init_health_sink`]. From then on the status is maintained
+/// passively from real ops (see the module header) plus `refresh_sync_status`.
+pub fn spawn_initial_sync_probe(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(Duration::from_secs(2)).await;
-        loop {
-            poll_once(&app).await;
-            tokio::time::sleep(POLL_INTERVAL).await;
-        }
+        poll_once(&app).await;
     });
 }
 
+/// Explicit `rclone lsd` probe — the startup check and the Settings refresh
+/// button. The passive path (`report_reach`) keeps the status current between
+/// these without spending a request per minute on an idle remote.
 async fn poll_once(app: &AppHandle) {
-    let prev = app.state::<SyncStatusState>().snapshot();
-
     let new_status = match resolve_remote(app) {
         None => {
             tracing::info!("sync probe: no remote configured (resolve_remote returned None)");
@@ -1036,7 +1151,6 @@ async fn poll_once(app: &AppHandle) {
                     tracing::info!(remote = %remote.remote, "sync probe: online");
                     SyncStatus {
                         reachability: SyncReachability::Online,
-                        last_ok_ago_secs: Some(0),
                         ..Default::default()
                     }
                 }
@@ -1052,18 +1166,7 @@ async fn poll_once(app: &AppHandle) {
         }
     };
 
-    if new_status.reachability == SyncReachability::Online {
-        app.state::<SyncStatusState>().mark_ok();
-    }
-
-    let changed = prev.reachability != new_status.reachability || prev.error != new_status.error;
-    app.state::<SyncStatusState>().set(new_status);
-    if changed {
-        let snap = app.state::<SyncStatusState>().snapshot();
-        if let Err(e) = app.emit("sync:status-changed", &snap) {
-            tracing::warn!(error = %e, "failed to emit sync:status-changed");
-        }
-    }
+    apply_status(app, new_status);
 }
 
 // ── OAuth remote authentication ─────────────────────────────────────────────
@@ -1506,6 +1609,32 @@ cloud:
             let folded = fold_blobs(&[("a".into(), a.clone())]);
             assert_eq!(folded.get("Hades").unwrap().playtime, 42);
         }
+    }
+
+    #[test]
+    fn reach_from_code_classifies() {
+        // The remote answered: success, or a definite "not found".
+        assert_eq!(reach_from_code(Some(0)), Reach::Online);
+        assert_eq!(reach_from_code(Some(3)), Reach::Online); // dir not found
+        assert_eq!(reach_from_code(Some(4)), Reach::Online); // file not found
+        assert_eq!(reach_from_code(Some(9)), Reach::Online); // no files transferred
+        // Every other code — temporary/fatal/usage errors, connection failures,
+        // signal kills (None) — means we couldn't confirm the remote: Offline.
+        assert_eq!(reach_from_code(Some(5)), Reach::Offline);
+        assert_eq!(reach_from_code(Some(7)), Reach::Offline);
+        assert_eq!(reach_from_code(Some(1)), Reach::Offline);
+        assert_eq!(reach_from_code(Some(2)), Reach::Offline);
+        assert_eq!(reach_from_code(None), Reach::Offline);
+    }
+
+    #[test]
+    fn stderr_tail_takes_last_nonempty_line() {
+        assert_eq!(stderr_tail(b""), None);
+        assert_eq!(stderr_tail(b"   \n  \n"), None);
+        assert_eq!(
+            stderr_tail(b"warming up\nFailed to cat: directory not found\n").as_deref(),
+            Some("Failed to cat: directory not found")
+        );
     }
 
     #[test]

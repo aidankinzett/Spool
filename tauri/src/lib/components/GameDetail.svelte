@@ -345,10 +345,10 @@
   }
 </script>
 
-<div class="flex min-w-0 flex-1 flex-col overflow-y-auto bg-bg-0">
+<div class="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-bg-0">
   <!-- Hero -->
   <div
-    class="relative h-[280px] overflow-hidden border-b border-line-1"
+    class="relative h-[280px] shrink-0 overflow-hidden border-b border-line-1"
     style:background="linear-gradient(135deg, color-mix(in srgb, {accentHex} 22%, var(--color-bg-1)) 0%, var(--color-bg-0) 100%)"
   >
     <!-- Hero image (when available) — full-bleed, fades into bg at bottom -->
@@ -457,7 +457,7 @@
   </div>
 
   <!-- Stats strip -->
-  <div class="grid grid-cols-4 border-b border-line-1 px-7 py-4">
+  <div class="grid shrink-0 grid-cols-4 border-b border-line-1 px-7 py-4">
     {#snippet stat(label: string, value: string, sub: string, first: boolean = false)}
       <div class="px-[18px] {first ? '' : 'border-l border-dashed border-line-1'}">
         <MonoLabel size={9.5}>{label}</MonoLabel>
@@ -504,7 +504,7 @@
   </div>
 
   <!-- Action toolbar -->
-  <div class="flex items-center gap-1.5 border-b border-line-1 px-7 py-3">
+  <div class="flex shrink-0 items-center gap-1.5 border-b border-line-1 px-7 py-3">
     <Btn variant="ghost" onclick={openFolder} disabled={!folderForGame(game)}>
       {#snippet icon()}<Folder size={14} />{/snippet}
       Open folder
@@ -548,10 +548,12 @@
     </Btn>
   </div>
 
-  <!-- Two-column body -->
+  <!-- Two-column body (scrolls independently so the hero + Play button stay
+       visible on short displays) -->
   <div
-    class="grid gap-3.5 px-7 pb-7 pt-5"
+    class="grid min-h-0 flex-1 gap-3.5 overflow-y-auto px-7 pb-7 pt-5"
     style:grid-template-columns="minmax(0, 1.4fr) minmax(0, 1fr)"
+    style:align-content="start"
   >
     <div class="flex min-w-0 flex-col gap-3.5">
       <!-- About -->
