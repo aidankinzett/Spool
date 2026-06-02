@@ -180,6 +180,17 @@ jobs:
         working-directory: tauri
         run: bun run test
 
+      # Storybook story tests run in a real browser (Vitest browser mode via
+      # Playwright), so they're a separate step that provisions Chromium first
+      # instead of riding on the browser-free `bun run test` above.
+      - name: Install Playwright Chromium
+        working-directory: tauri
+        run: bunx playwright install --with-deps chromium
+
+      - name: Storybook story tests
+        working-directory: tauri
+        run: bun run test:storybook
+
   # Backend lint + unit tests on a fast Ubuntu runner. Dev-profile clippy
   # compiles far quicker than the release-profile Windows job, so PRs get
   # their first green backend signal here while build-windows runs in

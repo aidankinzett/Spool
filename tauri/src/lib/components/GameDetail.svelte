@@ -32,6 +32,7 @@
   import { openView } from '$lib/nav';
   import { api, assetUrl } from '$lib/api';
   import { toasts } from '$lib/toasts.svelte';
+  import { confirmDialog } from '$lib/confirm.svelte';
   import type { GameEntry, RunPhase, SaveRevision, StreamingHostInfo } from '$lib/types';
   import {
     absDate,
@@ -45,6 +46,7 @@
   import CatalogId from './CatalogId.svelte';
   import Btn from './Btn.svelte';
   import DetailCard from './DetailCard.svelte';
+  import RemoveGameModal, { type RemoveChoice } from './RemoveGameModal.svelte';
 
   let {
     game,
@@ -127,11 +129,34 @@
     }
   }
 
-  async function removeGame() {
-    if (!confirm(`Remove "${game.game_name}" from your library?`)) return;
-    await api.removeGame(game.id);
+  // ── Remove / delete ─────────────────────────────────────────────────────
+  // The Remove button opens a chooser: forget the entry (leaving files +
+  // backups), or delete the install folder from disk. The modal calls back
+  // into `runRemoval` for the chosen action; on success `library:changed`
+  // clears the parent page's selection.
+  let removeOpen = $state(false);
+
+  async function runRemoval(choice: RemoveChoice) {
+    if (choice === 'disk') {
+      await api.deleteGameFromDisk(game.id);
+      toasts.show({
+        kind: 'ok',
+        label: 'DELETE · DONE',
+        title: 'Deleted from disk',
+        sub: game.game_name,
+        catalog: fmtCatalog(game.catalog_number),
+      });
+    } else {
+      await api.removeGame(game.id);
+    }
     // library:changed event will cause the parent page to clear selection.
   }
+
+  // Reset the chooser when switching games so it never carries over.
+  $effect(() => {
+    void game.id;
+    removeOpen = false;
+  });
 
   // ── Restore an earlier save (rollback) ──────────────────────────────────
   // Lazily loaded when the user expands the picker. The backend lists
@@ -166,12 +191,18 @@
     if (rev.is_current || isRunning || rollingBack) return;
     const when = absDateTime(rev.when);
     if (
-      !confirm(
-        `Restore the save backup from ${when} for "${game.game_name}"?\n\n` +
+      !(await confirmDialog({
+        label: 'LUDUSAVI · RESTORE',
+        title: 'Restore this earlier save?',
+        body:
+          `Restore the backup from ${when} for "${game.game_name}". ` +
           `This replaces your current save files. Spool snapshots the ` +
           `restored save as the newest revision so it sticks (this uses one ` +
           `retention slot, dropping the oldest backup).`,
-      )
+        confirmLabel: 'Restore save',
+        accent: accentHex,
+        catalog: fmtCatalog(game.catalog_number),
+      }))
     )
       return;
     rollingBack = rev.name;
@@ -511,7 +542,7 @@
       {#snippet icon()}<Pencil size={14} />{/snippet}
       Edit
     </Btn>
-    <Btn variant="danger" onclick={removeGame}>
+    <Btn variant="danger" onclick={() => (removeOpen = true)}>
       {#snippet icon()}<Trash2 size={14} />{/snippet}
       Remove
     </Btn>
@@ -738,3 +769,15 @@
     </div>
   </div>
 </div>
+
+{#if removeOpen}
+  <RemoveGameModal
+    gameName={game.game_name}
+    catalogId={fmtCatalog(game.catalog_number)}
+    accent={accentHex}
+    coverUrl={assetUrl(game.cover_image_path)}
+    folderPath={folderForGame(game)}
+    perform={runRemoval}
+    onClose={() => (removeOpen = false)}
+  />
+{/if}

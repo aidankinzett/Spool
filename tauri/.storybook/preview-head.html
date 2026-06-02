@@ -1,0 +1,14 @@
+<style>
+  /*
+   * Spool's app.css sets `html, body { overflow: hidden }` — in the real app
+   * the OS window provides the scroll surfaces, so the body never scrolls.
+   * In Storybook that same rule freezes the Docs page (you can't scroll past
+   * the story preview to reach the Controls table). Re-enable scrolling for
+   * the preview/docs canvas; individual stories that need to clip still do so
+   * via their own `overflow` on inner elements.
+   */
+  html,
+  body {
+    overflow: auto !important;
+  }
+</style>

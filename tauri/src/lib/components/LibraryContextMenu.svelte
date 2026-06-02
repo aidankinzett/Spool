@@ -19,6 +19,7 @@
   import { api, assetUrl } from '$lib/api';
   import { fmtCatalog } from '$lib/format';
   import { toasts } from '$lib/toasts.svelte';
+  import { confirmDialog } from '$lib/confirm.svelte';
   import type { GameEntry, StreamingHostInfo } from '$lib/types';
 
   let {
@@ -196,9 +197,14 @@
   async function manualRestore() {
     onclose();
     if (
-      !confirm(
-        `Restore saves for "${game.game_name}"?\n\nThis overwrites your current local saves with the most recent backup.`,
-      )
+      !(await confirmDialog({
+        label: 'LUDUSAVI · RESTORE',
+        title: 'Restore saves from backup?',
+        body: `This overwrites your current local saves for "${game.game_name}" with the most recent backup.`,
+        confirmLabel: 'Restore saves',
+        accent,
+        catalog: fmtCatalog(game.catalog_number),
+      }))
     ) {
       return;
     }
@@ -295,7 +301,17 @@
 
   async function remove() {
     onclose();
-    if (!confirm(`Remove "${game.game_name}" from your library?`)) return;
+    if (
+      !(await confirmDialog({
+        label: 'REMOVE · ENTRY',
+        title: 'Remove from library?',
+        body: `"${game.game_name}" will be forgotten. Your files on disk and save backups are left untouched — you can add it again later.`,
+        confirmLabel: 'Remove',
+        accent,
+        catalog: fmtCatalog(game.catalog_number),
+      }))
+    )
+      return;
     try {
       await api.removeGame(game.id);
     } catch (e) {
@@ -311,10 +327,16 @@
   async function deleteFromDisk() {
     onclose();
     if (
-      !confirm(
-        `Delete "${game.game_name}" from disk?\n\nThis permanently removes the install folder` +
-          `${game.game_folder_path ? `\n${game.game_folder_path}` : ''}\nand its library entry. This can't be undone.`,
-      )
+      !(await confirmDialog({
+        label: 'DELETE · DISK',
+        title: 'Delete from disk?',
+        body:
+          `This permanently removes the install folder` +
+          `${game.game_folder_path ? ` (${game.game_folder_path})` : ''} and the library entry for "${game.game_name}". This can't be undone.`,
+        confirmLabel: 'Delete from disk',
+        danger: true,
+        catalog: fmtCatalog(game.catalog_number),
+      }))
     )
       return;
     try {
