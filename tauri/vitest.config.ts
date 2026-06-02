@@ -35,6 +35,11 @@ export default defineConfig({
     projects: [{
       extends: true,
       test: {
+        // Plain jsdom unit/component tests. Browser-free, so `bun run test`
+        // (which targets this project) needs no Playwright install. The
+        // Storybook story tests live in the separate `storybook` project below
+        // and run via `bun run test:storybook` (CI installs Chromium first).
+        name: "unit",
         environment: "jsdom",
         include: ["src/**/*.{test,spec}.{js,ts}"],
         setupFiles: ["./vitest-setup.ts"]
