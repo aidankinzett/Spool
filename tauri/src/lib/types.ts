@@ -166,6 +166,14 @@ export type SearchCandidate = {
   gog_id: number | null;
   lutris_slug: string | null;
   manifest_install_dir: string | null;
+  /** All install-folder names ludusavi lists for this game. */
+  manifest_install_dirs: string[];
+  /**
+   * The picked exe's ancestor directory matching one of `manifest_install_dirs`
+   * — the detected install root. Only set by `searchByExe`; null for manual
+   * name searches. The Add flow defaults the install folder to this.
+   */
+  install_root: string | null;
 };
 
 /**

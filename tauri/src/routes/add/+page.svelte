@@ -32,15 +32,36 @@
   let searchQuery = $state('');
   let searchMode = $state(false); // true once the user types in the search box
   let error = $state<string | null>(null);
-  // Install folder for the game. Auto-detected from the exe's parent directory
-  // when a file is picked; the user can verify or override it before adding.
-  // A folder is what makes LAN sharing (on by default) actually streamable.
+  // Install folder for the game. Auto-detected when a file is picked — from the
+  // matched candidate's install root (ludusavi's `installDir`, found among the
+  // exe's ancestor folders) when known, otherwise the exe's parent directory.
+  // The user can verify or override it before adding. A folder is what makes
+  // LAN sharing (on by default) actually streamable.
   let gameFolder = $state<string | null>(null);
+  // True once the user picks a folder by hand, so auto-detection stops
+  // overwriting their choice when they switch candidates.
+  let folderTouched = $state(false);
 
   /** Parent directory of a file path, handling both `\` and `/` separators. */
   function parentDir(path: string): string | null {
     const idx = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
     return idx > 0 ? path.slice(0, idx) : null;
+  }
+
+  /**
+   * Auto-fill the install folder from a candidate, unless the user has already
+   * set one by hand. Prefers the candidate's detected install root and falls
+   * back to the exe's parent directory.
+   */
+  function applyDetectedFolder(cand: SearchCandidate | null) {
+    if (folderTouched || !exePath) return;
+    gameFolder = cand?.install_root ?? parentDir(exePath);
+  }
+
+  /** Highlight a candidate and re-derive the install folder from it. */
+  function pick(cand: SearchCandidate) {
+    picked = cand;
+    applyDetectedFolder(cand);
   }
 
   const stage = $derived.by((): 'no-exe' | 'identifying' | 'matches' | 'no-match' | 'search' => {
@@ -88,8 +109,10 @@
       return;
     }
     exePath = result;
-    // Default the install folder to the exe's parent directory; the user
-    // confirms or changes it below before adding.
+    // A freshly picked exe resets any manual folder choice. Seed the install
+    // folder with the exe's parent dir; identify() refines it once a candidate
+    // with a detected install root comes back.
+    folderTouched = false;
     gameFolder = parentDir(result);
     await identify();
   }
@@ -101,7 +124,10 @@
       multiple: false,
       defaultPath: gameFolder ?? undefined,
     });
-    if (typeof result === 'string') gameFolder = result;
+    if (typeof result === 'string') {
+      gameFolder = result;
+      folderTouched = true;
+    }
   }
 
   async function identify() {
@@ -114,6 +140,7 @@
     try {
       candidates = await api.searchByExe(exePath);
       picked = candidates[0] ?? null;
+      applyDetectedFolder(picked);
     } catch (e) {
       error = String(e);
       candidates = [];
@@ -139,6 +166,7 @@
       try {
         candidates = await api.searchGames(value);
         picked = candidates[0] ?? null;
+        applyDetectedFolder(picked);
       } catch (e) {
         error = String(e);
         candidates = [];
@@ -382,7 +410,7 @@
                   {cand}
                   index={i}
                   picked={picked?.name === cand.name}
-                  onpick={() => (picked = cand)}
+                  onpick={() => pick(cand)}
                 />
               </div>
             {/each}
