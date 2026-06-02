@@ -284,15 +284,47 @@ impl LudusaviClient {
         config_dir: &Path,
         query: &str,
     ) -> AppResult<Vec<SearchCandidate>> {
-        let hits = run_find(ludusavi_exe, config_dir, query).await?;
+        self.search_multi(ludusavi_exe, config_dir, &[query.to_string()])
+            .await
+    }
+
+    /// Like [`search`], but runs several queries and merges their hits into
+    /// one ranked candidate list. A game matched by more than one query
+    /// keeps its best score, and the manifest is loaded once for all of
+    /// them. Used by the Add Game flow to look up both the exe filename and
+    /// its parent folder name.
+    pub async fn search_multi(
+        &self,
+        ludusavi_exe: &Path,
+        config_dir: &Path,
+        queries: &[String],
+    ) -> AppResult<Vec<SearchCandidate>> {
         let manifest = self.manifest_or_load(ludusavi_exe, config_dir).await?;
 
-        let mut candidates: Vec<SearchCandidate> = hits
-            .games
+        // Merge hits keyed by game name, keeping the highest score when a
+        // game matches more than one query.
+        let mut best: HashMap<String, f64> = HashMap::new();
+        for query in queries {
+            if query.trim().is_empty() {
+                continue;
+            }
+            let hits = run_find(ludusavi_exe, config_dir, query).await?;
+            for (name, hit) in hits.games {
+                best.entry(name)
+                    .and_modify(|s| {
+                        if hit.score > *s {
+                            *s = hit.score;
+                        }
+                    })
+                    .or_insert(hit.score);
+            }
+        }
+
+        let mut candidates: Vec<SearchCandidate> = best
             .into_iter()
-            .map(|(name, hit)| {
+            .map(|(name, score)| {
                 let entry = manifest.get(&name);
-                enrich(name, hit.score, entry)
+                enrich(name, score, entry)
             })
             .collect();
 
@@ -700,11 +732,27 @@ fn prettify_save_template(template: &str) -> String {
 /// Best-effort guess at a ludusavi search query from an exe filename.
 /// `nightreign.exe` → `"Nightreign"`, `elden_ring.exe` → `"Elden Ring"`.
 pub fn infer_name_from_exe(path: &Path) -> String {
-    let stem = path
-        .file_stem()
+    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+    clean_query(stem)
+}
+
+/// Best-effort guess at a ludusavi search query from the exe's parent
+/// folder name. The title often lives in the folder even when the exe is
+/// generic — e.g. `Elden Ring/Game/start_protected_game.exe` or
+/// `Hollow Knight/hollow_knight.exe`.
+pub fn infer_name_from_parent_dir(path: &Path) -> String {
+    let name = path
+        .parent()
+        .and_then(|p| p.file_name())
         .and_then(|s| s.to_str())
         .unwrap_or("");
-    let cleaned: String = stem
+    clean_query(name)
+}
+
+/// Normalises a raw filename/folder fragment into a search query:
+/// underscores and dashes become spaces, then title-case.
+fn clean_query(raw: &str) -> String {
+    let cleaned: String = raw
         .chars()
         .map(|c| if c == '_' || c == '-' { ' ' } else { c })
         .collect();
@@ -858,9 +906,11 @@ pub async fn set_cloud_webdav(
     Ok(())
 }
 
-/// Identifies a game from its exe path by inferring a search query from
-/// the filename and running [`search_games`] under the hood. Used by the
-/// Add Game flow's "identifying…" state.
+/// Identifies a game from its exe path by inferring search queries from
+/// both the exe filename and its parent folder name, then running them
+/// through ludusavi and merging the results. Used by the Add Game flow's
+/// "identifying…" state. Querying the folder too catches games whose exe
+/// is generic (`Game/bin/start.exe`) but whose folder carries the title.
 #[tauri::command]
 pub async fn search_by_exe(
     config: State<'_, SharedConfig>,
@@ -869,11 +919,18 @@ pub async fn search_by_exe(
 ) -> AppResult<Vec<SearchCandidate>> {
     let ludusavi_exe = ludusavi_path_or_err(&config)?;
     let config_dir = crate::paths::ludusavi_config_dir();
-    let query = infer_name_from_exe(Path::new(&exe_path));
-    if query.is_empty() {
+    let path = Path::new(&exe_path);
+
+    let mut queries = vec![infer_name_from_exe(path)];
+    let folder = infer_name_from_parent_dir(path);
+    if !folder.is_empty() && !queries.contains(&folder) {
+        queries.push(folder);
+    }
+    queries.retain(|q| !q.is_empty());
+    if queries.is_empty() {
         return Ok(Vec::new());
     }
-    ludusavi.search(&ludusavi_exe, &config_dir, &query).await
+    ludusavi.search_multi(&ludusavi_exe, &config_dir, &queries).await
 }
 
 fn ludusavi_path_or_err(_config: &State<'_, SharedConfig>) -> AppResult<PathBuf> {
@@ -900,6 +957,22 @@ mod tests {
             "Hades 2"
         );
         assert_eq!(infer_name_from_exe(Path::new("")), "");
+    }
+
+    #[test]
+    fn infer_name_from_parent_dir_basic() {
+        // Folder carries the title even when the exe is generic.
+        assert_eq!(
+            infer_name_from_parent_dir(Path::new("D:/Games/Hollow_Knight/start.exe")),
+            "Hollow Knight"
+        );
+        assert_eq!(
+            infer_name_from_parent_dir(Path::new("/home/u/Games/Elden Ring/Game/start.exe")),
+            "Game"
+        );
+        // No parent folder → empty.
+        assert_eq!(infer_name_from_parent_dir(Path::new("game.exe")), "");
+        assert_eq!(infer_name_from_parent_dir(Path::new("")), "");
     }
 
     #[test]
