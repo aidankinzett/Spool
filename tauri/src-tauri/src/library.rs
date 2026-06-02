@@ -373,23 +373,16 @@ pub fn add_game(
         tracing::warn!(error = %e, "failed to emit library:changed after add_game");
     }
 
-    // Kick off cover-art and hero banner fetches. Both are non-blocking —
-    // the user sees the new card immediately and the images land a moment
-    // later via library:changed emits. They share the same sgdb game-id
-    // lookup internally; each runs its own request since the endpoints differ.
-    let app_for_cover = app.clone();
-    let id_for_cover = entry.id.clone();
+    // Kick off cover-art + hero banner fetches. Non-blocking — the user sees
+    // the new card immediately and both images land a moment later via a single
+    // library:changed emit. One sgdb game-id lookup feeds both downloads.
+    let app_for_art = app.clone();
+    let id_for_art = entry.id.clone();
     tauri::async_runtime::spawn(async move {
-        if let Err(e) = crate::steamgriddb::fetch_and_save_cover(&app_for_cover, &id_for_cover).await {
-            tracing::warn!(game_id = %id_for_cover, error = %e, "cover fetch failed");
-        }
-    });
-
-    let app_for_hero = app.clone();
-    let id_for_hero = entry.id.clone();
-    tauri::async_runtime::spawn(async move {
-        if let Err(e) = crate::steamgriddb::fetch_and_save_hero(&app_for_hero, &id_for_hero).await {
-            tracing::warn!(game_id = %id_for_hero, error = %e, "hero fetch failed");
+        if let Err(e) =
+            crate::steamgriddb::fetch_and_save_cover_and_hero(&app_for_art, &id_for_art).await
+        {
+            tracing::warn!(game_id = %id_for_art, error = %e, "cover/hero fetch failed");
         }
     });
 

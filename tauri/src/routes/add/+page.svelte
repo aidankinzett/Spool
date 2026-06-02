@@ -64,6 +64,16 @@
     applyDetectedFolder(cand);
   }
 
+  /**
+   * Stable identity for a candidate. `SearchCandidate` has no unique id and
+   * the multi-query lookup can surface two entries with the same display name,
+   * so key on name + store ids to keep the `{#each}` and the picked-highlight
+   * distinct.
+   */
+  function candKey(c: SearchCandidate): string {
+    return `${c.name}::${c.steam_id ?? ''}::${c.gog_id ?? ''}::${c.manifest_install_dir ?? ''}`;
+  }
+
   const stage = $derived.by((): 'no-exe' | 'identifying' | 'matches' | 'no-match' | 'search' => {
     if (!exePath) return 'no-exe';
     if (identifying) return 'identifying';
@@ -401,11 +411,11 @@
             {/if}
           </div>
           <div class="min-h-0 flex-1 overflow-y-auto rounded-sm border border-line-1 bg-bg-1">
-            {#each candidates as cand (cand.name)}
+            {#each candidates as cand (candKey(cand))}
               <div class="border-b border-line-1 last:border-b-0">
                 <CandidateRow
                   {cand}
-                  picked={picked?.name === cand.name}
+                  picked={!!picked && candKey(picked) === candKey(cand)}
                   onpick={() => pick(cand)}
                 />
               </div>
