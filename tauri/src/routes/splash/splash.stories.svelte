@@ -38,7 +38,7 @@
     argTypes: {
       phase: {
         control: 'select',
-        options: ['restoring', 'launching', 'playing', 'backing-up', 'done', 'error'],
+        options: ['restoring', 'launching', 'playing', 'backing-up', 'uploading', 'done', 'error'],
       },
       message: { control: 'text' },
       cloudUsed: { control: 'boolean' },
@@ -66,6 +66,7 @@
 
 <!-- Exit flow -------------------------------------------------------------- -->
 <Story name="Backing up" args={{ phase: 'backing-up' }} play={expectKicker('BACKING UP')} />
+<Story name="Uploading" args={{ phase: 'uploading' }} play={expectKicker('UPLOADING')} />
 <Story name="Done" args={{ phase: 'done' }} play={expectKicker('ALL SAVED')} />
 
 <!-- Cloud unreachable: backup is local-only, sync queued. -->

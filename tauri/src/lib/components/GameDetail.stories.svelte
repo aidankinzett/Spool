@@ -79,7 +79,7 @@
     argTypes: {
       runPhase: {
         control: 'select',
-        options: [null, 'restoring', 'launching', 'playing', 'backing-up'],
+        options: [null, 'restoring', 'launching', 'playing', 'backing-up', 'uploading'],
       },
     },
   });

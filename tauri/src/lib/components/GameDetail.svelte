@@ -78,6 +78,8 @@
         return 'Playing';
       case 'backing-up':
         return 'Backing up…';
+      case 'uploading':
+        return 'Uploading saves…';
       default:
         return 'Play';
     }
