@@ -265,7 +265,7 @@ pub fn init_health_sink(app: AppHandle) {
 }
 
 /// Whether a completed control-plane op proves the remote was reachable.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Reach {
     Online,
     Offline,
