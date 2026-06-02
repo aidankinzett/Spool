@@ -7,8 +7,8 @@
 //! is saved atomically and `library:changed` is emitted so any open
 //! window can refresh.
 //!
-//! v1 only fetches the portrait cover (600×900). Hero / wide grid / logo
-//! will land alongside the "Add to Steam" slice that needs them all.
+//! Fetches both the portrait cover (600×900) and the hero banner (1920×620)
+//! at add-time. Wide grid / logo are only fetched by the "Add to Steam" flow.
 
 use crate::config::SharedConfig;
 use crate::error::{AppError, AppResult};
@@ -79,98 +79,64 @@ pub async fn fetch_and_save_cover(
     app: &AppHandle,
     game_entry_id: &str,
 ) -> AppResult<Option<String>> {
-    let config = app.state::<SharedConfig>();
-    let library = app.state::<SharedLibrary>();
     let client = app.state::<SteamGridDbClient>();
-
-    // 1. Bail early if SteamGridDB isn't configured.
-    let (api_key, enabled) = {
-        let cfg = config.lock().map_err(|_| AppError::LockPoisoned)?;
-        (
-            cfg.data.steamgriddb_api_key.clone(),
-            cfg.data.steamgriddb_enabled,
-        )
-    };
-    if !enabled || api_key.is_empty() {
-        return Ok(None);
-    }
-
-    // 2. Snapshot lookup info from the library entry — drop the lock fast.
-    let (name, safe_name, steam_id) = {
-        let lib = library.lock().map_err(|_| AppError::LockPoisoned)?;
-        let entry = lib
-            .find(game_entry_id)
-            .ok_or_else(|| AppError::Other(format!("game not found: {game_entry_id}")))?;
-        (
-            entry.game_name.clone(),
-            entry.safe_name.clone(),
-            entry.steam_id,
-        )
-    };
-
-    // 3. Resolve to a SteamGridDB game id.
-    let Some(sgdb_id) = resolve_game_id(&client.http, &api_key, steam_id, &name).await? else {
+    let Some((sgdb_id, safe_name, api_key)) = resolve_entry_sgdb_id(app, game_entry_id).await?
+    else {
         return Ok(None);
     };
 
-    // 4. Pick the first portrait grid result.
-    let grids = fetch_portrait_grids(&client.http, &api_key, sgdb_id).await?;
-    let Some(grid) = grids.into_iter().next() else {
+    let Some(path_str) = download_cover(&client.http, &api_key, sgdb_id, &safe_name).await? else {
         return Ok(None);
     };
+    let accent = extract_accent_blocking(&path_str).await;
 
-    // 5. Download to disk.
-    let ext = mime_to_ext(&grid.mime).unwrap_or_else(|| url_ext(&grid.url).unwrap_or("png"));
-    let dir = paths::covers_dir();
-    std::fs::create_dir_all(&dir)?;
-    let path = dir.join(format!("{safe_name}.{ext}"));
-    let bytes = client
-        .http
-        .get(&grid.url)
-        .send()
-        .await
-        .map_err(|e| AppError::Other(format!("sgdb image fetch failed: {e}")))?
-        .error_for_status()
-        .map_err(|e| AppError::Other(format!("sgdb image non-2xx: {e}")))?
-        .bytes()
-        .await
-        .map_err(|e| AppError::Other(format!("sgdb image body failed: {e}")))?;
-    std::fs::write(&path, &bytes)?;
-    let path_str = path.to_string_lossy().to_string();
-
-    // 6. Extract a vibrant accent colour from the cover. Best-effort —
-    //    failure here just leaves the brand `spool` default on the UI.
-    //    Image decode + histogram is sync CPU work; per
-    //    `m07-concurrency` we punt to `spawn_blocking` so the async
-    //    runtime stays responsive while it's chewing on a 1 MB image.
-    let accent = {
-        let p = path.clone();
-        tokio::task::spawn_blocking(move || extract_vibrant_color(&p))
-            .await
-            .ok()
-            .flatten()
-    };
-
-    // 7. Update library entry + persist.
-    {
-        let mut lib = library.lock().map_err(|_| AppError::LockPoisoned)?;
-        if let Some(entry) = lib.entries.iter_mut().find(|e| e.id == game_entry_id) {
-            entry.cover_image_path = Some(path_str.clone());
-            if let Some(a) = accent.clone() {
-                entry.accent_color = Some(a);
-            }
-        } else {
-            tracing::warn!(game_entry_id, "cover downloaded but library entry gone; skipping update");
-        }
-        lib.save()?;
-    }
-
-    // 7. Notify the UI.
-    if let Err(e) = app.emit("library:changed", &game_entry_id.to_string()) {
-        tracing::warn!(error = %e, "failed to emit library:changed after cover download");
-    }
-
+    apply_art(app, game_entry_id, Some(&path_str), None, accent.as_deref())?;
     Ok(Some(path_str))
+}
+
+/// Fetches both the cover and the hero for `game_entry_id` from a single
+/// SteamGridDB game-id lookup, then writes them (plus the cover's accent
+/// colour) in one library save + `library:changed` emit. Used by add_game so
+/// the two assets don't each pay for their own id resolution. Each download is
+/// best-effort — one failing doesn't discard the other.
+pub async fn fetch_and_save_cover_and_hero(
+    app: &AppHandle,
+    game_entry_id: &str,
+) -> AppResult<()> {
+    let client = app.state::<SteamGridDbClient>();
+    let Some((sgdb_id, safe_name, api_key)) = resolve_entry_sgdb_id(app, game_entry_id).await?
+    else {
+        return Ok(());
+    };
+
+    let cover = download_cover(&client.http, &api_key, sgdb_id, &safe_name)
+        .await
+        .unwrap_or_else(|e| {
+            tracing::warn!(game_entry_id, error = %e, "cover download failed");
+            None
+        });
+    let hero = download_hero(&client.http, &api_key, sgdb_id, &safe_name)
+        .await
+        .unwrap_or_else(|e| {
+            tracing::warn!(game_entry_id, error = %e, "hero download failed");
+            None
+        });
+    if cover.is_none() && hero.is_none() {
+        return Ok(());
+    }
+
+    let accent = match &cover {
+        Some(p) => extract_accent_blocking(p).await,
+        None => None,
+    };
+    apply_art(
+        app,
+        game_entry_id,
+        cover.as_deref(),
+        hero.as_deref(),
+        accent.as_deref(),
+    )?;
+    Ok(())
 }
 
 // ── Accent colour extraction ────────────────────────────────────────────────
@@ -253,6 +219,29 @@ fn rgb_to_hsl(r: u8, g: u8, b: u8) -> (f32, f32, f32) {
         (r - g) / d + 4.0
     } * 60.0;
     (h, s, l)
+}
+
+/// Fetches the hero banner (1920×620 landscape) for `game_entry_id`, saves it
+/// to `%LOCALAPPDATA%\Spool\heroes\<safe_name>.<ext>`, updates
+/// `GameEntry.hero_image_path`, and emits `library:changed`. Mirrors
+/// `fetch_and_save_cover` but uses the `/heroes` SteamGridDB endpoint.
+///
+/// Returns the saved path, or None if the game has no hero art or SteamGridDB
+/// is disabled.
+pub async fn fetch_and_save_hero(
+    app: &AppHandle,
+    game_entry_id: &str,
+) -> AppResult<Option<String>> {
+    let client = app.state::<SteamGridDbClient>();
+    let Some((sgdb_id, safe_name, api_key)) = resolve_entry_sgdb_id(app, game_entry_id).await?
+    else {
+        return Ok(None);
+    };
+    let Some(path_str) = download_hero(&client.http, &api_key, sgdb_id, &safe_name).await? else {
+        return Ok(None);
+    };
+    apply_art(app, game_entry_id, None, Some(&path_str), None)?;
+    Ok(Some(path_str))
 }
 
 // ── Multi-art bundle for Add-to-Steam ───────────────────────────────────────
@@ -424,6 +413,143 @@ async fn download_bytes(http: &reqwest::Client, url: &str) -> AppResult<Vec<u8>>
     Ok(bytes.to_vec())
 }
 
+// ── Shared art-fetch helpers (cover + hero) ─────────────────────────────────
+
+/// Shared preamble for the cover/hero fetchers: bail if SteamGridDB is
+/// disabled, snapshot the entry's lookup fields, and resolve its SteamGridDB
+/// game id. Returns `(sgdb_id, safe_name, api_key)`, or None to skip (disabled,
+/// no API key, or nothing matched).
+async fn resolve_entry_sgdb_id(
+    app: &AppHandle,
+    game_entry_id: &str,
+) -> AppResult<Option<(u64, String, String)>> {
+    let config = app.state::<SharedConfig>();
+    let library = app.state::<SharedLibrary>();
+    let client = app.state::<SteamGridDbClient>();
+
+    let (api_key, enabled) = {
+        let cfg = config.lock().map_err(|_| AppError::LockPoisoned)?;
+        (
+            cfg.data.steamgriddb_api_key.clone(),
+            cfg.data.steamgriddb_enabled,
+        )
+    };
+    if !enabled || api_key.is_empty() {
+        return Ok(None);
+    }
+
+    let (name, safe_name, steam_id) = {
+        let lib = library.lock().map_err(|_| AppError::LockPoisoned)?;
+        let entry = lib
+            .find(game_entry_id)
+            .ok_or_else(|| AppError::Other(format!("game not found: {game_entry_id}")))?;
+        (
+            entry.game_name.clone(),
+            entry.safe_name.clone(),
+            entry.steam_id,
+        )
+    };
+
+    match resolve_game_id(&client.http, &api_key, steam_id, &name).await? {
+        Some(sgdb_id) => Ok(Some((sgdb_id, safe_name, api_key))),
+        None => Ok(None),
+    }
+}
+
+/// Downloads art at `url` into `<dir>/<safe_name>.<ext>` (ext inferred from the
+/// mime, then the URL, defaulting to `png`) and returns the saved path.
+async fn save_art_to(
+    http: &reqwest::Client,
+    dir: std::path::PathBuf,
+    safe_name: &str,
+    url: &str,
+    mime: &str,
+) -> AppResult<String> {
+    let ext = mime_to_ext(mime).unwrap_or_else(|| url_ext(url).unwrap_or("png"));
+    std::fs::create_dir_all(&dir)?;
+    let path = dir.join(format!("{safe_name}.{ext}"));
+    let bytes = download_bytes(http, url).await?;
+    std::fs::write(&path, &bytes)?;
+    Ok(path.to_string_lossy().to_string())
+}
+
+/// Downloads the first portrait cover for an already-resolved sgdb id into the
+/// covers dir. None when the game has no portrait grid.
+async fn download_cover(
+    http: &reqwest::Client,
+    api_key: &str,
+    sgdb_id: u64,
+    safe_name: &str,
+) -> AppResult<Option<String>> {
+    let grids = fetch_portrait_grids(http, api_key, sgdb_id).await?;
+    let Some(grid) = grids.into_iter().next() else {
+        return Ok(None);
+    };
+    Ok(Some(
+        save_art_to(http, paths::covers_dir(), safe_name, &grid.url, &grid.mime).await?,
+    ))
+}
+
+/// Downloads the first hero banner for an already-resolved sgdb id into the
+/// heroes dir. None when the game has no hero art.
+async fn download_hero(
+    http: &reqwest::Client,
+    api_key: &str,
+    sgdb_id: u64,
+    safe_name: &str,
+) -> AppResult<Option<String>> {
+    let Some(asset) = fetch_first_art(http, api_key, sgdb_id, "hero").await? else {
+        return Ok(None);
+    };
+    Ok(Some(
+        save_art_to(http, paths::heroes_dir(), safe_name, &asset.url, &asset.mime).await?,
+    ))
+}
+
+/// Extracts the vibrant accent colour from a saved cover off the async executor
+/// (image decode + histogram is sync CPU work). Best-effort — None on failure.
+async fn extract_accent_blocking(path: &str) -> Option<String> {
+    let p = std::path::PathBuf::from(path);
+    tokio::task::spawn_blocking(move || extract_vibrant_color(&p))
+        .await
+        .ok()
+        .flatten()
+}
+
+/// Applies any of cover path / hero path / accent to the entry, then persists
+/// and emits `library:changed` once. No-ops the write if the entry vanished
+/// mid-download.
+fn apply_art(
+    app: &AppHandle,
+    game_entry_id: &str,
+    cover: Option<&str>,
+    hero: Option<&str>,
+    accent: Option<&str>,
+) -> AppResult<()> {
+    let library = app.state::<SharedLibrary>();
+    {
+        let mut lib = library.lock().map_err(|_| AppError::LockPoisoned)?;
+        let Some(entry) = lib.entries.iter_mut().find(|e| e.id == game_entry_id) else {
+            tracing::warn!(game_entry_id, "art downloaded but library entry gone; skipping update");
+            return Ok(());
+        };
+        if let Some(c) = cover {
+            entry.cover_image_path = Some(c.to_string());
+        }
+        if let Some(h) = hero {
+            entry.hero_image_path = Some(h.to_string());
+        }
+        if let Some(a) = accent {
+            entry.accent_color = Some(a.to_string());
+        }
+        lib.save()?;
+    }
+    if let Err(e) = app.emit("library:changed", &game_entry_id.to_string()) {
+        tracing::warn!(error = %e, "failed to emit library:changed after art download");
+    }
+    Ok(())
+}
+
 /// Common shape for hero / grid / logo entries — they all return at least
 /// `url` and `mime`, sometimes more fields we don't need.
 #[derive(Debug, Deserialize)]
@@ -439,6 +565,12 @@ struct Asset {
 #[tauri::command]
 pub async fn fetch_cover(app: AppHandle, game_id: String) -> AppResult<Option<String>> {
     fetch_and_save_cover(&app, &game_id).await
+}
+
+/// Manual hero refresh for an existing game (re-runs lookup + download).
+#[tauri::command]
+pub async fn fetch_hero(app: AppHandle, game_id: String) -> AppResult<Option<String>> {
+    fetch_and_save_hero(&app, &game_id).await
 }
 
 // ── Internals ───────────────────────────────────────────────────────────────

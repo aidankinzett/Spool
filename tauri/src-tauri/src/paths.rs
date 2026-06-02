@@ -44,6 +44,10 @@ pub fn covers_dir() -> PathBuf {
     app_data_dir().join("covers")
 }
 
+pub fn heroes_dir() -> PathBuf {
+    app_data_dir().join("heroes")
+}
+
 #[allow(dead_code)]
 pub fn launchers_dir() -> PathBuf {
     app_data_dir().join("launchers")

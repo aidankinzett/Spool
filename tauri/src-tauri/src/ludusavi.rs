@@ -252,7 +252,18 @@ pub struct SearchCandidate {
     pub gog_id: Option<u64>,
     pub lutris_slug: Option<String>,
     /// The folder name ludusavi expects ("Hades" for `D:\Games\Hades\`).
+    /// The first of `manifest_install_dirs`, kept for existing consumers.
     pub manifest_install_dir: Option<String>,
+    /// Every install-folder name ludusavi lists for this game (the manifest's
+    /// `installDir` keys). Used to locate the game's real install root among
+    /// the picked exe's ancestor folders.
+    pub manifest_install_dirs: Vec<String>,
+    /// The picked exe's ancestor directory that matches one of
+    /// `manifest_install_dirs` — the detected install root, even when the exe
+    /// sits under `Binaries/Win64`. Only set by `search_by_exe` (which knows
+    /// the exe path); None for manual name searches. The Add flow defaults the
+    /// install folder to this when present.
+    pub install_root: Option<String>,
 }
 
 // ── Client ──────────────────────────────────────────────────────────────────
@@ -284,15 +295,47 @@ impl LudusaviClient {
         config_dir: &Path,
         query: &str,
     ) -> AppResult<Vec<SearchCandidate>> {
-        let hits = run_find(ludusavi_exe, config_dir, query).await?;
+        self.search_multi(ludusavi_exe, config_dir, &[query.to_string()])
+            .await
+    }
+
+    /// Like [`search`], but runs several queries and merges their hits into
+    /// one ranked candidate list. A game matched by more than one query
+    /// keeps its best score, and the manifest is loaded once for all of
+    /// them. Used by the Add Game flow to look up both the exe filename and
+    /// its parent folder name.
+    pub async fn search_multi(
+        &self,
+        ludusavi_exe: &Path,
+        config_dir: &Path,
+        queries: &[String],
+    ) -> AppResult<Vec<SearchCandidate>> {
         let manifest = self.manifest_or_load(ludusavi_exe, config_dir).await?;
 
-        let mut candidates: Vec<SearchCandidate> = hits
-            .games
+        // Merge hits keyed by game name, keeping the highest score when a
+        // game matches more than one query.
+        let mut best: HashMap<String, f64> = HashMap::new();
+        for query in queries {
+            if query.trim().is_empty() {
+                continue;
+            }
+            let hits = run_find(ludusavi_exe, config_dir, query).await?;
+            for (name, hit) in hits.games {
+                best.entry(name)
+                    .and_modify(|s| {
+                        if hit.score > *s {
+                            *s = hit.score;
+                        }
+                    })
+                    .or_insert(hit.score);
+            }
+        }
+
+        let mut candidates: Vec<SearchCandidate> = best
             .into_iter()
-            .map(|(name, hit)| {
+            .map(|(name, score)| {
                 let entry = manifest.get(&name);
-                enrich(name, hit.score, entry)
+                enrich(name, score, entry)
             })
             .collect();
 
@@ -652,6 +695,8 @@ fn enrich(
             gog_id: None,
             lutris_slug: None,
             manifest_install_dir: None,
+            manifest_install_dirs: Vec::new(),
+            install_root: None,
         };
     };
 
@@ -665,7 +710,11 @@ fn enrich(
     save_paths.sort(); // stable order for tests/UI
 
     let save_path = save_paths.first().cloned();
-    let manifest_install_dir = entry.install_dir.keys().next().cloned();
+    // All install-folder names ludusavi knows for this game, sorted for a
+    // stable primary pick. Most games list exactly one.
+    let mut manifest_install_dirs: Vec<String> = entry.install_dir.keys().cloned().collect();
+    manifest_install_dirs.sort();
+    let manifest_install_dir = manifest_install_dirs.first().cloned();
     let steam_id = entry.steam.as_ref().map(|s| s.id);
     let gog_id = entry
         .gog
@@ -683,6 +732,9 @@ fn enrich(
         gog_id,
         lutris_slug,
         manifest_install_dir,
+        manifest_install_dirs,
+        // Filled in by `search_by_exe`, which has the exe path to match against.
+        install_root: None,
     }
 }
 
@@ -700,15 +752,117 @@ fn prettify_save_template(template: &str) -> String {
 /// Best-effort guess at a ludusavi search query from an exe filename.
 /// `nightreign.exe` → `"Nightreign"`, `elden_ring.exe` → `"Elden Ring"`.
 pub fn infer_name_from_exe(path: &Path) -> String {
-    let stem = path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("");
-    let cleaned: String = stem
+    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+    clean_query(stem)
+}
+
+/// Normalises a raw filename/folder fragment into a search query:
+/// underscores and dashes become spaces, then title-case.
+fn clean_query(raw: &str) -> String {
+    let cleaned: String = raw
         .chars()
         .map(|c| if c == '_' || c == '-' { ' ' } else { c })
         .collect();
     title_case(cleaned.trim())
+}
+
+/// Folder names that are structural rather than a game's title. Skipped when
+/// walking an exe's ancestors to build search queries — engines bury the real
+/// binary under these (Unreal's `Binaries/Win64`, a bare `bin`, Steam's
+/// `steamapps/common`), so the title lives in a folder further up.
+const GENERIC_DIR_NAMES: &[&str] = &[
+    "bin",
+    "binaries",
+    "win",
+    "win32",
+    "win64",
+    "windows",
+    "x64",
+    "x86",
+    "x86_64",
+    "game",
+    "games",
+    "app",
+    "application",
+    "build",
+    "data",
+    "content",
+    "release",
+    "retail",
+    "redist",
+    "system",
+    "common",
+    "steamapps",
+    "engine",
+];
+
+fn is_generic_dir(name: &str) -> bool {
+    GENERIC_DIR_NAMES.contains(&name.to_ascii_lowercase().as_str())
+}
+
+/// How far up an exe's ancestors to walk when building search queries.
+const MAX_ANCESTOR_LEVELS: usize = 4;
+
+/// Builds ordered, de-duplicated ludusavi search queries from an exe path:
+/// the filename stem first, then each ancestor folder name walking upward
+/// (skipping structural folders like `bin` / `Binaries/Win64`). Walks at most
+/// [`MAX_ANCESTOR_LEVELS`] up so a deeply nested path doesn't fan out forever.
+fn infer_queries_from_path(path: &Path) -> Vec<String> {
+    let mut queries: Vec<String> = Vec::new();
+    let mut push = |q: String| {
+        if !q.is_empty() && !queries.contains(&q) {
+            queries.push(q);
+        }
+    };
+    push(infer_name_from_exe(path));
+
+    // `ancestors()` yields the path itself first; `skip(1)` starts at the
+    // immediate parent directory.
+    for ancestor in path.ancestors().skip(1).take(MAX_ANCESTOR_LEVELS) {
+        let Some(folder) = ancestor.file_name().and_then(|s| s.to_str()) else {
+            continue; // reached a root / prefix component
+        };
+        // Skip structural folders and drive-letter / single-char fragments
+        // (e.g. a Windows `D:`), which only add noise to the search.
+        if is_generic_dir(folder) || normalize_dir(folder).len() < 2 {
+            continue;
+        }
+        push(clean_query(folder));
+    }
+    queries
+}
+
+/// Lowercases and strips every non-alphanumeric char so `"Elden Ring"`,
+/// `"ELDEN RING"`, and a folder literally named `EldenRing` all compare equal.
+fn normalize_dir(s: &str) -> String {
+    s.chars()
+        .filter(|c| c.is_alphanumeric())
+        .flat_map(|c| c.to_lowercase())
+        .collect()
+}
+
+/// Given an exe path and a game's known install-folder names (the manifest's
+/// `installDir` keys), finds the ancestor directory whose name matches one of
+/// them — the game's install root, even when the exe is buried under
+/// `Binaries/Win64`. Returns the outermost match (the top of the game's tree),
+/// or None when nothing matches, in which case the caller keeps the exe's
+/// parent directory.
+fn resolve_install_root(exe_path: &Path, install_dirs: &[String]) -> Option<String> {
+    if install_dirs.is_empty() {
+        return None;
+    }
+    let wanted: Vec<String> = install_dirs.iter().map(|d| normalize_dir(d)).collect();
+    let mut best: Option<&Path> = None;
+    for ancestor in exe_path.ancestors().skip(1) {
+        let Some(folder) = ancestor.file_name().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        let folder_norm = normalize_dir(folder);
+        if !folder_norm.is_empty() && wanted.contains(&folder_norm) {
+            best = Some(ancestor); // keep climbing — prefer the outermost match
+        }
+    }
+    best.and_then(|p| p.to_str()).map(str::to_string)
 }
 
 fn title_case(s: &str) -> String {
@@ -717,13 +871,144 @@ fn title_case(s: &str) -> String {
             let mut chars = word.chars();
             match chars.next() {
                 Some(first) => {
-                    first.to_uppercase().collect::<String>() + chars.as_str()
+                    first.to_uppercase().collect::<String>() + &chars.as_str().to_lowercase()
                 }
                 None => String::new(),
             }
         })
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+// ── PE VERSIONINFO name extraction ─────────────────────────────────────────
+
+/// `ProductName` / `FileDescription` strings that indicate a game engine or
+/// generic application rather than a game's own title. When the PE-derived
+/// name matches one of these (case-insensitive, after stripping trademark
+/// symbols), we skip it rather than feeding junk into the ludusavi query.
+const JUNK_PRODUCT_NAMES: &[&str] = &[
+    // Engines
+    "unreal engine",
+    "unity",
+    "unity technologies",
+    "gamemaker",
+    "gamemaker studio",
+    "godot",
+    "godot engine",
+    "cryengine",
+    "rpg maker",
+    "rpgmaker",
+    "renpy",
+    "ren'py",
+    "construct",
+    "monogame",
+    "defold",
+    // Generic/installer strings
+    "application",
+    "setup",
+    "installer",
+    "uninstaller",
+    "uninstall",
+    "launcher",
+    "redistributable",
+    // Runtime/middleware vendors (ProductName = company, not title)
+    "microsoft",
+    "visual c++",
+    "directx",
+    "electronic arts",
+    "ea games",
+    "ubisoft",
+    "activision",
+    "bethesda",
+    "2k games",
+    "rockstar games",
+    "square enix",
+    "denuvo",
+    "eac",
+    "easy anti-cheat",
+    "bink",
+    "bink video",
+    "miles sound system",
+    "steam",
+    "steamworks",
+];
+
+fn is_junk_product_name(s: &str) -> bool {
+    let lower = s.to_lowercase();
+    JUNK_PRODUCT_NAMES.iter().any(|&j| lower == j)
+}
+
+/// Strips trademark/copyright symbols and collapses whitespace.
+fn sanitize_pe_string(raw: &str) -> String {
+    raw.chars()
+        .filter(|&c| c != '™' && c != '®' && c != '©')
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Reads the embedded PE VERSIONINFO resource from `path` and returns the
+/// best name string: `ProductName` when it isn't a generic engine/junk value,
+/// otherwise `FileDescription`. Returns `None` when the file can't be parsed
+/// as a PE, has no version resource, or neither field yields a useful name.
+///
+/// This is pure byte-level PE parsing (via `pelite`) — it works on any host
+/// OS, so Linux + Proton installations of Windows games are covered too.
+///
+/// Prefer English (lang_id 0x0409) when present; otherwise use the first
+/// available language from the translation table.
+pub fn read_exe_product_name(path: &Path) -> Option<String> {
+    // Memory-map rather than read the whole file — packed/protected game exes
+    // can be hundreds of MB, and PE parsing only touches the headers + resource
+    // section, so the OS pages in just what's read.
+    let map = pelite::FileMap::open(path).ok()?;
+    let bytes = map.as_ref();
+    // Try PE32+ (64-bit) first, fall back to PE32 (32-bit).
+    pe_product_name_64(bytes).or_else(|| pe_product_name_32(bytes))
+}
+
+fn pe_product_name_64(bytes: &[u8]) -> Option<String> {
+    use pelite::pe64::Pe;
+    let pe = pelite::pe64::PeFile::from_bytes(bytes).ok()?;
+    let vi = pe.resources().ok()?.version_info().ok()?;
+    pick_name_from_version_info(&vi)
+}
+
+fn pe_product_name_32(bytes: &[u8]) -> Option<String> {
+    use pelite::pe32::Pe;
+    let pe = pelite::pe32::PeFile::from_bytes(bytes).ok()?;
+    let vi = pe.resources().ok()?.version_info().ok()?;
+    pick_name_from_version_info(&vi)
+}
+
+fn pick_name_from_version_info(
+    vi: &pelite::resources::version_info::VersionInfo<'_>,
+) -> Option<String> {
+    let translations = vi.translation();
+    // Prefer English (0x0409); fall back to the first available language.
+    let lang = translations
+        .iter()
+        .find(|l| l.lang_id == 0x0409)
+        .or_else(|| translations.first())
+        .copied()?;
+
+    // ProductName first; skip if it's a junk/engine string.
+    // title_case normalises all-caps values (e.g. "PRAGMATA" → "Pragmata")
+    // so they score well against the mixed-case names in the ludusavi manifest.
+    let product = vi
+        .value(lang, "ProductName")
+        .map(|s| title_case(&sanitize_pe_string(&s)))
+        .filter(|s| !s.is_empty() && !is_junk_product_name(s));
+
+    if product.is_some() {
+        return product;
+    }
+
+    // FileDescription as the fallback.
+    vi.value(lang, "FileDescription")
+        .map(|s| title_case(&sanitize_pe_string(&s)))
+        .filter(|s| !s.is_empty() && !is_junk_product_name(s))
 }
 
 // ── Tauri commands ──────────────────────────────────────────────────────────
@@ -858,9 +1143,19 @@ pub async fn set_cloud_webdav(
     Ok(())
 }
 
-/// Identifies a game from its exe path by inferring a search query from
-/// the filename and running [`search_games`] under the hood. Used by the
-/// Add Game flow's "identifying…" state.
+/// Identifies a game from its exe path using three query sources, merged and
+/// ranked by ludusavi's fuzzy scorer:
+///
+/// 1. **PE VERSIONINFO** (`ProductName` / `FileDescription`) — highest signal;
+///    a generic launcher like `start_protected_game.exe` may embed the real
+///    title. Read in a blocking thread so the async executor isn't stalled.
+/// 2. **Exe filename stem** — `elden_ring.exe` → "Elden Ring".
+/// 3. **Ancestor folder names** — walks up to four levels, skipping structural
+///    ones like `Binaries/Win64`, so the title folder is found even when the
+///    exe is buried.
+///
+/// Each matched candidate is then checked against the exe's ancestor folders
+/// using the manifest's `installDir` names to auto-detect the install root.
 #[tauri::command]
 pub async fn search_by_exe(
     config: State<'_, SharedConfig>,
@@ -869,11 +1164,41 @@ pub async fn search_by_exe(
 ) -> AppResult<Vec<SearchCandidate>> {
     let ludusavi_exe = ludusavi_path_or_err(&config)?;
     let config_dir = crate::paths::ludusavi_config_dir();
-    let query = infer_name_from_exe(Path::new(&exe_path));
-    if query.is_empty() {
+    let path = Path::new(&exe_path);
+
+    // Read PE metadata off the async executor — file IO can block.
+    let exe_path_clone = exe_path.clone();
+    let pe_name = tokio::task::spawn_blocking(move || {
+        read_exe_product_name(Path::new(&exe_path_clone))
+    })
+    .await
+    .ok()
+    .flatten();
+
+    // Build the query list: PE name first (highest confidence), then the
+    // path-based heuristics, de-duped throughout.
+    let mut queries: Vec<String> = Vec::new();
+    if let Some(name) = pe_name {
+        queries.push(name);
+    }
+    for q in infer_queries_from_path(path) {
+        if !queries.contains(&q) {
+            queries.push(q);
+        }
+    }
+    if queries.is_empty() {
         return Ok(Vec::new());
     }
-    ludusavi.search(&ludusavi_exe, &config_dir, &query).await
+
+    let mut candidates = ludusavi
+        .search_multi(&ludusavi_exe, &config_dir, &queries)
+        .await?;
+    // Detect each candidate's install root from the exe's ancestor folders so
+    // the Add flow can default the install directory to it.
+    for cand in &mut candidates {
+        cand.install_root = resolve_install_root(path, &cand.manifest_install_dirs);
+    }
+    Ok(candidates)
 }
 
 fn ludusavi_path_or_err(_config: &State<'_, SharedConfig>) -> AppResult<PathBuf> {
@@ -900,6 +1225,99 @@ mod tests {
             "Hades 2"
         );
         assert_eq!(infer_name_from_exe(Path::new("")), "");
+        // All-caps exe names normalise to title case so fuzzy scores are good.
+        assert_eq!(infer_name_from_exe(Path::new("PRAGMATA.exe")), "Pragmata");
+        assert_eq!(infer_name_from_exe(Path::new("DOOM.exe")), "Doom");
+    }
+
+    #[test]
+    fn infer_queries_includes_exe_and_ancestor_folders() {
+        // Exe stem first, then the parent folder that carries the title.
+        let q = infer_queries_from_path(Path::new("D:/Games/Hollow_Knight/start.exe"));
+        assert_eq!(q, vec!["Start".to_string(), "Hollow Knight".to_string()]);
+    }
+
+    #[test]
+    fn infer_queries_skips_structural_folders() {
+        // Unreal layout: the title is two folders above the exe, under
+        // Binaries/Win64 — both of which are skipped.
+        let q = infer_queries_from_path(Path::new(
+            "C:/Games/Elden Ring/Game/Binaries/Win64/eldenring-Win64-Shipping.exe",
+        ));
+        // "Game", "Binaries", "Win64" are all generic and skipped; "Elden
+        // Ring" survives. The exe stem is included too.
+        assert!(q.contains(&"Elden Ring".to_string()));
+        assert!(!q.contains(&"Win64".to_string()));
+        assert!(!q.contains(&"Binaries".to_string()));
+        assert!(!q.contains(&"Game".to_string()));
+    }
+
+    #[test]
+    fn infer_queries_dedups_when_exe_matches_folder() {
+        // hollow_knight.exe inside a Hollow Knight folder → one query.
+        let q = infer_queries_from_path(Path::new("D:/hollow_knight/hollow_knight.exe"));
+        assert_eq!(q, vec!["Hollow Knight".to_string()]);
+    }
+
+    #[test]
+    fn resolve_install_root_matches_outermost_ancestor() {
+        // The exe is buried under Binaries/Win64; the install root is the
+        // ancestor folder named like the manifest's installDir.
+        let root = resolve_install_root(
+            Path::new("C:/Games/EldenRing/Game/Binaries/Win64/start.exe"),
+            &["ELDEN RING".to_string()],
+        );
+        assert_eq!(root.as_deref(), Some("C:/Games/EldenRing"));
+    }
+
+    #[test]
+    fn resolve_install_root_none_without_match_or_dirs() {
+        // No install-dir names → None (caller keeps the exe's parent).
+        assert!(resolve_install_root(Path::new("C:/Games/Foo/foo.exe"), &[]).is_none());
+        // Install-dir name that no ancestor matches → None.
+        assert!(resolve_install_root(
+            Path::new("C:/Games/Foo/foo.exe"),
+            &["Totally Different".to_string()]
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn normalize_dir_ignores_case_and_punctuation() {
+        assert_eq!(normalize_dir("Elden Ring"), "eldenring");
+        assert_eq!(normalize_dir("ELDEN_RING"), "eldenring");
+        assert_eq!(normalize_dir("EldenRing"), "eldenring");
+    }
+
+    #[test]
+    fn sanitize_pe_string_strips_trademark_symbols() {
+        assert_eq!(sanitize_pe_string("ELDEN RING™"), "ELDEN RING");
+        assert_eq!(sanitize_pe_string("Half-Life® 2"), "Half-Life 2");
+        assert_eq!(sanitize_pe_string("Doom © 2023"), "Doom 2023");
+        // Multiple spaces collapsed.
+        assert_eq!(sanitize_pe_string("  Hades  "), "Hades");
+    }
+
+    #[test]
+    fn pe_name_normalised_to_title_case() {
+        // Simulates pick_name_from_version_info's sanitize → title_case pipeline.
+        assert_eq!(title_case(&sanitize_pe_string("PRAGMATA")), "Pragmata");
+        assert_eq!(title_case(&sanitize_pe_string("ELDEN RING™")), "Elden Ring");
+        assert_eq!(title_case(&sanitize_pe_string("DOOM")), "Doom");
+        // Already title-cased values pass through unchanged.
+        assert_eq!(title_case(&sanitize_pe_string("Hades")), "Hades");
+    }
+
+    #[test]
+    fn is_junk_product_name_matches_case_insensitively() {
+        assert!(is_junk_product_name("Unreal Engine"));
+        assert!(is_junk_product_name("UNITY"));
+        assert!(is_junk_product_name("unity technologies"));
+        assert!(is_junk_product_name("Easy Anti-Cheat"));
+        // Real game titles should not be filtered.
+        assert!(!is_junk_product_name("ELDEN RING"));
+        assert!(!is_junk_product_name("Hades"));
+        assert!(!is_junk_product_name("Hollow Knight"));
     }
 
     #[test]
@@ -1023,6 +1441,9 @@ mod tests {
         let c = enrich("Hades".to_string(), 0.95, Some(&entry));
         assert_eq!(c.steam_id, Some(1145360));
         assert_eq!(c.manifest_install_dir.as_deref(), Some("Hades"));
+        assert_eq!(c.manifest_install_dirs, vec!["Hades".to_string()]);
+        // install_root is only resolved by search_by_exe, which has the path.
+        assert!(c.install_root.is_none());
         assert_eq!(c.save_path.as_deref(), Some("%APPDATA%/Hades/save"));
     }
 }

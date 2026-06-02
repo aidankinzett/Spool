@@ -102,7 +102,9 @@ export function makeCandidate(over: Partial<SearchCandidate> = {}): SearchCandid
     steam_id: 367520,
     gog_id: null,
     lutris_slug: null,
-    manifest_install_dir: null,
+    manifest_install_dir: 'Hollow Knight',
+    manifest_install_dirs: ['Hollow Knight'],
+    install_root: null,
     ...over,
   };
 }

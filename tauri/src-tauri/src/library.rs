@@ -373,15 +373,16 @@ pub fn add_game(
         tracing::warn!(error = %e, "failed to emit library:changed after add_game");
     }
 
-    // Kick off an async cover-art fetch. Non-blocking — the user sees the
-    // new card immediately with the synthetic sleeve fallback, and the
-    // real cover lands a moment later via a second library:changed emit.
-    let app_for_task = app.clone();
-    let id_for_task = entry.id.clone();
+    // Kick off cover-art + hero banner fetches. Non-blocking — the user sees
+    // the new card immediately and both images land a moment later via a single
+    // library:changed emit. One sgdb game-id lookup feeds both downloads.
+    let app_for_art = app.clone();
+    let id_for_art = entry.id.clone();
     tauri::async_runtime::spawn(async move {
-        if let Err(e) = crate::steamgriddb::fetch_and_save_cover(&app_for_task, &id_for_task).await
+        if let Err(e) =
+            crate::steamgriddb::fetch_and_save_cover_and_hero(&app_for_art, &id_for_art).await
         {
-            tracing::warn!(game_id = %id_for_task, error = %e, "cover fetch failed");
+            tracing::warn!(game_id = %id_for_art, error = %e, "cover/hero fetch failed");
         }
     });
 
