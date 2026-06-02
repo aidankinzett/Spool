@@ -7,8 +7,8 @@
 //! is saved atomically and `library:changed` is emitted so any open
 //! window can refresh.
 //!
-//! v1 only fetches the portrait cover (600×900). Hero / wide grid / logo
-//! will land alongside the "Add to Steam" slice that needs them all.
+//! Fetches both the portrait cover (600×900) and the hero banner (1920×620)
+//! at add-time. Wide grid / logo are only fetched by the "Add to Steam" flow.
 
 use crate::config::SharedConfig;
 use crate::error::{AppError, AppResult};
@@ -255,6 +255,70 @@ fn rgb_to_hsl(r: u8, g: u8, b: u8) -> (f32, f32, f32) {
     (h, s, l)
 }
 
+/// Fetches the hero banner (1920×620 landscape) for `game_entry_id`, saves it
+/// to `%LOCALAPPDATA%\Spool\heroes\<safe_name>.<ext>`, updates
+/// `GameEntry.hero_image_path`, and emits `library:changed`. Mirrors
+/// `fetch_and_save_cover` but uses the `/heroes` SteamGridDB endpoint.
+///
+/// Returns the saved path, or None if the game has no hero art or SteamGridDB
+/// is disabled.
+pub async fn fetch_and_save_hero(
+    app: &AppHandle,
+    game_entry_id: &str,
+) -> AppResult<Option<String>> {
+    let config = app.state::<SharedConfig>();
+    let library = app.state::<SharedLibrary>();
+    let client = app.state::<SteamGridDbClient>();
+
+    let (api_key, enabled) = {
+        let cfg = config.lock().map_err(|_| AppError::LockPoisoned)?;
+        (cfg.data.steamgriddb_api_key.clone(), cfg.data.steamgriddb_enabled)
+    };
+    if !enabled || api_key.is_empty() {
+        return Ok(None);
+    }
+
+    let (name, safe_name, steam_id) = {
+        let lib = library.lock().map_err(|_| AppError::LockPoisoned)?;
+        let entry = lib
+            .find(game_entry_id)
+            .ok_or_else(|| AppError::Other(format!("game not found: {game_entry_id}")))?;
+        (entry.game_name.clone(), entry.safe_name.clone(), entry.steam_id)
+    };
+
+    let Some(sgdb_id) = resolve_game_id(&client.http, &api_key, steam_id, &name).await? else {
+        return Ok(None);
+    };
+
+    let Some(asset) = fetch_first_art(&client.http, &api_key, sgdb_id, "hero").await? else {
+        return Ok(None);
+    };
+
+    let ext = mime_to_ext(&asset.mime).unwrap_or_else(|| url_ext(&asset.url).unwrap_or("png"));
+    let dir = paths::heroes_dir();
+    std::fs::create_dir_all(&dir)?;
+    let path = dir.join(format!("{safe_name}.{ext}"));
+    let bytes = download_bytes(&client.http, &asset.url).await?;
+    std::fs::write(&path, &bytes)?;
+    let path_str = path.to_string_lossy().to_string();
+
+    {
+        let mut lib = library.lock().map_err(|_| AppError::LockPoisoned)?;
+        if let Some(entry) = lib.entries.iter_mut().find(|e| e.id == game_entry_id) {
+            entry.hero_image_path = Some(path_str.clone());
+        } else {
+            tracing::warn!(game_entry_id, "hero downloaded but library entry gone; skipping update");
+        }
+        lib.save()?;
+    }
+
+    if let Err(e) = app.emit("library:changed", &game_entry_id.to_string()) {
+        tracing::warn!(error = %e, "failed to emit library:changed after hero download");
+    }
+
+    Ok(Some(path_str))
+}
+
 // ── Multi-art bundle for Add-to-Steam ───────────────────────────────────────
 
 /// Fetches hero / wide-grid / logo / icon from SteamGridDB and writes them
@@ -439,6 +503,12 @@ struct Asset {
 #[tauri::command]
 pub async fn fetch_cover(app: AppHandle, game_id: String) -> AppResult<Option<String>> {
     fetch_and_save_cover(&app, &game_id).await
+}
+
+/// Manual hero refresh for an existing game (re-runs lookup + download).
+#[tauri::command]
+pub async fn fetch_hero(app: AppHandle, game_id: String) -> AppResult<Option<String>> {
+    fetch_and_save_hero(&app, &game_id).await
 }
 
 // ── Internals ───────────────────────────────────────────────────────────────

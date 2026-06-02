@@ -30,7 +30,7 @@
   } from '@lucide/svelte';
   import { onMount } from 'svelte';
   import { openView } from '$lib/nav';
-  import { api } from '$lib/api';
+  import { api, assetUrl } from '$lib/api';
   import { toasts } from '$lib/toasts.svelte';
   import type { GameEntry, RunPhase, SaveRevision, StreamingHostInfo } from '$lib/types';
   import {
@@ -320,30 +320,44 @@
     class="relative h-[280px] overflow-hidden border-b border-line-1"
     style:background="linear-gradient(135deg, color-mix(in srgb, {accentHex} 22%, var(--color-bg-1)) 0%, var(--color-bg-0) 100%)"
   >
-    <!-- tape strip across top -->
+    <!-- Hero image (when available) — full-bleed, fades into bg at bottom -->
+    {#if assetUrl(game.hero_image_path)}
+      <img
+        src={assetUrl(game.hero_image_path)!}
+        alt=""
+        class="absolute inset-0 h-full w-full object-cover object-center"
+      />
+      <!-- Dark scrim so title and controls stay legible over any image -->
+      <div
+        class="pointer-events-none absolute inset-0"
+        style:background="linear-gradient(180deg, rgb(0 0 0 / 0.35) 0%, rgb(0 0 0 / 0.55) 100%)"
+      ></div>
+    {:else}
+      <!-- Fallback: accent-driven decorative circles when no hero art -->
+      <div
+        class="absolute right-[-120px] top-[-80px] h-[420px] w-[420px] rounded-full border"
+        style:border-color="color-mix(in srgb, {accentHex} 13%, transparent)"
+        style:background="radial-gradient(circle at 35% 35%, color-mix(in srgb, {accentHex} 20%, transparent), transparent 55%)"
+      ></div>
+      <div
+        class="absolute right-[-40px] top-[30px] h-[260px] w-[260px] rounded-full border border-dashed"
+        style:border-color="color-mix(in srgb, {accentHex} 20%, transparent)"
+      ></div>
+      <!-- subtle film grain -->
+      <div
+        class="pointer-events-none absolute inset-0 opacity-40 mix-blend-overlay"
+        style:background-image="radial-gradient(rgb(255 255 255 / 0.05) 1px, transparent 1px)"
+        style:background-size="3px 3px"
+      ></div>
+    {/if}
+
+    <!-- tape strip across top (always visible) -->
     <div
       class="absolute inset-x-0 top-0 h-1"
       style:background="linear-gradient(90deg, {accentHex} 0%, color-mix(in srgb, {accentHex} 60%, transparent) 50%, {accentHex} 100%)"
     ></div>
-    <!-- tape-reel halos -->
-    <div
-      class="absolute right-[-120px] top-[-80px] h-[420px] w-[420px] rounded-full border"
-      style:border-color="color-mix(in srgb, {accentHex} 13%, transparent)"
-      style:background="radial-gradient(circle at 35% 35%, color-mix(in srgb, {accentHex} 20%, transparent), transparent 55%)"
-    ></div>
-    <div
-      class="absolute right-[-40px] top-[30px] h-[260px] w-[260px] rounded-full border border-dashed"
-      style:border-color="color-mix(in srgb, {accentHex} 20%, transparent)"
-    ></div>
 
-    <!-- subtle film grain -->
-    <div
-      class="pointer-events-none absolute inset-0 opacity-40 mix-blend-overlay"
-      style:background-image="radial-gradient(rgb(255 255 255 / 0.05) 1px, transparent 1px)"
-      style:background-size="3px 3px"
-    ></div>
-
-    <!-- bottom fade to bg-0 -->
+    <!-- bottom fade to bg-0 (always — blends image or gradient into the body) -->
     <div
       class="pointer-events-none absolute inset-0"
       style:background="linear-gradient(180deg, transparent 40%, var(--color-bg-0) 100%)"

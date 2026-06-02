@@ -288,6 +288,7 @@ pub fn run() {
             ludusavi::set_cloud_webdav,
             // steamgriddb
             steamgriddb::fetch_cover,
+            steamgriddb::fetch_hero,
             metadata::fetch_metadata,
             // steam shortcut
             steam::add_spool_to_steam,

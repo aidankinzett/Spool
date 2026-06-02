@@ -78,6 +78,7 @@ export const api = {
 
   // SteamGridDB
   fetchCover: (gameId: string): Promise<string | null> => invoke('fetch_cover', { gameId }),
+  fetchHero: (gameId: string): Promise<string | null> => invoke('fetch_hero', { gameId }),
 
   // Steam Store metadata (description, developer, publisher, genres, release
   // date). Resolves true when any empty field was populated.
