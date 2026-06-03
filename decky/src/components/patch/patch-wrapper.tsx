@@ -25,6 +25,7 @@ export function PatchWrapper() {
     <div style={{ display: "flex", flexDirection: "row", gap: "0.25rem", padding: "0.5rem 2.8vw" }}>
       <BadgeShell>
         <SpoolMark size={16} />
+        Spool
       </BadgeShell>
       <SpoolLastPlayedBadge game={game} />
       <SpoolPlaytimeBadge game={game} />
