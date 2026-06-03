@@ -59,8 +59,7 @@ SteamOS-specific).
 SteamOS does **not** ship `umu-run` by default, and the usual package-manager
 route doesn't apply: the system partition is **read-only**, `pacman`/AUR aren't
 available, and anything written into the system image is wiped on the next
-SteamOS update. `sudo steamos-readonly disable` followed by `pacman` is not
-recommended for this reason.
+SteamOS update.
 
 Instead, build umu into your **home directory**, which is writable and survives
 system updates. Do this from **Desktop Mode**:
