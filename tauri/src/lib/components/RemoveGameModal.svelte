@@ -22,6 +22,7 @@
   import { shadeHex } from '$lib/tokens';
   import SpoolMark from '$lib/components/SpoolMark.svelte';
   import CatalogId from '$lib/components/CatalogId.svelte';
+  import { gamepadScope } from '$lib/gamepad';
 
   const BRAND_SPOOL = '#d7c9a0';
 
@@ -147,6 +148,7 @@
   <button
     type="button"
     onclick={() => pick(card.key)}
+    data-gp-autofocus={active ? '' : undefined}
     onmouseenter={() => (hover[`card-${card.key}`] = true)}
     onmouseleave={() => (hover[`card-${card.key}`] = false)}
     disabled={card.disabled || locked}
@@ -230,6 +232,8 @@
     role="dialog"
     aria-modal="true"
     aria-labelledby="rg-modal-title"
+    use:gamepadScope={{ onBack: () => { if (!locked) onClose(); } }}
+    style:--gp-focus={acc}
     style:width="540px"
     style:max-width="calc(100vw - 48px)"
     style:background="var(--color-bg-0)"

@@ -20,6 +20,7 @@
   import { fmtCatalog } from '$lib/format';
   import { toasts } from '$lib/toasts.svelte';
   import { confirmDialog } from '$lib/confirm.svelte';
+  import { gamepadScope } from '$lib/gamepad';
   import type { GameEntry } from '$lib/types';
 
   let {
@@ -325,9 +326,11 @@
 <div
   bind:this={menuEl}
   role="menu"
+  use:gamepadScope={{ onBack: onclose }}
   class="fixed z-50 w-[260px] overflow-hidden rounded-md border border-line-2 bg-bg-1 py-1.5 text-ink-0"
   style:left="{pos.x}px"
   style:top="{pos.y}px"
+  style:--gp-focus={accent}
   style:box-shadow="0 18px 48px rgb(0 0 0 / 0.6)"
 >
   <!-- Header: cover + name + catalog -->

@@ -16,6 +16,7 @@
   import Btn from '$lib/components/Btn.svelte';
   import SpoolMark from '$lib/components/SpoolMark.svelte';
   import CatalogId from '$lib/components/CatalogId.svelte';
+  import { gamepadScope } from '$lib/gamepad';
 
   const BRAND_SPOOL = '#d7c9a0';
 
@@ -76,6 +77,8 @@
     role="dialog"
     aria-modal="true"
     aria-labelledby="sl-modal-title"
+    use:gamepadScope={{ onBack: () => { if (!confirming) onCancel(); } }}
+    style:--gp-focus={acc}
     style:width="560px"
     style:max-width="calc(100vw - 48px)"
     style:background="var(--color-bg-0)"

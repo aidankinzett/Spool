@@ -42,6 +42,7 @@
   import Pill from '$lib/components/Pill.svelte';
   import MonoLabel from '$lib/components/MonoLabel.svelte';
   import SpoolMark from '$lib/components/SpoolMark.svelte';
+  import { gamepadScope } from '$lib/gamepad';
 
   const ACCENT = '#d7c9a0'; // brand spool — onboarding has no per-game cover
 
@@ -269,6 +270,8 @@
     role="dialog"
     aria-modal="true"
     aria-label="Set up Spool"
+    use:gamepadScope={{ onBack: back }}
+    style:--gp-focus={ACCENT}
     style:width="560px"
     style:max-width="calc(100vw - 48px)"
     style:height="548px"
