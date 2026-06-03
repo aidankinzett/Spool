@@ -119,7 +119,7 @@
     const win = getCurrentWindow();
     if (win.label !== 'main') {
       if (uiMode.resolved === 'touch') {
-        toasts.show({ kind: 'ok', label: 'DISPLAY', title: 'Touch mode on', sub: 'Switched the library to touch layout.' });
+        toasts.show({ kind: 'ok', label: 'DISPLAY', title: 'Gamepad mode on', sub: 'Switched the library to the gamepad layout.' });
         await win.close();
       }
     } else if (uiMode.resolved === 'desktop') {
@@ -389,12 +389,12 @@
           {#if activeGroup === 'general'}
             <div class="flex flex-col gap-4">
 
-              <!-- Display & touch -->
-              <SettingsCard title="Display & touch" helper="Auto-detects a touchscreen and grows targets for handhelds. Override it for a Deck or Ally docked to a monitor.">
+              <!-- Display & input -->
+              <SettingsCard title="Display" helper="Auto-detects a touchscreen or handheld. Gamepad mode grows targets and turns on controller navigation — good for a Deck, Ally, or a PC on the TV.">
                 {#snippet icon()}<MonitorSmartphone size={14} />{/snippet}
                 <SettingsRow
-                  label="Touch mode"
-                  helper={`Larger buttons, taller rows, tap-friendly spacing. Currently rendering: ${uiMode.resolved}.`}
+                  label="Layout"
+                  helper={`Gamepad mode: bigger targets, controller navigation, couch-friendly spacing. Currently rendering: ${uiMode.resolved === 'touch' ? 'Gamepad' : 'Desktop'}.`}
                 >
                   {#snippet extras()}
                     <Segmented
@@ -403,7 +403,7 @@
                       options={[
                         { value: 'auto', label: 'Auto' },
                         { value: 'desktop', label: 'Desktop' },
-                        { value: 'touch', label: 'Touch' },
+                        { value: 'touch', label: 'Gamepad' },
                       ]}
                     />
                   {/snippet}
