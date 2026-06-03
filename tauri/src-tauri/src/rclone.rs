@@ -1427,14 +1427,11 @@ pub async fn connect_cloud_oauth(
     };
     if let Some((rclone_args, base)) = cloud_snapshot {
         let ludusavi_remote_path = format!("{}/ludusavi-backup", base);
-        let rclone_val = crate::paths::resolve_rclone_path()
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_default();
         crate::ludusavi_config::set_cloud(
             Some(&provider),
             Some(remote_name),
             Some(&ludusavi_remote_path),
-            Some(&rclone_val),
+            None, // rclone path stays as "rclone"; resolved via PATH at run_api spawn time
             Some(&rclone_args),
         )
         .map_err(|e| AppError::Other(format!("failed to write cloud config: {e}")))?;

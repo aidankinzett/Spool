@@ -380,16 +380,11 @@ fn restamp_rclone(app: &AppHandle) {
         .ok()
         .map(|g| g.data.cloud.rclone_args.clone())
         .unwrap_or_default();
-    if let Some(rclone) = paths::resolve_rclone_path() {
-        if let Err(e) = ludusavi_config::set_cloud(
-            None,
-            None,
-            None,
-            Some(&rclone.to_string_lossy()),
-            Some(&rclone_args),
-        ) {
-            tracing::warn!(error = %e, "failed to re-stamp rclone path/args");
-        }
+    // Only sync the user's rclone_args into ludusavi's config — not the binary
+    // path. The path is always "rclone" (set by ensure_config) and resolved via
+    // PATH injection in run_api, so each process uses its own bundled binary.
+    if let Err(e) = ludusavi_config::set_cloud(None, None, None, None, Some(&rclone_args)) {
+        tracing::warn!(error = %e, "failed to re-stamp rclone args");
     }
 }
 
