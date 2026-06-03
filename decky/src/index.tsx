@@ -126,6 +126,29 @@ export default definePlugin(() => {
             x.props.className.includes(gameStatsClasses.GameStatsSection),
         );
         console.log("[spool] renderFunc ran. section?", !!section, "anyGameStat?", !!anyGameStat, "playtimeStat?", !!stat);
+
+        // DEV ONLY — dump function-component children so we can find which one
+        // to drill into (the play bar / stats render inside a nested component).
+        if (!stat) {
+          const fcs: Array<{ name: string; props: string[] }> = [];
+          const walk = (node: any, depth: number) => {
+            if (!node || depth > 8) return;
+            if (Array.isArray(node)) {
+              node.forEach((n) => walk(n, depth));
+              return;
+            }
+            if (typeof node !== "object") return;
+            if (typeof node.type === "function") {
+              fcs.push({
+                name: node.type.displayName || node.type.name || "anon",
+                props: Object.keys(node.props ?? {}),
+              });
+            }
+            walk(node?.props?.children, depth + 1);
+          };
+          walk(ret, 0);
+          console.log("[spool] fc children in ret:", fcs);
+        }
         if (!stat) return ret;
 
         // The {label, children} value field lives inside that block; swap its
