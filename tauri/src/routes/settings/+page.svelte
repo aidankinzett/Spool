@@ -740,6 +740,14 @@
                                 {#if dep.install_hint}
                                   <code class="rounded-[3px] bg-black/30 px-2 py-1 font-mono text-[10.5px] text-ink-2 select-all">{dep.install_hint}</code>
                                 {/if}
+                                {#if dep.install_docs_url}
+                                  <a
+                                    href={dep.install_docs_url}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    class="text-[11px] text-info hover:underline"
+                                  >Install instructions →</a>
+                                {/if}
                               </div>
                             {/if}
                           </div>

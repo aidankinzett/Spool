@@ -377,6 +377,8 @@ export type DepStatus = {
   source: DepSource;
   /** Copy-paste install command for the detected distro, or "" if found. */
   install_hint: string;
+  /** Link to full install docs, or "" if there's nothing more to link to. */
+  install_docs_url: string;
 };
 
 export type NewGame = {

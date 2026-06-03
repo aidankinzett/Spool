@@ -41,9 +41,11 @@ launch your library from Game Mode without dropping to the desktop, install the
 :::note[Running Windows games on Linux]
 The Linux build launches Windows `.exe` games through **Proton** using
 [umu-launcher](https://github.com/Open-Wine-Components/umu-launcher) (`umu-run`).
-It's the one dependency Spool doesn't bundle — install it from your distro's
-package manager. Settings → Compatibility checks whether it's present and gives
-per-distro install hints.
+It's the one dependency Spool doesn't bundle. On **Bazzite** it's already
+installed; on most other distros it's a one-line package install; on **SteamOS /
+Steam Deck** it needs a home-directory build because the root is read-only. See
+[Installing umu-launcher](/guides/installing-umu/) for per-distro steps.
+Settings → Compatibility also checks whether it's present and links the guide.
 :::
 
 ## How Spool runs

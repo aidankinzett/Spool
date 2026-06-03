@@ -118,9 +118,9 @@ export const SAMPLE_CANDIDATES: SearchCandidate[] = [
 
 /** A reachable, fully-found dependency-doctor result (Linux settings). */
 export const SAMPLE_DEPS: DepStatus[] = [
-  { name: 'umu-run', found: true, path: '/usr/bin/umu-run', source: 'system', install_hint: '' },
-  { name: 'ludusavi', found: true, path: '/opt/spool/ludusavi', source: 'bundled', install_hint: '' },
-  { name: 'rclone', found: true, path: '/opt/spool/rclone', source: 'bundled', install_hint: '' },
+  { name: 'umu-run', found: true, path: '/usr/bin/umu-run', source: 'system', install_hint: '', install_docs_url: '' },
+  { name: 'ludusavi', found: true, path: '/opt/spool/ludusavi', source: 'bundled', install_hint: '', install_docs_url: '' },
+  { name: 'rclone', found: true, path: '/opt/spool/rclone', source: 'bundled', install_hint: '', install_docs_url: '' },
 ];
 
 /** An in-flight LAN download. */
