@@ -112,13 +112,30 @@ Each step compiles, passes tests, and ships independently.
    absent (or empty) and `library.json` exists, load the JSON via the existing
    serde path and insert every entry. Keep `library.json` on disk untouched as
    a fallback/export for one or two releases (don't delete it — it's the
-   rollback path). Catalog-number backfill moves into the importer.
+   rollback path). The importer currently relies on `Library::load` having
+   already backfilled catalog numbers on the entries it's handed; that
+   backfill must move into the importer before the JSON loader is removed
+   (step 6), or imported rows would get `0`.
 
 3. **Switch reads.** Convert `list_games`, `find`, and the read-only call sites
    (LAN `PeerGame::from_entry`, plugin server `/library`, steam/launcher
    shortcut builders, diagnostics) to query the DB. The plugin server's
    "reload from disk every request" becomes "just query" — same freshness,
    less code.
+
+   **Wire the pool into the headless entry points here.** Today
+   `Db::init` only runs in the GUI/attached-`--run` processes; the
+   `--backup` / `--release-lock` / `--headless-server` subcommands
+   `std::process::exit()` in `lib.rs` *before* the pool is created
+   (`headless.rs`, `plugin_server.rs` still go through `Library::load()` /
+   per-request JSON reload). That means the three-live-processes contention
+   case the migration exists for is **not actually exercised against the db
+   until this step opens a pool in those entry points.** Don't skip it.
+
+   This is also where the db becomes load-bearing, so add the
+   migration/connect resilience deferred from step 1: a small retry around
+   `Db::init` (a few attempts, short backoff) so a transient `SQLITE_BUSY`
+   while another process is mid-migration doesn't leave a process with no db.
 
 4. **Switch writes to targeted methods.** Convert `add_game`/`update_game`/
    `remove_game`/`delete_game_core` to `upsert`/`delete`, and the runner +

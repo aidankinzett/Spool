@@ -176,8 +176,20 @@ impl Db {
     /// and `entries` is non-empty, insert every entry inside one transaction and
     /// return the count. A populated table is left untouched (returns 0), so this
     /// is safe to call on every startup — it only does work the first launch
-    /// after the db is introduced. `INSERT OR REPLACE` keyed on `id` makes a
-    /// concurrent double-import (two processes racing on first launch) idempotent.
+    /// after the db is introduced.
+    ///
+    /// The empty-table guard is a best-effort "skip the redundant work" check,
+    /// not a cross-process mutex: two processes racing on first launch could both
+    /// observe an empty table and both run the insert set. That's *outcome*-safe
+    /// rather than mutually exclusive — every entry carries a stable `id` and
+    /// `INSERT OR REPLACE` keyed on it converges to the same row set regardless of
+    /// who writes last (WAL serialises the writers, so no corruption). The second
+    /// importer just does wasted work.
+    ///
+    /// `entries` is expected to already have catalog numbers assigned — today the
+    /// caller gets them from `Library::load`, which backfills legacy entries
+    /// before this runs. When the JSON loader is removed (plan step 6) the
+    /// importer must own that backfill, or imported rows would get `0`.
     pub async fn import_if_empty(&self, entries: &[GameEntry]) -> AppResult<usize> {
         if entries.is_empty() || self.count_games().await? > 0 {
             return Ok(0);
