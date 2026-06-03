@@ -8,6 +8,7 @@ import { SpoolBackupBadge } from "./backup-badge";
 import { SpoolMark } from "../spool-mark";
 import { BadgeShell } from "./badge-shell";
 import { SpoolLastPlayedBadge } from "./last-played-badge";
+import { BadgeMenuButton } from "./badge-menu";
 
 // Badge wrapper injected into the game detail page's InnerContainer via
 // afterPatch. Uses useParams to read appid from Steam's internal router —
@@ -47,6 +48,11 @@ export function PatchWrapper() {
       {game && <SpoolLastPlayedBadge game={game} />}
       {game && <SpoolPlaytimeBadge game={game} />}
       <SpoolBackupBadge game={game} backingUp={backingUp} />
+      {game && (
+        <div style={{ marginLeft: "auto", display: "flex", alignItems: "center" }}>
+          <BadgeMenuButton game={game} />
+        </div>
+      )}
     </div>
   );
 }
