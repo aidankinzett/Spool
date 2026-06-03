@@ -71,6 +71,17 @@
   const selectedGame = $derived(lib.selectedGame);
   const accent = $derived(selectedGame?.accent_color ?? null);
 
+  // Default-select the first visible tile once the shelf loads, so there's an
+  // immediate highlight (and the banner is populated) before the first input —
+  // matters most for controller use, where focus lands on a tile at mount.
+  // Only fills an empty selection; never overrides an existing one, and re-runs
+  // if the category change leaves nothing selected.
+  $effect(() => {
+    if (lib.loaded && !lib.selectedId && shelfGames.length > 0) {
+      lib.selectedId = shelfGames[0].id;
+    }
+  });
+
   // Gamepad/keyboard nav selects the focused tile so the banner previews it
   // live. Gated on modality so a touch tap (which also focuses the button) keeps
   // the two-tap behaviour below instead of selecting + opening in one go.
