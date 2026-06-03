@@ -48,11 +48,15 @@ automatically when done.
 ### Decky plugin for Game Mode
 
 A companion [Decky Loader](https://github.com/SteamDeckHomebrew/decky-loader)
-plugin brings Spool into SteamOS Game Mode, so you don't have to drop to Desktop
-Mode. From the Quick Access menu you can browse and launch your library, start LAN
-transfers, and see cross-device playtime on Steam's own game pages. It also backs up
-your saves if Steam force-closes Spool when you quit a game, so a session is never
-lost. Install it in one click from Spool's settings.
+plugin lets you manage your Spool games directly in SteamOS Game Mode, so you
+don't have to drop to Desktop Mode. From the Quick Access menu you add any Spool
+game to Steam with a tap — from then on each game's Spool details live right on
+its own Steam game page: cross-device playtime, last played, and the save-backup
+and cloud-sync status, plus a menu to back up now, install Windows dependencies
+(Proton), or delete the game. You can also browse and install games shared by
+other Spool devices on your LAN. And it backs up your saves if Steam force-closes
+Spool when you quit a game, so a session is never lost. Install it in one click
+from Spool's settings.
 
 <img width="1029" height="580" alt="Screenshot 2026-06-02 at 10 04 32 PM" src="https://github.com/user-attachments/assets/e1a1ade7-6c59-4521-a11d-5cb2243535ec" />
 
