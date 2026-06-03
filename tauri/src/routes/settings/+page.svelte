@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, tick } from 'svelte';
   import {
     Check,
     Cloud,
@@ -38,11 +38,12 @@
   import ButtonLegend from '$lib/components/ButtonLegend.svelte';
   import type { GpButton } from '$lib/components/GamepadButton.svelte';
   import { uiMode } from '$lib/uiMode.svelte';
-  import { gamepadScope } from '$lib/gamepad';
+  import { gamepadScope, inputMode } from '$lib/gamepad';
 
   let config = $state<ConfigData | null>(null);
   let error = $state<string | null>(null);
   let activeGroup = $state('general');
+  let navEl = $state<HTMLElement>();
   let peers = $state<LanPeer[]>([]);
   let appVersion = $state<string | null>(null);
   let syncStatus = $state<SyncStatus | null>(null);
@@ -68,6 +69,14 @@
     const setup = async () => {
       try {
         config = await api.getConfig();
+        // Land controller/keyboard focus on the active settings group once the
+        // sidebar is in the DOM. The nav scope's initial autofocus runs before
+        // config loads (only the chrome Back button exists then), so it would
+        // otherwise settle on Back. Mouse users are left undisturbed.
+        await tick();
+        if (inputMode() === 'gamepad' || inputMode() === 'keyboard') {
+          navEl?.querySelector<HTMLElement>('[data-gp-autofocus]')?.focus();
+        }
         peers = await api.listLanPeers();
         appVersion = await getVersion();
         syncStatus = await api.currentSyncStatus();
@@ -313,7 +322,7 @@
     <div class="flex flex-1 min-h-0" style="display:grid; grid-template-columns: 264px 1fr">
 
       <!-- ── Sidebar ── -->
-      <nav class="overflow-y-auto border-r border-line-1 bg-bg-1 flex flex-col" style="padding: 16px 12px">
+      <nav bind:this={navEl} class="overflow-y-auto border-r border-line-1 bg-bg-1 flex flex-col" style="padding: 16px 12px">
         <div class="flex flex-col gap-[3px]">
           {#each NAV_GROUPS as group (group.id)}
             {@const isActive = activeGroup === group.id}
