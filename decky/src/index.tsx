@@ -38,8 +38,7 @@ export default definePlugin(() => {
 
   // Patch the Steam game-detail page to inject Spool's cross-device playtime
   // badge. Uses afterPatch + findInReactTree to splice into the InnerContainer
-  // of the rendered tree — same approach as OMGDuke/protondb-decky. Wrapping
-  // props.children doesn't work because the game detail component ignores it.
+  // of the rendered tree.
   const playtimePatch = routerHook.addPatch(
     "/library/app/:appid",
     (tree: any) => {
@@ -57,12 +56,12 @@ export default definePlugin(() => {
             ret,
             (x: any) =>
               Array.isArray(x?.props?.children) &&
-              x?.props?.className?.includes(appDetailsClasses.InnerContainer),
+              x?.props?.className?.includes(appDetailsClasses.Header),
           );
 
           if (typeof container !== "object") return ret;
           container.props.children.splice(1, 0, createElement(PatchWrapper, null));
-          
+
           return ret;
         },
       );
