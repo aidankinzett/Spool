@@ -12,6 +12,7 @@
   import type { RawConflictDetails } from '$lib/types';
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
+  import { listen, emit } from '@tauri-apps/api/event';
 
   const lib = createLibrary();
 
@@ -28,6 +29,66 @@
     } catch (e) {
       console.error('[library] onboarding check failed:', e);
     }
+  });
+
+  // Offer to switch to the Gamepad layout when a controller is present and the
+  // user is on Auto that resolved to Desktop (e.g. a PC on the TV — no
+  // touchscreen to auto-detect). Only nudges Auto users (an explicit Desktop
+  // choice is respected) and only once per session. The pad is read via the
+  // Rust bridge, since the webview Gamepad API is empty on Linux.
+  let gamepadPrompted = false;
+
+  async function switchToGamepad() {
+    try {
+      const cfg = await api.getConfig();
+      cfg.ui_mode = 'touch';
+      await api.updateConfig(cfg);
+      await emit('config:ui-mode-changed');
+    } catch (e) {
+      console.error('[library] switch to gamepad layout failed:', e);
+    }
+  }
+
+  function maybePromptGamepad() {
+    if (gamepadPrompted) return;
+    if (uiMode.setting !== 'auto' || uiMode.resolved !== 'desktop') return;
+    gamepadPrompted = true;
+    const id = toasts.show({
+      kind: 'info',
+      label: 'CONTROLLER',
+      title: 'Controller detected',
+      sub: 'Switch to the Gamepad layout for bigger targets and controller navigation.',
+      duration: 12000,
+      cta: {
+        label: 'Switch',
+        onClick: () => {
+          toasts.dismiss(id);
+          void switchToGamepad();
+        },
+      },
+    });
+  }
+
+  onMount(() => {
+    // A pad already plugged in at boot (the common TV-PC case) is reported by
+    // the bridge's startup enumeration, not as an event — so query once.
+    api.anyGamepadConnected()
+      .then((present) => {
+        if (present) maybePromptGamepad();
+      })
+      .catch((e) => console.error('[library] gamepad presence check failed:', e));
+
+    // …and catch hotplugs while the app is running.
+    let unlisten: (() => void) | undefined;
+    listen<{ kind: string }>('gamepad:input', (e) => {
+      if (e.payload.kind === 'connected') maybePromptGamepad();
+    })
+      .then((fn) => {
+        unlisten = fn;
+      })
+      .catch((e) => console.error('[library] gamepad listen failed:', e));
+
+    return () => unlisten?.();
   });
 
   $effect(() => {

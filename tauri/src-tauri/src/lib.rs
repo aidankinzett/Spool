@@ -264,6 +264,7 @@ pub fn run() {
         .manage::<LanServerShutdown>(LanServerShutdown::default())
         .manage::<SyncStatusState>(SyncStatusState::default())
         .manage::<rclone::OAuthState>(rclone::OAuthState::default())
+        .manage::<gamepad::GamepadPresence>(gamepad::GamepadPresence::default())
         .invoke_handler(tauri::generate_handler![
             take_pending_run,
             notify_splash_ready,
@@ -327,6 +328,8 @@ pub fn run() {
             decky_install::install_decky_plugin,
             // open a path with the OS default handler (AppImage-safe)
             system_open::open_path,
+            // gamepad presence (drives the "switch to Gamepad layout?" prompt)
+            gamepad::any_gamepad_connected,
         ])
         .setup(move |app| {
             if attached {

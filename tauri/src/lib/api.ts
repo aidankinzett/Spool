@@ -54,6 +54,9 @@ export const api = {
   appPlatform: (): Promise<string> => invoke('app_platform'),
   checkDependencies: (): Promise<DepStatus[]> => invoke('check_dependencies'),
 
+  // Gamepad presence — drives the "switch to Gamepad layout?" prompt.
+  anyGamepadConnected: (): Promise<boolean> => invoke('any_gamepad_connected'),
+
   // Decky plugin installer (SteamOS / Linux)
   deckyPluginStatus: (): Promise<DeckyPluginInfo> => invoke('decky_plugin_status'),
   installDeckyPlugin: (): Promise<void> => invoke('install_decky_plugin'),

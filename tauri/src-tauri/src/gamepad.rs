@@ -13,8 +13,45 @@
 //! and owned inside a dedicated OS thread rather than moved across one.
 
 use serde::Serialize;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
+
+/// Live count of connected gamepads, maintained by the bridge thread. The
+/// frontend queries this (via [`any_gamepad_connected`]) to offer switching to
+/// the Gamepad layout. A query is needed in addition to the `gamepad:input`
+/// `connected` events because gilrs reports pads present at startup through its
+/// initial enumeration, not as Connected events — so a controller already
+/// plugged in at boot (the TV/couch-PC case) never fires an event.
+#[derive(Clone, Default)]
+pub struct GamepadPresence {
+    count: Arc<AtomicUsize>,
+}
+
+impl GamepadPresence {
+    fn set(&self, n: usize) {
+        self.count.store(n, Ordering::Relaxed);
+    }
+    fn inc(&self) {
+        self.count.fetch_add(1, Ordering::Relaxed);
+    }
+    fn dec(&self) {
+        // Saturating — never wrap below zero on a spurious disconnect.
+        let _ = self
+            .count
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |c| Some(c.saturating_sub(1)));
+    }
+    fn any(&self) -> bool {
+        self.count.load(Ordering::Relaxed) > 0
+    }
+}
+
+/// Whether at least one gamepad is currently connected.
+#[tauri::command]
+pub fn any_gamepad_connected(presence: tauri::State<'_, GamepadPresence>) -> bool {
+    presence.any()
+}
 
 /// A single normalised input event sent to the frontend on `gamepad:input`.
 ///
@@ -48,6 +85,8 @@ pub fn spawn_bridge(app: AppHandle) {
 fn run(app: AppHandle) {
     use gilrs::{Event, EventType, Gilrs};
 
+    let presence = app.state::<GamepadPresence>().inner().clone();
+
     let mut gilrs = match Gilrs::new() {
         Ok(g) => g,
         Err(e) => {
@@ -58,6 +97,9 @@ fn run(app: AppHandle) {
     };
 
     let pads = gilrs.gamepads().count();
+    // Seed presence from the initial enumeration — pads already connected at
+    // startup don't arrive as Connected events.
+    presence.set(pads);
     tracing::info!(pads, "gamepad bridge started");
 
     // Sticks emit a stream of AxisChanged events; only forward when the axis is
@@ -112,20 +154,26 @@ fn run(app: AppHandle) {
                         None
                     }
                 }
-                EventType::Connected => Some(GamepadInput {
-                    kind: "connected",
-                    button: None,
-                    axis: None,
-                    value: 0.0,
-                    gamepad,
-                }),
-                EventType::Disconnected => Some(GamepadInput {
-                    kind: "disconnected",
-                    button: None,
-                    axis: None,
-                    value: 0.0,
-                    gamepad,
-                }),
+                EventType::Connected => {
+                    presence.inc();
+                    Some(GamepadInput {
+                        kind: "connected",
+                        button: None,
+                        axis: None,
+                        value: 0.0,
+                        gamepad,
+                    })
+                }
+                EventType::Disconnected => {
+                    presence.dec();
+                    Some(GamepadInput {
+                        kind: "disconnected",
+                        button: None,
+                        axis: None,
+                        value: 0.0,
+                        gamepad,
+                    })
+                }
                 _ => None,
             };
 
