@@ -15,9 +15,10 @@
   import { onMount } from 'svelte';
   import { open as openDialog } from '@tauri-apps/plugin-dialog';
   import { getCurrentWindow } from '@tauri-apps/api/window';
+  import { listen } from '@tauri-apps/api/event';
   import { Folder, HardDrive, Loader2, Package, FileWarning } from '@lucide/svelte';
   import { api } from '$lib/api';
-  import type { SearchCandidate, RepackInstallResult } from '$lib/types';
+  import type { SearchCandidate, RepackInstallResult, ProtonVersion } from '$lib/types';
   import AppChrome from '$lib/components/AppChrome.svelte';
   import MonoLabel from '$lib/components/MonoLabel.svelte';
   import Btn from '$lib/components/Btn.svelte';
@@ -32,9 +33,19 @@
   let gameName = $state('');
   let error = $state<string | null>(null);
 
+  // Proton version picker — loaded at mount, pre-selects first GE-Proton found.
+  let protonVersions = $state<ProtonVersion[]>([]);
+  let selectedProton = $state('');
+  let hasGeProton = $derived(
+    protonVersions.some((v) => v.name.toLowerCase().includes('ge-proton')),
+  );
+
   // Set once the installer finishes — carries the host install dir + the prefix
   // the game was installed into (forwarded to add_game).
   let install = $state<RepackInstallResult | null>(null);
+  // Populated early via the install:drive-ready event so the user sees the
+  // drive letter before the installer command returns.
+  let earlyDriveLetter = $state<string | null>(null);
 
   // Detect stage — mirrors the Add Game flow.
   let exePath = $state<string | null>(null);
@@ -66,9 +77,19 @@
     return `${c.name}::${c.steam_id ?? ''}::${c.gog_id ?? ''}::${c.manifest_install_dir ?? ''}`;
   }
 
-  // ── Mount: pick the installer immediately ──────────────────────────────
-  onMount(async () => {
-    await pickSetup(true);
+  // ── Mount: load Proton versions + pick the installer immediately ───────
+  onMount(() => {
+    let unlisten: (() => void) | null = null;
+    (async () => {
+      unlisten = await listen<string>('install:drive-ready', (e) => {
+        earlyDriveLetter = e.payload;
+      });
+      protonVersions = await api.listProtonVersions();
+      const ge = protonVersions.find((v) => v.name.toLowerCase().includes('ge-proton'));
+      if (ge) selectedProton = ge.path;
+      await pickSetup(true);
+    })();
+    return () => unlisten?.();
   });
 
   async function pickSetup(closeOnCancel = false) {
@@ -93,7 +114,7 @@
     error = null;
     stage = 'installing';
     try {
-      install = await api.runRepackInstaller(setupExe, gameName.trim());
+      install = await api.runRepackInstaller(setupExe, gameName.trim(), undefined, selectedProton || undefined);
       // Installer finished — pick the installed game exe.
       stage = 'detect';
       await pickGameExe();
@@ -148,6 +169,7 @@
         save_paths: picked.save_paths,
         game_folder_path: install.install_dir,
         wine_prefix_path: install.prefix_path,
+        proton_version_path: install.proton_path ?? undefined,
       });
       await getCurrentWindow().close();
     } catch (e) {
@@ -165,6 +187,7 @@
         save_paths: [],
         game_folder_path: install.install_dir,
         wine_prefix_path: install.prefix_path,
+        proton_version_path: install.proton_path ?? undefined,
       });
       await getCurrentWindow().close();
     } catch (e) {
@@ -232,6 +255,33 @@
           </p>
           <TextField bind:value={gameName} placeholder="e.g. Elden Ring" full />
         </div>
+
+        <!-- Proton version -->
+        <div class="rounded-md border border-line-1 bg-bg-1 px-3.5 py-3">
+          <MonoLabel size={10}>Proton version</MonoLabel>
+          <p class="m-0 mt-1 mb-2 text-[11.5px] leading-relaxed text-ink-3">
+            GE-Proton is recommended for repacks — it handles DLLs and codecs that stock Proton rejects.
+          </p>
+          <select
+            bind:value={selectedProton}
+            style="color-scheme: dark"
+            class="font-mono rounded-[4px] border border-line-1 bg-bg-2 px-2 py-1 text-[11.5px] text-ink-0"
+          >
+            <option value="">Auto (umu default)</option>
+            {#each protonVersions as p (p.path)}
+              <option value={p.path}>{p.name}</option>
+            {/each}
+          </select>
+        </div>
+
+        <!-- GE-Proton not found warning -->
+        {#if protonVersions.length > 0 && !hasGeProton}
+          <div class="rounded-sm border border-warn/40 bg-warn/10 px-3.5 py-2.5 text-[12px] text-warn">
+            <span class="font-semibold">GE-Proton not found.</span> It's recommended for repacks.
+            Install it via <span class="font-mono">ProtonUp-Qt</span>, or copy a GE-Proton build into
+            <span class="font-mono">~/.local/share/Steam/compatibilitytools.d/</span> and restart Spool.
+          </div>
+        {/if}
       {:else if stage === 'installing'}
         <div class="flex flex-1 flex-col items-center justify-center gap-4 py-8 text-center">
           <Loader2 size={40} class="animate-spin text-spool" />
@@ -242,7 +292,7 @@
             <p class="m-0 mt-2 max-w-[460px] text-[12.5px] leading-relaxed text-ink-2">
               When the installer asks where to install, choose the
               <span class="inline-flex items-center gap-1 font-mono font-semibold text-spool">
-                <HardDrive size={13} />{install?.drive_letter ?? 'mounted'}
+                <HardDrive size={13} />{install?.drive_letter ?? earlyDriveLetter ?? '…'}
               </span>
               drive. This step finishes when you close the installer.
             </p>

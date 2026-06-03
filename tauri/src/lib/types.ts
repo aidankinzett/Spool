@@ -375,6 +375,9 @@ export type NewGame = {
   /** Wine prefix ROOT override (Linux) — set by the guided repack installer so
    *  the game launches in the prefix it was installed into. */
   wine_prefix_path?: string | null;
+  /** Proton build dir used during install — pinned so launches use the same
+   *  version the prefix was created with. */
+  proton_version_path?: string | null;
 };
 
 /**
@@ -385,6 +388,7 @@ export type RepackInstallResult = {
   install_dir: string;
   prefix_path: string;
   drive_letter: string;
+  proton_path: string | null;
 };
 
 /**

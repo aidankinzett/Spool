@@ -17,7 +17,7 @@
 
 use crate::error::AppResult;
 use serde::Serialize;
-use tauri::AppHandle;
+use tauri::{AppHandle, Emitter};
 
 /// Result of a guided repack install, returned to the frontend. `prefix_path`
 /// is forwarded to `add_game` as `wine_prefix_path`; `drive_letter` is shown to
@@ -30,6 +30,10 @@ pub struct RepackInstallResult {
     pub prefix_path: String,
     /// Wine drive letter the install folder was mounted as, e.g. `"D:"`.
     pub drive_letter: String,
+    /// Proton build dir used for this install (absolute path). Saved onto the
+    /// game entry so launches use the same Proton version the prefix was built
+    /// with. `None` when umu-run used its own bundled default.
+    pub proton_path: Option<String>,
 }
 
 /// Runs a repack `setup.exe` through Proton/umu with a clean host folder
@@ -37,15 +41,19 @@ pub struct RepackInstallResult {
 ///
 /// `game_name` only seeds the default install folder name; the caller confirms
 /// the real game name later when adding to the library. `install_dir_override`
-/// lets the user pick a different install location.
+/// lets the user pick a different install location. `proton_version_override`
+/// pins a specific Proton build for the installer (path to a Proton dir);
+/// when absent the backend prefers any installed GE-Proton, then the global
+/// config default, then umu-run's own bundled default.
 #[tauri::command]
 pub async fn run_repack_installer(
     app: AppHandle,
     setup_exe: String,
     game_name: String,
     install_dir_override: Option<String>,
+    proton_version_override: Option<String>,
 ) -> AppResult<RepackInstallResult> {
-    run_impl(app, setup_exe, game_name, install_dir_override).await
+    run_impl(app, setup_exe, game_name, install_dir_override, proton_version_override).await
 }
 
 #[cfg(target_os = "linux")]
@@ -54,6 +62,7 @@ async fn run_impl(
     setup_exe: String,
     game_name: String,
     install_dir_override: Option<String>,
+    proton_version_override: Option<String>,
 ) -> AppResult<RepackInstallResult> {
     use crate::config::SharedConfig;
     use crate::error::AppError;
@@ -80,7 +89,19 @@ async fn run_impl(
         )
     };
     let umu_run = proton::resolve_umu_run(Some(&umu_run_path))?;
-    let proton_path = proton::resolve_proton_path(None, Some(&default_proton_path));
+
+    // Prefer GE-Proton for repacks: explicit override → global config default →
+    // first installed GE-Proton build → umu-run's own bundled default (None).
+    let proton_path = proton_version_override
+        .as_deref()
+        .and_then(|p| proton::resolve_proton_path(Some(p), None))
+        .or_else(|| proton::resolve_proton_path(None, Some(&default_proton_path)))
+        .or_else(|| {
+            proton::installed_proton_versions()
+                .into_iter()
+                .find(|v| v.name.to_lowercase().contains("ge-proton"))
+                .map(|v| PathBuf::from(v.path))
+        });
 
     // Clean host folder for the game.
     let install_dir = match install_dir_override {
@@ -112,8 +133,17 @@ async fn run_impl(
     std::os::unix::fs::symlink(&install_dir, &link)
         .map_err(|e| AppError::Other(format!("failed to mount install drive: {e}")))?;
 
+    // Tell the frontend the drive letter now, before the installer blocks.
+    let _ = app.emit("install:drive-ready", format!("{}:", letter.to_ascii_uppercase()));
+
     // Run the installer and wait for it to exit. run_game handles strip-appimage
     // env + cwd; the setup.exe's window staying open blocks here intentionally.
+    //
+    // WINE_LARGE_ADDRESS_AWARE=1: FitGirl/DODI repacks decompress large archives
+    // in-process. Wine's default virtual address space is too small, causing
+    // ISDone.dll / unarc.dll error codes -5/-11/-12 ("not enough memory") even
+    // when the machine has plenty of RAM. This flag widens the 32-bit address
+    // space so the decompressor can allocate the buffers it needs.
     run_game(
         &setup_path,
         LaunchSpec::Proton {
@@ -122,6 +152,7 @@ async fn run_impl(
             proton_path: proton_path.as_deref(),
             game_id: &install_id,
             extra_args: &[],
+            extra_env: &[("WINE_LARGE_ADDRESS_AWARE", "1")],
         },
     )
     .await?;
@@ -130,6 +161,7 @@ async fn run_impl(
         install_dir: install_dir.to_string_lossy().to_string(),
         prefix_path: prefix_root.to_string_lossy().to_string(),
         drive_letter: format!("{}:", letter.to_ascii_uppercase()),
+        proton_path: proton_path.map(|p| p.to_string_lossy().to_string()),
     })
 }
 
@@ -190,6 +222,7 @@ async fn run_impl(
     _setup_exe: String,
     _game_name: String,
     _install_dir_override: Option<String>,
+    _proton_version_override: Option<String>,
 ) -> AppResult<RepackInstallResult> {
     Err(crate::error::AppError::Other(
         "The guided installer runs repacks through Proton and is only available on Linux. On Windows, run the installer directly and use Add Game.".into(),

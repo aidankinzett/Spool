@@ -206,6 +206,10 @@ pub struct NewGame {
     /// the default `prefixes/<id>`).
     #[serde(default)]
     pub wine_prefix_path: Option<String>,
+    /// Proton build dir used during install. Pinned so the game always launches
+    /// with the same Proton version the prefix was created with.
+    #[serde(default)]
+    pub proton_version_path: Option<String>,
 }
 
 /// In-memory library, loaded once at startup and held behind a [`Mutex`] in
@@ -367,6 +371,7 @@ pub fn add_game(
             save_paths: new_game.save_paths,
             game_folder_path: new_game.game_folder_path,
             wine_prefix_path: new_game.wine_prefix_path,
+            proton_version_path: new_game.proton_version_path,
             // Newly added games are shared on the LAN by default; the user can
             // turn this off per-game in the editor. Sharing only actually
             // streams when game_folder_path is set (auto-detected on add).

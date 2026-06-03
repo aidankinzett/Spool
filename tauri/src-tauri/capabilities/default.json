@@ -2,7 +2,7 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Capability applied to all Spool windows (main library + transient popups like Add Game + the Game-Mode launch splash).",
-  "windows": ["main", "add", "edit", "browse", "settings", "splash"],
+  "windows": ["main", "add", "edit", "browse", "settings", "splash", "install"],
   "permissions": [
     "core:default",
     "core:window:allow-close",

@@ -44,7 +44,7 @@ CONF_ORIG=$(cat "$TAURI_CONF")
 if [ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ]; then
   echo "==> No signing key — building unsigned (updater artifacts disabled)"
   trap 'printf "%s\n" "$CONF_ORIG" > "$TAURI_CONF"' EXIT
-  jq '.bundle.createUpdaterArtifacts = false | del(.plugins.updater.pubkey)' \
+  jq '.bundle.createUpdaterArtifacts = false' \
     "$TAURI_CONF" > "$TAURI_CONF.tmp" && mv "$TAURI_CONF.tmp" "$TAURI_CONF"
 else
   trap 'printf "%s\n" "$CONF_ORIG" > "$TAURI_CONF"' EXIT

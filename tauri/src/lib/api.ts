@@ -69,8 +69,9 @@ export const api = {
     setupExe: string,
     gameName: string,
     installDirOverride?: string,
+    protonVersionOverride?: string,
   ): Promise<RepackInstallResult> =>
-    invoke('run_repack_installer', { setupExe, gameName, installDirOverride }),
+    invoke('run_repack_installer', { setupExe, gameName, installDirOverride, protonVersionOverride }),
 
   // Ludusavi — Add Game flow
   searchGames: (query: string): Promise<SearchCandidate[]> => invoke('search_games', { query }),

@@ -115,6 +115,8 @@ pub enum LaunchSpec<'a> {
         proton_path: Option<&'a Path>,
         game_id: &'a str,
         extra_args: &'a [String],
+        /// Additional env vars applied after the standard umu env.
+        extra_env: &'a [(&'a str, &'a str)],
     },
 }
 
@@ -152,6 +154,7 @@ pub async fn run_game(exe_path: &Path, spec: LaunchSpec<'_>) -> AppResult<i32> {
             proton_path,
             game_id,
             extra_args,
+            extra_env,
         } => {
             let launch = proton::build_umu_launch(
                 umu_run,
@@ -170,19 +173,53 @@ pub async fn run_game(exe_path: &Path, spec: LaunchSpec<'_>) -> AppResult<i32> {
             // (PYTHONHOME, LD_LIBRARY_PATH, GTK/GDK vars, …) so umu-run and the
             // Steam runtime container see the host environment. Without it,
             // umu-run's Python aborts instantly and the game "exits" in ~10ms.
+            tracing::info!(
+                program = %launch.program.display(),
+                args = ?launch.args,
+                cwd = %cwd.display(),
+                "spawning via umu-run"
+            );
+
             let mut cmd = Command::new(&launch.program);
             cmd.args(&launch.args).envs(launch.env).current_dir(cwd);
+            cmd.envs(extra_env.iter().copied());
+            cmd.stdout(std::process::Stdio::piped());
+            cmd.stderr(std::process::Stdio::piped());
             strip_appimage_env(&mut cmd);
             let mut child = cmd
                 .spawn()
                 .map_err(|e| AppError::Other(format!("failed to start game via Proton: {e}")))?;
+
+            let stdout_handle = child.stdout.take().map(|s| {
+                tokio::spawn(async move {
+                    use tokio::io::{AsyncBufReadExt, BufReader};
+                    let mut lines = BufReader::new(s).lines();
+                    while let Ok(Some(line)) = lines.next_line().await {
+                        tracing::info!(target: "umu", "{}", line);
+                    }
+                })
+            });
+            let stderr_handle = child.stderr.take().map(|s| {
+                tokio::spawn(async move {
+                    use tokio::io::{AsyncBufReadExt, BufReader};
+                    let mut lines = BufReader::new(s).lines();
+                    while let Ok(Some(line)) = lines.next_line().await {
+                        tracing::warn!(target: "umu", "{}", line);
+                    }
+                })
+            });
 
             let status = child
                 .wait()
                 .await
                 .map_err(|e| AppError::Other(format!("failed waiting on Proton game: {e}")))?;
 
-            Ok(status.code().unwrap_or(-1))
+            if let Some(h) = stdout_handle { let _ = h.await; }
+            if let Some(h) = stderr_handle { let _ = h.await; }
+
+            let code = status.code().unwrap_or(-1);
+            tracing::info!(exit_code = code, "umu-run process exited");
+            Ok(code)
         }
     }
 }

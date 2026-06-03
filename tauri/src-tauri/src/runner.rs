@@ -1697,7 +1697,21 @@ async fn reconcile_cloud_conflict(ctx: &WorkflowCtx<'_>) -> AppResult<()> {
 async fn phase_launch(ctx: &WorkflowCtx<'_>, exe_pathbuf: &Path) -> AppResult<SessionTiming> {
     emit_phase(ctx.app, ctx.game_id, "launching", Some("Launching game…"), ctx.cloud_configured, None, false);
     emit_phase(ctx.app, ctx.game_id, "playing", None, ctx.cloud_configured, None, false);
-    tracing::info!(exe_path = %exe_pathbuf.display(), use_proton = ctx.launch.use_proton, "launching game process");
+    if ctx.launch.use_proton {
+        tracing::info!(
+            exe_path = %exe_pathbuf.display(),
+            umu_run = %ctx.launch.umu_run.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "<none>".into()),
+            prefix_root = %ctx.launch.prefix_root.display(),
+            proton_path = %ctx.launch.proton_path.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "<umu default>".into()),
+            "launching game via Proton"
+        );
+    } else {
+        tracing::info!(
+            exe_path = %exe_pathbuf.display(),
+            run_as_admin = ctx.launch.run_as_admin,
+            "launching game natively"
+        );
+    }
     let session_start = Utc::now();
 
     let spec = if ctx.launch.use_proton {
@@ -1711,6 +1725,7 @@ async fn phase_launch(ctx: &WorkflowCtx<'_>, exe_pathbuf: &Path) -> AppResult<Se
             proton_path: ctx.launch.proton_path.as_deref(),
             game_id: ctx.game_id,
             extra_args: &ctx.launch.extra_args,
+            extra_env: &[],
         }
     } else {
         process::LaunchSpec::Native {
@@ -1748,7 +1763,8 @@ async fn phase_launch(ctx: &WorkflowCtx<'_>, exe_pathbuf: &Path) -> AppResult<Se
 
     tracing::info!(
         game_name = ctx.game_name,
-        duration_min = (session_end - session_start).num_minutes(),
+        duration_secs = (session_end - session_start).num_seconds(),
+        exit_code = spawn_result.as_ref().ok().copied().unwrap_or(-1),
         "game exited"
     );
 
