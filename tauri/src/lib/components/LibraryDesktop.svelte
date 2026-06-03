@@ -61,6 +61,30 @@
     if (ctxMenu) ctxMenu = null;
   }
 
+  // Bumpers cycle the sidebar filter tabs; Y opens the focused row's context
+  // menu (the gamepad equivalent of right-click).
+  function cycleFilter(dir: -1 | 1) {
+    const ids = filters.map((f) => f.id);
+    const i = ids.indexOf(lib.filter);
+    lib.filter = ids[(i + dir + ids.length) % ids.length];
+  }
+
+  function openContextForFocused() {
+    const el = document.activeElement as HTMLElement | null;
+    const id = el?.getAttribute('data-game-id');
+    if (!id) return;
+    const g = lib.games.find((x) => x.id === id);
+    if (!g) return;
+    const r = el!.getBoundingClientRect();
+    ctxMenu = { game: g, x: r.right - 24, y: r.top + r.height / 2 };
+  }
+
+  function libraryButton(btn: string) {
+    if (btn === 'LeftTrigger') cycleFilter(-1);
+    else if (btn === 'RightTrigger') cycleFilter(1);
+    else if (btn === 'North') openContextForFocused(); // Y
+  }
+
   function closeLanPopover() {
     lanOpen = false;
     lib.clearPeerView();
@@ -94,7 +118,7 @@
   });
 </script>
 
-<div class="flex h-screen flex-col bg-bg-0 text-ink-0" use:gamepadScope={{ onBack: libraryBack }}>
+<div class="flex h-screen flex-col bg-bg-0 text-ink-0" use:gamepadScope={{ onBack: libraryBack, onButton: libraryButton }}>
   <AppChrome
     sub="LIBRARY"
     peers={lib.lanPeers.length}
@@ -493,6 +517,7 @@
               type="button"
               data-testid="game-row"
               data-game-name={g.game_name}
+              data-game-id={g.id}
               data-gp-autofocus={(lib.selectedId ? selected : i === 0) ? '' : undefined}
               onclick={() => (lib.selectedId = g.id)}
               oncontextmenu={(e) => openContextMenu(e, g)}
