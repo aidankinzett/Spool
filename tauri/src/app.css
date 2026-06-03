@@ -131,9 +131,11 @@ html, body {
    ring only while the user is navigating by gamepad or keyboard — never for
    the mouse — by gating on the modality flag the engine writes to <html>.
    `--gp-focus` defaults to the brand spool colour; a surface can override it
-   (e.g. a modal sets it to the game's accent). */
-:root[data-gp-input='gamepad'] :focus,
-:root[data-gp-input='keyboard'] :focus {
+   (e.g. a modal sets it to the game's accent). An element that already paints
+   its own selection indicator opts out with `data-gp-no-ring` (e.g. the touch
+   cover tiles, which outline the cover art themselves). */
+:root[data-gp-input='gamepad'] :focus:not([data-gp-no-ring]),
+:root[data-gp-input='keyboard'] :focus:not([data-gp-no-ring]) {
   outline: 2px solid var(--gp-focus, var(--color-spool));
   outline-offset: 2px;
   border-radius: var(--radius-sm);

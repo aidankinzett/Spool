@@ -387,6 +387,7 @@
             <button
               type="button"
               data-gp-autofocus={(lib.selectedId ? active : i === 0) ? '' : undefined}
+              data-gp-no-ring
               onclick={() => onTileTap(game)}
               onfocus={() => onTileFocus(game)}
               onpointerdown={(e) => startLongPress(e, game)}
