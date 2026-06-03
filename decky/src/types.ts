@@ -10,6 +10,7 @@ export interface Settings {
 export interface LibraryGame {
   id: string;
   game_name: string;
+  exe_path: string;
   cover_image_path: string | null;
   accent_color: string | null;
   steam_id: number | null;

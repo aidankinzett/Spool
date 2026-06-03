@@ -96,6 +96,10 @@ pub async fn serve() -> AppResult<()> {
         // SteamGridDB art for a library game, transcoded to PNG/JPEG for the
         // live `SteamClient.Apps.SetCustomArtworkForApp` call.
         .route("/games/:id/steam-art/:kind", get(get_steam_art))
+        // Install Windows runtime deps (winetricks verbs) into a game's Proton
+        // prefix, so a Deck user can do it from Game Mode without dropping to
+        // desktop. Mirrors the desktop `install_proton_deps` command.
+        .route("/games/:id/install-deps", post(post_install_deps))
         // LAN browsing: list discovered peers, and proxy a peer's game list /
         // covers server-side (the UI can't reach a peer's non-loopback http
         // directly — mixed content). See `lan/server.rs` for the peer API.
@@ -394,6 +398,53 @@ fn transcode_webp_to_png(mime: &str, bytes: Vec<u8>) -> (&'static str, Vec<u8>) 
         "png"
     };
     (image_type, bytes)
+}
+
+#[derive(Deserialize)]
+struct InstallDepsRequest {
+    verbs: String,
+}
+
+/// Install winetricks verbs (e.g. `vcrun2022 dotnet48`) into a game's Proton
+/// prefix. Loads the library + config fresh, looks the game up by id, and runs
+/// the same state-free core the desktop `install_proton_deps` command uses.
+/// Long-running (downloads + installs into the prefix) — the Decky UI shows a
+/// blocking spinner and uses a generous client timeout. Returns
+/// `{ ok: true, message }` on success or `{ ok: false, reason }` on failure.
+async fn post_install_deps(
+    AxPath(id): AxPath<String>,
+    Json(body): Json<InstallDepsRequest>,
+) -> Json<Value> {
+    let library = Library::load().unwrap_or_default();
+    let Some(entry) = library.find(&id) else {
+        return Json(json!({ "ok": false, "reason": "game not in library" }));
+    };
+    let prefix_override = entry.wine_prefix_path.clone();
+    let proton_override = entry.proton_version_path.clone();
+
+    let config = crate::config::Config::load().unwrap_or_default();
+    let umu_run_path = config.data.launch.umu_run_path.clone();
+    let default_proton_path = config.data.launch.default_proton_path.clone();
+
+    match crate::proton::install_proton_deps_core(
+        &id,
+        &body.verbs,
+        prefix_override.as_deref(),
+        proton_override.as_deref(),
+        &umu_run_path,
+        &default_proton_path,
+    )
+    .await
+    {
+        Ok(message) => {
+            tracing::info!(game_id = %id, verbs = %body.verbs, "plugin: install-deps complete");
+            Json(json!({ "ok": true, "message": message }))
+        }
+        Err(e) => {
+            tracing::warn!(game_id = %id, verbs = %body.verbs, error = %e, "plugin: install-deps failed");
+            Json(json!({ "ok": false, "reason": e.to_string() }))
+        }
+    }
 }
 
 // ── LAN browsing ───────────────────────────────────────────────────────────

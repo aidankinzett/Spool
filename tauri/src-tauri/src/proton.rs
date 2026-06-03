@@ -347,6 +347,29 @@ pub async fn install_proton_deps(
         )
     };
 
+    install_proton_deps_core(
+        &game_id,
+        &verbs,
+        prefix_override.as_deref(),
+        proton_override.as_deref(),
+        &umu_run_path,
+        &default_proton_path,
+    )
+    .await
+}
+
+/// State-free core of [`install_proton_deps`]. Takes the resolved per-game and
+/// config values directly (no Tauri `State` injection), so it can be driven
+/// from both the Tauri command and the Decky plugin's loopback HTTP server
+/// (`plugin_server.rs`), which loads the library/config from disk instead.
+pub async fn install_proton_deps_core(
+    game_id: &str,
+    verbs: &str,
+    prefix_override: Option<&str>,
+    proton_override: Option<&str>,
+    umu_run_path: &str,
+    default_proton_path: &str,
+) -> AppResult<String> {
     let verb_list: Vec<String> = verbs.split_whitespace().map(String::from).collect();
     if verb_list.is_empty() {
         return Err(AppError::Other(
@@ -354,13 +377,12 @@ pub async fn install_proton_deps(
         ));
     }
 
-    let umu_run = resolve_umu_run(Some(&umu_run_path))?;
-    let proton_path =
-        resolve_winetricks_proton(proton_override.as_deref(), Some(&default_proton_path))?;
+    let umu_run = resolve_umu_run(Some(umu_run_path))?;
+    let proton_path = resolve_winetricks_proton(proton_override, Some(default_proton_path))?;
     let prefix_root = prefix_override
         .filter(|p| !p.trim().is_empty())
         .map(PathBuf::from)
-        .unwrap_or_else(|| game_prefix_path(&game_id));
+        .unwrap_or_else(|| game_prefix_path(game_id));
     std::fs::create_dir_all(&prefix_root)
         .map_err(|e| AppError::Other(format!("failed to create prefix dir: {e}")))?;
 

@@ -7,6 +7,7 @@ import { formatPlaytime, formatRelativeTime } from "../lib/format";
 import { useServerBase } from "../hooks/use-server-base";
 import { useParams } from "../lib/steam";
 import { deleteGame } from "../api/callables";
+import { InstallDepsModal } from "./install-deps-modal";
 
 function coverUrl(base: string, g: LibraryGame): string | null {
   if (!g.cover_image_path) return null;
@@ -100,6 +101,9 @@ export function GameDetailPage() {
   const cover = base ? coverUrl(base, game) : null;
   const accent = game.accent_color ?? "#3d7ab5";
   const canDelete = !!game.game_folder_path;
+  // Winetricks only applies to Windows `.exe` games launched through Proton;
+  // native Linux games don't use a prefix, so hide the button for them.
+  const canInstallDeps = game.exe_path?.toLowerCase().endsWith(".exe") ?? false;
   // Prefer hero (landscape) for background; fall back to portrait cover
   const bgSrc = heroDataUrl ?? cover;
 
@@ -221,6 +225,24 @@ export function GameDetailPage() {
           >
             ▶  Play
           </Focusable>
+
+          {canInstallDeps && (
+            <Focusable
+              onActivate={() => showModal(<InstallDepsModal game={game} />)}
+              style={{
+                padding: "0.5rem 1.2rem",
+                borderRadius: "5px",
+                background: "rgba(255,255,255,0.08)",
+                fontWeight: 600,
+                fontSize: "0.9rem",
+                cursor: "pointer",
+                border: "1px solid rgba(255,255,255,0.18)",
+                color: "#fff",
+              }}
+            >
+              Install dependencies
+            </Focusable>
+          )}
 
           {canDelete && (
             <Focusable

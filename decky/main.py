@@ -292,6 +292,19 @@ class Plugin:
             return {"ok": False, "reason": "server unavailable"}
         return result
 
+    async def install_deps(self, game_id: str, verbs: str) -> dict:
+        """Install Windows runtime deps (winetricks verbs, e.g. "vcrun2022")
+        into a game's Proton prefix so the user doesn't need desktop mode.
+        Forwards to the headless server's POST /games/<id>/install-deps, which
+        runs `umu-run winetricks -q <verbs>` (needs UMU/GE Proton). This can
+        take minutes — downloads + installs into the prefix — so the timeout is
+        generous and the UI shows a blocking spinner meanwhile."""
+        path = f"/games/{quote(game_id, safe='')}/install-deps"
+        result = await _spool("POST", path, {"verbs": verbs}, timeout=900.0)
+        if result is None:
+            return {"ok": False, "reason": "server unavailable"}
+        return result
+
     async def get_settings(self) -> dict:
         s = _load_settings()
         return {
