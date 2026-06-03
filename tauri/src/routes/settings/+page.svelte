@@ -36,6 +36,7 @@
   import SettingsRow from '$lib/components/SettingsRow.svelte';
   import Segmented from '$lib/components/Segmented.svelte';
   import Slider from '$lib/components/Slider.svelte';
+  import Select, { type SelectOption } from '$lib/components/Select.svelte';
   import ButtonLegend from '$lib/components/ButtonLegend.svelte';
   import type { GpButton } from '$lib/components/GamepadButton.svelte';
   import { uiMode } from '$lib/uiMode.svelte';
@@ -63,6 +64,23 @@
   const OAUTH_PROVIDERS = ['google-drive', 'onedrive', 'dropbox', 'box'];
   let oauthConnecting = $state(false);
   let remoteExists = $state(false);
+
+  const CLOUD_PROVIDER_OPTIONS: SelectOption[] = [
+    { value: '', label: 'Disabled' },
+    { value: 'custom', label: 'Custom (rclone remote)' },
+    { value: 'google-drive', label: 'Google Drive' },
+    { value: 'onedrive', label: 'OneDrive' },
+    { value: 'dropbox', label: 'Dropbox' },
+    { value: 'box', label: 'Box' },
+    { value: 'ftp', label: 'FTP' },
+    { value: 'smb', label: 'SMB' },
+    { value: 'webdav', label: 'WebDAV' },
+  ];
+  // Default-Proton picker: Auto + each detected build.
+  const protonOptions = $derived<SelectOption[]>([
+    { value: '', label: 'Auto (newest installed)' },
+    ...protonVersions.map((p) => ({ value: p.path, label: p.name })),
+  ]);
 
   onMount(() => {
     let unlisten: (() => void) | undefined;
@@ -537,8 +555,10 @@
                     <div class="bg-bg-0 pb-1">
                       <SettingsRow label="Provider" helper="Choose a cloud storage provider or Custom for a custom rclone remote name.">
                         {#snippet extras()}
-                          <select
+                          <Select
                             bind:value={config!.cloud_provider}
+                            options={CLOUD_PROVIDER_OPTIONS}
+                            placeholder="Disabled"
                             onchange={async () => {
                               if (oauthConnecting) await cancelOAuth();
                               remoteExists = false;
@@ -547,19 +567,7 @@
                                 remoteExists = await api.checkCloudRemoteExists(config.cloud_provider);
                               }
                             }}
-                            style="color-scheme: dark"
-                            class="rounded-[4px] border border-line-1 bg-bg-2 px-2 py-1 text-[11.5px] text-ink-0"
-                          >
-                            <option style="background: var(--color-bg-2); color: var(--color-ink-0)" value="">Disabled</option>
-                            <option style="background: var(--color-bg-2); color: var(--color-ink-0)" value="custom">Custom (rclone remote)</option>
-                            <option style="background: var(--color-bg-2); color: var(--color-ink-0)" value="google-drive">Google Drive</option>
-                            <option style="background: var(--color-bg-2); color: var(--color-ink-0)" value="onedrive">OneDrive</option>
-                            <option style="background: var(--color-bg-2); color: var(--color-ink-0)" value="dropbox">Dropbox</option>
-                            <option style="background: var(--color-bg-2); color: var(--color-ink-0)" value="box">Box</option>
-                            <option style="background: var(--color-bg-2); color: var(--color-ink-0)" value="ftp">FTP</option>
-                            <option style="background: var(--color-bg-2); color: var(--color-ink-0)" value="smb">SMB</option>
-                            <option style="background: var(--color-bg-2); color: var(--color-ink-0)" value="webdav">WebDAV</option>
-                          </select>
+                          />
                         {/snippet}
                       </SettingsRow>
 
@@ -728,17 +736,11 @@
 
                   <SettingsRow label="Default Proton" helper="Used when a game doesn't pick its own version. Auto chooses the newest installed.">
                     {#snippet extras()}
-                      <select
+                      <Select
                         bind:value={config!.default_proton_path}
+                        options={protonOptions}
                         onchange={persist}
-                        style="color-scheme: dark"
-                        class="font-mono rounded-[4px] border border-line-1 bg-bg-2 px-2 py-1 text-[11.5px] text-ink-0"
-                      >
-                        <option style="background: var(--color-bg-2); color: var(--color-ink-0)" value="">Auto (newest installed)</option>
-                        {#each protonVersions as p (p.path)}
-                          <option style="background: var(--color-bg-2); color: var(--color-ink-0)" value={p.path}>{p.name}</option>
-                        {/each}
-                      </select>
+                      />
                     {/snippet}
                   </SettingsRow>
 

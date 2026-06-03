@@ -23,6 +23,7 @@
   import MonoLabel from '$lib/components/MonoLabel.svelte';
   import Btn from '$lib/components/Btn.svelte';
   import TextField from '$lib/components/TextField.svelte';
+  import Select, { type SelectOption } from '$lib/components/Select.svelte';
   import CandidateRow from '$lib/components/CandidateRow.svelte';
 
   type Stage = 'config' | 'installing' | 'detect';
@@ -39,6 +40,10 @@
   let hasGeProton = $derived(
     protonVersions.some((v) => v.name.toLowerCase().includes('ge-proton')),
   );
+  const protonOptions = $derived<SelectOption[]>([
+    { value: '', label: 'Auto (umu default)' },
+    ...protonVersions.map((p) => ({ value: p.path, label: p.name })),
+  ]);
 
   // Set once the installer finishes — carries the host install dir + the prefix
   // the game was installed into (forwarded to add_game).
@@ -278,16 +283,7 @@
           <p class="m-0 mt-1 mb-2 text-[11.5px] leading-relaxed text-ink-3">
             GE-Proton is recommended for repacks — it handles DLLs and codecs that stock Proton rejects.
           </p>
-          <select
-            bind:value={selectedProton}
-            style="color-scheme: dark"
-            class="font-mono rounded-[4px] border border-line-1 bg-bg-2 px-2 py-1 text-[11.5px] text-ink-0"
-          >
-            <option value="">Auto (umu default)</option>
-            {#each protonVersions as p (p.path)}
-              <option value={p.path}>{p.name}</option>
-            {/each}
-          </select>
+          <Select bind:value={selectedProton} options={protonOptions} full />
         </div>
 
         <!-- GE-Proton not found warning -->
