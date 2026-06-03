@@ -35,7 +35,10 @@
   import SettingsCard from '$lib/components/SettingsCard.svelte';
   import SettingsRow from '$lib/components/SettingsRow.svelte';
   import Segmented from '$lib/components/Segmented.svelte';
+  import ButtonLegend from '$lib/components/ButtonLegend.svelte';
+  import type { GpButton } from '$lib/components/GamepadButton.svelte';
   import { uiMode } from '$lib/uiMode.svelte';
+  import { gamepadScope } from '$lib/gamepad';
 
   let config = $state<ConfigData | null>(null);
   let error = $state<string | null>(null);
@@ -267,9 +270,32 @@
     network: 'Network',
     advanced: 'Advanced',
   };
+
+  // Bumpers cycle the settings groups, like switching tabs on a console.
+  function switchGroup(dir: -1 | 1) {
+    const ids = NAV_GROUPS.map((g) => g.id);
+    const i = ids.indexOf(activeGroup);
+    if (i === -1) return;
+    activeGroup = ids[(i + dir + ids.length) % ids.length];
+  }
+
+  function settingsButton(btn: string) {
+    if (btn === 'LeftTrigger') switchGroup(-1);
+    else if (btn === 'RightTrigger') switchGroup(1);
+  }
+
+  const settingsLegend: { button: GpButton; label: string }[] = [
+    { button: 'a', label: 'Select' },
+    { button: 'b', label: 'Back' },
+    { button: 'lb', label: 'Prev' },
+    { button: 'rb', label: 'Next' },
+  ];
 </script>
 
-<div class="flex h-screen flex-col bg-bg-0 text-ink-0">
+<div
+  class="flex h-screen flex-col bg-bg-0 text-ink-0"
+  use:gamepadScope={{ onBack: () => history.back(), onButton: settingsButton }}
+>
   <AppChrome sub="SETTINGS" onback={() => history.back()} />
 
   {#if error}
@@ -293,6 +319,7 @@
             {@const isActive = activeGroup === group.id}
             <button
               onclick={() => (activeGroup = group.id)}
+              data-gp-autofocus={isActive ? '' : undefined}
               class="flex items-center gap-[11px] w-full text-left px-[10px] py-[9px] transition-colors"
               style:background={isActive ? 'var(--color-bg-3)' : 'transparent'}
               style:border-left={isActive ? '2px solid var(--color-spool)' : '2px solid transparent'}
@@ -960,7 +987,11 @@
         <span class="size-[6px] rounded-full bg-ok"></span>
         All changes saved
       </div>
-      <span class="font-mono text-[9.5px] text-ink-3 tracking-[0.08em]">%LOCALAPPDATA%\Spool\config.json</span>
+      {#if uiMode.resolved === 'touch'}
+        <ButtonLegend items={settingsLegend} size={16} />
+      {:else}
+        <span class="font-mono text-[9.5px] text-ink-3 tracking-[0.08em]">%LOCALAPPDATA%\Spool\config.json</span>
+      {/if}
     </div>
   {/if}
 </div>
