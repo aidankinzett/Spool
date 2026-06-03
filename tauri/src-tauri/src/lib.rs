@@ -33,6 +33,7 @@ mod diagnostics;
 mod config;
 mod error;
 mod gamemode;
+mod gamepad;
 mod headless;
 mod lan;
 mod launcher;
@@ -500,6 +501,11 @@ fn run_attached_launch(
     // no window to recover from, just a splash.
     restamp_rclone(app.handle());
 
+    // Controller input for the splash (conflict-resolution modal etc.). The
+    // attached path runs none of the normal startup tasks, so start the bridge
+    // here explicitly — this is the surface where controller nav matters most.
+    gamepad::spawn_bridge(app.handle().clone());
+
     // Splash window (the `main` window stays hidden / unused).
     if let Err(e) = tauri::WebviewWindowBuilder::new(
         app,
@@ -625,6 +631,10 @@ fn spawn_startup_tasks(app: &AppHandle) {
     // socket can't bind (port in use, firewall, etc.) — peer count stays at 0
     // in that case but everything else keeps working.
     lan::spawn_discovery(app.clone());
+
+    // Read the controller in Rust and forward events to the webview as
+    // `gamepad:input` (the webview can't see pads itself on Linux WebKitGTK).
+    gamepad::spawn_bridge(app.clone());
 
     // Backfill accent colours for any legacy entries that have a cover but no
     // extracted accent yet. Cheap no-op when every entry is already filled.

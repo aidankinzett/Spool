@@ -243,7 +243,7 @@ jobs:
       - name: Install Linux system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev libudev-dev
 
       - name: Bun cache
         uses: actions/cache@v5
@@ -324,7 +324,7 @@ jobs:
       - name: Install Linux system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libudev-dev
 
       - name: Bun cache
         uses: actions/cache@v5
@@ -456,6 +456,7 @@ jobs:
             libappindicator3-dev \
             librsvg2-dev \
             patchelf \
+            libudev-dev \
             webkit2gtk-driver \
             xvfb
 

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
+  import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 
   // Standalone Gamepad API smoke test. The whole point is to answer one
   // question before we build controller navigation: does the webview actually
@@ -27,6 +28,21 @@
   let pads = $state<PadSnapshot[]>([]);
   let lastEvent = $state<string>('—');
   let frames = $state(0);
+
+  // Events from the Rust gilrs bridge (gamepad:input). This is the path that
+  // actually matters on Linux: the webview Gamepad API above stays empty in the
+  // AppImage / Steam Game Mode, so if controller input works at all it shows up
+  // here. In Game Mode, press dpad / A / B and confirm entries appear.
+  type BridgeEvent = {
+    kind: string;
+    button?: string;
+    axis?: string;
+    value: number;
+    gamepad: string;
+  };
+  type BridgeLogEntry = BridgeEvent & { t: string };
+  let bridgeLog = $state<BridgeLogEntry[]>([]);
+  let bridgeCount = $state(0);
 
   // Standard mapping button names, for readability when mapping === "standard".
   const STANDARD_BUTTONS = [
@@ -69,32 +85,50 @@
   }
 
   onMount(() => {
-    if (typeof navigator === 'undefined' || !navigator.getGamepads) {
-      supported = false;
-      return;
-    }
+    // Rust gilrs bridge listener — attach this regardless of Gamepad API
+    // support, since on Linux the API is empty but the bridge is what works.
+    let unlisten: UnlistenFn | undefined;
+    listen<BridgeEvent>('gamepad:input', (e) => {
+      const t = new Date().toLocaleTimeString(undefined, { hour12: false });
+      bridgeCount += 1;
+      bridgeLog = [{ t, ...e.payload }, ...bridgeLog].slice(0, 40);
+    })
+      .then((fn) => {
+        unlisten = fn;
+      })
+      .catch((err) => console.error('[gamepad-test] listen failed:', err));
 
-    const onConnect = (e: GamepadEvent) => {
-      lastEvent = `connected: [${e.gamepad.index}] ${e.gamepad.id} (mapping: ${e.gamepad.mapping || 'none'})`;
-    };
-    const onDisconnect = (e: GamepadEvent) => {
-      lastEvent = `disconnected: [${e.gamepad.index}] ${e.gamepad.id}`;
-    };
-    window.addEventListener('gamepadconnected', onConnect);
-    window.addEventListener('gamepaddisconnected', onDisconnect);
+    // Browser Gamepad API path (works on Windows/WebView2; empty on Linux).
+    const gamepadApi = typeof navigator !== 'undefined' && !!navigator.getGamepads;
+    supported = gamepadApi;
 
     let raf = 0;
-    const loop = () => {
-      pads = snapshot();
-      frames += 1;
+    let onConnect: ((e: GamepadEvent) => void) | undefined;
+    let onDisconnect: ((e: GamepadEvent) => void) | undefined;
+
+    if (gamepadApi) {
+      onConnect = (e: GamepadEvent) => {
+        lastEvent = `connected: [${e.gamepad.index}] ${e.gamepad.id} (mapping: ${e.gamepad.mapping || 'none'})`;
+      };
+      onDisconnect = (e: GamepadEvent) => {
+        lastEvent = `disconnected: [${e.gamepad.index}] ${e.gamepad.id}`;
+      };
+      window.addEventListener('gamepadconnected', onConnect);
+      window.addEventListener('gamepaddisconnected', onDisconnect);
+
+      const loop = () => {
+        pads = snapshot();
+        frames += 1;
+        raf = requestAnimationFrame(loop);
+      };
       raf = requestAnimationFrame(loop);
-    };
-    raf = requestAnimationFrame(loop);
+    }
 
     return () => {
-      cancelAnimationFrame(raf);
-      window.removeEventListener('gamepadconnected', onConnect);
-      window.removeEventListener('gamepaddisconnected', onDisconnect);
+      unlisten?.();
+      if (raf) cancelAnimationFrame(raf);
+      if (onConnect) window.removeEventListener('gamepadconnected', onConnect);
+      if (onDisconnect) window.removeEventListener('gamepaddisconnected', onDisconnect);
     };
   });
 
@@ -118,6 +152,39 @@
     </p>
     <p class="event">Last event: <code>{lastEvent}</code></p>
   </header>
+
+  <section class="bridge">
+    <h2>Rust bridge (gilrs) — <code>gamepad:input</code></h2>
+    <p class="sub">
+      The path that matters on Linux. Events here come from the Rust gilrs reader,
+      not the webview. In Steam Game Mode (gamepad emulation), press dpad / A / B
+      and confirm entries appear below. Events received: <strong>{bridgeCount}</strong>
+    </p>
+    {#if bridgeLog.length === 0}
+      <div class="banner warn">
+        <strong>No bridge events yet.</strong>
+        <p>
+          Press buttons on the controller. If nothing appears here even in Game
+          Mode with gamepad emulation, gilrs can't see the (virtual) pad — check
+          the app log for "gamepad bridge" lines.
+        </p>
+      </div>
+    {:else}
+      <ul class="evlog">
+        {#each bridgeLog as ev, i (i)}
+          <li class:down={ev.kind === 'button-down'}>
+            <span class="ev-t">{ev.t}</span>
+            <span class="ev-kind">{ev.kind}</span>
+            <span class="ev-name">{ev.button ?? ev.axis ?? '—'}</span>
+            <span class="ev-val">{ev.value.toFixed(2)}</span>
+            <span class="ev-pad">{ev.gamepad}</span>
+          </li>
+        {/each}
+      </ul>
+    {/if}
+  </section>
+
+  <h2 class="api-heading">Browser Gamepad API</h2>
 
   {#if !supported}
     <div class="banner bad">
@@ -224,6 +291,59 @@
     padding: 0.1rem 0.4rem;
     border-radius: 4px;
     font-size: 0.85rem;
+  }
+
+  .bridge {
+    background: #161b22;
+    border: 1px solid #1f6feb;
+    border-radius: 10px;
+    padding: 1rem 1.25rem;
+    margin-bottom: 1.5rem;
+  }
+  .bridge h2 {
+    margin: 0 0 0.25rem;
+    font-size: 1.05rem;
+  }
+  .api-heading {
+    font-size: 1.05rem;
+    margin: 1.5rem 0 0.75rem;
+    color: #9da7b3;
+  }
+
+  .evlog {
+    list-style: none;
+    margin: 0.75rem 0 0;
+    padding: 0;
+    font-family: ui-monospace, monospace;
+    font-size: 0.82rem;
+    max-height: 16rem;
+    overflow-y: auto;
+  }
+  .evlog li {
+    display: grid;
+    grid-template-columns: 5.5rem 6.5rem 1fr 3.5rem auto;
+    gap: 0.6rem;
+    padding: 0.2rem 0.4rem;
+    border-radius: 4px;
+  }
+  .evlog li.down {
+    background: rgba(31, 111, 235, 0.18);
+  }
+  .ev-t {
+    color: #6e7681;
+  }
+  .ev-kind {
+    color: #58a6ff;
+  }
+  .ev-name {
+    font-weight: 600;
+  }
+  .ev-val {
+    text-align: right;
+    color: #9da7b3;
+  }
+  .ev-pad {
+    color: #6e7681;
   }
 
   .banner {
