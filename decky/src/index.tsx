@@ -89,11 +89,17 @@ export default definePlugin(() => {
   const gameStatsClasses = findClassModule(
     (m: any) => m.GameStatsSection && m.GameStat && m.Playtime,
   );
+  // DEV ONLY — debug the Play Time override
+  console.log("[spool] gameStatsClasses", gameStatsClasses);
   const playtimeStatPatch = routerHook.addPatch(
     "/library/app/:appid",
     (tree: any) => {
-      if (!gameStatsClasses) return tree;
+      if (!gameStatsClasses) {
+        console.log("[spool] no gameStatsClasses — patch bailing");
+        return tree;
+      }
       const routeProps = findInReactTree(tree, (x: any) => x?.renderFunc);
+      console.log("[spool] routeProps?", !!routeProps);
       if (!routeProps) return tree;
 
       afterPatch(routeProps, "renderFunc", (_: unknown[], ret?: ReactElement) => {
@@ -106,6 +112,20 @@ export default definePlugin(() => {
             x.props.className.includes(gameStatsClasses.GameStat) &&
             x.props.className.includes(gameStatsClasses.Playtime),
         );
+        // DEV ONLY — narrow down which step fails
+        const anyGameStat = findInReactTree(
+          ret,
+          (x: any) =>
+            typeof x?.props?.className === "string" &&
+            x.props.className.includes(gameStatsClasses.GameStat),
+        );
+        const section = findInReactTree(
+          ret,
+          (x: any) =>
+            typeof x?.props?.className === "string" &&
+            x.props.className.includes(gameStatsClasses.GameStatsSection),
+        );
+        console.log("[spool] renderFunc ran. section?", !!section, "anyGameStat?", !!anyGameStat, "playtimeStat?", !!stat);
         if (!stat) return ret;
 
         // The {label, children} value field lives inside that block; swap its
@@ -114,6 +134,7 @@ export default definePlugin(() => {
           stat,
           (x: any) => x?.props && "label" in x.props && "children" in x.props,
         );
+        console.log("[spool] field?", !!field, field?.props);
         if (field) {
           field.props.children = createElement(PlaytimeStatValue, {
             fallback: field.props.children,
