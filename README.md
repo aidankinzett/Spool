@@ -64,9 +64,19 @@ lost. Install it in one click from Spool's settings.
 Grab the latest build from the [Releases](../../releases) page:
 
 * **Windows** — the `Spool_<version>_x64-setup.exe` installer.
-* **Linux** — the `Spool_amd64.AppImage`. 
+* **Linux** — the `Spool_amd64.AppImage`.
 
 Both platforms auto-update in place.
+
+On Linux, to drop the AppImage into `~/Applications` and add a launcher entry
+(with icon) so it shows up in your desktop's app menu — KDE Plasma, GNOME, etc.:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/aidankinzett/Spool/master/scripts/install-appimage.sh | bash
+```
+
+The same script lives at [`scripts/install-appimage.sh`](scripts/install-appimage.sh);
+run it with `--uninstall` to remove the AppImage and launcher entry.
 
 ## Platform support
 
