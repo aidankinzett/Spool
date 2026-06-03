@@ -302,24 +302,6 @@ export type AddToSteamResult = {
 };
 
 /**
- * A detected Apollo/Sunshine streaming host. Mirrors `StreamingHostInfo` in
- * streaming_host.rs. `kind` is "apollo" | "sunshine" | "".
- */
-export type StreamingHostInfo = {
-  detected: boolean;
-  kind: string;
-  apps_path: string;
-};
-
-/** Result returned by `add_to_streaming_host`. Mirrors the Rust struct. */
-export type AddToStreamingHostResult = {
-  host_kind: string;
-  apps_path: string;
-  app_name: string;
-  image_set: boolean;
-};
-
-/**
  * Phases emitted by the Run workflow as `run:phase` events. The frontend
  * uses these to update the Play button label / lock the UI for the
  * currently-running game.

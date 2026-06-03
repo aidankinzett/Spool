@@ -52,7 +52,6 @@ mod session;
 mod size_backfill;
 mod steam;
 mod steamgriddb;
-mod streaming_host;
 mod suspend;
 mod system_open;
 mod tray;
@@ -293,9 +292,6 @@ pub fn run() {
             // steam shortcut
             steam::add_spool_to_steam,
             steam::add_to_steam,
-            // apollo / sunshine streaming host
-            streaming_host::detect_streaming_host,
-            streaming_host::add_to_streaming_host,
             // armoury crate launcher
             launcher::generate_armoury_launcher,
             // registry compat-flag probe

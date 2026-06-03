@@ -6,8 +6,6 @@
 import { invoke, convertFileSrc } from '@tauri-apps/api/core';
 import type {
   AddToSteamResult,
-  AddToStreamingHostResult,
-  StreamingHostInfo,
   ConfigData,
   DownloadProgress,
   GameEntry,
@@ -87,12 +85,6 @@ export const api = {
   // Steam shortcut
   addSpoolToSteam: (): Promise<AddToSteamResult> => invoke('add_spool_to_steam'),
   addToSteam: (gameId: string): Promise<AddToSteamResult> => invoke('add_to_steam', { gameId }),
-
-  // Apollo / Sunshine streaming host. detectStreamingHost resolves null when
-  // no host config is installed (used to gate the per-game "Add to" button).
-  detectStreamingHost: (): Promise<StreamingHostInfo | null> => invoke('detect_streaming_host'),
-  addToStreamingHost: (gameId: string): Promise<AddToStreamingHostResult> =>
-    invoke('add_to_streaming_host', { gameId }),
 
   // Open a file/folder with the OS default handler. Goes through Rust (not
   // the opener plugin) so it can strip the AppImage environment before

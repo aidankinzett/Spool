@@ -17,7 +17,6 @@
    * it up later is a one-liner.
    */
   import {
-    Cast,
     ChevronDown,
     Cloud,
     Copy,
@@ -33,7 +32,7 @@
   import { api, assetUrl } from '$lib/api';
   import { toasts } from '$lib/toasts.svelte';
   import { confirmDialog } from '$lib/confirm.svelte';
-  import type { GameEntry, RunPhase, SaveRevision, StreamingHostInfo } from '$lib/types';
+  import type { GameEntry, RunPhase, SaveRevision } from '$lib/types';
   import {
     absDate,
     absDateTime,
@@ -240,24 +239,9 @@
   });
 
   let isWindows = $state(false);
-  let streamingHost = $state<StreamingHostInfo | null>(null);
   onMount(async () => {
     isWindows = (await api.appPlatform()) === 'windows';
-    try {
-      streamingHost = await api.detectStreamingHost();
-    } catch {
-      streamingHost = null;
-    }
   });
-
-  // "Apollo" | "Sunshine" | "Apollo/Sunshine" — for button text + toasts.
-  const hostLabel = $derived(
-    streamingHost?.kind === 'apollo'
-      ? 'Apollo'
-      : streamingHost?.kind === 'sunshine'
-        ? 'Sunshine'
-        : 'Apollo/Sunshine',
-  );
 
   let generatingArmoury = $state(false);
   async function generateArmouryLauncher() {
@@ -321,30 +305,6 @@
     }
   }
 
-  let addingToHost = $state(false);
-  async function addToStreamingHost() {
-    addingToHost = true;
-    try {
-      const result = await api.addToStreamingHost(game.id);
-      const label = result.host_kind === 'apollo' ? 'Apollo' : 'Sunshine';
-      toasts.show({
-        kind: 'ok',
-        label: label.toUpperCase(),
-        title: `Added to ${label}`,
-        sub: `"${game.game_name}" is now streamable from ${label}.`,
-        catalog: fmtCatalog(game.catalog_number),
-      });
-    } catch (e) {
-      toasts.show({
-        kind: 'bad',
-        label: `${hostLabel.toUpperCase()} · FAILED`,
-        title: `Couldn't add to ${hostLabel}`,
-        sub: String(e),
-      });
-    } finally {
-      addingToHost = false;
-    }
-  }
 </script>
 
 <div class="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-bg-0">
@@ -529,16 +489,6 @@
       {#snippet icon()}<Play size={14} />{/snippet}
       {addingToSteam ? 'Adding…' : 'Add to Steam'}
     </Btn>
-    {#if streamingHost?.detected}
-      <Btn
-        variant="ghost"
-        onclick={addToStreamingHost}
-        disabled={!game.exe_path || addingToHost}
-      >
-        {#snippet icon()}<Cast size={14} />{/snippet}
-        {addingToHost ? 'Adding…' : `Add to ${hostLabel}`}
-      </Btn>
-    {/if}
     <div class="flex-1"></div>
     <Btn variant="ghost" onclick={() => openView('edit', { id: game.id })}>
       {#snippet icon()}<Pencil size={14} />{/snippet}
