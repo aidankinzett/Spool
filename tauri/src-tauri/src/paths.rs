@@ -19,6 +19,13 @@ pub fn library_file() -> PathBuf {
     app_data_dir().join("library.json")
 }
 
+/// SQLite database backing the game library (replaces `library_file`). Lives on
+/// local disk under the app-data dir — required for WAL-mode cross-process
+/// locking, which doesn't work over network filesystems. See `db.rs`.
+pub fn library_db() -> PathBuf {
+    app_data_dir().join("library.db")
+}
+
 #[allow(dead_code)]
 pub fn config_file() -> PathBuf {
     app_data_dir().join("config.json")

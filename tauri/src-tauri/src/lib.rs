@@ -27,6 +27,7 @@
 
 mod accent_backfill;
 mod cli;
+mod db;
 mod decky_install;
 mod plugin_server;
 mod diagnostics;
@@ -180,6 +181,19 @@ pub fn run() {
         Config::default()
     });
 
+    // Open the SQLite library database (WAL, cross-process safe). The library
+    // still reads/writes library.json for now — this only creates + migrates the
+    // db so later steps can move reads/writes onto it (see
+    // docs/sqlite-migration-plan.md). A failure here is non-fatal: nothing reads
+    // the pool yet, so we log and carry on rather than blocking startup.
+    let db = match tauri::async_runtime::block_on(db::Db::init()) {
+        Ok(db) => Some(db),
+        Err(e) => {
+            tracing::error!(error = %e, "failed to open library.db; continuing without it");
+            None
+        }
+    };
+
     // Decide whether this is an attached launch: `spool --run` inside a SteamOS
     // gamescope session, OR a `--run … --attached` shortcut (Apollo/Sunshine
     // streaming host). If so, we skip the tray, single-instance plugin, and
@@ -236,6 +250,12 @@ pub fn run() {
         builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
             handle_forwarded_launch(app, &argv);
         }));
+    }
+    // Place the SQLite pool in state when it opened. Managed as a bare `Db` so
+    // later readers resolve it with `state::<Db>()`; if init failed it's simply
+    // absent (nothing consumes it yet).
+    if let Some(db) = db {
+        builder = builder.manage::<db::Db>(db);
     }
     let app = builder
         .manage::<SharedLibrary>(Arc::new(Mutex::new(library)))
