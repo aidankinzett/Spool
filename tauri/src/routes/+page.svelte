@@ -11,6 +11,7 @@
   import { absDateTime, relDate, fmtSize } from '$lib/format';
   import type { RawConflictDetails } from '$lib/types';
   import { onMount } from 'svelte';
+  import { goto } from '$app/navigation';
 
   const lib = createLibrary();
 
@@ -82,6 +83,12 @@
 {:else}
   <LibraryDesktop {lib} />
 {/if}
+
+<!-- Temporary entry point for the controller-nav smoke test. Remove once the
+     gamepad input path is settled. -->
+<button class="gamepad-test-link" onclick={() => goto('/gamepad-test')} title="Gamepad smoke test">
+  🎮 Gamepad test
+</button>
 
 {#if showOnboarding}
   <OnboardingModal
@@ -162,3 +169,26 @@
     />
   {/if}
 {/if}
+
+<style>
+  .gamepad-test-link {
+    position: fixed;
+    bottom: 12px;
+    right: 12px;
+    z-index: 9999;
+    padding: 0.4rem 0.7rem;
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: #c9d1d9;
+    background: rgba(22, 27, 34, 0.85);
+    border: 1px solid #30363d;
+    border-radius: 8px;
+    cursor: pointer;
+    backdrop-filter: blur(4px);
+  }
+  .gamepad-test-link:hover {
+    background: rgba(31, 111, 235, 0.85);
+    color: #fff;
+    border-color: #58a6ff;
+  }
+</style>
