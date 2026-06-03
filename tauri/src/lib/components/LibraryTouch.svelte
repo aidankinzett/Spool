@@ -190,6 +190,7 @@
       <div class="flex h-full items-center justify-end gap-2 pr-2">
         <button
           type="button"
+          data-tauri-drag-region="false"
           onclick={() => (searchOpen = true)}
           class="inline-flex cursor-pointer items-center gap-2 rounded-full border border-line-2 bg-bg-2 text-ink-2 transition-colors hover:text-ink-0"
           style:height="calc(var(--control-h) * 0.75)"
@@ -200,6 +201,7 @@
         </button>
         <button
           type="button"
+          data-tauri-drag-region="false"
           onclick={() => openView('settings')}
           class="inline-flex cursor-pointer items-center justify-center rounded-sm border-none bg-transparent text-ink-2 transition-colors hover:bg-white/10 hover:text-ink-0"
           style:height="var(--control-h-icon)"
