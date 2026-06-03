@@ -18,6 +18,7 @@
    *   - Cancel → close without saving (form state is discarded)
    */
   import { onMount } from 'svelte';
+  import { SvelteSet } from 'svelte/reactivity';
   import { Download, Folder, FolderX, RefreshCw, Trash2 } from '@lucide/svelte';
   import { open as openDialog } from '@tauri-apps/plugin-dialog';
   import { getCurrentWindow } from '@tauri-apps/api/window';
@@ -55,7 +56,7 @@
     { verb: 'd3dcompiler_47', label: 'D3D Compiler 47' },
   ] as const;
 
-  let depsChecked = $state(new Set<string>());
+  let depsChecked = new SvelteSet<string>();
   let depsCustomEnabled = $state(false);
   let depsCustom = $state('');
   const effectiveDeps = $derived(
@@ -66,10 +67,8 @@
   );
 
   function togglePreset(verb: string, checked: boolean) {
-    const next = new Set(depsChecked);
-    if (checked) next.add(verb);
-    else next.delete(verb);
-    depsChecked = next;
+    if (checked) depsChecked.add(verb);
+    else depsChecked.delete(verb);
   }
 
   const BRAND_SPOOL = '#d7c9a0';
