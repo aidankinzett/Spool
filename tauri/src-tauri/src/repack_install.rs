@@ -153,7 +153,8 @@ async fn run_impl(
             extra_env: &[("WINE_LARGE_ADDRESS_AWARE", "1")],
         },
     )
-    .await?;
+    .await
+    .map(|_| ())?;
 
     Ok(RepackInstallResult {
         install_dir: install_dir.to_string_lossy().to_string(),

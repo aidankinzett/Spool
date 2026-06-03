@@ -24,7 +24,19 @@
 use crate::error::{AppError, AppResult};
 use crate::proton;
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 use tokio::process::Command;
+
+/// Result of spawning and waiting for a game process.
+pub struct GameExitResult {
+    /// Raw exit code from the process, or -1 if the process was signalled.
+    pub code: i32,
+    /// Tail of umu-run's stderr, populated when the process exits in under 5
+    /// seconds with a non-zero code — a reliable signal that Wine/Proton
+    /// crashed before the game window opened (missing DLL, bad prefix, etc.).
+    /// `None` for normal-length sessions or clean exits.
+    pub crash_hint: Option<String>,
+}
 
 /// Strip AppImage-injected environment pollution from a child command.
 ///
@@ -120,9 +132,8 @@ pub enum LaunchSpec<'a> {
     },
 }
 
-/// Spawns the game and waits for it to exit. Returns the exit code (or -1
-/// if the process was killed by a signal / didn't yield a code).
-pub async fn run_game(exe_path: &Path, spec: LaunchSpec<'_>) -> AppResult<i32> {
+/// Spawns the game and waits for it to exit.
+pub async fn run_game(exe_path: &Path, spec: LaunchSpec<'_>) -> AppResult<GameExitResult> {
     let cwd = exe_path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
@@ -131,7 +142,8 @@ pub async fn run_game(exe_path: &Path, spec: LaunchSpec<'_>) -> AppResult<i32> {
     match spec {
         LaunchSpec::Native { run_as_admin } => {
             if cfg!(windows) && run_as_admin {
-                return run_elevated(exe_path).await;
+                let code = run_elevated(exe_path).await?;
+                return Ok(GameExitResult { code, crash_hint: None });
             }
 
             let mut cmd = Command::new(exe_path);
@@ -146,7 +158,7 @@ pub async fn run_game(exe_path: &Path, spec: LaunchSpec<'_>) -> AppResult<i32> {
                 .await
                 .map_err(|e| AppError::Other(format!("failed waiting on game: {e}")))?;
 
-            Ok(status.code().unwrap_or(-1))
+            Ok(GameExitResult { code: status.code().unwrap_or(-1), crash_hint: None })
         }
         LaunchSpec::Proton {
             umu_run,
@@ -180,6 +192,8 @@ pub async fn run_game(exe_path: &Path, spec: LaunchSpec<'_>) -> AppResult<i32> {
                 "spawning via umu-run"
             );
 
+            let start = tokio::time::Instant::now();
+
             let mut cmd = Command::new(&launch.program);
             cmd.args(&launch.args).envs(launch.env).current_dir(cwd);
             cmd.envs(extra_env.iter().copied());
@@ -199,12 +213,20 @@ pub async fn run_game(exe_path: &Path, spec: LaunchSpec<'_>) -> AppResult<i32> {
                     }
                 })
             });
+
+            // Collect stderr into a buffer (for crash diagnosis) while still
+            // piping every line to debug.log via tracing.
+            let stderr_buf: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+            let stderr_buf_clone = Arc::clone(&stderr_buf);
             let stderr_handle = child.stderr.take().map(|s| {
                 tokio::spawn(async move {
                     use tokio::io::{AsyncBufReadExt, BufReader};
                     let mut lines = BufReader::new(s).lines();
                     while let Ok(Some(line)) = lines.next_line().await {
                         tracing::warn!(target: "umu", "{}", line);
+                        if let Ok(mut buf) = stderr_buf_clone.lock() {
+                            buf.push(line);
+                        }
                     }
                 })
             });
@@ -213,13 +235,36 @@ pub async fn run_game(exe_path: &Path, spec: LaunchSpec<'_>) -> AppResult<i32> {
                 .wait()
                 .await
                 .map_err(|e| AppError::Other(format!("failed waiting on Proton game: {e}")))?;
+            let elapsed = start.elapsed();
 
             if let Some(h) = stdout_handle { let _ = h.await; }
             if let Some(h) = stderr_handle { let _ = h.await; }
 
             let code = status.code().unwrap_or(-1);
-            tracing::info!(exit_code = code, "umu-run process exited");
-            Ok(code)
+            tracing::info!(exit_code = code, elapsed_secs = elapsed.as_secs(), "umu-run process exited");
+
+            // A non-zero exit in under 5 seconds means the game almost certainly
+            // never opened a window — Wine/Proton printed the reason to stderr
+            // (missing DLL, broken prefix, etc.). Surface the tail so callers can
+            // include it in the error message without the user needing debug.log.
+            let crash_hint = if code != 0 && elapsed.as_secs() < 5 {
+                let buf = stderr_buf.lock().unwrap_or_else(|e| e.into_inner());
+                let tail = buf
+                    .iter()
+                    .rev()
+                    .take(15)
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .rev()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                if tail.is_empty() { None } else { Some(tail) }
+            } else {
+                None
+            };
+
+            Ok(GameExitResult { code, crash_hint })
         }
     }
 }
