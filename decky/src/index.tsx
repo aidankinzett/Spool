@@ -8,6 +8,7 @@ import {
 import {
   afterPatch,
   appDetailsClasses,
+  playSectionClasses,
   createReactTreePatcher,
   findInReactTree,
   staticClasses,
@@ -45,6 +46,9 @@ export default definePlugin(() => {
       const routeProps = findInReactTree(tree, (x: any) => x?.renderFunc);
       if (!routeProps) return tree;
 
+      console.log(findInReactTree(tree, (x: any) => x?.props?.children?.props?.label === "Last Played")
+        ?.props?.children);
+
       const patchHandler = createReactTreePatcher(
         [
           (t: any) =>
@@ -56,7 +60,7 @@ export default definePlugin(() => {
             ret,
             (x: any) =>
               Array.isArray(x?.props?.children) &&
-              x?.props?.className?.includes(appDetailsClasses.InnerContainer),
+              x?.props?.className?.includes(playSectionClasses.InnerContainer),
           );
 
           if (typeof container !== "object") return ret;
