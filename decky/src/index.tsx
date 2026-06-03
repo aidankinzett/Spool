@@ -21,7 +21,7 @@ import { GameDetailPage } from "./components/game-detail-panel";
 import { LanPage } from "./components/lan-view";
 import { PeerGamesPage } from "./components/peer-games";
 import { PeerGameDetailPage } from "./components/peer-game-detail-panel";
-import { PlaytimePatchWrapper } from "./components/playtime-patch-wrapper";
+import { PatchWrapper } from "./components/patch/patch-wrapper";
 import { SpoolPage } from "./components/spool-page";
 
 export default definePlugin(() => {
@@ -45,6 +45,7 @@ export default definePlugin(() => {
     (tree: any) => {
       const routeProps = findInReactTree(tree, (x: any) => x?.renderFunc);
       if (!routeProps) return tree;
+
       const patchHandler = createReactTreePatcher(
         [
           (t: any) =>
@@ -58,12 +59,16 @@ export default definePlugin(() => {
               Array.isArray(x?.props?.children) &&
               x?.props?.className?.includes(appDetailsClasses.InnerContainer),
           );
+
           if (typeof container !== "object") return ret;
-          container.props.children.splice(1, 0, createElement(PlaytimePatchWrapper, null));
+          container.props.children.splice(1, 0, createElement(PatchWrapper, null));
+          
           return ret;
         },
       );
+
       afterPatch(routeProps, "renderFunc", patchHandler);
+
       return tree;
     },
   );
