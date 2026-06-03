@@ -19,7 +19,7 @@ export function PatchWrapper() {
   if (!appid || loading || !game) return null;
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: "0.25rem", padding: "0.5rem 0" }}>
+    <div style={{ display: "flex", flexDirection: "row", gap: "0.25rem", padding: "0.5rem 0" }}>
       <SpoolPlaytimeBadge game={game} />
       <SpoolBackupBadge game={game} />
     </div>
