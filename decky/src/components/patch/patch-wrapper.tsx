@@ -4,6 +4,8 @@ import { useParams } from "../../lib/steam";
 import { SpoolPlaytimeBadge } from "./playtime-badge";
 import { SpoolBackupBadge } from "./backup-badge";
 import { SpoolMark } from "../spool-mark";
+import { BadgeShell } from "./badge-shell";
+import { SpoolLastPlayedBadge } from "./last-played-badge";
 
 // Badge wrapper injected into the game detail page's InnerContainer via
 // afterPatch. Uses useParams to read appid from Steam's internal router —
@@ -21,9 +23,10 @@ export function PatchWrapper() {
 
   return (
     <div style={{ display: "flex", flexDirection: "row", gap: "0.25rem", padding: "0.5rem 2.8vw" }}>
-      <div>
+      <BadgeShell>
         <SpoolMark size={16} />
-      </div>
+      </BadgeShell>
+      <SpoolLastPlayedBadge game={game} />
       <SpoolPlaytimeBadge game={game} />
       <SpoolBackupBadge game={game} />
     </div>

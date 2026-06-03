@@ -1,5 +1,6 @@
 import type { LibraryGame } from "../../types";
 import { formatRelativeTime } from "../../lib/format";
+import { BadgeShell, BadgeSep } from "./badge-shell";
 
 // Maps the Rust `sync_badge` value (see library.rs) to a short label + colour.
 // `null` means there's nothing to say about cloud sync (cloud not configured
@@ -24,28 +25,16 @@ export function SpoolBackupBadge({ game }: { game: LibraryGame }) {
 
   const when = formatRelativeTime(game.save_last_backed_up_at);
   const sync = syncState(game.sync_badge);
-  const sep = <span style={{ opacity: 0.3, margin: "0 0.3rem" }}>·</span>;
 
   return (
-    <div
-      style={{
-        display: "inline-flex",
-        alignItems: "center",
-        padding: "0.75rem 0.75rem",
-        borderRadius: "4px",
-        background: "rgba(255,255,255,0.08)",
-        fontSize: "0.8rem",
-        fontWeight: 600,
-      }}
-    >
-      <span style={{ opacity: 0.6, marginRight: "0.4rem" }}>☁️</span>
+    <BadgeShell>
       Save backed up {when}
       {sync && (
         <>
-          {sep}
+          <BadgeSep />
           <span style={{ color: sync.color }}>{sync.label}</span>
         </>
       )}
-    </div>
+    </BadgeShell>
   );
 }
