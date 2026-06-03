@@ -31,6 +31,7 @@
   import Btn from '$lib/components/Btn.svelte';
   import Pill from '$lib/components/Pill.svelte';
   import TextField from '$lib/components/TextField.svelte';
+  import NumberField from '$lib/components/NumberField.svelte';
   import Toggle from '$lib/components/Toggle.svelte';
   import SettingsCard from '$lib/components/SettingsCard.svelte';
   import SettingsRow from '$lib/components/SettingsRow.svelte';
@@ -833,13 +834,12 @@
                     <div class="bg-bg-0 pb-1">
                       <SettingsRow label="Port" helper="TCP port peers connect to. Falls back to a random port if taken.">
                         {#snippet control()}
-                          <input
-                            type="number"
-                            min="1024"
-                            max="65535"
+                          <NumberField
+                            min={1024}
+                            max={65535}
+                            width="6rem"
                             bind:value={config!.lan_share_port}
-                            onblur={onLanPortCommit}
-                            class="font-mono h-7 w-24 rounded-sm border border-line-1 bg-bg-2 px-2 text-right text-[12px] text-ink-0 outline-none focus:border-line-3"
+                            oncommit={onLanPortCommit}
                           />
                         {/snippet}
                       </SettingsRow>
@@ -863,23 +863,20 @@
                           : 'Unlimited — transfers use whatever bandwidth they can get.'}
                       >
                         {#snippet control()}
-                          <div class="flex items-center gap-1.5">
-                            <input
-                              type="number"
-                              min="0"
-                              step="1"
-                              bind:value={config!.lan_download_max_mbps}
-                              onblur={() => {
-                                if (!config) return;
-                                if (!Number.isFinite(config.lan_download_max_mbps) || config.lan_download_max_mbps < 0) {
-                                  config.lan_download_max_mbps = 0;
-                                }
-                                persist();
-                              }}
-                              class="font-mono h-7 w-20 rounded-sm border border-line-1 bg-bg-2 px-2 text-right text-[12px] text-ink-0 outline-none focus:border-line-3"
-                            />
-                            <span class="font-mono text-[10px] uppercase tracking-[0.1em] text-ink-3">Mbps</span>
-                          </div>
+                          <NumberField
+                            min={0}
+                            step={1}
+                            width="5rem"
+                            suffix="Mbps"
+                            bind:value={config!.lan_download_max_mbps}
+                            oncommit={() => {
+                              if (!config) return;
+                              if (!Number.isFinite(config.lan_download_max_mbps) || config.lan_download_max_mbps < 0) {
+                                config.lan_download_max_mbps = 0;
+                              }
+                              persist();
+                            }}
+                          />
                         {/snippet}
                       </SettingsRow>
 

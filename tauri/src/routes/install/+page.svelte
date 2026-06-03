@@ -25,6 +25,7 @@
   import TextField from '$lib/components/TextField.svelte';
   import Select, { type SelectOption } from '$lib/components/Select.svelte';
   import CandidateRow from '$lib/components/CandidateRow.svelte';
+  import { gamepadScope } from '$lib/gamepad';
 
   type Stage = 'config' | 'installing' | 'detect';
 
@@ -221,7 +222,10 @@
   }
 </script>
 
-<div class="flex h-screen flex-col bg-bg-0 text-ink-0">
+<div
+  class="flex h-screen flex-col bg-bg-0 text-ink-0"
+  use:gamepadScope={{ onBack: () => history.back() }}
+>
   <AppChrome sub="INSTALL GAME" onback={() => history.back()} />
 
   <main class="flex flex-1 flex-col overflow-hidden">
