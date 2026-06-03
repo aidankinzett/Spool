@@ -50,7 +50,7 @@ export function PatchWrapper() {
       <SpoolBackupBadge game={game} backingUp={backingUp} />
       {game && (
         <div style={{ marginLeft: "auto", display: "flex", alignItems: "center" }}>
-          <BadgeMenuButton game={game} />
+          <BadgeMenuButton game={game} appid={appid} />
         </div>
       )}
     </div>

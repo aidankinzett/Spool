@@ -3,11 +3,12 @@ import { DialogButton, Menu, MenuItem, Navigation, showContextMenu } from "@deck
 import { FaEllipsisVertical } from "react-icons/fa6";
 import type { LibraryGame } from "../../types";
 import { backupNow } from "../../api/callables";
+import { backupStarted, backupFinished } from "../../lib/backup-status";
 
 // Three-dots button rendered on the right of the game-page badge row. Opens a
 // Steam context menu (showContextMenu) anchored to itself with Spool actions
 // for the matched game.
-export function BadgeMenuButton({ game }: { game: LibraryGame }) {
+export function BadgeMenuButton({ game, appid }: { game: LibraryGame; appid: number }) {
   const openMenu = (e: MouseEvent) => {
     showContextMenu(
       <Menu label="Spool">
@@ -17,13 +18,21 @@ export function BadgeMenuButton({ game }: { game: LibraryGame }) {
         <MenuItem
           onSelected={() => {
             void (async () => {
-              const res = await backupNow();
-              if (res.ok) {
-                toaster.toast({ title: "Spool", body: `Backed up ${res.game ?? game.game_name} ✓` });
-              } else if (!res.acted) {
-                toaster.toast({ title: "Spool", body: "No active session to back up." });
-              } else {
-                toaster.toast({ title: "Spool", body: `Backup failed: ${res.reason || "unknown error"}` });
+              // Drive the same backup-status store the on_app_stop events feed,
+              // so the badge shows its spinner and the patch wrapper refetches
+              // when this finishes.
+              backupStarted(appid);
+              try {
+                const res = await backupNow();
+                if (res.ok) {
+                  toaster.toast({ title: "Spool", body: `Backed up ${res.game ?? game.game_name} ✓` });
+                } else if (!res.acted) {
+                  toaster.toast({ title: "Spool", body: "No active session to back up." });
+                } else {
+                  toaster.toast({ title: "Spool", body: `Backup failed: ${res.reason || "unknown error"}` });
+                }
+              } finally {
+                backupFinished(appid);
               }
             })();
           }}
