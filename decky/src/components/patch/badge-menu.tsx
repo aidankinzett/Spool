@@ -48,10 +48,12 @@ export function BadgeMenuButton({ game, appid }: { game: LibraryGame; appid: num
     <DialogButton
       style={{
         minWidth: 0,
-        width: "auto",
-        padding: "0 0.6rem",
+        width: "48px",
+        height: "48px",
+        padding: 0,
         display: "flex",
         alignItems: "center",
+        justifyContent: "center",
       }}
       onClick={openMenu}
     >
