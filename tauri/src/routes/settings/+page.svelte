@@ -161,6 +161,25 @@
     try { deps = await api.checkDependencies(); } finally { depsLoading = false; }
   }
 
+  let addingToSteam = $state(false);
+  async function addSpoolToSteam() {
+    addingToSteam = true;
+    try {
+      const r = await api.addSpoolToSteam();
+      const extras = r.extras_placed.length ? ` · ${r.extras_placed.join(', ')} art placed` : '';
+      toasts.show({
+        kind: 'ok',
+        label: 'STEAM',
+        title: 'Added Spool to Steam',
+        sub: `Restart Steam, then launch Spool from your library${extras}. In Game Mode it opens fullscreen.`,
+      });
+    } catch (e) {
+      toasts.show({ kind: 'bad', label: 'STEAM · FAILED', title: "Couldn't add to Steam", sub: String(e) });
+    } finally {
+      addingToSteam = false;
+    }
+  }
+
   async function installDeckyPlugin() {
     deckyInstalling = true;
     try {
@@ -650,6 +669,27 @@
           <!-- ════ STEAM DECK & LINUX ════ -->
           {:else if activeGroup === 'deck'}
             <div class="flex flex-col gap-4">
+
+              <!-- Add Spool to Steam -->
+              {#if isLinux}
+                <SettingsCard
+                  title="Add to Steam"
+                  helper="Adds Spool as a non-Steam shortcut so you can launch your library from Steam — including SteamOS Game Mode, where it opens fullscreen."
+                >
+                  {#snippet icon()}<Gamepad2 size={14} />{/snippet}
+                  <SettingsRow
+                    label="Steam shortcut"
+                    helper="Creates a “Spool” entry in your Steam library with its cover art. Restart Steam afterwards to see it."
+                  >
+                    {#snippet extras()}
+                      <Btn variant="primary" onclick={addSpoolToSteam} disabled={addingToSteam}>
+                        {#snippet icon()}<Gamepad2 size={14} />{/snippet}
+                        {addingToSteam ? 'Adding…' : 'Add to Steam'}
+                      </Btn>
+                    {/snippet}
+                  </SettingsRow>
+                </SettingsCard>
+              {/if}
 
               <!-- Game Mode companion (Decky) -->
               {#if isLinux}

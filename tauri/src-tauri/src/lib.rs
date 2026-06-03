@@ -588,6 +588,17 @@ fn run_normal_setup(
     if let Some(main) = app.get_webview_window("main") {
         let win = main.clone();
         let app_handle = app.handle().clone();
+        // In Steam Game Mode, gamescope composites a single window onto the
+        // whole output. The window-state plugin restores a *windowed* size from
+        // a prior desktop session, which gamescope then pillarboxes (black bars
+        // on the sides). Force fullscreen so it fills the screen. Fullscreen
+        // isn't one of the persisted window-state flags, so desktop sessions
+        // don't inherit it. Done while still hidden to avoid a windowed flash.
+        if gamemode::is_steam_game_mode() {
+            if let Err(e) = main.set_fullscreen(true) {
+                tracing::warn!(error = %e, "failed to set main window fullscreen in Game Mode");
+            }
+        }
         // `main` is now created hidden — show it explicitly (also removes the
         // startup white-flash).
         let _ = main.show();
