@@ -7,7 +7,14 @@ export function SpoolPlaytimeBadge({ game }: { game: LibraryGame }) {
 
   return (
     <BadgeShell>
-      {formatPlaytime(game.playtime_minutes)} played
+      <div style={{ display: "flex", flexDirection: "column", gap: "0.125rem", alignItems: "center" }}>
+        <div>
+          PLAY TIME
+        </div>
+        <div style={{ color: "#79c0ff" }}>
+          {formatPlaytime(game.playtime_minutes)}
+        </div>
+      </div>
     </BadgeShell>
   );
 }

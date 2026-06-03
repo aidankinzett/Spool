@@ -1,28 +1,28 @@
 import type { LibraryGame } from "../../types";
 import { formatRelativeTime } from "../../lib/format";
-import { BadgeShell, BadgeSep } from "./badge-shell";
+import { BadgeShell } from "./badge-shell";
 import { Spinner } from "@decky/ui";
 
-// Maps the Rust `sync_badge` value (see library.rs) to a short label + colour.
-// `null` means there's nothing to say about cloud sync (cloud not configured
-// or no backup history), so we just show the local backup line.
-function syncState(badge: string | null): { label: string; color: string } | null {
+// Maps the Rust `sync_badge` value (see library.rs) to the colour the backed-up
+// time is shown in. `null` means there's nothing to say about cloud sync (cloud
+// not configured or no backup history), so fall back to the default value blue.
+function syncColor(badge: string | null): string {
   switch (badge) {
     case "synced":
-      return { label: "Synced to cloud", color: "#7ee787" };
+      return "#7ee787";
     case "local-newer":
-      return { label: "Not yet uploaded", color: "#e3b341" };
+      return "#e3b341";
     case "cloud-newer":
-      return { label: "Cloud has newer save", color: "#79c0ff" };
+      return "#79c0ff";
     default:
-      return null;
+      return "#79c0ff";
   }
 }
 
 // Badge injected on the Steam /library/app/:appid page showing Spool's save
-// backup status: when the save was last backed up and its cloud-sync state.
-// While `backingUp` is set (a forced-close fallback backup is running) it shows
-// a spinner instead, regardless of any prior backup history.
+// backup status: when the save was last backed up, coloured by its cloud-sync
+// state. While `backingUp` is set (a forced-close fallback backup is running) it
+// shows a spinner instead, regardless of any prior backup history.
 export function SpoolBackupBadge({
   game,
   backingUp,
@@ -33,26 +33,28 @@ export function SpoolBackupBadge({
   if (backingUp) {
     return (
       <BadgeShell>
-        <Spinner style={{ width: "14px", height: "14px", marginRight: "0.4rem" }} />
-        Backing up save…
+        <div style={{ display: "flex", flexDirection: "column", gap: "0.125rem", alignItems: "center" }}>
+          <div>
+            SAVE BACKUP
+          </div>
+          <Spinner style={{ width: "14px", height: "14px" }} />
+        </div>
       </BadgeShell>
     );
   }
 
   if (!game?.save_last_backed_up_at) return null;
 
-  const when = formatRelativeTime(game.save_last_backed_up_at);
-  const sync = syncState(game.sync_badge);
-
   return (
     <BadgeShell>
-      Save backed up {when}
-      {sync && (
-        <>
-          <BadgeSep />
-          <span style={{ color: sync.color }}>{sync.label}</span>
-        </>
-      )}
+      <div style={{ display: "flex", flexDirection: "column", gap: "0.125rem", alignItems: "center" }}>
+        <div>
+          SAVE BACKUP
+        </div>
+        <div style={{ color: syncColor(game.sync_badge) }}>
+          {formatRelativeTime(game.save_last_backed_up_at)}
+        </div>
+      </div>
     </BadgeShell>
   );
 }

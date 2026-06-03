@@ -9,9 +9,9 @@ export function SpoolLastPlayedBadge({ game }: { game: LibraryGame }) {
 
     return (
         <BadgeShell>
-            <div style={{ display: "flex", flexDirection: "column", gap: "0.25rem", alignItems: "center" }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: "0.125rem", alignItems: "center" }}>
                 <div>
-                    Last played 
+                    LAST PLAYED 
                 </div>
                 <div style={{ color: "#79c0ff" }}>
                     {lastPlayed}
