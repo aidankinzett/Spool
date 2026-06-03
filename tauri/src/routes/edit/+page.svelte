@@ -448,13 +448,15 @@
             </span>
           {/snippet}
         {:else if tab === 'launch'}
-          {@render field(
-            'Run as administrator',
-            registryRunAsAdmin
-              ? 'Already enabled by Windows for this exe — Spool will elevate either way.'
-              : 'Required by some games (mostly older / DRM-laden). Off by default. Triggers a UAC prompt at launch.',
-            launchRunAs,
-          )}
+          {#if !isLinux}
+            {@render field(
+              'Run as administrator',
+              registryRunAsAdmin
+                ? 'Already enabled by Windows for this exe — Spool will elevate either way.'
+                : 'Required by some games (mostly older / DRM-laden). Off by default. Triggers a UAC prompt at launch.',
+              launchRunAs,
+            )}
+          {/if}
           {#if isLinux && exeIsWindows}
             {@render field(
               'Proton version',
