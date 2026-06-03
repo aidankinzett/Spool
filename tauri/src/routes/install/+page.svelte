@@ -85,8 +85,6 @@
         earlyDriveLetter = e.payload;
       });
       protonVersions = await api.listProtonVersions();
-      const ge = protonVersions.find((v) => v.name.toLowerCase().includes('ge-proton'));
-      if (ge) selectedProton = ge.path;
       await pickSetup(true);
     })();
     return () => unlisten?.();

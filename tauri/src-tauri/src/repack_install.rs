@@ -90,18 +90,14 @@ async fn run_impl(
     };
     let umu_run = proton::resolve_umu_run(Some(&umu_run_path))?;
 
-    // Prefer GE-Proton for repacks: explicit override → global config default →
-    // first installed GE-Proton build → umu-run's own bundled default (None).
+    // Explicit override → global config default → umu-run's own bundled default.
+    // We don't auto-select GE-Proton here: in practice UMU-Proton is more
+    // reliable for running repack installers (better decompressor compatibility),
+    // while GE-Proton is preferable for the installed game at launch time.
     let proton_path = proton_version_override
         .as_deref()
         .and_then(|p| proton::resolve_proton_path(Some(p), None))
-        .or_else(|| proton::resolve_proton_path(None, Some(&default_proton_path)))
-        .or_else(|| {
-            proton::installed_proton_versions()
-                .into_iter()
-                .find(|v| v.name.to_lowercase().contains("ge-proton"))
-                .map(|v| PathBuf::from(v.path))
-        });
+        .or_else(|| proton::resolve_proton_path(None, Some(&default_proton_path)));
 
     // Clean host folder for the game.
     let install_dir = match install_dir_override {
