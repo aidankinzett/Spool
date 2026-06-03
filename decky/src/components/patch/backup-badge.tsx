@@ -33,7 +33,7 @@ export function SpoolBackupBadge({
   if (backingUp) {
     return (
       <BadgeShell>
-        <div style={{ display: "flex", flexDirection: "column", gap: "0.125rem", alignItems: "center" }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: "0", alignItems: "center" }}>
           <div>
             SAVE BACKUP
           </div>
@@ -49,7 +49,7 @@ export function SpoolBackupBadge({
 
   return (
     <BadgeShell>
-      <div style={{ display: "flex", flexDirection: "column", gap: "0.125rem", alignItems: "center" }}>
+      <div style={{ display: "flex", flexDirection: "column", gap: "0", alignItems: "center" }}>
         <div>
           SAVE BACKUP
         </div>

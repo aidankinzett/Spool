@@ -8,7 +8,7 @@ export function BadgeShell({ children }: { children: ReactNode }) {
       style={{
         display: "inline-flex",
         alignItems: "center",
-        padding: "0.75rem 0.75rem",
+        padding: "0.4rem 0.75rem",
         borderRadius: "4px",
         background: "rgba(255,255,255,0.08)",
         fontSize: "0.8rem",
