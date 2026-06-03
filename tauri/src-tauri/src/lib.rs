@@ -194,6 +194,18 @@ pub fn run() {
         }
     };
 
+    // One-shot import of the existing library.json into the db on the first
+    // launch after the db is introduced. No-op once the table is populated, so
+    // it's cheap to attempt every startup. library.json is left in place as the
+    // rollback path until later steps make the db authoritative.
+    if let Some(ref db) = db {
+        match tauri::async_runtime::block_on(db.import_if_empty(&library.entries)) {
+            Ok(0) => {}
+            Ok(n) => tracing::info!(count = n, "imported library.json into library.db"),
+            Err(e) => tracing::error!(error = %e, "library.db import failed"),
+        }
+    }
+
     // Decide whether this is an attached launch: `spool --run` inside a SteamOS
     // gamescope session, OR a `--run … --attached` shortcut (Apollo/Sunshine
     // streaming host). If so, we skip the tray, single-instance plugin, and
