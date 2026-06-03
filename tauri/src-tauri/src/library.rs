@@ -10,7 +10,7 @@ use crate::paths;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 /// One game in the library. Matches the C# `GameEntry` JSON shape exactly
 /// for the legacy fields, plus a small set of manifest-derived metadata
@@ -339,6 +339,32 @@ pub fn make_safe_filename(name: &str) -> String {
     }
 }
 
+// ── SQLite mirror helpers (migration step 4a) ────────────────────────────────
+//
+// The in-memory `Vec` + `library.json` stay authoritative this step; these
+// mirror each write into the SQLite db alongside, so the db is a complete live
+// copy before reads flip onto it in step 4b. Best-effort: a no-op when the pool
+// isn't in state (headless processes don't open one yet), and a db error is
+// logged, never propagated — the authoritative write already succeeded.
+
+/// Mirror a full-row write (add/update) into the db.
+async fn mirror_db_upsert(app: &AppHandle, entry: &GameEntry) {
+    if let Some(db) = app.try_state::<crate::db::Db>() {
+        if let Err(e) = db.upsert_game(entry).await {
+            tracing::warn!(game_id = %entry.id, error = %e, "db upsert mirror failed");
+        }
+    }
+}
+
+/// Mirror a delete into the db.
+async fn mirror_db_remove(app: &AppHandle, id: &str) {
+    if let Some(db) = app.try_state::<crate::db::Db>() {
+        if let Err(e) = db.remove_game(id).await {
+            tracing::warn!(game_id = %id, error = %e, "db remove mirror failed");
+        }
+    }
+}
+
 // ── Tauri commands ──────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -350,7 +376,7 @@ pub fn list_games(state: State<'_, SharedLibrary>) -> AppResult<Vec<GameEntry>> 
 /// Adds a new game. Assigns id/catalog/timestamps server-side; persists
 /// atomically; emits `library.changed` so any open windows can refresh.
 #[tauri::command]
-pub fn add_game(
+pub async fn add_game(
     state: State<'_, SharedLibrary>,
     app: AppHandle,
     new_game: NewGame,
@@ -382,6 +408,7 @@ pub fn add_game(
         lib.save()?;
         entry
     };
+    mirror_db_upsert(&app, &entry).await;
     if let Err(e) = app.emit("library:changed", &entry.id) {
         tracing::warn!(error = %e, "failed to emit library:changed after add_game");
     }
@@ -417,7 +444,7 @@ pub fn add_game(
 /// `entry` is the lookup key; mismatches between in-memory state and
 /// disk are resolved by overwriting.
 #[tauri::command]
-pub fn update_game(
+pub async fn update_game(
     state: State<'_, SharedLibrary>,
     app: AppHandle,
     entry: GameEntry,
@@ -433,6 +460,7 @@ pub fn update_game(
         lib.save()?;
         entry
     };
+    mirror_db_upsert(&app, &updated).await;
     if let Err(e) = app.emit("library:changed", &updated.id) {
         tracing::warn!(error = %e, "failed to emit library:changed after update_game");
     }
@@ -442,7 +470,7 @@ pub fn update_game(
 /// Removes an entry by id. No-op if the id isn't present (returns false).
 /// Emits `library.changed` when something was actually removed.
 #[tauri::command]
-pub fn remove_game(
+pub async fn remove_game(
     state: State<'_, SharedLibrary>,
     app: AppHandle,
     id: String,
@@ -459,6 +487,7 @@ pub fn remove_game(
         }
     };
     if removed {
+        mirror_db_remove(&app, &id).await;
         if let Err(e) = app.emit("library:changed", &id) {
             tracing::warn!(error = %e, "failed to emit library:changed after remove_game");
         }
@@ -491,7 +520,8 @@ pub async fn delete_game_from_disk(
     app: AppHandle,
     id: String,
 ) -> AppResult<()> {
-    delete_game_core(state.inner(), &id).await?;
+    let db = app.try_state::<crate::db::Db>();
+    delete_game_core(state.inner(), db.as_deref(), &id).await?;
     if let Err(e) = app.emit("library:changed", &id) {
         tracing::warn!(error = %e, "failed to emit library:changed after delete_game_from_disk");
     }
@@ -501,7 +531,11 @@ pub async fn delete_game_from_disk(
 /// Folder-delete + entry-removal shared by the [`delete_game_from_disk`]
 /// command and the Decky plugin server's `DELETE /games/:id`. Does not emit
 /// `library:changed` — the caller does that where a Tauri `AppHandle` exists.
-pub async fn delete_game_core(library: &SharedLibrary, id: &str) -> AppResult<()> {
+pub async fn delete_game_core(
+    library: &SharedLibrary,
+    db: Option<&crate::db::Db>,
+    id: &str,
+) -> AppResult<()> {
     // Snapshot the folder + prefix paths under the lock, then drop the guard
     // before any blocking IO or await (lock discipline: never hold a std Mutex
     // across await). The Proton prefix is only ever managed on Linux, so its
@@ -560,9 +594,16 @@ pub async fn delete_game_core(library: &SharedLibrary, id: &str) -> AppResult<()
     // Folder gone (or already absent) — now forget the entry. Reuse the same
     // retain + save path as remove_game.
     let id = id.to_string();
-    let mut lib = library.lock().map_err(|_| AppError::LockPoisoned)?;
-    lib.entries.retain(|e| e.id != id);
-    lib.save()?;
+    {
+        let mut lib = library.lock().map_err(|_| AppError::LockPoisoned)?;
+        lib.entries.retain(|e| e.id != id);
+        lib.save()?;
+    }
+    if let Some(db) = db {
+        if let Err(e) = db.remove_game(&id).await {
+            tracing::warn!(game_id = %id, error = %e, "db remove mirror failed");
+        }
+    }
     Ok(())
 }
 

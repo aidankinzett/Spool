@@ -59,7 +59,9 @@ pub(crate) fn run_backup_headless(game_name: &str) -> i32 {
         }
     };
     let result = rt.block_on(async {
-        runner::backup_game_core(&client, &ludusavi_exe, &config_dir, &lib_state, &game_id).await
+        // No db pool in the headless backup process yet (wired in step 4b).
+        runner::backup_game_core(&client, &ludusavi_exe, &config_dir, &lib_state, None, &game_id)
+            .await
     });
     let cfg_data = config::Config::load().map(|c| c.data).unwrap_or_default();
 

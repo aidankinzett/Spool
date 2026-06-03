@@ -268,7 +268,9 @@ async fn get_library() -> Json<Value> {
 async fn delete_game(AxPath(id): AxPath<String>) -> Result<Json<Value>, StatusCode> {
     let library: crate::library::SharedLibrary =
         Arc::new(Mutex::new(Library::load().unwrap_or_default()));
-    match crate::library::delete_game_core(&library, &id).await {
+    // No db pool in the plugin-server process yet (wired in migration step 4b);
+    // the db delete is mirrored by the GUI when it picks up the change.
+    match crate::library::delete_game_core(&library, None, &id).await {
         Ok(()) => Ok(Json(json!({ "ok": true }))),
         Err(e) => {
             tracing::warn!(game_id = %id, error = %e, "plugin: delete_game failed");
@@ -635,6 +637,8 @@ async fn run_backup(state: &PluginState, game_name: &str, session_id: &str) -> J
         &ludusavi_exe,
         &config_dir,
         &library,
+        // No db pool in the plugin-server process yet (wired in step 4b).
+        None,
         &game_id,
     )
     .await

@@ -31,7 +31,7 @@ use crate::ludusavi_config;
 use crate::redirects;
 use crate::rclone::{self, SessionClass};
 use crate::{process, paths, registry};
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -174,11 +174,13 @@ pub(crate) fn os_toast_if_hidden(app: &AppHandle, title: &str, body: &str) {
 /// source size is recorded from this run's reported bytes (ludusavi exposes no
 /// per-backup or total on-disk size via its API). If the backup list can't be
 /// queried we fall back to a simple increment so the signal isn't lost.
+#[allow(clippy::too_many_arguments)]
 async fn persist_backup_stats(
     ludusavi_client: &LudusaviClient,
     ludusavi_exe: &Path,
     config_dir: &Path,
     library: &SharedLibrary,
+    db: Option<&crate::db::Db>,
     game_id: &str,
     game_name: &str,
     bytes_total: u64,
@@ -186,27 +188,40 @@ async fn persist_backup_stats(
     let stats = ludusavi_client
         .list_backups(ludusavi_exe, config_dir, game_name)
         .await;
-    let mut lib = library.lock().map_err(|_| AppError::LockPoisoned)?;
-    if let Some(entry) = lib.entries.iter_mut().find(|e| e.id == game_id) {
-        match &stats {
-            Ok(s) => {
-                entry.save_backup_count = s.count;
-                entry.save_last_backed_up_at = s.last_backed_up_at;
+    let size_mb = (bytes_total as f64) / (1024.0 * 1024.0);
+    // Capture the persisted values so we can mirror them into the db after the
+    // lock is dropped (never hold a std Mutex across the db await).
+    let persisted: Option<(i32, Option<DateTime<Utc>>)> = {
+        let mut lib = library.lock().map_err(|_| AppError::LockPoisoned)?;
+        let captured = if let Some(entry) = lib.entries.iter_mut().find(|e| e.id == game_id) {
+            match &stats {
+                Ok(s) => {
+                    entry.save_backup_count = s.count;
+                    entry.save_last_backed_up_at = s.last_backed_up_at;
+                }
+                Err(e) => {
+                    tracing::warn!(game_name, error = %e, "ludusavi backups query failed; incrementing count");
+                    entry.save_backup_count += 1;
+                    entry.save_last_backed_up_at = Some(Utc::now());
+                }
             }
-            Err(e) => {
-                tracing::warn!(game_name, error = %e, "ludusavi backups query failed; incrementing count");
-                entry.save_backup_count += 1;
-                entry.save_last_backed_up_at = Some(Utc::now());
-            }
+            entry.save_backup_size_mb = size_mb;
+            Some((entry.save_backup_count, entry.save_last_backed_up_at))
+        } else {
+            tracing::warn!(
+                game_id,
+                "backup stats not persisted: library entry missing after session"
+            );
+            None
+        };
+        lib.save()?;
+        captured
+    };
+    if let (Some(db), Some((count, last_at))) = (db, persisted) {
+        if let Err(e) = db.set_backup_stats(game_id, count, last_at, Some(size_mb)).await {
+            tracing::warn!(game_id, error = %e, "db backup-stats mirror failed");
         }
-        entry.save_backup_size_mb = (bytes_total as f64) / (1024.0 * 1024.0);
-    } else {
-        tracing::warn!(
-            game_id,
-            "backup stats not persisted: library entry missing after session"
-        );
     }
-    lib.save()?;
     Ok(())
 }
 
@@ -219,6 +234,7 @@ pub async fn backup_game_core(
     ludusavi_exe: &Path,
     config_dir: &Path,
     library: &SharedLibrary,
+    db: Option<&crate::db::Db>,
     game_id: &str,
 ) -> AppResult<ManualBackupResult> {
     let (game_name, uses_proton, prefix_override) = {
@@ -272,6 +288,7 @@ pub async fn backup_game_core(
             ludusavi_exe,
             config_dir,
             library,
+            db,
             game_id,
             &game_name,
             bytes_total,
@@ -281,11 +298,18 @@ pub async fn backup_game_core(
         // upload actually reached the remote, otherwise "local-newer" so the
         // user sees the local save hasn't been backed up to the cloud yet.
         let badge = if cloud_synced { "synced" } else { "local-newer" };
-        let mut lib = library.lock().map_err(|_| AppError::LockPoisoned)?;
-        if let Some(entry) = lib.entries.iter_mut().find(|e| e.id == game_id) {
-            entry.sync_badge = Some(badge.to_string());
+        {
+            let mut lib = library.lock().map_err(|_| AppError::LockPoisoned)?;
+            if let Some(entry) = lib.entries.iter_mut().find(|e| e.id == game_id) {
+                entry.sync_badge = Some(badge.to_string());
+            }
+            lib.save()?;
         }
-        lib.save()?;
+        if let Some(db) = db {
+            if let Err(e) = db.set_sync_badge(game_id, Some(badge)).await {
+                tracing::warn!(game_id, error = %e, "db sync-badge mirror failed");
+            }
+        }
     }
 
     Ok(ManualBackupResult {
@@ -313,9 +337,17 @@ pub async fn manual_backup(app: AppHandle, game_id: String) -> AppResult<ManualB
     let config_dir = crate::paths::ludusavi_config_dir();
     let ludusavi_client = app.state::<LudusaviClient>();
     let library = app.state::<SharedLibrary>();
+    let db = app.try_state::<crate::db::Db>();
 
-    let result =
-        backup_game_core(&ludusavi_client, &ludusavi_exe, &config_dir, &library, &game_id).await?;
+    let result = backup_game_core(
+        &ludusavi_client,
+        &ludusavi_exe,
+        &config_dir,
+        &library,
+        db.as_deref(),
+        &game_id,
+    )
+    .await?;
 
     if result.game_count > 0 {
         let _ = app.emit("library:changed", &game_id);
@@ -370,24 +402,34 @@ pub async fn refresh_save_metadata(app: AppHandle, game_id: String) -> AppResult
         }
     };
 
-    let library = app.state::<SharedLibrary>();
-    let mut lib = library.lock().map_err(|_| AppError::LockPoisoned)?;
-    let changed = if let Some(entry) = lib.entries.iter_mut().find(|e| e.id == game_id) {
-        let changed = entry.save_backup_count != stats.count
-            || entry.save_last_backed_up_at != stats.last_backed_up_at;
+    let changed = {
+        let library = app.state::<SharedLibrary>();
+        let mut lib = library.lock().map_err(|_| AppError::LockPoisoned)?;
+        let changed = if let Some(entry) = lib.entries.iter_mut().find(|e| e.id == game_id) {
+            let changed = entry.save_backup_count != stats.count
+                || entry.save_last_backed_up_at != stats.last_backed_up_at;
+            if changed {
+                entry.save_backup_count = stats.count;
+                entry.save_last_backed_up_at = stats.last_backed_up_at;
+            }
+            changed
+        } else {
+            false
+        };
         if changed {
-            entry.save_backup_count = stats.count;
-            entry.save_last_backed_up_at = stats.last_backed_up_at;
+            lib.save()?;
         }
         changed
-    } else {
-        false
     };
     if changed {
-        lib.save()?;
-    }
-    drop(lib);
-    if changed {
+        if let Some(db) = app.try_state::<crate::db::Db>() {
+            if let Err(e) = db
+                .set_backup_stats(&game_id, stats.count, stats.last_backed_up_at, None)
+                .await
+            {
+                tracing::warn!(game_id, error = %e, "db backup-stats mirror failed");
+            }
+        }
         let _ = app.emit("library:changed", &game_id);
     }
     Ok(())
@@ -509,11 +551,13 @@ pub async fn restore_save_revision(
 
     // ── Step 2: pin the rolled-back state as the new tip ──────────────────
     let library = app.state::<SharedLibrary>();
+    let db = app.try_state::<crate::db::Db>();
     let pin = backup_game_core(
         &ludusavi_client,
         &ludusavi_exe,
         &config_dir,
         &library,
+        db.as_deref(),
         &game_id,
     )
     .await
@@ -529,7 +573,7 @@ pub async fn restore_save_revision(
         // launch's conflict check is exact rather than falling back to timestamps.
         let backup_dir = ludusavi_config::backup_dir();
         if let Some(tip) = redirects::read_local_backup_tip(&backup_dir, &game_name) {
-            let _ = set_cloud_baseline(&app, &game_id, &tip.name);
+            let _ = set_cloud_baseline(&app, &game_id, &tip.name).await;
         }
         // We're the latest backer: clear any marker + record the backer.
         rclone::complete_session_backup(&app, &game_name).await;
@@ -617,7 +661,7 @@ pub async fn resolve_cloud_conflict(
     // launch doesn't immediately re-prompt for the same (now-resolved) state.
     let backup_dir = ludusavi_config::backup_dir();
     if let Some(tip) = redirects::read_local_backup_tip(&backup_dir, &game_name) {
-        let _ = set_cloud_baseline(&app, &game_id, &tip.name);
+        let _ = set_cloud_baseline(&app, &game_id, &tip.name).await;
     }
 
     Ok(ManualRestoreResult { game_count })
@@ -903,13 +947,27 @@ fn decide_cloud_sync(
 
 /// Record `tip_name` as the cloud-sync baseline for `game_id` and persist
 /// (only writes when it actually changed).
-fn set_cloud_baseline(app: &AppHandle, game_id: &str, tip_name: &str) -> AppResult<()> {
-    let library = app.state::<SharedLibrary>();
-    let mut lib = library.lock().map_err(|_| AppError::LockPoisoned)?;
-    if let Some(entry) = lib.entries.iter_mut().find(|e| e.id == game_id) {
-        if entry.cloud_sync_baseline.as_deref() != Some(tip_name) {
-            entry.cloud_sync_baseline = Some(tip_name.to_string());
-            lib.save()?;
+async fn set_cloud_baseline(app: &AppHandle, game_id: &str, tip_name: &str) -> AppResult<()> {
+    let changed = {
+        let library = app.state::<SharedLibrary>();
+        let mut lib = library.lock().map_err(|_| AppError::LockPoisoned)?;
+        if let Some(entry) = lib.entries.iter_mut().find(|e| e.id == game_id) {
+            if entry.cloud_sync_baseline.as_deref() != Some(tip_name) {
+                entry.cloud_sync_baseline = Some(tip_name.to_string());
+                lib.save()?;
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        }
+    };
+    if changed {
+        if let Some(db) = app.try_state::<crate::db::Db>() {
+            if let Err(e) = db.set_cloud_baseline(game_id, tip_name).await {
+                tracing::warn!(game_id, error = %e, "db cloud-baseline mirror failed");
+            }
         }
     }
     Ok(())
@@ -1596,7 +1654,7 @@ async fn phase_restore(ctx: &WorkflowCtx<'_>) -> AppResult<bool> {
             // the synced baseline so the next conflict check is exact.
             let backup_dir = ludusavi_config::backup_dir();
             if let Some(tip) = redirects::read_local_backup_tip(&backup_dir, ctx.game_name) {
-                let _ = set_cloud_baseline(ctx.app, ctx.game_id, &tip.name);
+                let _ = set_cloud_baseline(ctx.app, ctx.game_id, &tip.name).await;
             }
         }
         // "No saves to restore" is only true when ludusavi explicitly doesn't
@@ -1671,7 +1729,7 @@ async fn reconcile_cloud_conflict(ctx: &WorkflowCtx<'_>) -> AppResult<()> {
                 ));
             }
             if let Some(tip) = cloud_tip.as_ref() {
-                let _ = set_cloud_baseline(ctx.app, ctx.game_id, &tip.name);
+                let _ = set_cloud_baseline(ctx.app, ctx.game_id, &tip.name).await;
             }
             emit_cloud_notice(ctx.app, ctx.game_id, "Restored newer saves from the cloud");
         }
@@ -1682,7 +1740,7 @@ async fn reconcile_cloud_conflict(ctx: &WorkflowCtx<'_>) -> AppResult<()> {
                 .cloud_resolve(ctx.ludusavi_exe, &ctx.config_dir, crate::ludusavi::CloudOp::Upload, ctx.game_name)
                 .await?;
             if let Some(tip) = local_tip.as_ref() {
-                let _ = set_cloud_baseline(ctx.app, ctx.game_id, &tip.name);
+                let _ = set_cloud_baseline(ctx.app, ctx.game_id, &tip.name).await;
             }
         }
         CloudSyncDecision::InSync => {}
@@ -1803,6 +1861,16 @@ async fn phase_launch(ctx: &WorkflowCtx<'_>, exe_pathbuf: &Path) -> AppResult<Se
         }
         lib.save()?;
     }
+    // Field-level db mirror: a relative playtime add (not a whole-row write) so a
+    // concurrent write from the tray GUI can't clobber this session's minutes.
+    if let Some(db) = ctx.app.try_state::<crate::db::Db>() {
+        if let Err(e) = db
+            .record_session_end(ctx.game_id, session_end, session_minutes)
+            .await
+        {
+            tracing::warn!(game_id = %ctx.game_id, error = %e, "db session-end mirror failed");
+        }
+    }
     let _ = ctx.app.emit("library:changed", &ctx.game_id.to_string());
 
     Ok(SessionTiming { end: session_end, minutes: session_minutes })
@@ -1873,11 +1941,13 @@ async fn phase_backup(ctx: &WorkflowCtx<'_>, no_saves: bool, timing: &SessionTim
                 if let Some(overall) = &out.overall {
                     if overall.total_games > 0 {
                         let library = ctx.app.state::<SharedLibrary>();
+                        let db = ctx.app.try_state::<crate::db::Db>();
                         persist_backup_stats(
                             ctx.ludusavi_client,
                             ctx.ludusavi_exe,
                             &ctx.config_dir,
                             &library,
+                            db.as_deref(),
                             ctx.game_id,
                             ctx.game_name,
                             overall.total_bytes,
@@ -1953,7 +2023,7 @@ async fn phase_backup(ctx: &WorkflowCtx<'_>, no_saves: bool, timing: &SessionTim
                 if ctx.cloud_configured && !cloud_upload_failed {
                     let backup_dir = ludusavi_config::backup_dir();
                     if let Some(tip) = redirects::read_local_backup_tip(&backup_dir, ctx.game_name) {
-                        let _ = set_cloud_baseline(ctx.app, ctx.game_id, &tip.name);
+                        let _ = set_cloud_baseline(ctx.app, ctx.game_id, &tip.name).await;
                     }
                 }
 
@@ -1979,6 +2049,11 @@ async fn phase_backup(ctx: &WorkflowCtx<'_>, no_saves: bool, timing: &SessionTim
                     false
                 };
                 if badge_changed {
+                    if let Some(db) = ctx.app.try_state::<crate::db::Db>() {
+                        if let Err(e) = db.set_sync_badge(ctx.game_id, Some(target_badge)).await {
+                            tracing::warn!(game_id = %ctx.game_id, error = %e, "db sync-badge mirror failed");
+                        }
+                    }
                     let _ = ctx.app.emit("library:changed", &ctx.game_id.to_string());
                 }
             }

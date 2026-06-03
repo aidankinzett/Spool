@@ -16,6 +16,7 @@
 use crate::error::{AppError, AppResult};
 use crate::library::GameEntry;
 use crate::paths;
+use chrono::{DateTime, Utc};
 use sqlx::sqlite::{
     SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteRow, SqliteSynchronous,
 };
@@ -278,6 +279,100 @@ impl Db {
         row.as_ref().map(row_to_entry).transpose()
     }
 
+    /// Delete a game by id. Succeeds (no-op) when the id isn't present.
+    pub async fn remove_game(&self, id: &str) -> AppResult<()> {
+        sqlx::query("DELETE FROM games WHERE id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| AppError::Other(format!("remove game {id}: {e}")))?;
+        Ok(())
+    }
+
+    // ── Field-level setters ─────────────────────────────────────────────────
+    //
+    // These write individual columns rather than the whole row, so two processes
+    // updating *different* fields of the same game (e.g. an attached launch
+    // recording playtime while the tray GUI sets a sync badge) don't clobber each
+    // other — the lost-update bug the JSON whole-file rewrite had. Each is a
+    // single UPDATE, so it's atomic on its own.
+
+    /// Record post-backup stats. `size_mb` of `None` leaves the size column as-is
+    /// (the metadata refresh path updates count/last only).
+    pub async fn set_backup_stats(
+        &self,
+        id: &str,
+        count: i32,
+        last_at: Option<DateTime<Utc>>,
+        size_mb: Option<f64>,
+    ) -> AppResult<()> {
+        let q = if let Some(size) = size_mb {
+            sqlx::query(
+                "UPDATE games SET save_backup_count = ?, save_last_backed_up_at = ?, \
+                 save_backup_size_mb = ? WHERE id = ?",
+            )
+            .bind(count)
+            .bind(last_at)
+            .bind(size)
+            .bind(id)
+        } else {
+            sqlx::query(
+                "UPDATE games SET save_backup_count = ?, save_last_backed_up_at = ? WHERE id = ?",
+            )
+            .bind(count)
+            .bind(last_at)
+            .bind(id)
+        };
+        q.execute(&self.pool)
+            .await
+            .map_err(|e| AppError::Other(format!("set backup stats {id}: {e}")))?;
+        Ok(())
+    }
+
+    /// Set (or clear, with `None`) the cross-device sync badge.
+    pub async fn set_sync_badge(&self, id: &str, badge: Option<&str>) -> AppResult<()> {
+        sqlx::query("UPDATE games SET sync_badge = ? WHERE id = ?")
+            .bind(badge)
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| AppError::Other(format!("set sync badge {id}: {e}")))?;
+        Ok(())
+    }
+
+    /// Set the cloud-sync baseline (the last backup tip reconciled with the cloud).
+    pub async fn set_cloud_baseline(&self, id: &str, baseline: &str) -> AppResult<()> {
+        sqlx::query("UPDATE games SET cloud_sync_baseline = ? WHERE id = ?")
+            .bind(baseline)
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| AppError::Other(format!("set cloud baseline {id}: {e}")))?;
+        Ok(())
+    }
+
+    /// Record a finished play session: set `last_played_at` and **add** to
+    /// `playtime_minutes`. The relative add (rather than read-then-write) is what
+    /// keeps two processes from clobbering each other's playtime.
+    pub async fn record_session_end(
+        &self,
+        id: &str,
+        last_played: DateTime<Utc>,
+        add_minutes: i32,
+    ) -> AppResult<()> {
+        sqlx::query(
+            "UPDATE games SET last_played_at = ?, playtime_minutes = playtime_minutes + ? \
+             WHERE id = ?",
+        )
+        .bind(last_played)
+        .bind(add_minutes)
+        .bind(id)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| AppError::Other(format!("record session end {id}: {e}")))?;
+        Ok(())
+    }
+
     /// Borrow the underlying pool for queries.
     #[allow(dead_code)] // wired into state now; first readers land in a later step
     pub fn pool(&self) -> &SqlitePool {
@@ -528,6 +623,87 @@ mod tests {
         let dup = db.find_by_name("Dup").await.unwrap().expect("present");
         assert_eq!(dup.id, "a");
         assert!(db.find_by_name("Nope").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn remove_game_deletes_and_is_idempotent() {
+        let db = memory_db().await;
+        db.upsert_game(&GameEntry {
+            id: "x".to_string(),
+            ..GameEntry::default()
+        })
+        .await
+        .unwrap();
+        db.remove_game("x").await.unwrap();
+        assert_eq!(db.count_games().await.unwrap(), 0);
+        // Removing an absent id is a no-op, not an error.
+        db.remove_game("x").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn field_level_setters_touch_only_their_columns() {
+        let db = memory_db().await;
+        db.upsert_game(&GameEntry {
+            id: "g".to_string(),
+            game_name: "G".to_string(),
+            playtime_minutes: 100,
+            ..GameEntry::default()
+        })
+        .await
+        .unwrap();
+
+        let ts = DateTime::parse_from_rfc3339("2026-06-04T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        db.set_backup_stats("g", 5, Some(ts), Some(2.5)).await.unwrap();
+        db.set_sync_badge("g", Some("synced")).await.unwrap();
+        db.set_cloud_baseline("g", "tip-1").await.unwrap();
+
+        let e = db.find("g").await.unwrap().unwrap();
+        assert_eq!(e.save_backup_count, 5);
+        assert_eq!(e.save_last_backed_up_at, Some(ts));
+        assert_eq!(e.save_backup_size_mb, 2.5);
+        assert_eq!(e.sync_badge.as_deref(), Some("synced"));
+        assert_eq!(e.cloud_sync_baseline.as_deref(), Some("tip-1"));
+        // Untouched columns are intact.
+        assert_eq!(e.game_name, "G");
+        assert_eq!(e.playtime_minutes, 100);
+
+        // size_mb None leaves the size column unchanged.
+        db.set_backup_stats("g", 6, Some(ts), None).await.unwrap();
+        let e = db.find("g").await.unwrap().unwrap();
+        assert_eq!(e.save_backup_count, 6);
+        assert_eq!(e.save_backup_size_mb, 2.5, "size preserved when None");
+
+        // Clearing the badge.
+        db.set_sync_badge("g", None).await.unwrap();
+        assert_eq!(db.find("g").await.unwrap().unwrap().sync_badge, None);
+    }
+
+    /// The relative playtime add is the lost-update fix: two session-end records
+    /// against the same game accumulate rather than overwrite, which a
+    /// read-modify-write of the whole row could not guarantee across processes.
+    #[tokio::test]
+    async fn record_session_end_accumulates_playtime() {
+        let db = memory_db().await;
+        db.upsert_game(&GameEntry {
+            id: "g".to_string(),
+            playtime_minutes: 100,
+            ..GameEntry::default()
+        })
+        .await
+        .unwrap();
+        let ts1 = DateTime::parse_from_rfc3339("2026-06-04T10:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let ts2 = DateTime::parse_from_rfc3339("2026-06-04T11:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        db.record_session_end("g", ts1, 30).await.unwrap();
+        db.record_session_end("g", ts2, 15).await.unwrap();
+        let e = db.find("g").await.unwrap().unwrap();
+        assert_eq!(e.playtime_minutes, 145, "100 + 30 + 15");
+        assert_eq!(e.last_played_at, Some(ts2), "last write wins for timestamp");
     }
 
     #[tokio::test]

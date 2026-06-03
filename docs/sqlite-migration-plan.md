@@ -133,24 +133,38 @@ Each step compiles, passes tests, and ships independently.
    transient `SQLITE_BUSY` during a first-launch migration race doesn't leave a
    process with no db. Zero behaviour change — nothing reads these methods yet.
 
-4. **Cutover: flip reads *and* writes to the db together.** Convert
-   `add_game`/`update_game`/`remove_game`/`delete_game_core` to `upsert`/`delete`
-   and the runner + backfills to field-level setters (the actual lost-update
-   fix), and in the same step flip the readers (`list_games`, `find`, LAN
-   `PeerGame::from_entry`, plugin server `/library`, steam/launcher shortcut
-   builders, diagnostics) onto the db. Because reads and writes are coupled this
-   is one coherent cutover, not two.
+4. **Cutover (split into 4a + 4b for reviewability).** Reads and writes are
+   coupled, so the *authority* flip must be atomic — but the write plumbing can
+   be built and exercised first, behind the still-authoritative `Vec`/JSON.
 
-   **Wire the pool into the headless entry points here.** Today `Db::init` only
-   runs in the GUI/attached-`--run` processes; the `--backup` / `--release-lock`
-   / `--headless-server` subcommands `std::process::exit()` in `lib.rs` *before*
+   **4a — additive db writes (done).** Add the db write API (`remove_game` +
+   field-level setters: `set_backup_stats`, `set_sync_badge`,
+   `set_cloud_baseline`, `record_session_end` with a *relative* playtime add) and
+   mirror the `library.rs` CRUD commands and the runner save/backup/badge paths
+   into the db alongside their existing `Vec`/JSON writes. Best-effort via
+   `app.try_state::<Db>()` — a no-op when the pool is absent (headless), and a db
+   error is logged, never propagated, because the authoritative write already
+   succeeded. The `Vec`/JSON stays authoritative and readers are unchanged, so
+   there's zero behaviour change; the db just becomes a live mirror of these
+   paths. The other writers (LAN install-add, accent/size/metadata backfills,
+   steamgriddb, rclone device-fold) are intentionally **not** mirrored yet — see
+   4b.
+
+   **4b — flip authority.** Mirror the remaining writers into the db, then flip
+   *all* readers (`list_games`, `find`, LAN `PeerGame::from_entry`, plugin server
+   `/library`, steam/launcher shortcut builders, diagnostics) onto the db and
+   remove the `Vec`-backed `Library` / `SharedLibrary`. Convert the field-level
+   setters from best-effort mirrors to the authoritative writes (the lost-update
+   fix goes live here, when reads come from the db). Keep dual-writing
+   `library.json` as a mirror for rollback; stop in step 6.
+
+   **Wire the pool into the headless entry points in 4b.** `Db::init` only runs
+   in the GUI/attached-`--run` processes; the `--backup` / `--release-lock` /
+   `--headless-server` subcommands `std::process::exit()` in `lib.rs` *before*
    the pool is created (`headless.rs`, `plugin_server.rs` still go through
-   `Library::load()` / per-request JSON reload). The three-live-processes
-   contention case the migration exists for is **not actually exercised against
-   the db until this step opens a pool in those entry points.** Don't skip it.
-
-   Keep dual-writing `library.json` through this step so rollback stays trivial;
-   stop writing it in step 6.
+   `Library::load()` / per-request JSON reload, and pass `None` for the db in
+   4a). The three-live-processes contention case the migration exists for is
+   **not actually exercised against the db until 4b opens a pool there.**
 
 5. **Cross-process refresh.** Add the `version` row + GUI poll (option 1).
 
