@@ -50,10 +50,15 @@
   let {
     game,
     runPhase = null,
+    autofocusPlay = false,
   }: {
     game: GameEntry;
     /** Current Run-workflow phase for *this* game (null if idle). */
     runPhase?: RunPhase | null;
+    /** When true, the Play button is the gamepad-nav initial-focus target.
+     *  Set by the touch detail overlay (its own nav scope); desktop leaves it
+     *  off so focus stays on the library list. */
+    autofocusPlay?: boolean;
   } = $props();
 
   // When the selected game changes, refresh its save-backup stats from
@@ -379,6 +384,7 @@
           <button
             type="button"
             data-testid="play-button"
+            data-gp-autofocus={autofocusPlay && !isRunning && !!game.exe_path ? '' : undefined}
             onclick={launch}
             disabled={isRunning || !game.exe_path}
             class="font-sans inline-flex items-center gap-2.5 rounded-md border-none font-semibold transition-opacity"

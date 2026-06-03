@@ -100,12 +100,16 @@
     }
   }
 
-  // Launch from banner Play button
+  // Launch from the banner Play button — same flow as GameDetail's Play.
+  // Open the detail overlay *first* so the run-phase events (restoring saves,
+  // launching, backing up…) are visible on its Play button, then kick off the
+  // launch. A cloud conflict surfaces via the conflict modal (lib.conflictGameId
+  // is set from the workflow), so only toast genuine launch failures.
   async function launchSelected() {
-    if (!lib.selectedId) return;
+    if (!selectedGame?.exe_path || !lib.selectedId) return;
+    detailOpen = true;
     try {
       await api.launchGame(lib.selectedId);
-      detailOpen = true; // navigate to detail so run-phase events are visible
     } catch (e) {
       const msg = String(e);
       if (!/cloud sync conflict/i.test(msg)) {
@@ -164,6 +168,7 @@
       <GameDetail
         game={selectedGame}
         runPhase={lib.runningId === selectedGame.id ? lib.runningPhase : null}
+        autofocusPlay
       />
     </div>
     <div class="shrink-0 border-t border-line-1 bg-black/30 py-2" style:backdrop-filter="blur(12px)">
@@ -315,7 +320,7 @@
               style:font-size="var(--text-base)"
             >
               <Play size={15} fill="currentColor" />
-              {selectedGame.last_played_at ? 'Resume' : 'Play'}
+              Play
             </button>
             <button
               type="button"
