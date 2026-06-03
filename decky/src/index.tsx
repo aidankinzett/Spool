@@ -8,7 +8,6 @@ import {
 import {
   afterPatch,
   appDetailsClasses,
-  playSectionClasses,
   createReactTreePatcher,
   findInReactTree,
   staticClasses,
@@ -39,15 +38,12 @@ export default definePlugin(() => {
 
   // Patch the Steam game-detail page to inject Spool's cross-device playtime
   // badge. Uses afterPatch + findInReactTree to splice into the InnerContainer
-  // of the rendered tree.
+  // of the rendered tree
   const playtimePatch = routerHook.addPatch(
     "/library/app/:appid",
     (tree: any) => {
       const routeProps = findInReactTree(tree, (x: any) => x?.renderFunc);
       if (!routeProps) return tree;
-
-      console.log(findInReactTree(tree, (x: any) => x?.props?.children?.props?.label === "Last Played")
-        ?.props?.children);
 
       const patchHandler = createReactTreePatcher(
         [
@@ -60,7 +56,7 @@ export default definePlugin(() => {
             ret,
             (x: any) =>
               Array.isArray(x?.props?.children) &&
-              x?.props?.className?.includes(playSectionClasses.InnerContainer),
+              x?.props?.className?.includes(appDetailsClasses.InnerContainer),
           );
 
           if (typeof container !== "object") return ret;
