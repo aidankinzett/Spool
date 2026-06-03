@@ -35,6 +35,13 @@ refresh_caches() {
   if command -v gtk-update-icon-cache &>/dev/null; then
     gtk-update-icon-cache -f -t "$ICON_ROOT" &>/dev/null || true
   fi
+  # KDE Plasma maintains its own service/icon cache separate from GTK's.
+  # Try versioned binaries first, then the unversioned fallback.
+  local kbuildsycoca
+  kbuildsycoca="$(command -v kbuildsycoca6 || command -v kbuildsycoca5 || command -v kbuildsycoca || true)"
+  if [ -n "$kbuildsycoca" ]; then
+    "$kbuildsycoca" --noincremental &>/dev/null || true
+  fi
 }
 
 # ── Uninstall ─────────────────────────────────────────────────────────────────
