@@ -39,6 +39,7 @@
 <button
   type="button"
   onclick={onpick}
+  data-gp-autofocus={picked ? '' : undefined}
   onmouseenter={() => (hover = true)}
   onmouseleave={() => (hover = false)}
   class="grid w-full cursor-pointer items-center gap-x-2.5 gap-y-0.5 border-l-2 px-3 py-1.5 text-left transition-colors"

@@ -33,6 +33,7 @@
   import Btn from '$lib/components/Btn.svelte';
   import TextField from '$lib/components/TextField.svelte';
   import Toggle from '$lib/components/Toggle.svelte';
+  import { gamepadScope } from '$lib/gamepad';
 
   type Tab = 'identity' | 'install' | 'launch' | 'sharing';
 
@@ -334,9 +335,25 @@
     { id: 'launch', label: 'Launch' },
     { id: 'sharing', label: 'Sharing' },
   ];
+
+  // Bumpers cycle the edit tabs, like switching tabs on a console.
+  function switchTab(dir: -1 | 1) {
+    const ids = tabs.map((t) => t.id);
+    const i = ids.indexOf(tab);
+    tab = ids[(i + dir + ids.length) % ids.length];
+  }
+
+  function editButton(btn: string) {
+    if (btn === 'LeftTrigger') switchTab(-1);
+    else if (btn === 'RightTrigger') switchTab(1);
+  }
 </script>
 
-<div class="flex h-screen flex-col bg-bg-0 text-ink-0">
+<div
+  class="flex h-screen flex-col bg-bg-0 text-ink-0"
+  use:gamepadScope={{ onBack: () => history.back(), onButton: editButton }}
+  style:--gp-focus={accent}
+>
   <AppChrome sub="EDIT · ENTRY" {accent} onback={() => history.back()} />
 
   {#if error && !form}
@@ -388,6 +405,7 @@
           <button
             type="button"
             onclick={() => (tab = t.id)}
+            data-gp-autofocus={active ? '' : undefined}
             class="cursor-pointer border-b-2 px-3.5 py-2.5 text-[12.5px] transition-colors"
             style:border-color={active ? accent : 'transparent'}
             style:color={active ? 'var(--color-ink-0)' : 'var(--color-ink-2)'}
