@@ -38,13 +38,50 @@ pub struct SteamUser {
     pub last_modified: SystemTime,
 }
 
+/// Resolves the Steam install directory. On Windows, `steamlocate` reads
+/// `HKLM\SOFTWARE\WOW6432Node\Valve\Steam\InstallPath` first, which can be
+/// corrupted by games that write their own path there. When steamlocate fails
+/// we fall back to `HKCU\Software\Valve\Steam\SteamPath`, which Steam itself
+/// maintains and is almost always correct.
+#[cfg(windows)]
+fn find_steam_dir() -> AppResult<PathBuf> {
+    if let Ok(d) = steamlocate::SteamDir::locate() {
+        let p = d.path().to_path_buf();
+        if p.is_dir() {
+            return Ok(p);
+        }
+    }
+    use winreg::enums::HKEY_CURRENT_USER;
+    use winreg::RegKey;
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    let key = hkcu
+        .open_subkey(r"Software\Valve\Steam")
+        .map_err(|e| AppError::Other(format!("Steam registry key not found: {e}")))?;
+    let path_str: String = key
+        .get_value("SteamPath")
+        .map_err(|e| AppError::Other(format!("SteamPath registry value not found: {e}")))?;
+    let path = PathBuf::from(&path_str);
+    if !path.is_dir() {
+        return Err(AppError::Other(format!(
+            "Steam directory from registry ({}) does not exist",
+            path.display()
+        )));
+    }
+    Ok(path)
+}
+
+#[cfg(not(windows))]
+fn find_steam_dir() -> AppResult<PathBuf> {
+    steamlocate::SteamDir::locate()
+        .map(|d| d.path().to_path_buf())
+        .map_err(|e| AppError::Other(format!("Steam not found: {e}")))
+}
+
 /// Finds Steam's install dir and enumerates users with at least one
 /// shortcuts.vdf present (or a config/ folder ready for us to create
 /// one in). Returns users sorted newest-first by last-modified.
 pub fn locate_steam_users() -> AppResult<Vec<SteamUser>> {
-    let steam_dir = steamlocate::SteamDir::locate()
-        .map_err(|e| AppError::Other(format!("Steam not found: {e}")))?;
-    let userdata = steam_dir.path().join("userdata");
+    let userdata = find_steam_dir()?.join("userdata");
     if !userdata.is_dir() {
         return Err(AppError::Other(format!(
             "Steam userdata folder not found at {}",
