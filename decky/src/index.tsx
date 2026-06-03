@@ -10,8 +10,7 @@ import {
   appDetailsClasses,
   createReactTreePatcher,
   findInReactTree,
-  staticClasses,
-  findModule
+  staticClasses
 } from "@decky/ui";
 import { createElement, type ReactElement } from "react";
 import { FaFloppyDisk } from "react-icons/fa6";
