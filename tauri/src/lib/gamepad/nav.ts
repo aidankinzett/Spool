@@ -182,9 +182,39 @@ function focusEl(el: HTMLElement) {
   el.scrollIntoView({ block: 'nearest', inline: 'nearest' });
 }
 
+/** Is `el` a focused range input? Dpad left/right adjusts it instead of moving. */
+function isRangeInput(el: Element | null): el is HTMLInputElement {
+  return el instanceof HTMLInputElement && el.type === 'range';
+}
+
+/** Nudge a range input by one step, honouring min/max, and fire input + change
+ *  so two-way bindings and commit handlers react (the keyboard does this
+ *  natively; the gamepad path has to synthesise it). */
+function adjustRange(el: HTMLInputElement, sign: 1 | -1) {
+  const step = Number(el.step) || 1;
+  const min = el.min !== '' ? Number(el.min) : -Infinity;
+  const max = el.max !== '' ? Number(el.max) : Infinity;
+  const cur = Number(el.value);
+  const next = Math.min(max, Math.max(min, cur + sign * step));
+  if (next !== cur) {
+    el.value = String(next);
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+}
+
 /** Move focus one step in `dir` within the active scope. */
 function move(dir: Direction) {
   const root = activeRoot();
+
+  // A focused slider eats horizontal input as a value change; up/down still
+  // navigates away. Held-repeat works for free since this runs per move() tick.
+  const focused = document.activeElement;
+  if ((dir === 'left' || dir === 'right') && isRangeInput(focused) && root.contains(focused)) {
+    adjustRange(focused, dir === 'right' ? 1 : -1);
+    return;
+  }
+
   const items = focusablesIn(root);
   if (items.length === 0) return;
 

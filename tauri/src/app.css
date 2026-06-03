@@ -75,6 +75,8 @@
   --toggle-h: 18px;        /* Toggle track height */
   --toggle-thumb: 14px;    /* Toggle sliding thumb */
   --toggle-pad: 2px;       /* thumb inset from the track edge */
+  --slider-thumb: 16px;    /* Slider thumb diameter */
+  --slider-track-h: 5px;   /* Slider track height */
 }
 
 [data-mode='touch'] {
@@ -90,6 +92,8 @@
   --toggle-h: 27px;
   --toggle-thumb: 21px;
   --toggle-pad: 3px;
+  --slider-thumb: 24px;
+  --slider-track-h: 8px;
 }
 
 /* ── Global resets / app shell ─────────────────────────────────────── */

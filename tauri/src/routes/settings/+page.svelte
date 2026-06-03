@@ -35,6 +35,7 @@
   import SettingsCard from '$lib/components/SettingsCard.svelte';
   import SettingsRow from '$lib/components/SettingsRow.svelte';
   import Segmented from '$lib/components/Segmented.svelte';
+  import Slider from '$lib/components/Slider.svelte';
   import ButtonLegend from '$lib/components/ButtonLegend.svelte';
   import type { GpButton } from '$lib/components/GamepadButton.svelte';
   import { uiMode } from '$lib/uiMode.svelte';
@@ -481,14 +482,15 @@
                   helper="How many save backups to retain per game. More gives more rollback points at the cost of disk and cloud upload. 1–10."
                 >
                   {#snippet control()}
-                    <input
-                      type="number"
-                      min="1"
-                      max="10"
-                      bind:value={config!.save_retention_full}
-                      onblur={onRetentionCommit}
-                      class="font-mono h-7 w-24 rounded-sm border border-line-1 bg-bg-2 px-2 text-right text-[12px] text-ink-0 outline-none focus:border-line-3"
-                    />
+                    <div style="max-width: 280px">
+                      <Slider
+                        min={1}
+                        max={10}
+                        step={1}
+                        bind:value={config!.save_retention_full}
+                        oncommit={onRetentionCommit}
+                      />
+                    </div>
                   {/snippet}
                 </SettingsRow>
 
