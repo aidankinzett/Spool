@@ -16,6 +16,7 @@ import { createElement, type ReactElement } from "react";
 import { FaFloppyDisk } from "react-icons/fa6";
 import { SPOOL_ROUTE, SPOOL_GAME_ROUTE, SPOOL_LAN_ROUTE, SPOOL_LAN_PEER_ROUTE, SPOOL_LAN_GAME_ROUTE } from "./constants";
 import { onAppStop } from "./api/callables";
+import { backupStarted, backupFinished } from "./lib/backup-status";
 import { Content } from "./components/content";
 import { GameDetailPage } from "./components/game-detail-panel";
 import { LanPage } from "./components/lan-view";
@@ -88,13 +89,20 @@ export default definePlugin(() => {
     },
   );
 
-  const onBackupFinished = (game: string, ok: boolean, reason: string) => {
+  // Drive the game-page backup badge's spinner. `started`/`finished` carry the
+  // appid and always fire (independent of the notify setting); the separate
+  // `toast` event is gated by that setting on the Python side.
+  const onBackupStarted = (appid: number) => backupStarted(appid);
+  const onBackupFinished = (appid: number) => backupFinished(appid);
+  const onBackupToast = (game: string, ok: boolean, reason: string) => {
     toaster.toast({
       title: "Spool",
       body: ok ? `Backed up ${game} ✓` : `Backup failed: ${reason || "unknown error"}`,
     });
   };
+  addEventListener("spool_backup_started", onBackupStarted);
   addEventListener("spool_backup_finished", onBackupFinished);
+  addEventListener("spool_backup_toast", onBackupToast);
 
   return {
     name: "Spool",
@@ -103,7 +111,9 @@ export default definePlugin(() => {
     icon: <FaFloppyDisk />,
     onDismount() {
       sub.unregister();
+      removeEventListener("spool_backup_started", onBackupStarted);
       removeEventListener("spool_backup_finished", onBackupFinished);
+      removeEventListener("spool_backup_toast", onBackupToast);
       routerHook.removeRoute(SPOOL_ROUTE);
       routerHook.removeRoute(SPOOL_GAME_ROUTE);
       routerHook.removeRoute(SPOOL_LAN_ROUTE);
