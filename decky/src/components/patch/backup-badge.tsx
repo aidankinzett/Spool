@@ -3,19 +3,19 @@ import { formatRelativeTime } from "../../lib/format";
 import { BadgeShell } from "./badge-shell";
 import { Spinner } from "@decky/ui";
 
-// Maps the Rust `sync_badge` value (see library.rs) to the colour the backed-up
-// time is shown in. `null` means there's nothing to say about cloud sync (cloud
-// not configured or no backup history), so fall back to the default value blue.
-function syncColor(badge: string | null): string {
+// Maps the Rust `sync_badge` value (see library.rs) to a short label + colour.
+// `null` means there's nothing to say about cloud sync (cloud not configured or
+// no backup history), so fall back to the relative backup time.
+function syncState(badge: string | null): { label: string; color: string } | null {
   switch (badge) {
     case "synced":
-      return "#7ee787";
+      return { label: "Synced", color: "#7ee787" };
     case "local-newer":
-      return "#e3b341";
+      return { label: "Not yet uploaded", color: "#e3b341" };
     case "cloud-newer":
-      return "#79c0ff";
+      return { label: "Cloud has newer save", color: "#79c0ff" };
     default:
-      return "#79c0ff";
+      return null;
   }
 }
 
@@ -45,14 +45,16 @@ export function SpoolBackupBadge({
 
   if (!game?.save_last_backed_up_at) return null;
 
+  const sync = syncState(game.sync_badge);
+
   return (
     <BadgeShell>
       <div style={{ display: "flex", flexDirection: "column", gap: "0.125rem", alignItems: "center" }}>
         <div>
           SAVE BACKUP
         </div>
-        <div style={{ color: syncColor(game.sync_badge) }}>
-          {formatRelativeTime(game.save_last_backed_up_at)}
+        <div style={{ color: sync ? sync.color : "#79c0ff" }}>
+          {sync ? sync.label : formatRelativeTime(game.save_last_backed_up_at)}
         </div>
       </div>
     </BadgeShell>
