@@ -12,6 +12,9 @@
   import LibraryContextMenu from '$lib/components/LibraryContextMenu.svelte';
   import LibrarySearch from '$lib/components/LibrarySearch.svelte';
   import MonoLabel from '$lib/components/MonoLabel.svelte';
+  import ButtonLegend from '$lib/components/ButtonLegend.svelte';
+  import type { GpButton } from '$lib/components/GamepadButton.svelte';
+  import { gamepadScope, inputMode } from '$lib/gamepad';
 
   let { lib }: { lib: Library } = $props();
 
@@ -68,6 +71,14 @@
   const selectedGame = $derived(lib.selectedGame);
   const accent = $derived(selectedGame?.accent_color ?? null);
 
+  // Gamepad/keyboard nav selects the focused tile so the banner previews it
+  // live. Gated on modality so a touch tap (which also focuses the button) keeps
+  // the two-tap behaviour below instead of selecting + opening in one go.
+  function onTileFocus(game: GameEntry) {
+    const mode = inputMode();
+    if (mode === 'gamepad' || mode === 'keyboard') lib.selectedId = game.id;
+  }
+
   // Tapping a tile: first tap selects (features in banner), second opens detail
   function onTileTap(game: GameEntry) {
     cancelLongPress();
@@ -97,11 +108,42 @@
     { id: 'all', label: 'All games' },
     { id: 'lan', label: `LAN · ${lanCat.length}` },
   ]);
+
+  // Cycle the shelf category with the bumpers (LB/RB).
+  function cycleShelf(dir: -1 | 1) {
+    const ids = cats.map((c) => c.id);
+    const i = ids.indexOf(shelfCat);
+    shelfCat = ids[(i + dir + ids.length) % ids.length];
+  }
+
+  // Gamepad-first mapping for the shelf. A (activate, opens the focused tile's
+  // detail) and dpad (move) are handled by the nav engine; these are the extras
+  // the legend advertises. Tiles select on focus, so X plays whatever's focused.
+  function shelfButton(btn: string) {
+    if (btn === 'North') searchOpen = true; // Y → search
+    else if (btn === 'West') launchSelected(); // X → play selected
+    else if (btn === 'LeftTrigger') cycleShelf(-1); // LB → prev category
+    else if (btn === 'RightTrigger') cycleShelf(1); // RB → next category
+    else if (btn === 'Start') openView('settings'); // ≡ → settings
+  }
+
+  const shelfLegend: { button: GpButton; label: string }[] = [
+    { button: 'a', label: 'Open' },
+    { button: 'x', label: 'Play' },
+    { button: 'y', label: 'Search' },
+    { button: 'lb', label: 'Prev' },
+    { button: 'rb', label: 'Next' },
+    { button: 'menu', label: 'Settings' },
+  ];
 </script>
 
 {#if detailOpen && selectedGame}
   <!-- Full-screen detail overlay -->
-  <div class="fixed inset-0 z-50 flex flex-col overflow-hidden bg-bg-0">
+  <div
+    class="fixed inset-0 z-50 flex flex-col overflow-hidden bg-bg-0"
+    use:gamepadScope={{ onBack: () => (detailOpen = false) }}
+    style:--gp-focus={accent ?? 'var(--color-spool)'}
+  >
     <AppChrome
       sub={selectedGame.game_name.toUpperCase().slice(0, 18)}
       accent={accent ?? undefined}
@@ -113,13 +155,27 @@
         runPhase={lib.runningId === selectedGame.id ? lib.runningPhase : null}
       />
     </div>
+    <div class="shrink-0 border-t border-line-1 bg-black/30 py-2" style:backdrop-filter="blur(12px)">
+      <ButtonLegend
+        items={[
+          { button: 'a', label: 'Select' },
+          { button: 'b', label: 'Back' },
+        ]}
+      />
+    </div>
   </div>
 {:else if searchOpen}
-  <LibrarySearch {lib} onclose={() => (searchOpen = false)} />
+  <!-- display:contents so LibrarySearch's own `fixed inset-0` layout is
+       unchanged; the wrapper exists only to scope gamepad nav (B closes). -->
+  <div use:gamepadScope={{ onBack: () => (searchOpen = false) }} style:display="contents">
+    <LibrarySearch {lib} onclose={() => (searchOpen = false)} />
+  </div>
 {:else}
   <!-- Shelf view -->
   <div
     class="flex h-screen flex-col overflow-hidden bg-bg-0 text-ink-0"
+    use:gamepadScope={{ onButton: shelfButton }}
+    style:--gp-focus={accent ?? 'var(--color-spool)'}
     style:background={accent
       ? `radial-gradient(ellipse 90% 55% at 75% 25%, ${accent}28, transparent 62%), var(--color-bg-0)`
       : undefined}
@@ -321,14 +377,16 @@
             {shelfCat === 'continue' ? 'No recently played games.' : shelfCat === 'lan' ? 'No LAN-shared games.' : 'No games.'}
           </p>
         {:else}
-          {#each shelfGames as game (game.id)}
+          {#each shelfGames as game, i (game.id)}
             {@const active = lib.selectedId === game.id}
             {@const cover = assetUrl(game.cover_image_path)}
             {@const tileW = 'calc(var(--control-h) * 2.8)'}
             {@const tileH = 'calc(var(--control-h) * 3.9)'}
             <button
               type="button"
+              data-gp-autofocus={(lib.selectedId ? active : i === 0) ? '' : undefined}
               onclick={() => onTileTap(game)}
+              onfocus={() => onTileFocus(game)}
               onpointerdown={(e) => startLongPress(e, game)}
               onpointerup={cancelLongPress}
               onpointercancel={cancelLongPress}
@@ -376,6 +434,11 @@
           {/each}
         {/if}
       </div>
+    </div>
+
+    <!-- Gamepad hint bar — gamepad-first touch layout -->
+    <div class="shrink-0 border-t border-line-1 bg-black/30 pb-3 pt-2" style:backdrop-filter="blur(12px)">
+      <ButtonLegend items={shelfLegend} />
     </div>
   </div>
 {/if}

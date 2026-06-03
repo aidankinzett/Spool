@@ -9,6 +9,9 @@ import { pushScope, updateScope } from './nav';
 export interface GamepadScopeParams {
   /** Invoked on B / Escape — typically closes the modal or pops the view. */
   onBack?: () => void;
+  /** Invoked for buttons not used by built-in nav (North/West, bumpers,
+   *  Start/Select…), with the gilrs button name. Bind extra actions here. */
+  onButton?: (button: string) => void;
 }
 
 /**
@@ -21,11 +24,11 @@ export interface GamepadScopeParams {
  * ```
  */
 export const gamepadScope: Action<HTMLElement, GamepadScopeParams | undefined> = (node, params) => {
-  const release = pushScope(node, { onBack: params?.onBack });
+  const release = pushScope(node, { onBack: params?.onBack, onButton: params?.onButton });
 
   return {
     update(next) {
-      updateScope(node, { onBack: next?.onBack });
+      updateScope(node, { onBack: next?.onBack, onButton: next?.onButton });
     },
     destroy() {
       release();

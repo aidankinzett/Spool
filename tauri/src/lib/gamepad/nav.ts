@@ -33,6 +33,11 @@ export type Direction = 'up' | 'down' | 'left' | 'right';
 interface Scope {
   el: HTMLElement;
   onBack?: () => void;
+  /** Receives gilrs button names not consumed by built-in nav — i.e. anything
+   *  other than the dpad (move), South (activate), East (back): North/West,
+   *  LeftTrigger/RightTrigger (bumpers), Start/Select/Mode, etc. Lets a surface
+   *  bind extra actions (X = details, Y = search, LB/RB = switch tab…). */
+  onButton?: (button: string) => void;
   /** Last element focused inside this scope, restored on re-entry. */
   lastFocused?: HTMLElement;
 }
@@ -211,8 +216,18 @@ function back() {
 
 /** Flag the current input modality on <html> so CSS can show focus rings only
  *  for gamepad/keyboard, never for mouse. */
-function setInputMode(mode: 'gamepad' | 'keyboard' | 'mouse') {
+type InputMode = 'gamepad' | 'keyboard' | 'mouse';
+let inputModeState: InputMode = 'mouse';
+
+function setInputMode(mode: InputMode) {
+  inputModeState = mode;
   document.documentElement.setAttribute('data-gp-input', mode);
+}
+
+/** The most recent input modality. Surfaces use this to apply gamepad-only
+ *  behaviour (e.g. select-on-focus) without affecting touch/mouse. */
+export function inputMode(): InputMode {
+  return inputModeState;
 }
 
 function onGamepad(p: GamepadInput) {
@@ -223,15 +238,22 @@ function onGamepad(p: GamepadInput) {
       startRepeat(dir);
       return;
     }
-    switch (p.button) {
-      case 'South': // A
-        setInputMode('gamepad');
-        activate();
-        break;
-      case 'East': // B
-        setInputMode('gamepad');
-        back();
-        break;
+    if (p.button === 'South') {
+      // A
+      setInputMode('gamepad');
+      activate();
+      return;
+    }
+    if (p.button === 'East') {
+      // B
+      setInputMode('gamepad');
+      back();
+      return;
+    }
+    // Any other button (North/West, bumpers, Start/Select…) → active scope.
+    if (p.button) {
+      setInputMode('gamepad');
+      activeScope()?.onButton?.(p.button);
     }
   } else if (p.kind === 'button-up') {
     const dir = p.button ? DPAD_DIRECTION[p.button] : undefined;
@@ -287,7 +309,7 @@ function onKeydown(e: KeyboardEvent) {
   }
 }
 
-function onPointerMove() {
+function onPointerActivity() {
   setInputMode('mouse');
 }
 
@@ -314,7 +336,10 @@ export function startGamepadNav() {
     });
 
   window.addEventListener('keydown', onKeydown, true);
-  window.addEventListener('pointermove', onPointerMove, { passive: true });
+  // Any pointer movement or press reverts to mouse/touch modality (so the focus
+  // ring hides and gamepad-only behaviours like select-on-focus stand down).
+  window.addEventListener('pointermove', onPointerActivity, { passive: true });
+  window.addEventListener('pointerdown', onPointerActivity, { passive: true, capture: true });
 }
 
 export function stopGamepadNav() {
@@ -324,7 +349,8 @@ export function stopGamepadNav() {
   unlistenGamepad?.();
   unlistenGamepad = undefined;
   window.removeEventListener('keydown', onKeydown, true);
-  window.removeEventListener('pointermove', onPointerMove);
+  window.removeEventListener('pointermove', onPointerActivity);
+  window.removeEventListener('pointerdown', onPointerActivity, true);
 }
 
 /**
@@ -333,14 +359,17 @@ export function stopGamepadNav() {
  * scope's remembered focus (or its first focusable) is focused; on release,
  * the parent scope's remembered focus is restored.
  */
-export function pushScope(el: HTMLElement, opts: { onBack?: () => void } = {}): () => void {
+export function pushScope(
+  el: HTMLElement,
+  opts: { onBack?: () => void; onButton?: (button: string) => void } = {},
+): () => void {
   // Remember where focus was so we can restore it when this scope pops.
   const parent = activeScope();
   if (parent && document.activeElement instanceof HTMLElement && parent.el.contains(document.activeElement)) {
     parent.lastFocused = document.activeElement;
   }
 
-  const scope: Scope = { el, onBack: opts.onBack };
+  const scope: Scope = { el, onBack: opts.onBack, onButton: opts.onButton };
   scopeStack.push(scope);
 
   // Focus the first focusable on the next frame so the scope's content has
@@ -375,8 +404,14 @@ function releaseScope(scope: Scope) {
   }
 }
 
-/** Update the back handler for the scope owning `el` (used by action `update`). */
-export function updateScope(el: HTMLElement, opts: { onBack?: () => void }) {
+/** Update handlers for the scope owning `el` (used by action `update`). */
+export function updateScope(
+  el: HTMLElement,
+  opts: { onBack?: () => void; onButton?: (button: string) => void },
+) {
   const scope = scopeStack.find((s) => s.el === el);
-  if (scope) scope.onBack = opts.onBack;
+  if (scope) {
+    scope.onBack = opts.onBack;
+    scope.onButton = opts.onButton;
+  }
 }
