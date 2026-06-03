@@ -175,23 +175,27 @@ async fn init_prefix(
     proton_path: Option<&std::path::Path>,
     install_id: &str,
 ) -> AppResult<()> {
-    use tokio::process::Command;
+    use crate::process::{run_game, LaunchSpec};
 
-    let mut cmd = Command::new(umu_run);
-    cmd.arg("")
-        .env("GAMEID", format!("umu-{install_id}"))
-        .env("WINEPREFIX", prefix_root);
-    if let Some(p) = proton_path {
-        cmd.env("PROTONPATH", p);
+    // Hand umu-run an empty program argument so it builds the prefix without
+    // launching anything. Goes through run_game (same spawn/strip-appimage-env
+    // path as the installer launch) for consistency.
+    let res = run_game(
+        std::path::Path::new(""),
+        LaunchSpec::Proton {
+            umu_run,
+            prefix_root,
+            proton_path,
+            game_id: install_id,
+            extra_args: &[],
+            extra_env: &[],
+        },
+    )
+    .await;
+    if let Err(e) = res {
+        tracing::warn!(error = %e, "umu createprefix failed; continuing (installer will build the prefix)");
     }
-    crate::process::strip_appimage_env(&mut cmd);
-    match cmd.output().await {
-        Ok(_) => Ok(()),
-        Err(e) => {
-            tracing::warn!(error = %e, "umu createprefix failed; continuing (installer will build the prefix)");
-            Ok(())
-        }
-    }
+    Ok(())
 }
 
 /// Pick a free Wine drive letter to mount the install folder as. Skips letters
