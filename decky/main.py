@@ -29,6 +29,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from functools import partial
 from typing import Optional
 from urllib.parse import quote
@@ -50,6 +51,51 @@ def _read_port() -> Optional[int]:
             return int(f.read().strip())
     except (OSError, ValueError):
         return None
+
+
+def _ping(port: int, timeout: float = 1.0) -> bool:
+    """True if a healthy headless server answers GET /status on `port`. Used as
+    a liveness probe: the port file can outlive the server (forced close in Game
+    Mode, crash), so its presence alone doesn't mean the server is reachable."""
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=timeout)
+        try:
+            conn.request("GET", "/status")
+            resp = conn.getresponse()
+            resp.read()
+            return resp.status == 200
+        finally:
+            conn.close()
+    except (OSError, http.client.HTTPException):
+        return False
+
+
+def _ensure_server(wait_s: float = 12.0) -> Optional[int]:
+    """Return a port for a live, reachable headless server — starting it if
+    necessary. The plugin starts the server once at load, but it can still be
+    coming up (AppImage mount + bind takes a moment) or have died since. Rather
+    than report "server unavailable" and give up, (re)start it on demand and
+    wait for it to publish a port and answer /status. Returns None only if it
+    never becomes reachable within `wait_s`."""
+    port = _read_port()
+    if port is not None and _ping(port):
+        return port
+
+    global _server_proc
+    # If a server we launched is still alive, it's likely just starting up —
+    # wait for it rather than spawning a second one (which would bind an
+    # ephemeral port and orphan the first). Otherwise (re)start.
+    starting = _server_proc is not None and _server_proc.poll() is None
+    if not starting:
+        _start_server(_load_settings())
+
+    deadline = time.monotonic() + wait_s
+    while time.monotonic() < deadline:
+        port = _read_port()
+        if port is not None and _ping(port):
+            return port
+        time.sleep(0.25)
+    return None
 
 
 def _launcher_path() -> str:
@@ -80,6 +126,33 @@ def _save_settings(settings: dict) -> None:
 
 # ── HTTP-over-loopback-TCP client ─────────────────────────────────────────────
 
+def _do_request(
+    port: int,
+    method: str,
+    path: str,
+    body: Optional[dict],
+    timeout: float,
+) -> Optional[dict]:
+    """One HTTP attempt against the loopback server. Raises on a transport
+    failure (server down / refused / dropped) — i.e. before the server could
+    have acted, so the caller may safely retry. Returns the parsed JSON dict on
+    a completed response, or None for an empty body."""
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=timeout)
+    headers: dict = {}
+    data: Optional[bytes] = None
+    if body is not None:
+        data = json.dumps(body).encode()
+        headers["Content-Type"] = "application/json"
+        headers["Content-Length"] = str(len(data))
+    try:
+        conn.request(method, path, body=data, headers=headers)
+        resp = conn.getresponse()
+        raw = resp.read()
+        return json.loads(raw) if raw else None
+    finally:
+        conn.close()
+
+
 def _request_sync(
     method: str,
     path: str,
@@ -88,29 +161,29 @@ def _request_sync(
 ) -> Optional[dict]:
     """Synchronous HTTP request to the plugin's loopback TCP server.
 
-    Returns the parsed JSON response dict, or None if the server is
-    unavailable (no published port) or the response cannot be parsed.
+    Returns the parsed JSON response dict, or None if the server cannot be
+    reached even after a (re)start attempt, or the response can't be parsed.
     Intended to be called via `run_in_executor` from async handlers.
+
+    The transport is resilient: if the first attempt fails (the server is still
+    coming up, has died, or the published port is stale), we (re)start the
+    server, wait for it to become reachable, and retry once. A connection
+    failure happens before the server acts, so retrying is safe even for POSTs.
     """
     port = _read_port()
+    if port is not None:
+        try:
+            return _do_request(port, method, path, body, timeout)
+        except (OSError, http.client.HTTPException,
+                json.JSONDecodeError, ValueError):
+            pass  # fall through to ensure-server + single retry
+
+    port = _ensure_server()
     if port is None:
         return None
     try:
-        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=timeout)
-        headers: dict = {}
-        data: Optional[bytes] = None
-        if body is not None:
-            data = json.dumps(body).encode()
-            headers["Content-Type"] = "application/json"
-            headers["Content-Length"] = str(len(data))
-        try:
-            conn.request(method, path, body=data, headers=headers)
-            resp = conn.getresponse()
-            raw = resp.read()
-            return json.loads(raw) if raw else None
-        finally:
-            conn.close()
-    except (OSError, ConnectionRefusedError, http.client.HTTPException,
+        return _do_request(port, method, path, body, timeout)
+    except (OSError, http.client.HTTPException,
             json.JSONDecodeError, ValueError):
         return None
 
@@ -275,9 +348,12 @@ class Plugin:
 
     async def get_server_base(self) -> dict:
         """Hand the React UI the loopback base URL so it can fetch `/library`
-        and `<img>`-load `/covers/*` directly. `baseUrl` is None when the
-        headless server isn't running yet."""
-        port = _read_port()
+        and `<img>`-load `/covers/*` directly. This is the first call the QAM
+        panel makes, so ensure the server is up (start/await it if needed)
+        rather than handing back a dead URL. `baseUrl` is None only if it can't
+        be brought up."""
+        loop = asyncio.get_event_loop()
+        port = await loop.run_in_executor(None, _ensure_server)
         return {"baseUrl": f"http://127.0.0.1:{port}" if port else None}
 
     async def delete_game(self, game_id: str) -> dict:

@@ -389,16 +389,26 @@ pub async fn install_proton_deps_core(
     let mut args = vec!["winetricks".to_string(), "-q".to_string()];
     args.extend(verb_list);
 
-    let output = Command::new(&umu_run)
-        .args(&args)
+    tracing::info!(game_id, verbs, ?proton_path, "winetricks install starting");
+
+    let mut cmd = Command::new(&umu_run);
+    cmd.args(&args)
         .env("GAMEID", format!("umu-{game_id}"))
         .env("WINEPREFIX", &prefix_root)
-        .env("PROTONPATH", &proton_path)
+        .env("PROTONPATH", &proton_path);
+    // Strip the AppImage's environment pollution (PYTHONHOME, LD_LIBRARY_PATH,
+    // GTK/GDK vars, …) so umu-run's Python sees the host environment — the same
+    // treatment the launch path applies in process.rs. Without it, when Spool
+    // runs as an AppImage umu-run's Python aborts instantly with "failed to
+    // import encodings module" and the install never starts.
+    crate::process::strip_appimage_env(&mut cmd);
+    let output = cmd
         .output()
         .await
         .map_err(|e| AppError::Other(format!("failed to run umu-run winetricks: {e}")))?;
 
     if output.status.success() {
+        tracing::info!(game_id, verbs, "winetricks install succeeded");
         Ok("Dependencies installed.".to_string())
     } else {
         // Surface the most useful tail (stderr, falling back to stdout).
@@ -414,6 +424,9 @@ pub async fn install_proton_deps_core(
             .rev()
             .collect::<Vec<_>>()
             .join("\n");
+        // Log the failure too — the helper otherwise only returns this tail to
+        // the UI toast, leaving nothing in debug.log to diagnose after the fact.
+        tracing::error!(game_id, verbs, status = ?output.status.code(), %tail, "winetricks install failed");
         Err(AppError::Other(format!("winetricks failed:\n{tail}")))
     }
 }
