@@ -619,6 +619,19 @@ async fn run_api(ludusavi_exe: &Path, config_dir: &Path, args: &[&str]) -> AppRe
     let mut cmd = std::process::Command::new(&exe);
     cmd.arg("--config").arg(&cfg);
     cmd.args(&owned_args);
+    // Prepend the bundled rclone's directory to PATH so ludusavi resolves
+    // "rclone" to THIS process's binary (never a stale AppImage FUSE path).
+    if let Some(rclone_dir) = crate::paths::resolve_rclone_path()
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+    {
+        let existing = std::env::var_os("PATH").unwrap_or_default();
+        if let Ok(new_path) = std::env::join_paths(
+            std::iter::once(rclone_dir.into_os_string())
+                .chain(std::env::split_paths(&existing).map(|p| p.into_os_string())),
+        ) {
+            cmd.env("PATH", new_path);
+        }
+    }
     crate::capture_stdio!(cmd);
 
     let mut child = match cmd.spawn() {
@@ -1103,12 +1116,11 @@ pub async fn apply_webdav_remote(
         AppError::Other("Ludusavi sidecar not found — reinstall Spool.".to_string())
     })?;
 
-    // ludusavi shells out to rclone to obscure the password, so the owned config
-    // must point at a usable rclone before we invoke `cloud set`.
+    // rclone_exe is used directly for `rclone obscure` below. ludusavi itself
+    // finds rclone via PATH injection in run_api; no path stamp needed here.
     let rclone_exe = crate::paths::resolve_rclone_path().ok_or_else(|| {
         AppError::Other("rclone sidecar not found — reinstall Spool.".to_string())
     })?;
-    crate::ludusavi_config::set_cloud(None, None, None, Some(&rclone_exe.to_string_lossy()), None)?;
 
     let password = if obscure_password {
         let out = Command::new(&rclone_exe)

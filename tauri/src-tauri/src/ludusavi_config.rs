@@ -82,6 +82,24 @@ pub fn ensure_config() -> AppResult<()> {
     // values intact so a user-configured remote survives a restart.
     changed |= ensure_key_exists(&mut v, &["cloud", "remote"], Value::Null);
 
+    // Always use a bare "rclone" name so each Spool process injects its own
+    // bundled binary via PATH when spawning ludusavi, rather than storing an
+    // absolute AppImage FUSE-mount path that becomes stale when that process exits.
+    changed |= set_path(&mut v, &["apps", "rclone", "path"], Value::String("rclone".into()));
+
+    // Ensure fast-fail timeout flags are present in apps.rclone.arguments so
+    // --cloud-sync gives up quickly on an unreachable remote. Fold them into
+    // whatever is already there (preserves user-configured args).
+    let current_args = v
+        .get(k("apps"))
+        .and_then(|a| a.get(k("rclone")))
+        .and_then(|r| r.get(k("arguments")))
+        .and_then(|a| a.as_str())
+        .unwrap_or("")
+        .to_string();
+    let with_timeouts = ensure_rclone_timeouts(&current_args);
+    changed |= set_path(&mut v, &["apps", "rclone", "arguments"], Value::String(with_timeouts));
+
     if changed || !file.exists() {
         write_value(&v)?;
     }
