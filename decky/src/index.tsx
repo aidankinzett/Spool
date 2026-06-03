@@ -11,6 +11,7 @@ import {
   createReactTreePatcher,
   findInReactTree,
   staticClasses,
+  findModule
 } from "@decky/ui";
 import { createElement, type ReactElement } from "react";
 import { FaFloppyDisk } from "react-icons/fa6";
@@ -56,7 +57,7 @@ export default definePlugin(() => {
             ret,
             (x: any) =>
               Array.isArray(x?.props?.children) &&
-              x?.props?.className?.includes(appDetailsClasses.InnerContainer),
+              x?.props?.className?.includes(appDetailsClasses.HeaderLoaded),
           );
 
           if (typeof container !== "object") return ret;
