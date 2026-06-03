@@ -14,6 +14,7 @@ import type {
   NewGame,
   PeerGame,
   ProtonVersion,
+  RepackInstallResult,
   SyncStatus,
   UploadSnapshot,
   SearchCandidate,
@@ -61,6 +62,15 @@ export const api = {
   listProtonVersions: (): Promise<ProtonVersion[]> => invoke('list_proton_versions'),
   installProtonDeps: (gameId: string, verbs: string): Promise<string> =>
     invoke('install_proton_deps', { gameId, verbs }),
+
+  /** Run a repack `setup.exe` through Proton with the install folder mounted as
+   *  a Wine drive (Linux). Resolves when the installer process exits. */
+  runRepackInstaller: (
+    setupExe: string,
+    gameName: string,
+    installDirOverride?: string,
+  ): Promise<RepackInstallResult> =>
+    invoke('run_repack_installer', { setupExe, gameName, installDirOverride }),
 
   // Ludusavi — Add Game flow
   searchGames: (query: string): Promise<SearchCandidate[]> => invoke('search_games', { query }),

@@ -7,6 +7,7 @@
     CloudOff,
     Download,
     Loader2,
+    Package,
     Plus,
     Search,
     Settings,
@@ -14,7 +15,7 @@
     X,
   } from '@lucide/svelte';
   import { openView } from '$lib/nav';
-  import { assetUrl } from '$lib/api';
+  import { api, assetUrl } from '$lib/api';
   import { fmtCatalog, fmtRate, relDate } from '$lib/format';
   import type { GameEntry } from '$lib/types';
   import type { Library } from '$lib/library.svelte';
@@ -28,6 +29,8 @@
   let { lib }: { lib: Library } = $props();
 
   // UI-only state (not in controller)
+  // The guided repack installer runs through Proton, so the button is Linux-only.
+  let isLinux = $state(false);
   let lanOpen = $state(false);
   let transfersOpen = $state(false);
   let ctxMenu = $state<{ game: GameEntry; x: number; y: number } | null>(null);
@@ -68,6 +71,10 @@
     if (transferPillEl?.contains(e.target as Node)) return;
     transfersOpen = false;
   }
+
+  onMount(() => {
+    api.appPlatform().then((p) => (isLinux = p === 'linux'));
+  });
 
   onMount(() => {
     document.addEventListener('mousedown', handleLanOutside, true);
@@ -538,7 +545,17 @@
       </div>
 
       <!-- Footer -->
-      <div class="border-t border-line-1 bg-bg-0 px-3 py-2.5">
+      <div class="flex flex-col gap-1.5 border-t border-line-1 bg-bg-0 px-3 py-2.5">
+        {#if isLinux}
+          <button
+            type="button"
+            onclick={() => openView('install')}
+            class="inline-flex h-8 w-full cursor-pointer items-center justify-center gap-1.5 rounded-sm border border-line-2 bg-bg-1 px-3 text-[12.5px] font-medium text-ink-1 transition-colors hover:bg-bg-2 hover:text-ink-0"
+          >
+            <Package size={14} />
+            Install game
+          </button>
+        {/if}
         <button
           type="button"
           onclick={() => openView('add')}
@@ -562,14 +579,26 @@
         <p class="max-w-md text-sm text-ink-2">
           No games yet. Add an executable to start your collection.
         </p>
-        <button
-          type="button"
-          onclick={() => openView('add')}
-          class="inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-sm bg-spool px-3 text-[12.5px] font-medium text-bg-0 transition-colors hover:brightness-95"
-        >
-          <Plus size={14} />
-          Add your first game
-        </button>
+        <div class="flex items-center gap-2">
+          {#if isLinux}
+            <button
+              type="button"
+              onclick={() => openView('install')}
+              class="inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-sm border border-line-2 bg-bg-1 px-3 text-[12.5px] font-medium text-ink-1 transition-colors hover:bg-bg-2 hover:text-ink-0"
+            >
+              <Package size={14} />
+              Install a repack
+            </button>
+          {/if}
+          <button
+            type="button"
+            onclick={() => openView('add')}
+            class="inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-sm bg-spool px-3 text-[12.5px] font-medium text-bg-0 transition-colors hover:brightness-95"
+          >
+            <Plus size={14} />
+            Add your first game
+          </button>
+        </div>
       </div>
     {:else}
       <div class="flex items-center justify-center">

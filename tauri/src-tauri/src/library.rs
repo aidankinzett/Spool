@@ -199,6 +199,13 @@ pub struct NewGame {
     /// something to stream — see `PeerGame::from_entry` in `lan/mod.rs`.
     #[serde(default)]
     pub game_folder_path: Option<String>,
+    /// Override for the Wine prefix ROOT (Linux). Set by the guided repack
+    /// installer (`repack_install.rs`) so the game launches in the very prefix
+    /// it was installed into — keeping any vcredist/dotnet/registry state the
+    /// installer set up. `None` for the normal Add flow (the runner then uses
+    /// the default `prefixes/<id>`).
+    #[serde(default)]
+    pub wine_prefix_path: Option<String>,
 }
 
 /// In-memory library, loaded once at startup and held behind a [`Mutex`] in
@@ -359,6 +366,7 @@ pub fn add_game(
             manifest_install_dir: new_game.manifest_install_dir,
             save_paths: new_game.save_paths,
             game_folder_path: new_game.game_folder_path,
+            wine_prefix_path: new_game.wine_prefix_path,
             // Newly added games are shared on the LAN by default; the user can
             // turn this off per-game in the editor. Sharing only actually
             // streams when game_folder_path is set (auto-detected on add).

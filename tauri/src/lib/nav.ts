@@ -5,16 +5,17 @@ import { goto } from '$app/navigation';
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { uiMode } from './uiMode.svelte';
 
-type View = 'settings' | 'add' | 'edit';
+type View = 'settings' | 'add' | 'install' | 'edit';
 
 const WINDOWS: Record<View, {
   url: string; title: string;
   width: number; height: number;
   minWidth: number; minHeight: number;
 }> = {
-  settings: { url: '/settings', title: 'Spool — Settings', width: 1180, height: 760, minWidth: 900,  minHeight: 600 },
-  add:      { url: '/add',      title: 'Add Game · Spool', width: 720,  height: 560, minWidth: 600,  minHeight: 480 },
-  edit:     { url: '/edit',     title: 'Edit · Spool',     width: 720,  height: 560, minWidth: 600,  minHeight: 480 },
+  settings: { url: '/settings', title: 'Spool — Settings',     width: 1180, height: 760, minWidth: 900,  minHeight: 600 },
+  add:      { url: '/add',      title: 'Add Game · Spool',     width: 720,  height: 560, minWidth: 600,  minHeight: 480 },
+  install:  { url: '/install',  title: 'Install Game · Spool', width: 720,  height: 560, minWidth: 600,  minHeight: 480 },
+  edit:     { url: '/edit',     title: 'Edit · Spool',         width: 720,  height: 560, minWidth: 600,  minHeight: 480 },
 };
 
 /** Open a named view. On touch: routes in-app via goto(). On desktop:

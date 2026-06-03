@@ -372,6 +372,19 @@ export type NewGame = {
   manifest_install_dir?: string | null;
   save_paths?: string[];
   game_folder_path?: string | null;
+  /** Wine prefix ROOT override (Linux) — set by the guided repack installer so
+   *  the game launches in the prefix it was installed into. */
+  wine_prefix_path?: string | null;
+};
+
+/**
+ * Result of the guided repack installer (`run_repack_installer`). Mirrors the
+ * Rust `RepackInstallResult` struct in src-tauri/src/repack_install.rs.
+ */
+export type RepackInstallResult = {
+  install_dir: string;
+  prefix_path: string;
+  drive_letter: string;
 };
 
 /**
