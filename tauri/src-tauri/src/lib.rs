@@ -414,7 +414,13 @@ fn init_tracing() -> tracing_appender::non_blocking::WorkerGuard {
     let (file_writer, guard) = tracing_appender::non_blocking(file_appender);
 
     let env_filter = EnvFilter::try_from_env("SPOOL_LOG").unwrap_or_else(|_| {
-        EnvFilter::new("info,tauri=warn,h2=warn,hyper=warn,hyper_util=warn,reqwest=warn,rustls=warn")
+        // gilrs/gilrs_core clamped to error: their force-feedback thread spams a
+        // benign "force feedback loop took more than 50ms" warning, and we don't
+        // use rumble. Our own "gamepad bridge" logs are under the `spool` target,
+        // so they're unaffected.
+        EnvFilter::new(
+            "info,tauri=warn,h2=warn,hyper=warn,hyper_util=warn,reqwest=warn,rustls=warn,gilrs=error,gilrs_core=error",
+        )
     });
 
     tracing_subscriber::registry()
