@@ -17,7 +17,9 @@
 
 use crate::error::AppResult;
 use serde::Serialize;
-use tauri::{AppHandle, Emitter};
+use tauri::AppHandle;
+#[cfg(target_os = "linux")]
+use tauri::Emitter;
 
 /// Result of a guided repack install, returned to the frontend. `prefix_path`
 /// is forwarded to `add_game` as `wine_prefix_path`; `drive_letter` is shown to
