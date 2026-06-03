@@ -35,7 +35,14 @@ pub struct DepStatus {
     /// Suggested install command for the detected distro, when missing.
     /// Empty string if the dep is present.
     pub install_hint: String,
+    /// Link to a docs page with full install instructions, when one exists.
+    /// Empty string if there's nothing more to link to.
+    pub install_docs_url: String,
 }
+
+/// Docs page with per-distro umu-launcher install instructions (including the
+/// SteamOS read-only-root path that doesn't fit a one-line command).
+const UMU_DOCS_URL: &str = "https://spool.kinzett.io/guides/installing-umu/";
 
 /// Check all three runtime dependencies and return their status.
 /// Called from Settings → Compatibility on mount and after autodetect.
@@ -71,7 +78,9 @@ fn check_umu_run(configured: &str, distro: &Distro) -> DepStatus {
     if let Some(p) = paths::find_system_binary("umu-run") {
         return found("umu-run", &p.to_string_lossy(), DepSource::System);
     }
-    missing("umu-run", install_hint_umu(distro))
+    let mut status = missing("umu-run", install_hint_umu(distro));
+    status.install_docs_url = UMU_DOCS_URL.to_string();
+    status
 }
 
 fn check_ludusavi(_distro: &Distro) -> DepStatus {
@@ -95,6 +104,7 @@ fn found(name: &str, path: &str, source: DepSource) -> DepStatus {
         path: path.to_string(),
         source,
         install_hint: String::new(),
+        install_docs_url: String::new(),
     }
 }
 
@@ -105,6 +115,7 @@ fn missing(name: &str, install_hint: String) -> DepStatus {
         path: String::new(),
         source: DepSource::Missing,
         install_hint,
+        install_docs_url: String::new(),
     }
 }
 
@@ -112,10 +123,11 @@ fn missing(name: &str, install_hint: String) -> DepStatus {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Distro {
-    Arch,   // Arch, CachyOS, Manjaro, EndeavourOS, Bazzite (rpm/arch variant), …
-    Fedora, // Fedora, Bazzite (rpm), RHEL
-    Debian, // Ubuntu, Debian, Pop!_OS
-    Suse,   // openSUSE
+    SteamOS, // Valve's SteamOS 3 (Steam Deck) — Arch-based but read-only root
+    Arch,    // Arch, CachyOS, Manjaro, EndeavourOS
+    Fedora,  // Fedora, Nobara, RHEL (Bazzite ships umu-run preinstalled)
+    Debian,  // Ubuntu, Debian, Pop!_OS
+    Suse,    // openSUSE
     Other,
 }
 
@@ -124,6 +136,12 @@ fn detect_distro() -> Distro {
     // Check ID_LIKE first (broader family), then ID (specific distro).
     let id_like = extract_field(&os_release, "ID_LIKE").to_lowercase();
     let id = extract_field(&os_release, "ID").to_lowercase();
+
+    // SteamOS reports ID_LIKE=arch, so match its specific ID before the family
+    // loop — its read-only root means the generic Arch `paru` hint won't work.
+    if id == "steamos" {
+        return Distro::SteamOS;
+    }
 
     for field in [id_like.as_str(), id.as_str()] {
         if field.contains("arch") || field.contains("cachyos") || field.contains("manjaro") {
@@ -155,11 +173,14 @@ fn extract_field<'a>(content: &'a str, key: &str) -> &'a str {
 
 fn install_hint_umu(distro: &Distro) -> String {
     match distro {
+        // SteamOS root is read-only and AUR isn't available, so there's no
+        // one-line package install — the docs link covers the home-dir build.
+        Distro::SteamOS => "# SteamOS root is read-only — see the guide below".to_string(),
         Distro::Arch => "paru -S umu-launcher".to_string(),
         Distro::Fedora => "sudo dnf install umu-launcher".to_string(),
-        Distro::Debian => "# Not in apt yet — see https://github.com/Open-Wine-Components/umu-launcher/releases".to_string(),
+        Distro::Debian => "# Not in apt yet — see the guide below".to_string(),
         Distro::Suse => "sudo zypper install umu-launcher".to_string(),
-        Distro::Other => "See https://github.com/Open-Wine-Components/umu-launcher".to_string(),
+        Distro::Other => "# See the guide below".to_string(),
     }
 }
 

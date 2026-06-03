@@ -38,6 +38,7 @@ export default defineConfig({
           label: 'Using Spool',
           items: [
             { label: 'Install Spool', slug: 'guides/installing' },
+            { label: 'Installing umu-launcher', slug: 'guides/installing-umu' },
             { label: 'Cloud Save Sync', slug: 'guides/cloud-saves' },
             { label: 'LAN Transfers', slug: 'guides/lan-transfers' },
           ],
