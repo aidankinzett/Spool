@@ -17,6 +17,16 @@ export function rememberAppid(gameId: string, appid: number) {
   localStorage.setItem(APPID_MAP_KEY, JSON.stringify(map));
 }
 
+// Drop a game's stored appid — used when its Steam shortcut is removed so a
+// later add creates a fresh shortcut rather than reusing the dead appid.
+export function forgetAppid(gameId: string) {
+  const map = loadAppidMap();
+  if (gameId in map) {
+    delete map[gameId];
+    localStorage.setItem(APPID_MAP_KEY, JSON.stringify(map));
+  }
+}
+
 // Reverse of loadAppidMap: maps steam_appid (non-Steam shortcut CRC id) -> spool game_id.
 export function buildInverseAppidMap(): Record<number, string> {
   const map = loadAppidMap();

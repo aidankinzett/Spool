@@ -10,41 +10,36 @@ import {
   appDetailsClasses,
   createReactTreePatcher,
   findInReactTree,
-  staticClasses,
+  staticClasses
 } from "@decky/ui";
 import { createElement, type ReactElement } from "react";
 import { FaFloppyDisk } from "react-icons/fa6";
-import { SPOOL_ROUTE, SPOOL_GAME_ROUTE, SPOOL_LAN_ROUTE, SPOOL_LAN_PEER_ROUTE, SPOOL_LAN_GAME_ROUTE } from "./constants";
+import { SPOOL_LAN_ROUTE, SPOOL_LAN_PEER_ROUTE, SPOOL_LAN_GAME_ROUTE } from "./constants";
 import { onAppStop } from "./api/callables";
+import { backupStarted, backupFinished } from "./lib/backup-status";
 import { Content } from "./components/content";
-import { GameDetailPage } from "./components/game-detail-panel";
 import { LanPage } from "./components/lan-view";
 import { PeerGamesPage } from "./components/peer-games";
 import { PeerGameDetailPage } from "./components/peer-game-detail-panel";
-import { PlaytimePatchWrapper } from "./components/playtime-patch-wrapper";
-import { SpoolPage } from "./components/spool-page";
+import { PatchWrapper } from "./components/patch/patch-wrapper";
 
 export default definePlugin(() => {
-  // Register the full-screen route (Library | LAN). The QAM "Browse Library"
-  // button navigates to it; we remove it on dismount to avoid duplicate
+  // Register the full-screen LAN browse routes. The QAM "Browse LAN games"
+  // button navigates to them; we remove them on dismount to avoid duplicate
   // patches across hot-reloads.
-  // `/spool` must be exact, otherwise it prefix-matches `/spool/game/:id` and
-  // shadows the detail page (first matching <Route> in the Switch wins).
-  routerHook.addRoute(SPOOL_ROUTE, SpoolPage, { exact: true });
-  routerHook.addRoute(SPOOL_GAME_ROUTE, GameDetailPage);
   routerHook.addRoute(SPOOL_LAN_ROUTE, LanPage, { exact: true });
   routerHook.addRoute(SPOOL_LAN_PEER_ROUTE, PeerGamesPage, { exact: true });
   routerHook.addRoute(SPOOL_LAN_GAME_ROUTE, PeerGameDetailPage);
 
   // Patch the Steam game-detail page to inject Spool's cross-device playtime
   // badge. Uses afterPatch + findInReactTree to splice into the InnerContainer
-  // of the rendered tree — same approach as OMGDuke/protondb-decky. Wrapping
-  // props.children doesn't work because the game detail component ignores it.
+  // of the rendered tree
   const playtimePatch = routerHook.addPatch(
     "/library/app/:appid",
     (tree: any) => {
       const routeProps = findInReactTree(tree, (x: any) => x?.renderFunc);
       if (!routeProps) return tree;
+
       const patchHandler = createReactTreePatcher(
         [
           (t: any) =>
@@ -58,12 +53,16 @@ export default definePlugin(() => {
               Array.isArray(x?.props?.children) &&
               x?.props?.className?.includes(appDetailsClasses.InnerContainer),
           );
+
           if (typeof container !== "object") return ret;
-          container.props.children.splice(1, 0, createElement(PlaytimePatchWrapper, null));
+          container.props.children.splice(1, 0, createElement(PatchWrapper, null));
+
           return ret;
         },
       );
+
       afterPatch(routeProps, "renderFunc", patchHandler);
+
       return tree;
     },
   );
@@ -84,13 +83,20 @@ export default definePlugin(() => {
     },
   );
 
-  const onBackupFinished = (game: string, ok: boolean, reason: string) => {
+  // Drive the game-page backup badge's spinner. `started`/`finished` carry the
+  // appid and always fire (independent of the notify setting); the separate
+  // `toast` event is gated by that setting on the Python side.
+  const onBackupStarted = (appid: number) => backupStarted(appid);
+  const onBackupFinished = (appid: number) => backupFinished(appid);
+  const onBackupToast = (game: string, ok: boolean, reason: string) => {
     toaster.toast({
       title: "Spool",
       body: ok ? `Backed up ${game} ✓` : `Backup failed: ${reason || "unknown error"}`,
     });
   };
+  addEventListener("spool_backup_started", onBackupStarted);
   addEventListener("spool_backup_finished", onBackupFinished);
+  addEventListener("spool_backup_toast", onBackupToast);
 
   return {
     name: "Spool",
@@ -99,9 +105,9 @@ export default definePlugin(() => {
     icon: <FaFloppyDisk />,
     onDismount() {
       sub.unregister();
+      removeEventListener("spool_backup_started", onBackupStarted);
       removeEventListener("spool_backup_finished", onBackupFinished);
-      routerHook.removeRoute(SPOOL_ROUTE);
-      routerHook.removeRoute(SPOOL_GAME_ROUTE);
+      removeEventListener("spool_backup_toast", onBackupToast);
       routerHook.removeRoute(SPOOL_LAN_ROUTE);
       routerHook.removeRoute(SPOOL_LAN_PEER_ROUTE);
       routerHook.removeRoute(SPOOL_LAN_GAME_ROUTE);

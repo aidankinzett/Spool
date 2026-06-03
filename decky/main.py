@@ -314,22 +314,33 @@ class Plugin:
         appid matches the active session and that the session hasn't already
         been backed up, then releases the play lock and runs the backup.
         """
+        # Tell the UI a backup may be starting so the game-page badge can show a
+        # spinner. The frontend debounces this: the common no-op game-stop
+        # (Spool's own runner already backed up) resolves fast enough that the
+        # spinner never appears — only a real forced-close backup, which takes
+        # seconds, crosses the debounce threshold.
+        await decky.emit("spool_backup_started", appid)
+
         result = await _spool("POST", "/session/game-stopped", {"appid": appid}, timeout=120.0)
         if result is None:
             decky.logger.warning(
                 "Spool: server unavailable for game-stopped (appid %s)", appid
             )
+            await decky.emit("spool_backup_finished", appid, False, False, "", "server unavailable")
             return {"acted": False, "reason": "server unavailable"}
 
-        notify = _load_settings().get("notify", True)
-        if notify and result.get("acted"):
-            game = result.get("game", "")
-            await decky.emit(
-                "spool_backup_finished",
-                game,
-                bool(result.get("ok")),
-                result.get("reason", ""),
-            )
+        acted = bool(result.get("acted"))
+        ok = bool(result.get("ok"))
+        game = result.get("game", "")
+        reason = result.get("reason", "")
+
+        # Always signal completion so the badge can drop the spinner and refresh,
+        # independent of the notify preference (which only governs the toast).
+        await decky.emit("spool_backup_finished", appid, acted, ok, game, reason)
+
+        if _load_settings().get("notify", True) and acted:
+            await decky.emit("spool_backup_toast", game, ok, reason)
+
         return result
 
     # ── QAM panel ─────────────────────────────────────────────────────────────

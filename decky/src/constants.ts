@@ -1,11 +1,4 @@
-// Full-screen library route registered via routerHook. The QAM "Browse
-// Library" button navigates here.
-export const SPOOL_ROUTE = "/spool";
-
-// Per-game detail page route. `:id` is the Spool library game ID.
-export const SPOOL_GAME_ROUTE = "/spool/game/:id";
-
-// LAN peers list page.
+// LAN peers list page. The QAM "Browse LAN games" button navigates here.
 export const SPOOL_LAN_ROUTE = "/spool/lan";
 
 // A single peer's shared games. `:peerAddr` is the peer's IP, `:peerPort` is
