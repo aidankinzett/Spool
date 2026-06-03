@@ -9,6 +9,7 @@ import {
   afterPatch,
   appDetailsClasses,
   createReactTreePatcher,
+  findClassModule,
   findInReactTree,
   staticClasses
 } from "@decky/ui";
@@ -22,6 +23,7 @@ import { LanPage } from "./components/lan-view";
 import { PeerGamesPage } from "./components/peer-games";
 import { PeerGameDetailPage } from "./components/peer-game-detail-panel";
 import { PatchWrapper } from "./components/patch/patch-wrapper";
+import { PlaytimeStatValue } from "./components/patch/playtime-stat-override";
 import { SpoolPage } from "./components/spool-page";
 
 import * as DUI from "@decky/ui";
@@ -61,7 +63,7 @@ export default definePlugin(() => {
             ret,
             (x: any) =>
               Array.isArray(x?.props?.children) &&
-              x?.props?.className?.includes(appDetailsClasses.HeaderLoaded),
+              x?.props?.className?.includes(appDetailsClasses.InnerContainer),
           );
 
           if (typeof container !== "object") return ret;
@@ -72,6 +74,53 @@ export default definePlugin(() => {
       );
 
       afterPatch(routeProps, "renderFunc", patchHandler);
+
+      return tree;
+    },
+  );
+
+  // Override the gamepad-UI game-detail "Play Time" stat with Spool's
+  // cross-device total. Separate from the desktop InnerContainer badge patch
+  // above — this targets Game Mode's GameStatsSection, which renders through a
+  // different layout. Match on Steam's stable semantic class keys (GameStat +
+  // Playtime) so it survives Steam updates and localisation; the label string
+  // is never matched. Resolved once here — the minified values rotate between
+  // Steam builds, but the keys are stable.
+  const gameStatsClasses = findClassModule(
+    (m: any) => m.GameStatsSection && m.GameStat && m.Playtime,
+  );
+  const playtimeStatPatch = routerHook.addPatch(
+    "/library/app/:appid",
+    (tree: any) => {
+      if (!gameStatsClasses) return tree;
+      const routeProps = findInReactTree(tree, (x: any) => x?.renderFunc);
+      if (!routeProps) return tree;
+
+      afterPatch(routeProps, "renderFunc", (_: unknown[], ret?: ReactElement) => {
+        // The "Play Time" stat block carries both GameStat and Playtime;
+        // "Last Played" shares GameStat, so requiring both pins it precisely.
+        const stat = findInReactTree(
+          ret,
+          (x: any) =>
+            typeof x?.props?.className === "string" &&
+            x.props.className.includes(gameStatsClasses.GameStat) &&
+            x.props.className.includes(gameStatsClasses.Playtime),
+        );
+        if (!stat) return ret;
+
+        // The {label, children} value field lives inside that block; swap its
+        // value for Spool's, keeping the original as a loading/no-match fallback.
+        const field = findInReactTree(
+          stat,
+          (x: any) => x?.props && "label" in x.props && "children" in x.props,
+        );
+        if (field) {
+          field.props.children = createElement(PlaytimeStatValue, {
+            fallback: field.props.children,
+          });
+        }
+        return ret;
+      });
 
       return tree;
     },
@@ -115,6 +164,7 @@ export default definePlugin(() => {
       routerHook.removeRoute(SPOOL_LAN_PEER_ROUTE);
       routerHook.removeRoute(SPOOL_LAN_GAME_ROUTE);
       routerHook.removePatch("/library/app/:appid", playtimePatch);
+      routerHook.removePatch("/library/app/:appid", playtimeStatPatch);
     },
   };
 });
