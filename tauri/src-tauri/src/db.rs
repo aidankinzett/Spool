@@ -17,9 +17,9 @@ use crate::error::{AppError, AppResult};
 use crate::library::GameEntry;
 use crate::paths;
 use sqlx::sqlite::{
-    SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous,
+    SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteRow, SqliteSynchronous,
 };
-use sqlx::SqlitePool;
+use sqlx::{Row, SqlitePool};
 use std::time::Duration;
 
 /// Column list for the `games` table, in a fixed order shared by the INSERT
@@ -107,10 +107,32 @@ pub struct Db {
 }
 
 impl Db {
-    /// Opens (creating if absent) the library database at
-    /// `%LOCALAPPDATA%\Spool\library.db`, applies the PRAGMAs that make
-    /// cross-process access safe, and runs pending migrations.
+    /// Opens (creating if absent) the library database, applies the PRAGMAs that
+    /// make cross-process access safe, and runs pending migrations. Retries a few
+    /// times with a short backoff: several Spool processes can start at once
+    /// (tray GUI + a launch process), and the loser of a first-launch migration
+    /// race can hit a transient `SQLITE_BUSY` while the winner holds the write
+    /// lock. Retrying rides that out instead of leaving a process with no db.
     pub async fn init() -> AppResult<Self> {
+        const ATTEMPTS: u32 = 4;
+        let mut last_err = None;
+        for attempt in 1..=ATTEMPTS {
+            match Self::init_once().await {
+                Ok(db) => return Ok(db),
+                Err(e) => {
+                    if attempt < ATTEMPTS {
+                        tracing::warn!(attempt, error = %e, "library.db open failed; retrying");
+                        tokio::time::sleep(Duration::from_millis(150 * attempt as u64)).await;
+                    }
+                    last_err = Some(e);
+                }
+            }
+        }
+        Err(last_err.unwrap_or_else(|| AppError::Other("library.db init failed".to_string())))
+    }
+
+    /// Single open + migrate attempt. See [`Db::init`] for the retry wrapper.
+    async fn init_once() -> AppResult<Self> {
         let path = paths::library_db();
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
@@ -216,6 +238,46 @@ impl Db {
         Ok(entries.len())
     }
 
+    /// All games, ordered by catalog number (≈ add order — the order the
+    /// JSON-backed `Vec` preserved). The inverse of `import`/`upsert`.
+    #[allow(dead_code)] // call sites flip to this in the next step
+    pub async fn list_games(&self) -> AppResult<Vec<GameEntry>> {
+        let sql = format!("SELECT {GAME_COLUMNS} FROM games ORDER BY catalog_number");
+        let rows = sqlx::query(&sql)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| AppError::Other(format!("list games: {e}")))?;
+        rows.iter().map(row_to_entry).collect()
+    }
+
+    /// One game by id, or `None` if absent.
+    #[allow(dead_code)] // call sites flip to this in the next step
+    pub async fn find(&self, id: &str) -> AppResult<Option<GameEntry>> {
+        let sql = format!("SELECT {GAME_COLUMNS} FROM games WHERE id = ?");
+        let row = sqlx::query(&sql)
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| AppError::Other(format!("find game {id}: {e}")))?;
+        row.as_ref().map(row_to_entry).transpose()
+    }
+
+    /// First game whose `game_name` matches exactly, or `None`. Names aren't
+    /// unique; ties resolve to the lowest catalog number for a stable result
+    /// (mirrors the old `Vec`'s first-match-by-insertion-order behaviour).
+    #[allow(dead_code)] // call sites flip to this in the next step
+    pub async fn find_by_name(&self, name: &str) -> AppResult<Option<GameEntry>> {
+        let sql = format!(
+            "SELECT {GAME_COLUMNS} FROM games WHERE game_name = ? ORDER BY catalog_number LIMIT 1"
+        );
+        let row = sqlx::query(&sql)
+            .bind(name)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| AppError::Other(format!("find game by name {name}: {e}")))?;
+        row.as_ref().map(row_to_entry).transpose()
+    }
+
     /// Borrow the underlying pool for queries.
     #[allow(dead_code)] // wired into state now; first readers land in a later step
     pub fn pool(&self) -> &SqlitePool {
@@ -223,9 +285,77 @@ impl Db {
     }
 }
 
+/// Maps a `games` row back into a [`GameEntry`] — the inverse of [`bind_game`].
+/// Column order is irrelevant here (lookups are by name), but every column the
+/// binder writes must be read back, so the two evolve together. The add-then-read
+/// identity test guards against drift.
+fn row_to_entry(row: &SqliteRow) -> AppResult<GameEntry> {
+    // List fields are stored as JSON text; parse back to Vec<String>.
+    let genres_json: String = try_col(row, "genres")?;
+    let save_paths_json: String = try_col(row, "save_paths")?;
+    let genres: Vec<String> = serde_json::from_str(&genres_json)
+        .map_err(|e| AppError::Other(format!("decode genres json: {e}")))?;
+    let save_paths: Vec<String> = serde_json::from_str(&save_paths_json)
+        .map_err(|e| AppError::Other(format!("decode save_paths json: {e}")))?;
+
+    Ok(GameEntry {
+        id: try_col(row, "id")?,
+        catalog_number: try_col::<i64>(row, "catalog_number")? as u32,
+        game_name: try_col(row, "game_name")?,
+        exe_path: try_col(row, "exe_path")?,
+        safe_name: try_col(row, "safe_name")?,
+        cover_image_path: try_col(row, "cover_image_path")?,
+        hero_image_path: try_col(row, "hero_image_path")?,
+        added_at: try_col(row, "added_at")?,
+        last_played_at: try_col(row, "last_played_at")?,
+        launcher_exe_path: try_col(row, "launcher_exe_path")?,
+        game_folder_path: try_col(row, "game_folder_path")?,
+        run_as_admin: try_col(row, "run_as_admin")?,
+        use_proton: try_col(row, "use_proton")?,
+        proton_version_path: try_col(row, "proton_version_path")?,
+        wine_prefix_path: try_col(row, "wine_prefix_path")?,
+        launch_args: try_col(row, "launch_args")?,
+        description: try_col(row, "description")?,
+        developer: try_col(row, "developer")?,
+        publisher: try_col(row, "publisher")?,
+        genres,
+        release_date: try_col(row, "release_date")?,
+        install_size_mb: try_col(row, "install_size_mb")?,
+        playtime_minutes: try_col(row, "playtime_minutes")?,
+        lan_shared: try_col(row, "lan_shared")?,
+        lan_share_folder: try_col(row, "lan_share_folder")?,
+        save_backup_count: try_col(row, "save_backup_count")?,
+        save_last_backed_up_at: try_col(row, "save_last_backed_up_at")?,
+        save_backup_size_mb: try_col(row, "save_backup_size_mb")?,
+        install_source: try_col(row, "install_source")?,
+        lan_install_source_device_name: try_col(row, "lan_install_source_device_name")?,
+        lan_install_source_device_id: try_col(row, "lan_install_source_device_id")?,
+        // i64 ↔ u64: symmetric with the bind-side cast (real ids fit in i64).
+        steam_id: try_col::<Option<i64>>(row, "steam_id")?.map(|v| v as u64),
+        gog_id: try_col::<Option<i64>>(row, "gog_id")?.map(|v| v as u64),
+        lutris_slug: try_col(row, "lutris_slug")?,
+        manifest_install_dir: try_col(row, "manifest_install_dir")?,
+        save_paths,
+        accent_color: try_col(row, "accent_color")?,
+        sync_badge: try_col(row, "sync_badge")?,
+        cloud_sync_baseline: try_col(row, "cloud_sync_baseline")?,
+    })
+}
+
+/// `row.try_get` with the column name folded into the error for a useful message
+/// when a column type doesn't decode.
+fn try_col<'r, T>(row: &'r SqliteRow, col: &str) -> AppResult<T>
+where
+    T: sqlx::Decode<'r, sqlx::Sqlite> + sqlx::Type<sqlx::Sqlite>,
+{
+    row.try_get::<T, _>(col)
+        .map_err(|e| AppError::Other(format!("decode column {col}: {e}")))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::{DateTime, Utc};
 
     /// The embedded migrations apply cleanly against a fresh database and create
     /// the `games` table. Uses an in-memory pool so it doesn't depend on the
@@ -296,6 +426,108 @@ mod tests {
         assert_eq!(genres, r#"["Action","Roguelike"]"#);
         assert_eq!(steam_id, 1145360);
         assert!(run_as_admin);
+    }
+
+    /// A fully-populated entry survives upsert → read with every field intact.
+    /// This is the guard against `bind_game!` / `row_to_entry` column drift: if a
+    /// column is bound but not read back (or vice-versa), the round trip breaks.
+    #[tokio::test]
+    async fn upsert_then_read_round_trips_all_fields() {
+        let db = memory_db().await;
+
+        // Fixed, whole-second timestamp — avoids sub-second precision flakiness
+        // in the TEXT round trip.
+        let ts = DateTime::parse_from_rfc3339("2026-06-04T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+
+        let original = GameEntry {
+            id: "round-trip".to_string(),
+            catalog_number: 7,
+            game_name: "Hollow Knight".to_string(),
+            exe_path: "C:/Games/HK/hollow_knight.exe".to_string(),
+            safe_name: "Hollow Knight".to_string(),
+            cover_image_path: Some("covers/hk.png".to_string()),
+            hero_image_path: None,
+            added_at: Some(ts),
+            last_played_at: Some(ts),
+            launcher_exe_path: None,
+            game_folder_path: Some("C:/Games/HK".to_string()),
+            run_as_admin: true,
+            use_proton: false,
+            proton_version_path: None,
+            wine_prefix_path: Some("/home/u/.prefix".to_string()),
+            launch_args: Some("--windowed".to_string()),
+            description: "Explore a vast ruined kingdom.".to_string(),
+            developer: "Team Cherry".to_string(),
+            publisher: "Team Cherry".to_string(),
+            genres: vec!["Metroidvania".to_string(), "Souls-like".to_string()],
+            release_date: Some(ts),
+            install_size_mb: 9000.5,
+            playtime_minutes: 1234,
+            lan_shared: true,
+            lan_share_folder: Some("C:/Games/HK".to_string()),
+            save_backup_count: 3,
+            save_last_backed_up_at: Some(ts),
+            save_backup_size_mb: 4.25,
+            install_source: "lan".to_string(),
+            lan_install_source_device_name: Some("deck".to_string()),
+            lan_install_source_device_id: Some("dev-1".to_string()),
+            steam_id: Some(367520),
+            gog_id: None,
+            lutris_slug: Some("hollow-knight".to_string()),
+            manifest_install_dir: Some("Hollow Knight".to_string()),
+            save_paths: vec!["%USERPROFILE%/AppData/.../HK".to_string()],
+            accent_color: Some("#2b3a67".to_string()),
+            sync_badge: Some("synced".to_string()),
+            cloud_sync_baseline: Some("backup-2026".to_string()),
+        };
+
+        db.upsert_game(&original).await.expect("upsert");
+        let read_back = db
+            .find("round-trip")
+            .await
+            .expect("find")
+            .expect("present");
+        assert_eq!(read_back, original);
+
+        // An entry that leaves the optional/empty fields at their defaults also
+        // round-trips (None columns, empty Vecs → '[]').
+        let minimal = GameEntry {
+            id: "minimal".to_string(),
+            game_name: "Bare".to_string(),
+            ..GameEntry::default()
+        };
+        db.upsert_game(&minimal).await.expect("upsert minimal");
+        let read_min = db.find("minimal").await.expect("find").expect("present");
+        assert_eq!(read_min, minimal);
+    }
+
+    #[tokio::test]
+    async fn list_games_orders_by_catalog_and_find_by_name_picks_lowest() {
+        let db = memory_db().await;
+        let mk = |id: &str, cat: u32, name: &str| GameEntry {
+            id: id.to_string(),
+            catalog_number: cat,
+            game_name: name.to_string(),
+            ..GameEntry::default()
+        };
+        // Insert out of catalog order; duplicate name across two entries.
+        db.upsert_game(&mk("c", 3, "Dup")).await.unwrap();
+        db.upsert_game(&mk("a", 1, "Dup")).await.unwrap();
+        db.upsert_game(&mk("b", 2, "Solo")).await.unwrap();
+
+        let list = db.list_games().await.unwrap();
+        assert_eq!(
+            list.iter().map(|e| e.id.as_str()).collect::<Vec<_>>(),
+            ["a", "b", "c"],
+            "ordered by catalog_number"
+        );
+
+        // Duplicate name resolves to the lowest catalog number.
+        let dup = db.find_by_name("Dup").await.unwrap().expect("present");
+        assert_eq!(dup.id, "a");
+        assert!(db.find_by_name("Nope").await.unwrap().is_none());
     }
 
     #[tokio::test]

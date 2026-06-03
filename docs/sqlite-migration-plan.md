@@ -117,30 +117,40 @@ Each step compiles, passes tests, and ships independently.
    backfill must move into the importer before the JSON loader is removed
    (step 6), or imported rows would get `0`.
 
-3. **Switch reads.** Convert `list_games`, `find`, and the read-only call sites
-   (LAN `PeerGame::from_entry`, plugin server `/library`, steam/launcher
-   shortcut builders, diagnostics) to query the DB. The plugin server's
-   "reload from disk every request" becomes "just query" — same freshness,
-   less code.
+   > **3/4 re-scoped (during implementation):** "switch reads" and "switch
+   > writes" can't ship independently. If `list_games` reads the db while
+   > `add_game` still writes only JSON+`Vec`, a freshly added game won't appear
+   > — reads-from-db require writes-to-db to keep it fresh. So the original
+   > reads-then-writes split was unsound; steps 3 and 4 are redrawn along the
+   > real seam below.
 
-   **Wire the pool into the headless entry points here.** Today
-   `Db::init` only runs in the GUI/attached-`--run` processes; the
-   `--backup` / `--release-lock` / `--headless-server` subcommands
-   `std::process::exit()` in `lib.rs` *before* the pool is created
-   (`headless.rs`, `plugin_server.rs` still go through `Library::load()` /
-   per-request JSON reload). That means the three-live-processes contention
-   case the migration exists for is **not actually exercised against the db
-   until this step opens a pool in those entry points.** Don't skip it.
+3. **Build + prove the db read layer (no call-site flips).** Add the
+   `row → GameEntry` mapping (inverse of the `bind_game!` binder), `Db::list_games`
+   / `find` / `find_by_name`, and an **add-then-read identity test** asserting
+   total `GameEntry` equality after a round trip — the guard against binder/mapper
+   column drift, the highest-blast-radius risk in the migration. Also add the
+   `Db::init` retry (a few attempts, short backoff) deferred from step 1, so a
+   transient `SQLITE_BUSY` during a first-launch migration race doesn't leave a
+   process with no db. Zero behaviour change — nothing reads these methods yet.
 
-   This is also where the db becomes load-bearing, so add the
-   migration/connect resilience deferred from step 1: a small retry around
-   `Db::init` (a few attempts, short backoff) so a transient `SQLITE_BUSY`
-   while another process is mid-migration doesn't leave a process with no db.
+4. **Cutover: flip reads *and* writes to the db together.** Convert
+   `add_game`/`update_game`/`remove_game`/`delete_game_core` to `upsert`/`delete`
+   and the runner + backfills to field-level setters (the actual lost-update
+   fix), and in the same step flip the readers (`list_games`, `find`, LAN
+   `PeerGame::from_entry`, plugin server `/library`, steam/launcher shortcut
+   builders, diagnostics) onto the db. Because reads and writes are coupled this
+   is one coherent cutover, not two.
 
-4. **Switch writes to targeted methods.** Convert `add_game`/`update_game`/
-   `remove_game`/`delete_game_core` to `upsert`/`delete`, and the runner +
-   backfills to the field-level setters above. This is the step that actually
-   kills the lost-update bug.
+   **Wire the pool into the headless entry points here.** Today `Db::init` only
+   runs in the GUI/attached-`--run` processes; the `--backup` / `--release-lock`
+   / `--headless-server` subcommands `std::process::exit()` in `lib.rs` *before*
+   the pool is created (`headless.rs`, `plugin_server.rs` still go through
+   `Library::load()` / per-request JSON reload). The three-live-processes
+   contention case the migration exists for is **not actually exercised against
+   the db until this step opens a pool in those entry points.** Don't skip it.
+
+   Keep dual-writing `library.json` through this step so rollback stays trivial;
+   stop writing it in step 6.
 
 5. **Cross-process refresh.** Add the `version` row + GUI poll (option 1).
 

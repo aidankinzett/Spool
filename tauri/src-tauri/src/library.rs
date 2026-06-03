@@ -15,7 +15,7 @@ use tauri::{AppHandle, Emitter, State};
 /// One game in the library. Matches the C# `GameEntry` JSON shape exactly
 /// for the legacy fields, plus a small set of manifest-derived metadata
 /// new to the Tauri rewrite (steam id, gog id, save paths, …).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct GameEntry {
     pub id: String,
