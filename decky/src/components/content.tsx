@@ -8,9 +8,10 @@ import {
   ToggleField,
 } from "@decky/ui";
 import { useEffect, useState } from "react";
-import { SPOOL_ROUTE } from "../constants";
+import { SPOOL_LAN_ROUTE } from "../constants";
 import type { Settings } from "../types";
 import { backupNow, getSettings, getStatus, setSettings } from "../api/callables";
+import { AddToSteamList } from "./add-to-steam-list";
 
 export function Content() {
   const [status, setStatus] = useState<Awaited<ReturnType<typeof getStatus>> | null>(
@@ -37,16 +38,20 @@ export function Content() {
 
   return (
     <>
-      <PanelSection title="Library">
+      <PanelSection title="Add to Steam">
+        <AddToSteamList />
+      </PanelSection>
+
+      <PanelSection title="LAN">
         <PanelSectionRow>
           <ButtonItem
             layout="below"
             onClick={() => {
-              Navigation.Navigate(SPOOL_ROUTE);
+              Navigation.Navigate(SPOOL_LAN_ROUTE);
               Navigation.CloseSideMenus();
             }}
           >
-            Browse Library
+            Browse LAN games
           </ButtonItem>
         </PanelSectionRow>
       </PanelSection>

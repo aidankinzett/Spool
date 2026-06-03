@@ -14,25 +14,19 @@ import {
 } from "@decky/ui";
 import { createElement, type ReactElement } from "react";
 import { FaFloppyDisk } from "react-icons/fa6";
-import { SPOOL_ROUTE, SPOOL_GAME_ROUTE, SPOOL_LAN_ROUTE, SPOOL_LAN_PEER_ROUTE, SPOOL_LAN_GAME_ROUTE } from "./constants";
+import { SPOOL_LAN_ROUTE, SPOOL_LAN_PEER_ROUTE, SPOOL_LAN_GAME_ROUTE } from "./constants";
 import { onAppStop } from "./api/callables";
 import { backupStarted, backupFinished } from "./lib/backup-status";
 import { Content } from "./components/content";
-import { GameDetailPage } from "./components/game-detail-panel";
 import { LanPage } from "./components/lan-view";
 import { PeerGamesPage } from "./components/peer-games";
 import { PeerGameDetailPage } from "./components/peer-game-detail-panel";
 import { PatchWrapper } from "./components/patch/patch-wrapper";
-import { SpoolPage } from "./components/spool-page";
 
 export default definePlugin(() => {
-  // Register the full-screen route (Library | LAN). The QAM "Browse Library"
-  // button navigates to it; we remove it on dismount to avoid duplicate
+  // Register the full-screen LAN browse routes. The QAM "Browse LAN games"
+  // button navigates to them; we remove them on dismount to avoid duplicate
   // patches across hot-reloads.
-  // `/spool` must be exact, otherwise it prefix-matches `/spool/game/:id` and
-  // shadows the detail page (first matching <Route> in the Switch wins).
-  routerHook.addRoute(SPOOL_ROUTE, SpoolPage, { exact: true });
-  routerHook.addRoute(SPOOL_GAME_ROUTE, GameDetailPage);
   routerHook.addRoute(SPOOL_LAN_ROUTE, LanPage, { exact: true });
   routerHook.addRoute(SPOOL_LAN_PEER_ROUTE, PeerGamesPage, { exact: true });
   routerHook.addRoute(SPOOL_LAN_GAME_ROUTE, PeerGameDetailPage);
@@ -114,8 +108,6 @@ export default definePlugin(() => {
       removeEventListener("spool_backup_started", onBackupStarted);
       removeEventListener("spool_backup_finished", onBackupFinished);
       removeEventListener("spool_backup_toast", onBackupToast);
-      routerHook.removeRoute(SPOOL_ROUTE);
-      routerHook.removeRoute(SPOOL_GAME_ROUTE);
       routerHook.removeRoute(SPOOL_LAN_ROUTE);
       routerHook.removeRoute(SPOOL_LAN_PEER_ROUTE);
       routerHook.removeRoute(SPOOL_LAN_GAME_ROUTE);

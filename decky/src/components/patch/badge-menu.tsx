@@ -1,44 +1,90 @@
 import { toaster } from "@decky/api";
-import { DialogButton, Menu, MenuItem, Navigation, showContextMenu } from "@decky/ui";
+import {
+  ConfirmModal,
+  DialogButton,
+  Menu,
+  MenuItem,
+  MenuSeparator,
+  showContextMenu,
+  showModal,
+} from "@decky/ui";
 import { FaEllipsisVertical } from "react-icons/fa6";
 import type { LibraryGame } from "../../types";
-import { backupNow } from "../../api/callables";
+import { backupNow, deleteGame } from "../../api/callables";
 import { backupStarted, backupFinished } from "../../lib/backup-status";
+import { InstallDepsModal } from "../install-deps-modal";
 
 // Three-dots button rendered on the right of the game-page badge row. Opens a
 // Steam context menu (showContextMenu) anchored to itself with Spool actions
 // for the matched game.
 export function BadgeMenuButton({ game, appid }: { game: LibraryGame; appid: number }) {
+  // Winetricks only applies to Windows `.exe` games launched through Proton;
+  // native Linux games don't use a prefix.
+  const canInstallDeps = game.exe_path?.toLowerCase().endsWith(".exe") ?? false;
+  const canDelete = !!game.game_folder_path;
+
+  const runBackup = () => {
+    void (async () => {
+      // Drive the same backup-status store the on_app_stop events feed, so the
+      // badge shows its spinner and the patch wrapper refetches when this
+      // finishes.
+      backupStarted(appid);
+      try {
+        const res = await backupNow();
+        if (res.ok) {
+          toaster.toast({ title: "Spool", body: `Backed up ${res.game ?? game.game_name} ✓` });
+        } else if (!res.acted) {
+          toaster.toast({ title: "Spool", body: "No active session to back up." });
+        } else {
+          toaster.toast({ title: "Spool", body: `Backup failed: ${res.reason || "unknown error"}` });
+        }
+      } finally {
+        backupFinished(appid);
+      }
+    })();
+  };
+
+  const confirmDelete = () => {
+    showModal(
+      <ConfirmModal
+        strTitle={`Delete ${game.game_name} from disk?`}
+        strDescription={
+          "This permanently removes the install folder" +
+          (game.game_folder_path ? `\n${game.game_folder_path}` : "") +
+          "\nand its library entry. This can't be undone."
+        }
+        strOKButtonText="Delete from disk"
+        strCancelButtonText="Cancel"
+        bDestructiveWarning
+        onOK={() => {
+          void (async () => {
+            const res = await deleteGame(game.id);
+            if (res.ok) {
+              toaster.toast({ title: "Spool", body: `Deleted ${game.game_name} from disk` });
+            } else {
+              toaster.toast({ title: "Spool", body: `Couldn't delete: ${res.reason ?? "unknown error"}` });
+            }
+          })();
+        }}
+      />,
+    );
+  };
+
   const openMenu = (e: MouseEvent) => {
     showContextMenu(
       <Menu label="Spool">
-        <MenuItem onSelected={() => Navigation.Navigate(`/spool/game/${game.id}`)}>
-          Open in Spool
-        </MenuItem>
-        <MenuItem
-          onSelected={() => {
-            void (async () => {
-              // Drive the same backup-status store the on_app_stop events feed,
-              // so the badge shows its spinner and the patch wrapper refetches
-              // when this finishes.
-              backupStarted(appid);
-              try {
-                const res = await backupNow();
-                if (res.ok) {
-                  toaster.toast({ title: "Spool", body: `Backed up ${res.game ?? game.game_name} ✓` });
-                } else if (!res.acted) {
-                  toaster.toast({ title: "Spool", body: "No active session to back up." });
-                } else {
-                  toaster.toast({ title: "Spool", body: `Backup failed: ${res.reason || "unknown error"}` });
-                }
-              } finally {
-                backupFinished(appid);
-              }
-            })();
-          }}
-        >
-          Back up now
-        </MenuItem>
+        <MenuItem onSelected={runBackup}>Back up now</MenuItem>
+        {canInstallDeps && (
+          <MenuItem onSelected={() => showModal(<InstallDepsModal game={game} />)}>
+            Install dependencies
+          </MenuItem>
+        )}
+        {canDelete && <MenuSeparator />}
+        {canDelete && (
+          <MenuItem tone="destructive" onSelected={confirmDelete}>
+            Delete from disk
+          </MenuItem>
+        )}
       </Menu>,
       e.currentTarget ?? undefined,
     );
