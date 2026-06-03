@@ -24,6 +24,11 @@ import { PeerGameDetailPage } from "./components/peer-game-detail-panel";
 import { PatchWrapper } from "./components/patch/patch-wrapper";
 import { SpoolPage } from "./components/spool-page";
 
+import * as DUI from "@decky/ui";
+
+// DEV ONLY — remove before release
+(window as any).DUI = DUI;
+
 export default definePlugin(() => {
   // Register the full-screen route (Library | LAN). The QAM "Browse Library"
   // button navigates to it; we remove it on dismount to avoid duplicate
