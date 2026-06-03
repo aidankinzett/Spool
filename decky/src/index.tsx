@@ -9,7 +9,6 @@ import {
   afterPatch,
   appDetailsClasses,
   createReactTreePatcher,
-  findClassModule,
   findInReactTree,
   staticClasses
 } from "@decky/ui";
@@ -23,13 +22,7 @@ import { LanPage } from "./components/lan-view";
 import { PeerGamesPage } from "./components/peer-games";
 import { PeerGameDetailPage } from "./components/peer-game-detail-panel";
 import { PatchWrapper } from "./components/patch/patch-wrapper";
-import { PlaytimeStatValue } from "./components/patch/playtime-stat-override";
 import { SpoolPage } from "./components/spool-page";
-
-import * as DUI from "@decky/ui";
-
-// DEV ONLY — remove before release
-(window as any).DUI = DUI;
 
 export default definePlugin(() => {
   // Register the full-screen route (Library | LAN). The QAM "Browse Library"
@@ -79,97 +72,6 @@ export default definePlugin(() => {
     },
   );
 
-  // Override the gamepad-UI game-detail "Play Time" stat with Spool's
-  // cross-device total. Separate from the desktop InnerContainer badge patch
-  // above — this targets Game Mode's GameStatsSection, which renders through a
-  // different layout. Match on Steam's stable semantic class keys (GameStat +
-  // Playtime) so it survives Steam updates and localisation; the label string
-  // is never matched. Resolved once here — the minified values rotate between
-  // Steam builds, but the keys are stable.
-  const gameStatsClasses = findClassModule(
-    (m: any) => m.GameStatsSection && m.GameStat && m.Playtime,
-  );
-  // DEV ONLY — debug the Play Time override
-  console.log("[spool] gameStatsClasses", gameStatsClasses);
-  const playtimeStatPatch = routerHook.addPatch(
-    "/library/app/:appid",
-    (tree: any) => {
-      if (!gameStatsClasses) {
-        console.log("[spool] no gameStatsClasses — patch bailing");
-        return tree;
-      }
-      const routeProps = findInReactTree(tree, (x: any) => x?.renderFunc);
-      console.log("[spool] routeProps?", !!routeProps);
-      if (!routeProps) return tree;
-
-      afterPatch(routeProps, "renderFunc", (_: unknown[], ret?: ReactElement) => {
-        // The "Play Time" stat block carries both GameStat and Playtime;
-        // "Last Played" shares GameStat, so requiring both pins it precisely.
-        const stat = findInReactTree(
-          ret,
-          (x: any) =>
-            typeof x?.props?.className === "string" &&
-            x.props.className.includes(gameStatsClasses.GameStat) &&
-            x.props.className.includes(gameStatsClasses.Playtime),
-        );
-        // DEV ONLY — narrow down which step fails
-        const anyGameStat = findInReactTree(
-          ret,
-          (x: any) =>
-            typeof x?.props?.className === "string" &&
-            x.props.className.includes(gameStatsClasses.GameStat),
-        );
-        const section = findInReactTree(
-          ret,
-          (x: any) =>
-            typeof x?.props?.className === "string" &&
-            x.props.className.includes(gameStatsClasses.GameStatsSection),
-        );
-        console.log("[spool] renderFunc ran. section?", !!section, "anyGameStat?", !!anyGameStat, "playtimeStat?", !!stat);
-
-        // DEV ONLY — dump function-component children so we can find which one
-        // to drill into (the play bar / stats render inside a nested component).
-        if (!stat) {
-          const fcs: Array<{ name: string; props: string[] }> = [];
-          const walk = (node: any, depth: number) => {
-            if (!node || depth > 8) return;
-            if (Array.isArray(node)) {
-              node.forEach((n) => walk(n, depth));
-              return;
-            }
-            if (typeof node !== "object") return;
-            if (typeof node.type === "function") {
-              fcs.push({
-                name: node.type.displayName || node.type.name || "anon",
-                props: Object.keys(node.props ?? {}),
-              });
-            }
-            walk(node?.props?.children, depth + 1);
-          };
-          walk(ret, 0);
-          console.log("[spool] fc children in ret:", fcs);
-        }
-        if (!stat) return ret;
-
-        // The {label, children} value field lives inside that block; swap its
-        // value for Spool's, keeping the original as a loading/no-match fallback.
-        const field = findInReactTree(
-          stat,
-          (x: any) => x?.props && "label" in x.props && "children" in x.props,
-        );
-        console.log("[spool] field?", !!field, field?.props);
-        if (field) {
-          field.props.children = createElement(PlaytimeStatValue, {
-            fallback: field.props.children,
-          });
-        }
-        return ret;
-      });
-
-      return tree;
-    },
-  );
-
   // Register the game-stop listener ONCE at plugin load (not inside the panel,
   // which unmounts when the QAM closes). On a stop, let the backend decide
   // whether a forced-close fallback backup is needed.
@@ -208,7 +110,6 @@ export default definePlugin(() => {
       routerHook.removeRoute(SPOOL_LAN_PEER_ROUTE);
       routerHook.removeRoute(SPOOL_LAN_GAME_ROUTE);
       routerHook.removePatch("/library/app/:appid", playtimePatch);
-      routerHook.removePatch("/library/app/:appid", playtimeStatPatch);
     },
   };
 });
