@@ -34,6 +34,18 @@ chmod +x Spool_*_amd64.AppImage
 ./Spool_*_amd64.AppImage
 ```
 
+To install it properly — drop the AppImage into `~/Applications` and add a
+launcher entry (with icon) so Spool shows up in your desktop's application menu
+(KDE Plasma, GNOME, etc.) — run the installer script instead:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/aidankinzett/Spool/master/scripts/install-appimage.sh | bash
+```
+
+It downloads the latest release, registers the launcher entry, and installs the
+icons. Re-run it anytime to reinstall (the AppImage also self-updates in place),
+or pass `--uninstall` to remove the AppImage and launcher entry.
+
 On a Steam Deck or other handheld, do this from Desktop Mode the first time. To
 launch your library from Game Mode without dropping to the desktop, install the
 [Decky plugin](/decky/overview/).
