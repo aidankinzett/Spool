@@ -80,14 +80,22 @@
   // ── Mount: load Proton versions + pick the installer immediately ───────
   onMount(() => {
     let unlisten: (() => void) | null = null;
+    let isUnmounted = false;
     (async () => {
-      unlisten = await listen<string>('install:drive-ready', (e) => {
+      const fn = await listen<string>('install:drive-ready', (e) => {
         earlyDriveLetter = e.payload;
       });
+      // If we unmounted while the listen() promise was in flight, tear down
+      // immediately so we don't leak the listener.
+      if (isUnmounted) fn();
+      else unlisten = fn;
       protonVersions = await api.listProtonVersions();
       await pickSetup(true);
     })();
-    return () => unlisten?.();
+    return () => {
+      isUnmounted = true;
+      unlisten?.();
+    };
   });
 
   async function pickSetup(closeOnCancel = false) {
