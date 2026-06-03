@@ -312,7 +312,7 @@
 
       <!-- Horizontal cover rail -->
       <div
-        class="flex gap-3 overflow-x-auto px-4 pb-5"
+        class="flex gap-3 overflow-x-auto px-4 pb-5 pt-4"
         style:scroll-snap-type="x mandatory"
         style:-webkit-overflow-scrolling="touch"
       >
