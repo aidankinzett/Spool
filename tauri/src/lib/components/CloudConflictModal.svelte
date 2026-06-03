@@ -48,6 +48,7 @@
   import { shadeHex } from '$lib/tokens';
   import SpoolMark from '$lib/components/SpoolMark.svelte';
   import CatalogId from '$lib/components/CatalogId.svelte';
+  import { gamepadScope } from '$lib/gamepad';
 
   const BRAND_SPOOL = '#d7c9a0';
 
@@ -199,6 +200,14 @@
     }
   }
 
+  // Controller B / Escape via the gamepad-nav scope — same intent as the
+  // Escape key above (no-op mid-apply so a transfer can't be abandoned).
+  function navBack() {
+    if (phase === 'applying') return;
+    if (phase === 'error') onCancel();
+    else onClose?.();
+  }
+
   // Reel spinner spokes (port of the design's ReelHub, size 26).
   const REEL_SPOKES = (() => {
     const size = 26;
@@ -281,6 +290,7 @@
     onmouseenter={() => (hover[`card-${side.key}`] = true)}
     onmouseleave={() => (hover[`card-${side.key}`] = false)}
     disabled={locked}
+    data-gp-autofocus={side.recent ? '' : undefined}
     class="relative flex flex-col overflow-hidden rounded-md p-0 text-left transition-[background,border-color,opacity] duration-150"
     style:background={bg}
     style:border="1px solid {borderCol}"
@@ -469,11 +479,13 @@
     role="dialog"
     aria-modal="true"
     aria-labelledby="cc-modal-title"
+    use:gamepadScope={{ onBack: navBack }}
     style:width="640px"
     style:max-width="calc(100vw - 48px)"
     style:background="var(--color-bg-0)"
     style:border-radius="8px"
     style:box-shadow="0 32px 80px rgba(0,0,0,0.6), 0 0 0 1px rgba(255,255,255,0.07)"
+    style:--gp-focus={acc}
   >
     <!-- chrome -->
     <div

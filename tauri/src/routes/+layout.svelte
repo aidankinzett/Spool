@@ -7,6 +7,7 @@
   import ConfirmHost from '$lib/components/ConfirmHost.svelte';
   import { api } from '$lib/api';
   import { uiMode } from '$lib/uiMode.svelte';
+  import { startGamepadNav } from '$lib/gamepad';
 
   let { children } = $props();
 
@@ -30,6 +31,10 @@
   }
 
   onMount(() => {
+    // Wire controller / keyboard spatial navigation for every window. Idempotent
+    // and self-disabling when the Tauri event bridge isn't present.
+    startGamepadNav();
+
     let unlisten: (() => void) | undefined;
     (async () => {
       try {
