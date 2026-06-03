@@ -12,6 +12,8 @@ import { FaEllipsisVertical } from "react-icons/fa6";
 import type { LibraryGame } from "../../types";
 import { backupNow, deleteGame } from "../../api/callables";
 import { backupStarted, backupFinished } from "../../lib/backup-status";
+import { forgetAppid } from "../../lib/appid-map";
+import { steamApps } from "../../lib/steam";
 import { InstallDepsModal } from "../install-deps-modal";
 
 // Three-dots button rendered on the right of the game-page badge row. Opens a
@@ -60,6 +62,14 @@ export function BadgeMenuButton({ game, appid }: { game: LibraryGame; appid: num
           void (async () => {
             const res = await deleteGame(game.id);
             if (res.ok) {
+              // This badge lives on the game's own Steam page, so `appid` is its
+              // non-Steam shortcut. Remove it too and forget the stored mapping.
+              try {
+                steamApps()?.RemoveShortcut?.(appid);
+              } catch (e) {
+                console.warn("[Spool] RemoveShortcut failed", e);
+              }
+              forgetAppid(game.id);
               toaster.toast({ title: "Spool", body: `Deleted ${game.game_name} from disk` });
             } else {
               toaster.toast({ title: "Spool", body: `Couldn't delete: ${res.reason ?? "unknown error"}` });

@@ -1,5 +1,6 @@
 import { ButtonItem, PanelSectionRow } from "@decky/ui";
 import { useEffect, useState } from "react";
+import { FaCheck, FaPlus } from "react-icons/fa6";
 import type { LibraryGame } from "../types";
 import { useServerBase } from "../hooks/use-server-base";
 import { addLibraryGameShortcut, existingShortcutAppId } from "../lib/launch";
@@ -66,7 +67,7 @@ export function AddToSteamList() {
               disabled={isAdded || isBusy}
               onClick={() => void add(game)}
             >
-              {isAdded ? "✓ Added" : isBusy ? "Adding…" : "Add to Steam"}
+              {isAdded ? <FaCheck /> : isBusy ? "…" : <FaPlus />}
             </ButtonItem>
           </PanelSectionRow>
         );
