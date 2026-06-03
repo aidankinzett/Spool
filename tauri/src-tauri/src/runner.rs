@@ -1697,7 +1697,21 @@ async fn reconcile_cloud_conflict(ctx: &WorkflowCtx<'_>) -> AppResult<()> {
 async fn phase_launch(ctx: &WorkflowCtx<'_>, exe_pathbuf: &Path) -> AppResult<SessionTiming> {
     emit_phase(ctx.app, ctx.game_id, "launching", Some("Launching game…"), ctx.cloud_configured, None, false);
     emit_phase(ctx.app, ctx.game_id, "playing", None, ctx.cloud_configured, None, false);
-    tracing::info!(exe_path = %exe_pathbuf.display(), use_proton = ctx.launch.use_proton, "launching game process");
+    if ctx.launch.use_proton {
+        tracing::info!(
+            exe_path = %exe_pathbuf.display(),
+            umu_run = %ctx.launch.umu_run.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "<none>".into()),
+            prefix_root = %ctx.launch.prefix_root.display(),
+            proton_path = %ctx.launch.proton_path.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "<umu default>".into()),
+            "launching game via Proton"
+        );
+    } else {
+        tracing::info!(
+            exe_path = %exe_pathbuf.display(),
+            run_as_admin = ctx.launch.run_as_admin,
+            "launching game natively"
+        );
+    }
     let session_start = Utc::now();
 
     let spec = if ctx.launch.use_proton {
@@ -1711,6 +1725,7 @@ async fn phase_launch(ctx: &WorkflowCtx<'_>, exe_pathbuf: &Path) -> AppResult<Se
             proton_path: ctx.launch.proton_path.as_deref(),
             game_id: ctx.game_id,
             extra_args: &ctx.launch.extra_args,
+            extra_env: &[],
         }
     } else {
         process::LaunchSpec::Native {
@@ -1748,15 +1763,33 @@ async fn phase_launch(ctx: &WorkflowCtx<'_>, exe_pathbuf: &Path) -> AppResult<Se
 
     tracing::info!(
         game_name = ctx.game_name,
-        duration_min = (session_end - session_start).num_minutes(),
+        duration_secs = (session_end - session_start).num_seconds(),
+        exit_code = spawn_result.as_ref().ok().map(|r| r.code).unwrap_or(-1),
         "game exited"
     );
 
-    if let Err(e) = spawn_result {
-        // No game session occurred — delete the marker so other devices aren't
-        // permanently blocked by a PendingBackup state that will never resolve.
-        rclone::delete_session_marker(ctx.app, ctx.game_name).await;
-        return Err(AppError::Other(format!("Game failed to launch: {e}")));
+    match spawn_result {
+        Err(e) => {
+            // Process never started — delete the marker so peers aren't blocked.
+            rclone::delete_session_marker(ctx.app, ctx.game_name).await;
+            return Err(AppError::Other(format!("Game failed to launch: {e}")));
+        }
+        Ok(ref result) if result.crash_hint.is_some() => {
+            // Game exited in under 5 seconds with a non-zero code — almost
+            // certainly a Wine/Proton crash before the window opened (missing
+            // DLL, bad prefix, vcredist not installed, etc.). Treat it as a
+            // failed launch so the user sees the relevant umu output rather than
+            // a silent 0-minute session.
+            rclone::delete_session_marker(ctx.app, ctx.game_name).await;
+            let hint = result.crash_hint.as_deref().unwrap_or_default();
+            let log_path = crate::paths::log_file();
+            return Err(AppError::Other(format!(
+                "Game exited immediately (code {}).\n\n{hint}\n\nFull log: {}",
+                result.code,
+                log_path.display()
+            )));
+        }
+        Ok(_) => {}
     }
 
     // ── Update last_played + playtime (best-effort) ───────────────────

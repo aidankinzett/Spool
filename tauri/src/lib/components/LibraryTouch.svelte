@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { Info, Play, Search, Settings } from '@lucide/svelte';
+  import { onMount } from 'svelte';
+  import { Info, Package, Play, Search, Settings } from '@lucide/svelte';
   import { api, assetUrl } from '$lib/api';
   import { fmtCatalog, fmtPlaytime, relDate } from '$lib/format';
   import { openView } from '$lib/nav';
@@ -13,6 +14,12 @@
   import MonoLabel from '$lib/components/MonoLabel.svelte';
 
   let { lib }: { lib: Library } = $props();
+
+  // The guided repack installer runs through Proton, so the button is Linux-only.
+  let isLinux = $state(false);
+  onMount(() => {
+    api.appPlatform().then((p) => (isLinux = p === 'linux'));
+  });
 
   // Local overlay state
   let detailOpen = $state(false);
@@ -157,16 +164,31 @@
       <div class="flex flex-1 flex-col items-center justify-center gap-4 px-6">
         <MonoLabel>Empty shelf</MonoLabel>
         <p class="text-ink-2" style:font-size="var(--text-base)">No games yet.</p>
-        <button
-          type="button"
-          onclick={() => openView('add')}
-          class="inline-flex cursor-pointer items-center gap-2 rounded-sm bg-spool font-medium text-bg-0"
-          style:height="var(--control-h)"
-          style:padding-inline="calc(var(--space-unit) * 4)"
-          style:font-size="var(--text-base)"
-        >
-          Add your first game
-        </button>
+        <div class="flex items-center gap-3">
+          {#if isLinux}
+            <button
+              type="button"
+              onclick={() => openView('install')}
+              class="inline-flex cursor-pointer items-center gap-2 rounded-sm border border-line-2 bg-bg-2 font-medium text-ink-1"
+              style:height="var(--control-h)"
+              style:padding-inline="calc(var(--space-unit) * 4)"
+              style:font-size="var(--text-base)"
+            >
+              <Package size={16} />
+              Install a repack
+            </button>
+          {/if}
+          <button
+            type="button"
+            onclick={() => openView('add')}
+            class="inline-flex cursor-pointer items-center gap-2 rounded-sm bg-spool font-medium text-bg-0"
+            style:height="var(--control-h)"
+            style:padding-inline="calc(var(--space-unit) * 4)"
+            style:font-size="var(--text-base)"
+          >
+            Add your first game
+          </button>
+        </div>
       </div>
     {:else if selectedGame}
       <div class="flex min-h-0 flex-1 items-center gap-6 overflow-hidden px-6 py-5">
