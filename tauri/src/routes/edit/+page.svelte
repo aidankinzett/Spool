@@ -44,8 +44,33 @@
   // Proton launch (Linux only). Populated on mount.
   let isLinux = $state(false);
   let protonVersions = $state<ProtonVersion[]>([]);
-  let depsVerbs = $state('vcrun2022');
   let depsInstalling = $state(false);
+
+  const VERB_PRESETS = [
+    { verb: 'vcrun2022', label: 'Visual C++ 2022' },
+    { verb: 'dotnet48', label: '.NET 4.8' },
+    { verb: 'dotnet6', label: '.NET 6' },
+    { verb: 'xna40', label: 'XNA 4.0' },
+    { verb: 'physx', label: 'PhysX' },
+    { verb: 'd3dcompiler_47', label: 'D3D Compiler 47' },
+  ] as const;
+
+  let depsChecked = $state(new Set<string>());
+  let depsCustomEnabled = $state(false);
+  let depsCustom = $state('');
+  const effectiveDeps = $derived(
+    [
+      ...depsChecked,
+      ...(depsCustomEnabled ? depsCustom.trim().split(/\s+/).filter(Boolean) : []),
+    ].join(' '),
+  );
+
+  function togglePreset(verb: string, checked: boolean) {
+    const next = new Set(depsChecked);
+    if (checked) next.add(verb);
+    else next.delete(verb);
+    depsChecked = next;
+  }
 
   const BRAND_SPOOL = '#d7c9a0';
   const accent = $derived(form?.accent_color ?? BRAND_SPOOL);
@@ -161,7 +186,7 @@
 
   async function installDeps() {
     if (!form || depsInstalling) return;
-    const verbs = depsVerbs.trim();
+    const verbs = effectiveDeps.trim();
     if (!verbs) return;
     depsInstalling = true;
     try {
@@ -468,7 +493,7 @@
             )}
             {@render field(
               'Install dependencies',
-              'Install Windows runtimes into this prefix via winetricks (space-separated, e.g. vcrun2022 dotnet48). Needs UMU/GE Proton.',
+              'Install Windows runtime packages into this prefix via winetricks. Needs UMU or GE-Proton.',
               depsRow,
             )}
           {/if}
@@ -534,12 +559,49 @@
             />
           {/snippet}
           {#snippet depsRow()}
-            <div class="flex gap-1.5">
-              <TextField bind:value={depsVerbs} mono full placeholder="vcrun2022" />
-              <Btn variant="ghost" onclick={installDeps} disabled={depsInstalling}>
-                {#snippet icon()}<Download size={14} />{/snippet}
-                {depsInstalling ? 'Installing…' : 'Install'}
-              </Btn>
+            <div class="flex flex-col gap-2">
+              <div class="grid grid-cols-2 gap-1.5">
+                {#each VERB_PRESETS as p (p.verb)}
+                  <label class="flex cursor-pointer items-start gap-2 rounded-[4px] border border-line-1 bg-bg-1 px-2.5 py-2 hover:bg-bg-2">
+                    <input
+                      type="checkbox"
+                      checked={depsChecked.has(p.verb)}
+                      onchange={(e) => togglePreset(p.verb, e.currentTarget.checked)}
+                      class="mt-0.5 shrink-0 accent-[var(--color-spool)]"
+                    />
+                    <div class="min-w-0">
+                      <div class="font-mono truncate text-[11px] font-medium text-ink-0">{p.verb}</div>
+                      <div class="truncate text-[10px] text-ink-3">{p.label}</div>
+                    </div>
+                  </label>
+                {/each}
+              </div>
+              <label class="flex cursor-pointer items-center gap-2 rounded-[4px] border border-line-1 bg-bg-1 px-2.5 py-2 hover:bg-bg-2">
+                <input
+                  type="checkbox"
+                  bind:checked={depsCustomEnabled}
+                  class="shrink-0 accent-[var(--color-spool)]"
+                />
+                <span class="font-mono text-[11px] font-medium text-ink-0">custom</span>
+                {#if depsCustomEnabled}
+                  <input
+                    bind:value={depsCustom}
+                    placeholder="e.g. dotnet7 d3dcompiler_47"
+                    class="font-mono ml-1 min-w-0 flex-1 rounded-[3px] border border-line-2 bg-bg-2 px-2 py-0.5 text-[11px] text-ink-0 outline-none placeholder:text-ink-3 focus:border-line-3"
+                  />
+                {/if}
+              </label>
+              <div class="flex items-center justify-between">
+                {#if effectiveDeps}
+                  <span class="font-mono text-[10px] text-ink-3 truncate">→ {effectiveDeps}</span>
+                {:else}
+                  <span></span>
+                {/if}
+                <Btn variant="ghost" onclick={installDeps} disabled={depsInstalling || !effectiveDeps}>
+                  {#snippet icon()}<Download size={14} />{/snippet}
+                  {depsInstalling ? 'Installing…' : 'Install'}
+                </Btn>
+              </div>
             </div>
           {/snippet}
         {:else if tab === 'sharing'}

@@ -52,6 +52,9 @@
   let identifying = $state(false);
   let candidates = $state<SearchCandidate[]>([]);
   let picked = $state<SearchCandidate | null>(null);
+  // Effective game folder: candidate's detected install root when ludusavi
+  // knows it, otherwise the exe's parent directory. Mirrors Add Game logic.
+  let gameFolder = $state<string | null>(null);
 
   function baseName(path: string): string {
     const parts = path.split(/[\\/]/);
@@ -71,6 +74,11 @@
       .replace(/[[(].*?[\])]/g, '')
       .replace(/\s+/g, ' ')
       .trim();
+  }
+
+  function applyDetectedFolder(cand: SearchCandidate | null) {
+    if (!exePath) return;
+    gameFolder = cand?.install_root ?? parentDir(exePath);
   }
 
   function candKey(c: SearchCandidate): string {
@@ -142,6 +150,7 @@
     });
     if (typeof result !== 'string') return;
     exePath = result;
+    gameFolder = parentDir(result);
     await identify();
   }
 
@@ -153,6 +162,7 @@
     try {
       candidates = await api.searchByExe(exePath);
       picked = candidates[0] ?? null;
+      applyDetectedFolder(picked);
     } catch (e) {
       error = String(e);
       candidates = [];
@@ -173,7 +183,7 @@
         lutris_slug: picked.lutris_slug,
         manifest_install_dir: picked.manifest_install_dir,
         save_paths: picked.save_paths,
-        game_folder_path: install.install_dir,
+        game_folder_path: gameFolder,
         wine_prefix_path: install.prefix_path,
         proton_version_path: install.proton_path ?? undefined,
       });
@@ -191,7 +201,7 @@
         game_name: picked?.name ?? fallback,
         exe_path: exePath,
         save_paths: [],
-        game_folder_path: install.install_dir,
+        game_folder_path: gameFolder,
         wine_prefix_path: install.prefix_path,
         proton_version_path: install.proton_path ?? undefined,
       });
@@ -353,7 +363,7 @@
                   <CandidateRow
                     {cand}
                     picked={!!picked && candKey(picked) === candKey(cand)}
-                    onpick={() => (picked = cand)}
+                    onpick={() => { picked = cand; applyDetectedFolder(cand); }}
                   />
                 </div>
               {/each}
