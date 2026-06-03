@@ -58,6 +58,41 @@ const scopeStack: Scope[] = [];
 let started = false;
 let unlistenGamepad: UnlistenFn | undefined;
 
+// Held-direction auto-repeat for the dpad. gilrs emits a single press/release
+// (no key-repeat), so we synthesise repeat here: one move on press, then after
+// an initial delay, steady repeats until release — like a keyboard's typematic.
+const REPEAT_DELAY_MS = 350;
+const REPEAT_INTERVAL_MS = 90;
+let heldDir: Direction | null = null;
+let repeatTimer: ReturnType<typeof setTimeout> | undefined;
+let repeatInterval: ReturnType<typeof setInterval> | undefined;
+
+const DPAD_DIRECTION: Record<string, Direction> = {
+  DPadUp: 'up',
+  DPadDown: 'down',
+  DPadLeft: 'left',
+  DPadRight: 'right',
+};
+
+function startRepeat(dir: Direction) {
+  stopRepeat();
+  heldDir = dir;
+  move(dir);
+  repeatTimer = setTimeout(() => {
+    repeatInterval = setInterval(() => move(dir), REPEAT_INTERVAL_MS);
+  }, REPEAT_DELAY_MS);
+}
+
+function stopRepeat(dir?: Direction) {
+  // If a specific direction released, only stop when it's the one repeating.
+  if (dir && heldDir !== dir) return;
+  heldDir = null;
+  if (repeatTimer) clearTimeout(repeatTimer);
+  if (repeatInterval) clearInterval(repeatInterval);
+  repeatTimer = undefined;
+  repeatInterval = undefined;
+}
+
 /** The scope navigation is currently confined to (top of stack), or null. */
 function activeScope(): Scope | null {
   return scopeStack.length ? scopeStack[scopeStack.length - 1] : null;
@@ -182,23 +217,13 @@ function setInputMode(mode: 'gamepad' | 'keyboard' | 'mouse') {
 
 function onGamepad(p: GamepadInput) {
   if (p.kind === 'button-down') {
+    const dir = p.button ? DPAD_DIRECTION[p.button] : undefined;
+    if (dir) {
+      setInputMode('gamepad');
+      startRepeat(dir);
+      return;
+    }
     switch (p.button) {
-      case 'DPadUp':
-        setInputMode('gamepad');
-        move('up');
-        break;
-      case 'DPadDown':
-        setInputMode('gamepad');
-        move('down');
-        break;
-      case 'DPadLeft':
-        setInputMode('gamepad');
-        move('left');
-        break;
-      case 'DPadRight':
-        setInputMode('gamepad');
-        move('right');
-        break;
       case 'South': // A
         setInputMode('gamepad');
         activate();
@@ -208,18 +233,33 @@ function onGamepad(p: GamepadInput) {
         back();
         break;
     }
+  } else if (p.kind === 'button-up') {
+    const dir = p.button ? DPAD_DIRECTION[p.button] : undefined;
+    if (dir) stopRepeat(dir);
   } else if (p.kind === 'axis') {
     setInputMode('gamepad');
-    // gilrs reports +Y up, +X right. Bridge only emits on a threshold crossing.
+    // gilrs reports +Y up, +X right. Bridge only emits on a threshold crossing,
+    // so the stick is single-step (no held-repeat) for now.
     if (p.axis === 'LeftStickX') move(p.value > 0 ? 'right' : 'left');
     else if (p.axis === 'LeftStickY') move(p.value > 0 ? 'up' : 'down');
   }
+}
+
+/** Editable fields keep native arrow-key behaviour (caret movement). A gamepad
+ *  dpad still navigates away — only the keyboard path defers here. */
+function isEditable(el: Element | null): boolean {
+  if (!(el instanceof HTMLElement)) return false;
+  const tag = el.tagName;
+  return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || el.isContentEditable;
 }
 
 function onKeydown(e: KeyboardEvent) {
   // Only steer focus while a scope is active (a modal/view opted in). Outside
   // a scope, leave the browser's native Tab behaviour alone.
   if (scopeStack.length === 0) return;
+
+  // Don't hijack arrows while typing — let the caret move in text fields.
+  if (isEditable(document.activeElement)) return;
 
   switch (e.key) {
     case 'ArrowUp':
@@ -260,6 +300,10 @@ export function startGamepadNav() {
   if (started) return;
   started = true;
 
+  // Default to mouse modality so programmatic focus (e.g. a view's initial
+  // focus) doesn't flash a ring before the user touches a key or pad.
+  setInputMode('mouse');
+
   listen<GamepadInput>('gamepad:input', (e) => onGamepad(e.payload))
     .then((fn) => {
       unlistenGamepad = fn;
@@ -276,6 +320,7 @@ export function startGamepadNav() {
 export function stopGamepadNav() {
   if (!started) return;
   started = false;
+  stopRepeat();
   unlistenGamepad?.();
   unlistenGamepad = undefined;
   window.removeEventListener('keydown', onKeydown, true);

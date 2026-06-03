@@ -25,6 +25,7 @@
   import LibraryContextMenu from '$lib/components/LibraryContextMenu.svelte';
   import TransferPill from '$lib/components/TransferPill.svelte';
   import TransfersPanel from '$lib/components/TransfersPanel.svelte';
+  import { gamepadScope } from '$lib/gamepad';
 
   let { lib }: { lib: Library } = $props();
 
@@ -51,6 +52,13 @@
   function openContextMenu(e: MouseEvent, g: GameEntry) {
     e.preventDefault();
     ctxMenu = { game: g, x: e.clientX, y: e.clientY };
+  }
+
+  // Controller B / Escape at the library root. The LAN popover and transfers
+  // panel push their own scopes (so B closes them first); this only needs to
+  // dismiss the context menu, which isn't a scope of its own.
+  function libraryBack() {
+    if (ctxMenu) ctxMenu = null;
   }
 
   function closeLanPopover() {
@@ -86,7 +94,7 @@
   });
 </script>
 
-<div class="flex h-screen flex-col bg-bg-0 text-ink-0">
+<div class="flex h-screen flex-col bg-bg-0 text-ink-0" use:gamepadScope={{ onBack: libraryBack }}>
   <AppChrome
     sub="LIBRARY"
     peers={lib.lanPeers.length}
@@ -167,6 +175,7 @@
       class="fixed z-40"
       style:right="92px"
       style:top="var(--chrome-h)"
+      use:gamepadScope={{ onBack: () => (transfersOpen = false) }}
     >
       <TransfersPanel
         download={lib.activeDownload}
@@ -188,6 +197,7 @@
       class="fixed right-3 z-40 w-[320px] overflow-hidden rounded-md border border-line-2 bg-bg-1"
       style:box-shadow="0 18px 48px rgb(0 0 0 / 0.6)"
       style:top="var(--chrome-h)"
+      use:gamepadScope={{ onBack: closeLanPopover }}
     >
       {#if lib.openPeer}
         <!-- Drilled view: one peer's library -->
@@ -459,7 +469,7 @@
         {:else if lib.filteredGames.length === 0}
           <p class="px-4 py-3 text-[12px] text-ink-3">No matches.</p>
         {:else}
-          {#each lib.filteredGames as g (g.id)}
+          {#each lib.filteredGames as g, i (g.id)}
             {@const selected = lib.selectedId === g.id}
             {@const cover = assetUrl(g.cover_image_path)}
             {@const rowAccent = g.accent_color ?? '#d7c9a0'}
@@ -483,6 +493,7 @@
               type="button"
               data-testid="game-row"
               data-game-name={g.game_name}
+              data-gp-autofocus={(lib.selectedId ? selected : i === 0) ? '' : undefined}
               onclick={() => (lib.selectedId = g.id)}
               oncontextmenu={(e) => openContextMenu(e, g)}
               class="flex w-full items-center gap-2.5 border-l-2 px-3 py-2 text-left transition-colors"
