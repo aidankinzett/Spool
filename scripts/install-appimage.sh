@@ -97,9 +97,16 @@ EMBEDDED_ICON="${EMBEDDED_ICON:-spool}"
 mkdir -p "$DESKTOP_DIR"
 if [ -n "$SRC_DESKTOP" ]; then
   # Reuse the embedded entry, rewriting Exec/Icon and the path-based TryExec.
+  # StartupWMClass must match the WM_CLASS *class* value (second element, e.g.
+  # "Spool") not the instance ("spool"); Tauri sets these with capital first
+  # letter, but the bundled .desktop often ships the lowercase form, which
+  # breaks KDE taskbar icon matching.
+  WM_CLASS_NAME="$(grep -m1 '^Name=' "$SRC_DESKTOP" | cut -d= -f2-)"
+  WM_CLASS_NAME="${WM_CLASS_NAME:-Spool}"
   sed -E \
     -e "s#^Exec=.*#Exec=\"$APPIMAGE_PATH\" %U#" \
     -e "s#^Icon=.*#Icon=$ICON_NAME#" \
+    -e "s#^StartupWMClass=.*#StartupWMClass=$WM_CLASS_NAME#" \
     -e "/^TryExec=/d" \
     "$SRC_DESKTOP" > "$DESKTOP_PATH"
 else
