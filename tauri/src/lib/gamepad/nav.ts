@@ -182,13 +182,15 @@ function focusEl(el: HTMLElement) {
   el.scrollIntoView({ block: 'nearest', inline: 'nearest' });
 }
 
-/** Is `el` a focused range input? Dpad left/right adjusts it instead of moving. */
-function isRangeInput(el: Element | null): el is HTMLInputElement {
-  return el instanceof HTMLInputElement && el.type === 'range';
+/** A focused range or number input absorbs dpad left/right as a value step
+ *  (instead of moving focus). Up/down still navigates away — keeping a vertical
+ *  list traversable while the horizontal axis tweaks the value. */
+function isStepInput(el: Element | null): el is HTMLInputElement {
+  return el instanceof HTMLInputElement && (el.type === 'range' || el.type === 'number');
 }
 
-/** Nudge a range input by one step, honouring min/max, and fire input + change
- *  so two-way bindings and commit handlers react (the keyboard does this
+/** Nudge a range/number input by one step, honouring min/max, and fire input +
+ *  change so two-way bindings and commit handlers react (the keyboard does this
  *  natively; the gamepad path has to synthesise it). */
 function adjustRange(el: HTMLInputElement, sign: 1 | -1) {
   const step = Number(el.step) || 1;
@@ -207,10 +209,11 @@ function adjustRange(el: HTMLInputElement, sign: 1 | -1) {
 function move(dir: Direction) {
   const root = activeRoot();
 
-  // A focused slider eats horizontal input as a value change; up/down still
-  // navigates away. Held-repeat works for free since this runs per move() tick.
+  // A focused slider / number input eats horizontal input as a value change;
+  // up/down still navigates away. Held-repeat works for free since this runs
+  // per move() tick.
   const focused = document.activeElement;
-  if ((dir === 'left' || dir === 'right') && isRangeInput(focused) && root.contains(focused)) {
+  if ((dir === 'left' || dir === 'right') && isStepInput(focused) && root.contains(focused)) {
     adjustRange(focused, dir === 'right' ? 1 : -1);
     return;
   }
