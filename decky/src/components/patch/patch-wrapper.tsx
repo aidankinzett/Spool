@@ -12,6 +12,25 @@ const BAR_HEIGHT = 44;
 // Inset from the capsule's left/right edges, and the gap above its bottom edge.
 const SIDE_INSET = "2.8vw";
 const BOTTOM_GAP = 14;
+// How far to lift Steam's title logo so the bar doesn't cover it.
+const TITLE_SHIFT = BAR_HEIGHT + BOTTOM_GAP + 14;
+// Attribute we toggle on the capsule to scope the title-shift CSS to our pages.
+const ACTIVE_ATTR = "data-spool-bar-active";
+
+// Inject (once) a scoped rule that lifts the hero's title logo while our bar is
+// shown. A CSS rule rather than an inline transform so it survives Steam's
+// React re-renders of the title; scoped by `ACTIVE_ATTR` so it only affects the
+// capsule we mark, never other game pages.
+function ensureTitleShiftStyle() {
+  const id = "spool-title-shift";
+  if (typeof document === "undefined" || document.getElementById(id)) return;
+  const el = document.createElement("style");
+  el.id = id;
+  el.textContent =
+    `[${ACTIVE_ATTR}] .${appDetailsHeaderClasses.TitleSection}{` +
+    `transform:translateY(-${TITLE_SHIFT}px);transition:transform .12s ease;}`;
+  document.head.appendChild(el);
+}
 
 // Walk from our injected anchor to the page's hero banner element ("TopCapsule"):
 // anchor → parent (InnerContainer) → the `Header` sibling → its `TopCapsule`
@@ -53,6 +72,7 @@ export function PatchWrapper() {
   const backingUp = useBackingUp(appid);
 
   const anchorRef = useRef<HTMLDivElement | null>(null);
+  const capsuleRef = useRef<HTMLElement | null>(null);
   // Vertical offset of the bar within the capsule (px from the capsule top), or
   // null until the capsule is measured. `hidden` tracks the fullscreen-hero
   // animation so the bar isn't left floating over the expanded banner.
@@ -72,6 +92,8 @@ export function PatchWrapper() {
   useEffect(() => {
     const capsule = findTopCapsule(anchorRef.current);
     if (!capsule) return;
+    capsuleRef.current = capsule;
+    ensureTitleShiftStyle();
 
     const measure = () =>
       setTop(Math.max(0, capsule.offsetHeight - BAR_HEIGHT - BOTTOM_GAP));
@@ -97,8 +119,20 @@ export function PatchWrapper() {
     return () => {
       ro.disconnect();
       mo.disconnect();
+      capsule.removeAttribute(ACTIVE_ATTR);
+      capsuleRef.current = null;
     };
   }, [game?.id]);
+
+  // Mark the capsule active (lifting its title) exactly when the bar is on
+  // screen, so the logo only shifts while something covers it.
+  const barVisible = !!game && top !== null && !hidden;
+  useEffect(() => {
+    const capsule = capsuleRef.current;
+    if (!capsule) return;
+    if (barVisible) capsule.setAttribute(ACTIVE_ATTR, "");
+    else capsule.removeAttribute(ACTIVE_ATTR);
+  }, [barVisible]);
 
   // Keep mounting the anchor while a backup runs even before the first fetch
   // resolves, so the bar isn't gated behind `loading`/`game` — but the bar
@@ -107,7 +141,7 @@ export function PatchWrapper() {
 
   return (
     <div id="spool-bar-anchor" ref={anchorRef} style={{ position: "relative", height: 0 }}>
-      {game && top !== null && !hidden && (
+      {barVisible && (
         <div
           style={{
             position: "absolute",
