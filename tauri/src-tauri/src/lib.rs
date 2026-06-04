@@ -598,6 +598,15 @@ fn run_normal_setup(
             if let Err(e) = main.set_fullscreen(true) {
                 tracing::warn!(error = %e, "failed to set main window fullscreen in Game Mode");
             }
+            // gamescope advertises a device scale factor of 1 and doesn't carry
+            // over the desktop session's display scaling (e.g. KDE's 150%), so
+            // the webview renders at "100%" and the UI looks tiny on a handheld.
+            // Scale the webview up to compensate. The factor is overridable via
+            // $SPOOL_GAMEMODE_ZOOM for screens where 1.5 is too much/little.
+            let zoom = gamemode::game_mode_zoom();
+            if let Err(e) = main.set_zoom(zoom) {
+                tracing::warn!(error = %e, zoom, "failed to set main window zoom in Game Mode");
+            }
         }
         // `main` is now created hidden — show it explicitly (also removes the
         // startup white-flash).

@@ -68,7 +68,14 @@
   let progressRaf = $state<number | null>(null);
 
   let windowHeight = $state(800);
-  let s = $derived(windowHeight / 800);
+  // The splash only ever renders in attached / Game-Mode launches, where
+  // gamescope drops the desktop's display scaling (e.g. KDE's 150%) — the same
+  // reason the library window gets a webview zoom. A WebKit zoom would just
+  // shrink the reported innerHeight and cancel this windowHeight-based scaling,
+  // so instead bake the bump straight into the scale factor. Keep in sync with
+  // gamemode::DEFAULT_GAME_MODE_ZOOM on the backend.
+  const GAME_MODE_ZOOM = 1.5;
+  let s = $derived((windowHeight / 800) * GAME_MODE_ZOOM);
   let syncStatus = $state<'online' | 'offline' | 'unconfigured'>('online');
   // Cloud upload failure (local backup ok, remote upload failed) also renders as offline.
   let net = $derived(syncStatus === 'offline' || cloudUploadFailed ? 'offline' : 'online');
@@ -581,6 +588,12 @@
   </div>
 
   {#if isCloudConflict}
+    <!-- CloudConflictModal is a shared component sized in fixed px (it renders
+         at desktop density in the main window), so it doesn't read the splash's
+         --s scale. Wrap it in a CSS `zoom` so it matches the rest of the
+         zoomed-up Game-Mode splash. `zoom` scales the modal's fixed-position
+         scrim too, unlike `transform`. -->
+    <div style="zoom: {s};">
     <CloudConflictModal
       gameName={game?.game_name ?? 'Game'}
       catalogId={game?.catalog_number ? catalogId(game.catalog_number) : undefined}
@@ -627,6 +640,7 @@
         await exit(0);
       }}
     />
+    </div>
   {/if}
 </div>
 
