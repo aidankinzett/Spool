@@ -343,13 +343,26 @@ pub fn run() {
 
     // Run with an exit-event interceptor so the app stays alive when
     // the last window closes (it's a tray app — only "Quit" exits).
-    app.run(|_app_handle, event| {
-        if let RunEvent::ExitRequested { api, code, .. } = &event {
-            // code is `Some(_)` when we explicitly called `app.exit()`
-            // — let that through. Otherwise (last-window-closed), block.
-            if code.is_none() {
+    app.run(|app_handle, event| {
+        match &event {
+            // code is `Some(_)` when we explicitly called `app.exit()` — let
+            // that through. Otherwise (last-window-closed), block the exit.
+            RunEvent::ExitRequested { api, code, .. } if code.is_none() => {
                 api.prevent_exit();
             }
+            // Gate the gamepad bridge on window focus: a Spool window gaining
+            // focus turns input on, losing it (alt-tab away, hide to tray,
+            // game launch) turns it off. Fires for every window, so switching
+            // between the library and a child window keeps it on.
+            RunEvent::WindowEvent {
+                event: WindowEvent::Focused(focused),
+                ..
+            } => {
+                app_handle
+                    .state::<gamepad::GamepadPresence>()
+                    .set_active(*focused);
+            }
+            _ => {}
         }
     });
 }
