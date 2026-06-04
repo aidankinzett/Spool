@@ -220,6 +220,31 @@ pub fn write_shortcuts(path: &Path, shortcuts: &[ShortcutOwned]) -> AppResult<()
     Ok(())
 }
 
+/// Spool's own branded Big Picture artwork, generated from the cassette brand
+/// by `scripts/gen-steam-art.mjs` and embedded at compile time. The Spool
+/// shortcut has no SteamGridDB entry to pull from, so we ship these and drop
+/// them into Steam's grid dir directly. Suffixes match Steam's grid naming
+/// (`p` portrait, `` wide, `_hero`, `_logo`).
+const SPOOL_ART_PORTRAIT: &[u8] = include_bytes!("../assets/steam/portrait.png");
+const SPOOL_ART_WIDE: &[u8] = include_bytes!("../assets/steam/wide.png");
+const SPOOL_ART_HERO: &[u8] = include_bytes!("../assets/steam/hero.png");
+const SPOOL_ART_LOGO: &[u8] = include_bytes!("../assets/steam/logo.png");
+
+/// Writes embedded image bytes into Steam's grid dir as
+/// `<grid_dir>/<app_id><suffix>.png`. Used to place Spool's own branded
+/// artwork (see [`SPOOL_ART_PORTRAIT`] et al.). Creates the grid dir if needed.
+fn write_grid_art_bytes(
+    grid_dir: &Path,
+    app_id: u32,
+    suffix: &str,
+    bytes: &[u8],
+) -> AppResult<PathBuf> {
+    std::fs::create_dir_all(grid_dir)?;
+    let dest = grid_dir.join(format!("{app_id}{suffix}.png"));
+    std::fs::write(&dest, bytes)?;
+    Ok(dest)
+}
+
 /// Copies a source image file to Steam's grid dir under
 /// `<grid_dir>/<app_id><suffix>.<ext>`, where `suffix` differentiates the
 /// art kind ("p" for portrait cover, "" for wide grid, "_hero" for hero,
@@ -295,12 +320,31 @@ pub async fn add_spool_to_steam() -> AppResult<AddToSteamResult> {
     );
     write_shortcuts(&user.shortcuts_path, &shortcuts)?;
 
+    // Place Spool's branded artwork so the shortcut presents with brand art
+    // instead of a blank tile / default Steam background. Best-effort — an art
+    // write failing never aborts the shortcut itself.
+    let arts: [(&str, &str, &[u8]); 4] = [
+        ("p", "portrait", SPOOL_ART_PORTRAIT),
+        ("", "wide", SPOOL_ART_WIDE),
+        ("_hero", "hero", SPOOL_ART_HERO),
+        ("_logo", "logo", SPOOL_ART_LOGO),
+    ];
+    let mut portrait_placed = false;
+    let mut extras_placed = Vec::new();
+    for (suffix, label, bytes) in arts {
+        match write_grid_art_bytes(&user.grid_dir, app_id, suffix, bytes) {
+            Ok(_) if suffix == "p" => portrait_placed = true,
+            Ok(_) => extras_placed.push(label.to_string()),
+            Err(e) => tracing::warn!(%e, label, "add_spool_to_steam: failed to place branded art"),
+        }
+    }
+
     Ok(AddToSteamResult {
         steam_user_id: user.user_id,
         app_id,
         shortcuts_path: user.shortcuts_path.to_string_lossy().to_string(),
-        portrait_placed: false,
-        extras_placed: vec![],
+        portrait_placed,
+        extras_placed,
     })
 }
 

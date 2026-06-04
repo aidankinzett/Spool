@@ -31,6 +31,23 @@ pub fn is_steam_game_mode() -> bool {
     )
 }
 
+/// Default webview zoom applied to the library window in Game Mode. Chosen to
+/// roughly match a typical handheld desktop scale (e.g. KDE's 150%), which
+/// gamescope drops. Overridable with `$SPOOL_GAMEMODE_ZOOM`.
+const DEFAULT_GAME_MODE_ZOOM: f64 = 1.5;
+
+/// Resolves the Game-Mode webview zoom factor, reading `$SPOOL_GAMEMODE_ZOOM`
+/// when set to a sane value and falling back to [`DEFAULT_GAME_MODE_ZOOM`].
+/// Clamped to `[1.0, 3.0]` so a stray env value can't make the UI unusable.
+pub fn game_mode_zoom() -> f64 {
+    std::env::var("SPOOL_GAMEMODE_ZOOM")
+        .ok()
+        .and_then(|v| v.trim().parse::<f64>().ok())
+        .filter(|z| z.is_finite())
+        .map(|z| z.clamp(1.0, 3.0))
+        .unwrap_or(DEFAULT_GAME_MODE_ZOOM)
+}
+
 #[cfg(test)]
 mod tests {
     use super::decide;
