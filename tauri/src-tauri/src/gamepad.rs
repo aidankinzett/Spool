@@ -13,7 +13,7 @@
 //! and owned inside a dedicated OS thread rather than moved across one.
 
 use serde::Serialize;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
@@ -24,9 +24,26 @@ use tauri::{AppHandle, Emitter, Manager};
 /// `connected` events because gilrs reports pads present at startup through its
 /// initial enumeration, not as Connected events — so a controller already
 /// plugged in at boot (the TV/couch-PC case) never fires an event.
-#[derive(Clone, Default)]
+///
+/// `active` tracks whether a Spool window currently has focus. The bridge only
+/// forwards button/axis input while it's true, so a controller doesn't drive
+/// the hidden window while Spool sits in the tray (or a game runs in Game Mode).
+/// Connect/disconnect tracking continues regardless so the count stays accurate.
+/// It's set from window focus events in the `app.run` loop; defaults true so
+/// input works before the first focus event (e.g. the Game-Mode splash).
+#[derive(Clone)]
 pub struct GamepadPresence {
     count: Arc<AtomicUsize>,
+    active: Arc<AtomicBool>,
+}
+
+impl Default for GamepadPresence {
+    fn default() -> Self {
+        Self {
+            count: Arc::new(AtomicUsize::new(0)),
+            active: Arc::new(AtomicBool::new(true)),
+        }
+    }
 }
 
 impl GamepadPresence {
@@ -44,6 +61,16 @@ impl GamepadPresence {
     }
     fn any(&self) -> bool {
         self.count.load(Ordering::Relaxed) > 0
+    }
+
+    /// Mark whether a Spool window holds focus. Called from the window-focus
+    /// hook in `lib.rs`.
+    pub fn set_active(&self, active: bool) {
+        self.active.store(active, Ordering::Relaxed);
+    }
+
+    fn is_active(&self) -> bool {
+        self.active.load(Ordering::Relaxed)
     }
 }
 
@@ -178,15 +205,25 @@ fn run(app: AppHandle) {
             };
 
             if let Some(p) = payload {
-                if let Err(e) = app.emit("gamepad:input", p) {
-                    tracing::warn!(error = %e, "gamepad bridge: emit failed");
+                // Forward input only while a Spool window has focus, so the pad
+                // doesn't drive the hidden window from the tray / behind a game.
+                // Connect/disconnect always pass through (and the count is kept
+                // current above) so the "offer Gamepad layout" prompt stays right.
+                let is_presence = matches!(p.kind, "connected" | "disconnected");
+                if (is_presence || presence.is_active())
+                    && app.emit("gamepad:input", p).is_err()
+                {
+                    tracing::warn!("gamepad bridge: emit failed");
                 }
             }
         }
 
         // gilrs has no cross-platform blocking read we rely on here; poll at
-        // ~120 Hz, which is responsive for menu nav and negligible CPU.
-        std::thread::sleep(Duration::from_millis(8));
+        // ~120 Hz while focused (responsive for menu nav, negligible CPU). When
+        // backgrounded, input is dropped anyway, so back off to a slow drain
+        // that keeps connect/disconnect fresh without spinning on a handheld.
+        let interval = if presence.is_active() { 8 } else { 200 };
+        std::thread::sleep(Duration::from_millis(interval));
     }
 }
 
