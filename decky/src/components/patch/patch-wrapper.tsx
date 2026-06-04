@@ -1,10 +1,16 @@
 import { useEffect, useRef, useState } from "react";
-import { appDetailsClasses, appDetailsHeaderClasses } from "@decky/ui";
+import {
+  appDetailsClasses,
+  appDetailsHeaderClasses,
+  unminifyClass,
+} from "@decky/ui";
 import { useServerBase } from "../../hooks/use-server-base";
 import { useSpoolPlaytime } from "../../hooks/use-spool-playtime";
 import { useBackingUp } from "../../hooks/use-backing-up";
 import { useParams } from "../../lib/steam";
 import { SpoolBar } from "./spool-bar";
+
+(window as any).unminifyClass = unminifyClass;
 
 // Height of the SpoolBar (kept in sync with the bar's own `height`), used to
 // offset it up from the bottom edge of the hero capsule.
@@ -144,7 +150,11 @@ export function PatchWrapper() {
   if (!appid || (!backingUp && (loading || !game))) return null;
 
   return (
-    <div id="spool-bar-anchor" ref={anchorRef} style={{ position: "relative", height: 0 }}>
+    <div
+      id="spool-bar-anchor"
+      ref={anchorRef}
+      style={{ position: "relative", height: 0 }}
+    >
       {barVisible && (
         <div
           style={{
