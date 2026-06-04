@@ -15,6 +15,7 @@ import { backupStarted, backupFinished } from "../../lib/backup-status";
 import { forgetAppid } from "../../lib/appid-map";
 import { steamApps } from "../../lib/steam";
 import { InstallDepsModal } from "../install-deps-modal";
+import { ProtonVersionModal } from "../proton-version-modal";
 
 // Three-dots button rendered on the right of the game-page badge row. Opens a
 // Steam context menu (showContextMenu) anchored to itself with Spool actions
@@ -84,6 +85,11 @@ export function BadgeMenuButton({ game, appid }: { game: LibraryGame; appid: num
     showContextMenu(
       <Menu label="Spool">
         <MenuItem onSelected={runBackup}>Back up now</MenuItem>
+        {canInstallDeps && (
+          <MenuItem onSelected={() => showModal(<ProtonVersionModal game={game} />)}>
+            Proton version
+          </MenuItem>
+        )}
         {canInstallDeps && (
           <MenuItem onSelected={() => showModal(<InstallDepsModal game={game} />)}>
             Install dependencies

@@ -100,6 +100,11 @@ pub async fn serve() -> AppResult<()> {
         // prefix, so a Deck user can do it from Game Mode without dropping to
         // desktop. Mirrors the desktop `install_proton_deps` command.
         .route("/games/:id/install-deps", post(post_install_deps))
+        // Per-game Proton version: list the installed builds for a picker, and
+        // pin the one a game launches with. Mirrors the desktop edit page's
+        // Proton dropdown so a Deck user can switch versions from Game Mode.
+        .route("/proton-versions", get(get_proton_versions))
+        .route("/games/:id/proton", post(post_set_proton))
         // LAN browsing: list discovered peers, and proxy a peer's game list /
         // covers server-side (the UI can't reach a peer's non-loopback http
         // directly — mixed content). See `lan/server.rs` for the peer API.
@@ -442,6 +447,55 @@ async fn post_install_deps(
         }
         Err(e) => {
             tracing::warn!(game_id = %id, verbs = %body.verbs, error = %e, "plugin: install-deps failed");
+            Json(json!({ "ok": false, "reason": e.to_string() }))
+        }
+    }
+}
+
+// ── Proton version ─────────────────────────────────────────────────────────
+
+/// List the Proton builds discovered on this machine, newest-first. Mirrors
+/// the desktop `list_proton_versions` command so the Decky picker shows the
+/// same options. Empty on a host with no Proton installed.
+async fn get_proton_versions() -> Json<Value> {
+    let versions = crate::proton::installed_proton_versions();
+    Json(serde_json::to_value(versions).unwrap_or(json!([])))
+}
+
+#[derive(Deserialize)]
+struct SetProtonRequest {
+    /// Absolute path to the Proton dir to pin, or empty/null for "auto" (let
+    /// umu-run pick its own default — clears the per-game override).
+    proton_version_path: Option<String>,
+}
+
+/// Pin (or clear) a game's Proton version. Loads the library fresh, sets the
+/// entry's `proton_version_path`, and saves atomically — matching what the
+/// desktop edit page's `update_game` does for this one field. An empty or
+/// absent path clears the override. Returns `{ ok: true }` on success.
+async fn post_set_proton(
+    AxPath(id): AxPath<String>,
+    Json(body): Json<SetProtonRequest>,
+) -> Json<Value> {
+    let mut library = Library::load().unwrap_or_default();
+    let Some(entry) = library.entries.iter_mut().find(|e| e.id == id) else {
+        return Json(json!({ "ok": false, "reason": "game not in library" }));
+    };
+
+    let trimmed = body
+        .proton_version_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    entry.proton_version_path = trimmed.map(str::to_string);
+
+    match library.save() {
+        Ok(()) => {
+            tracing::info!(game_id = %id, proton = ?trimmed, "plugin: set proton version");
+            Json(json!({ "ok": true }))
+        }
+        Err(e) => {
+            tracing::warn!(game_id = %id, error = %e, "plugin: set proton version failed");
             Json(json!({ "ok": false, "reason": e.to_string() }))
         }
     }

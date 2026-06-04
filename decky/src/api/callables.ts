@@ -1,5 +1,5 @@
 import { callable } from "@decky/api";
-import type { Settings } from "../types";
+import type { ProtonVersion, Settings } from "../types";
 
 // `SteamClient` (incl. GameSessions.RegisterForAppLifetimeNotifications and the
 // LifetimeNotification payload) is provided as an ambient global by @decky/ui.
@@ -48,3 +48,17 @@ export const installDeps = callable<
   [game_id: string, verbs: string],
   { ok: boolean; message?: string; reason?: string }
 >("install_deps");
+
+// Lists the Proton builds installed on this machine (newest-first) for the
+// per-game Proton picker. Empty when the server is down or none are installed.
+export const listProtonVersions = callable<[], ProtonVersion[]>(
+  "list_proton_versions",
+);
+
+// Pins a game's Proton version. Pass an empty string to clear the override
+// (back to "auto", letting umu-run pick its default). `ok` is false (with a
+// `reason`) when the server is unavailable or the game isn't in the library.
+export const setProtonVersion = callable<
+  [game_id: string, proton_version_path: string],
+  { ok: boolean; reason?: string }
+>("set_proton_version");

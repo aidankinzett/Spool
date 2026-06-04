@@ -392,6 +392,24 @@ class Plugin:
             return {"ok": False, "reason": "server unavailable"}
         return result
 
+    async def list_proton_versions(self) -> list:
+        """List the Proton builds installed on this machine (newest-first) for
+        the per-game Proton picker. Forwards to GET /proton-versions. Returns an
+        empty list if the server is unavailable or no Proton is installed."""
+        result = await _spool("GET", "/proton-versions", timeout=10.0)
+        return result if isinstance(result, list) else []
+
+    async def set_proton_version(self, game_id: str, proton_version_path: str) -> dict:
+        """Pin a game's Proton version (empty string = auto / clear override).
+        Forwards to POST /games/<id>/proton, which updates the library entry the
+        same way the desktop edit page does."""
+        path = f"/games/{quote(game_id, safe='')}/proton"
+        body = {"proton_version_path": proton_version_path or ""}
+        result = await _spool("POST", path, body, timeout=30.0)
+        if result is None:
+            return {"ok": False, "reason": "server unavailable"}
+        return result
+
     async def get_settings(self) -> dict:
         s = _load_settings()
         return {
