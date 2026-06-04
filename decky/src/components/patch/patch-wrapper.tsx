@@ -12,22 +12,26 @@ const BAR_HEIGHT = 44;
 // Inset from the capsule's left/right edges, and the gap above its bottom edge.
 const SIDE_INSET = "2.8vw";
 const BOTTOM_GAP = 14;
-// How far to lift Steam's title logo so the bar doesn't cover it.
-const TITLE_SHIFT = BAR_HEIGHT + BOTTOM_GAP + 14;
+// How far to lift Steam's title logo so the bar doesn't cover it. The bar
+// occupies BAR_HEIGHT + BOTTOM_GAP up from the capsule's bottom edge; lifting
+// the logo container by the same amount clears it with a small gap.
+const TITLE_SHIFT = BAR_HEIGHT + BOTTOM_GAP;
 // Attribute we toggle on the capsule to scope the title-shift CSS to our pages.
 const ACTIVE_ATTR = "data-spool-bar-active";
 
 // Inject (once) a scoped rule that lifts the hero's title logo while our bar is
-// shown. A CSS rule rather than an inline transform so it survives Steam's
-// React re-renders of the title; scoped by `ACTIVE_ATTR` so it only affects the
-// capsule we mark, never other game pages.
+// shown. The logo lives in Steam's box-sizer machinery; `BoxSizerContainer` is
+// the bottom-anchored element (a direct child of the capsule) that holds it,
+// regardless of where the user has positioned the logo within the capsule. A
+// CSS rule rather than an inline transform so it survives Steam's React
+// re-renders; scoped by `ACTIVE_ATTR` so it only affects the capsule we mark.
 function ensureTitleShiftStyle() {
   const id = "spool-title-shift";
   if (typeof document === "undefined" || document.getElementById(id)) return;
   const el = document.createElement("style");
   el.id = id;
   el.textContent =
-    `[${ACTIVE_ATTR}] .${appDetailsHeaderClasses.TitleSection}{` +
+    `[${ACTIVE_ATTR}] .${appDetailsHeaderClasses.BoxSizerContainer}{` +
     `transform:translateY(-${TITLE_SHIFT}px);transition:transform .12s ease;}`;
   document.head.appendChild(el);
 }
