@@ -246,14 +246,22 @@ pub fn place_grid_art(
     Ok(Some(dest))
 }
 
-/// Build the `--run "<name>" "<exe>"` launch-options string. Steam stores
-/// the value verbatim and splits args by shell rules at launch time, so
+/// Build the `--run "<name>" "<exe>" --attached` launch-options string. Steam
+/// stores the value verbatim and splits args by shell rules at launch time, so
 /// each token gets its own quoted block. Interior `"` are escaped as `\"`
 /// so names/paths containing quotes don't corrupt the field.
+///
+/// The trailing `--attached` forces attached-launch mode: the Steam-launched
+/// `spool.exe` skips the single-instance plugin (runs as its own process rather
+/// than forwarding argv to the tray instance and exiting), shows the splash,
+/// runs the workflow, and exits when the game closes. That lets Steam track the
+/// session by the launched process tree — without it, the forwarded launch exits
+/// immediately while the game runs under the tray instance, so Steam shows the
+/// game as still running after it closes and "Stop" kills the whole tray app.
 pub fn build_launch_options(game_name: &str, exe_path: &str) -> String {
     let name = game_name.replace('"', "\\\"");
     let exe = exe_path.replace('"', "\\\"");
-    format!("--run \"{name}\" \"{exe}\"")
+    format!("--run \"{name}\" \"{exe}\" --attached")
 }
 
 // ── Tauri commands ──────────────────────────────────────────────────────────
@@ -457,7 +465,7 @@ mod tests {
     fn launch_options_quote_both_args() {
         assert_eq!(
             build_launch_options("Hades II", "C:\\Games\\Hades II\\Hades II.exe"),
-            "--run \"Hades II\" \"C:\\Games\\Hades II\\Hades II.exe\""
+            "--run \"Hades II\" \"C:\\Games\\Hades II\\Hades II.exe\" --attached"
         );
     }
 
