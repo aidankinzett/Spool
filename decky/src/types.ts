@@ -22,6 +22,15 @@ export interface LibraryGame {
   save_backup_count: number;
   save_last_backed_up_at: string | null;
   save_backup_size_mb: number;
+  // Pinned Proton build path, or null for "auto" (umu-run picks its default).
+  proton_version_path: string | null;
+}
+
+// Mirror of the Rust `ProtonVersion` (proton.rs). A discovered Proton build.
+export interface ProtonVersion {
+  name: string;
+  path: string;
+  source: string;
 }
 
 // Shortcut fields from the backend (mirrors what desktop "Add to Steam" writes).
