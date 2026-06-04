@@ -1,16 +1,14 @@
 import { useEffect, useRef, useState } from "react";
-import {
-  appDetailsClasses,
-  appDetailsHeaderClasses,
-  unminifyClass,
-} from "@decky/ui";
+import { appDetailsClasses, appDetailsHeaderClasses } from "@decky/ui";
 import { useServerBase } from "../../hooks/use-server-base";
 import { useSpoolPlaytime } from "../../hooks/use-spool-playtime";
 import { useBackingUp } from "../../hooks/use-backing-up";
 import { useParams } from "../../lib/steam";
 import { SpoolBar } from "./spool-bar";
+import * as DUI from "@decky/ui";
 
-(window as any).unminifyClass = unminifyClass;
+// DEV ONLY — remove before release
+(window as any).DUI = DUI;
 
 // Height of the SpoolBar (kept in sync with the bar's own `height`), used to
 // offset it up from the bottom edge of the hero capsule.
