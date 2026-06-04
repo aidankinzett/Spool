@@ -96,9 +96,11 @@ export function SpoolBar({
         gap: 14,
         height: 44,
         padding: "0 8px 0 14px",
-        background: st.backing
-          ? `linear-gradient(90deg, ${accent}12, ${C.surface} 40%)`
-          : C.surface,
+        // Keep the same solid surface while backing up — the spinning reel and
+        // tape meter carry the activity cue, so the background shouldn't change
+        // (the old accent gradient let the hero image bleed through and read
+        // lighter than the resting bar).
+        background: C.surface,
         borderRadius: 4,
         borderLeft: `2.5px solid ${accent}`,
         boxShadow: `inset 0 0 0 1px ${st.backing ? accent + "33" : C.line}`,
