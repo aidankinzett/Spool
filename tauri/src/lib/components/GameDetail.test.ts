@@ -61,6 +61,8 @@ function makeGame(over: Partial<GameEntry> = {}): GameEntry {
     accent_color: null,
     sync_badge: null,
     cloud_sync_baseline: null,
+    save_last_backer_device: null,
+    save_cloud_revision_at: null,
     ...over,
   };
 }
