@@ -925,6 +925,21 @@ pub fn compute_badge(our_device_id: &str, latest_backer: Option<&str>) -> &'stat
     }
 }
 
+/// The backer device name + cloud revision time to record for a given badge.
+/// Only `cloud-newer` carries them (so the UI can show "Desktop-PC · 2h ago");
+/// every other state clears the pair.
+fn backer_for_badge(badge: &str, f: &Folded) -> (Option<String>, Option<DateTime<Utc>>) {
+    if badge != "cloud-newer" {
+        return (None, None);
+    }
+    let rev = f
+        .latest_backup_raw
+        .as_deref()
+        .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+        .map(|t| t.with_timezone(&Utc));
+    (f.latest_backer_name.clone(), rev)
+}
+
 /// Folded cross-device totals for one game.
 #[derive(Default)]
 struct Folded {
@@ -933,6 +948,8 @@ struct Folded {
     last_played_raw: Option<String>,
     latest_backer: Option<String>,
     latest_backup_ts: Option<i64>, // unix ts backing `latest_backer`
+    latest_backer_name: Option<String>, // display name of `latest_backer`
+    latest_backup_raw: Option<String>, // rfc3339 of `latest_backup_ts`
 }
 
 /// Fold a set of device blobs into per-game cross-device totals.
@@ -957,6 +974,13 @@ fn fold_blobs(blobs: &[(String, DeviceBlob)]) -> BTreeMap<String, Folded> {
                 if e.latest_backup_ts.map(|cur| parsed > cur).unwrap_or(true) {
                     e.latest_backup_ts = Some(parsed);
                     e.latest_backer = Some(device_id.clone());
+                    // device_name may be blank on legacy blobs — fall back to id.
+                    e.latest_backer_name = Some(if blob.device_name.is_empty() {
+                        device_id.clone()
+                    } else {
+                        blob.device_name.clone()
+                    });
+                    e.latest_backup_raw = Some(ts.clone());
                 }
             }
         }
@@ -1039,6 +1063,15 @@ pub async fn fold_devices_from_config() -> bool {
             entry.sync_badge = Some(badge.to_string());
             applied += 1;
         }
+        let (backer, rev) = backer_for_badge(badge, f);
+        if entry.save_last_backer_device != backer {
+            entry.save_last_backer_device = backer;
+            applied += 1;
+        }
+        if entry.save_cloud_revision_at != rev {
+            entry.save_cloud_revision_at = rev;
+            applied += 1;
+        }
     }
     if applied > 0 {
         if let Err(e) = library.save() {
@@ -1105,6 +1138,16 @@ async fn run_startup_fold(app: &AppHandle) {
             let badge = compute_badge(&our_device_id, f.latest_backer.as_deref());
             if entry.sync_badge.as_deref() != Some(badge) {
                 entry.sync_badge = Some(badge.to_string());
+                applied += 1;
+            }
+            // backer device + revision time behind a `cloud-newer` badge
+            let (backer, rev) = backer_for_badge(badge, f);
+            if entry.save_last_backer_device != backer {
+                entry.save_last_backer_device = backer;
+                applied += 1;
+            }
+            if entry.save_cloud_revision_at != rev {
+                entry.save_cloud_revision_at = rev;
                 applied += 1;
             }
         }

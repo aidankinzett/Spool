@@ -120,6 +120,16 @@ pub struct GameEntry {
     /// games never synced — the workflow falls back to a timestamp heuristic
     /// until the first sync records a baseline.
     pub cloud_sync_baseline: Option<String>,
+
+    /// Display name of the device that holds the most recent cloud backup, when
+    /// that's a device *other* than this one (i.e. paired with a `cloud-newer`
+    /// `sync_badge`). Folded from the rclone device blobs at startup. `None`
+    /// when this device is the latest backer or cloud sync isn't configured.
+    pub save_last_backer_device: Option<String>,
+    /// Timestamp of that newer cloud backup (the latest backer's upload time).
+    /// Pairs with `save_last_backer_device` to render "Desktop-PC · 2h ago" on
+    /// the `cloud-newer` state. `None` when we're the latest backer / no sync.
+    pub save_cloud_revision_at: Option<DateTime<Utc>>,
 }
 
 impl Default for GameEntry {
@@ -164,6 +174,8 @@ impl Default for GameEntry {
             accent_color: None,
             sync_badge: None,
             cloud_sync_baseline: None,
+            save_last_backer_device: None,
+            save_cloud_revision_at: None,
         }
     }
 }

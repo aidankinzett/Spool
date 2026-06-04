@@ -59,6 +59,8 @@ export function makeGame(over: Partial<GameEntry> = {}): GameEntry {
     accent_color: '#6fb7c9',
     sync_badge: 'synced',
     cloud_sync_baseline: null,
+    save_last_backer_device: null,
+    save_cloud_revision_at: null,
     ...over,
   };
 }

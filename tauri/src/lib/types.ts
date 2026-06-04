@@ -148,6 +148,15 @@ export type GameEntry = {
    * read it directly but it round-trips through `GameEntry`.
    */
   cloud_sync_baseline: string | null;
+
+  /**
+   * Display name of the device holding the newest cloud backup, when that's
+   * another device (paired with a `cloud-newer` `sync_badge`). `null` when this
+   * device is the latest backer or cloud sync isn't configured.
+   */
+  save_last_backer_device: string | null;
+  /** ISO timestamp of that newer cloud backup. Pairs with `save_last_backer_device`. */
+  save_cloud_revision_at: string | null;
 };
 
 /**

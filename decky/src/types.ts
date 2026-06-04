@@ -22,6 +22,10 @@ export interface LibraryGame {
   save_backup_count: number;
   save_last_backed_up_at: string | null;
   save_backup_size_mb: number;
+  // Device holding the newest cloud backup + its revision time, when that's
+  // another device (paired with sync_badge === "cloud-newer"). Null otherwise.
+  save_last_backer_device: string | null;
+  save_cloud_revision_at: string | null;
   // Pinned Proton build path, or null for "auto" (umu-run picks its default).
   proton_version_path: string | null;
 }
