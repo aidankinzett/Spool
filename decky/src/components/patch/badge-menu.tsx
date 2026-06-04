@@ -17,9 +17,10 @@ import { steamApps } from "../../lib/steam";
 import { InstallDepsModal } from "../install-deps-modal";
 import { ProtonVersionModal } from "../proton-version-modal";
 
-// Three-dots button rendered on the right of the game-page badge row. Opens a
+// Three-dots button rendered on the right of the game-page Spool bar. Opens a
 // Steam context menu (showContextMenu) anchored to itself with Spool actions
-// for the matched game.
+// for the matched game. (Action logic unchanged from the original; only the
+// trigger button is resized to sit inline in the compact bar.)
 export function BadgeMenuButton({ game, appid }: { game: LibraryGame; appid: number }) {
   // Winetricks only applies to Windows `.exe` games launched through Proton;
   // native Linux games don't use a prefix.
@@ -29,7 +30,7 @@ export function BadgeMenuButton({ game, appid }: { game: LibraryGame; appid: num
   const runBackup = () => {
     void (async () => {
       // Drive the same backup-status store the on_app_stop events feed, so the
-      // badge shows its spinner and the patch wrapper refetches when this
+      // bar shows its spinning reel and the patch wrapper refetches when this
       // finishes.
       backupStarted(appid);
       try {
@@ -110,12 +111,16 @@ export function BadgeMenuButton({ game, appid }: { game: LibraryGame; appid: num
     <DialogButton
       style={{
         minWidth: 0,
-        width: "48px",
-        height: "48px",
+        width: "36px",
+        height: "36px",
         padding: 0,
+        flexShrink: 0,
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
+        background: "rgba(255,255,255,0.04)",
+        boxShadow: "inset 0 0 0 1px rgba(255,255,255,0.08)",
+        borderRadius: "4px",
       }}
       onClick={openMenu}
     >
