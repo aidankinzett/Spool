@@ -5,10 +5,7 @@ import { useSpoolPlaytime } from "../../hooks/use-spool-playtime";
 import { useBackingUp } from "../../hooks/use-backing-up";
 import { useParams } from "../../lib/steam";
 import { SpoolBar } from "./spool-bar";
-import * as DUI from "@decky/ui";
-
-// DEV ONLY — remove before release
-(window as any).DUI = DUI;
+import { ensureReelKeyframes } from "./reel";
 
 // Height of the SpoolBar (kept in sync with the bar's own `height`), used to
 // offset it up from the bottom edge of the hero capsule.
@@ -29,15 +26,23 @@ const ACTIVE_ATTR = "data-spool-bar-active";
 // regardless of where the user has positioned the logo within the capsule. A
 // CSS rule rather than an inline transform so it survives Steam's React
 // re-renders; scoped by `ACTIVE_ATTR` so it only affects the capsule we mark.
-function ensureTitleShiftStyle() {
+//
+// Injected into `doc` — the capsule's ownerDocument (the Big Picture window),
+// NOT the plugin's global `document` (SharedJSContext). The two differ in
+// Steam; injecting into the plugin's document would put the rule in a document
+// that doesn't contain the logo, so it would never apply.
+function ensureTitleShiftStyle(doc: Document | null | undefined) {
   const id = "spool-title-shift";
-  if (typeof document === "undefined" || document.getElementById(id)) return;
-  const el = document.createElement("style");
+  if (!doc || doc.getElementById(id)) return;
+  const el = doc.createElement("style");
   el.id = id;
+  // `!important` is required: Steam's own stylesheet sets the box-sizer
+  // container's `transform` with `!important` (its base box positioning, an
+  // identity translate by default), which would otherwise win over ours.
   el.textContent =
     `[${ACTIVE_ATTR}] .${appDetailsHeaderClasses.BoxSizerContainer}{` +
-    `transform:translateY(-${TITLE_SHIFT}px);transition:transform .12s ease;}`;
-  document.head.appendChild(el);
+    `transform:translateY(-${TITLE_SHIFT}px)!important;transition:transform .12s ease;}`;
+  doc.head.appendChild(el);
 }
 
 // Walk from our injected anchor to the page's hero banner element ("TopCapsule"):
@@ -101,7 +106,11 @@ export function PatchWrapper() {
     const capsule = findTopCapsule(anchorRef.current);
     if (!capsule) return;
     capsuleRef.current = capsule;
-    ensureTitleShiftStyle();
+    // Inject our styles into the document the bar actually renders in (the Big
+    // Picture window), not the plugin's SharedJSContext `document`.
+    const doc = capsule.ownerDocument;
+    ensureTitleShiftStyle(doc);
+    ensureReelKeyframes(doc);
 
     const measure = () =>
       setTop(Math.max(0, capsule.offsetHeight - BAR_HEIGHT - BOTTOM_GAP));

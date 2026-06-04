@@ -3,13 +3,22 @@
 // while a backup is running. Geometry matches the cassette reels in SpoolMark.
 
 const SPOOL_KF_ID = "spool-bar-keyframes";
-if (typeof document !== "undefined" && !document.getElementById(SPOOL_KF_ID)) {
-  const el = document.createElement("style");
+const SPOOL_KEYFRAMES =
+  "@keyframes spool-reel-spin{to{transform:rotate(360deg)}}" +
+  "@keyframes spool-tape-sheen{0%{transform:translateX(-130%)}55%,100%{transform:translateX(360%)}}";
+
+// Inject the reel/tape keyframes into the given document. Steam renders the
+// plugin's DOM in a different document (the Big Picture window) than the
+// plugin's own `document` global (SharedJSContext), so the caller must pass the
+// document the bar actually renders in — i.e. the capsule's `ownerDocument`.
+// See patch-wrapper. Injecting into the plugin's `document` would put the rule
+// in a document with no reel, so the spin/sheen animations would never run.
+export function ensureReelKeyframes(doc: Document | null | undefined) {
+  if (!doc || doc.getElementById(SPOOL_KF_ID)) return;
+  const el = doc.createElement("style");
   el.id = SPOOL_KF_ID;
-  el.textContent =
-    "@keyframes spool-reel-spin{to{transform:rotate(360deg)}}" +
-    "@keyframes spool-tape-sheen{0%{transform:translateX(-130%)}55%,100%{transform:translateX(360%)}}";
-  document.head.appendChild(el);
+  el.textContent = SPOOL_KEYFRAMES;
+  doc.head.appendChild(el);
 }
 
 export function Reel({
