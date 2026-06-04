@@ -66,6 +66,7 @@
 </script>
 
 <div
+  data-tauri-drag-region="deep"
   class="flex shrink-0 items-center gap-3 border-b border-line-1 bg-black/40"
   style:height="var(--chrome-h)"
   style:padding-inline="calc(var(--space-unit) * 4)"
@@ -73,6 +74,7 @@
   {#if onback}
     <button
       type="button"
+      data-tauri-drag-region="false"
       onclick={onback}
       class="inline-flex cursor-pointer items-center justify-center rounded-sm border-none bg-transparent text-ink-2 transition-colors hover:text-ink-0"
       style:height="var(--control-h-icon)"

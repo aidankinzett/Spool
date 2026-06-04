@@ -71,6 +71,12 @@
   --tap-min: 32px;         /* minimum hit target */
   --space-unit: 4px;       /* multiply for gaps/padding */
   --chrome-h: 40px;        /* title-bar strip height */
+  --toggle-w: 32px;        /* Toggle track width */
+  --toggle-h: 18px;        /* Toggle track height */
+  --toggle-thumb: 14px;    /* Toggle sliding thumb */
+  --toggle-pad: 2px;       /* thumb inset from the track edge */
+  --slider-thumb: 16px;    /* Slider thumb diameter */
+  --slider-track-h: 5px;   /* Slider track height */
 }
 
 [data-mode='touch'] {
@@ -82,6 +88,12 @@
   --tap-min: 48px;
   --space-unit: 6px;
   --chrome-h: 60px;
+  --toggle-w: 48px;
+  --toggle-h: 27px;
+  --toggle-thumb: 21px;
+  --toggle-pad: 3px;
+  --slider-thumb: 24px;
+  --slider-track-h: 8px;
 }
 
 /* ── Global resets / app shell ─────────────────────────────────────── */
@@ -125,6 +137,24 @@ html, body {
 
 /* Mono numeric — tabular figures for catalog ids, timestamps, sizes */
 .num { font-variant-numeric: tabular-nums; }
+
+/* ── Gamepad / keyboard focus ring ─────────────────────────────────────
+   The spatial-nav engine (lib/gamepad) moves native focus around. Show a
+   ring only while the user is navigating by gamepad or keyboard — never for
+   the mouse — by gating on the modality flag the engine writes to <html>.
+   `--gp-focus` defaults to the brand spool colour; a surface can override it
+   (e.g. a modal sets it to the game's accent). An element that already paints
+   its own selection indicator opts out with `data-gp-no-ring` (e.g. the touch
+   cover tiles, which outline the cover art themselves). */
+:root[data-gp-input='gamepad'] :focus:not([data-gp-no-ring]),
+:root[data-gp-input='keyboard'] :focus:not([data-gp-no-ring]) {
+  outline: 2px solid var(--gp-focus, var(--color-spool));
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+:root[data-gp-input='mouse'] :focus {
+  outline: none;
+}
 
 /* Spinning-reels animation — used by the Add Game "identifying" state.
    Defined globally because Svelte's component-scoped @keyframes wouldn't

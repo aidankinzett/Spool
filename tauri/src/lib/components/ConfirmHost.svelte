@@ -14,6 +14,7 @@
   import { shadeHex } from '$lib/tokens';
   import SpoolMark from '$lib/components/SpoolMark.svelte';
   import CatalogId from '$lib/components/CatalogId.svelte';
+  import { gamepadScope } from '$lib/gamepad';
 
   const BRAND_SPOOL = '#d7c9a0';
 
@@ -57,6 +58,8 @@
       role="alertdialog"
       aria-modal="true"
       aria-labelledby="cf-title"
+      use:gamepadScope={{ onBack: () => confirms.cancel() }}
+      style:--gp-focus={acc}
       style:width="460px"
       style:max-width="calc(100vw - 48px)"
       style:background="var(--color-bg-0)"
@@ -134,6 +137,7 @@
         <button
           type="button"
           onclick={() => confirms.cancel()}
+          data-gp-autofocus=""
           class="inline-flex items-center justify-center whitespace-nowrap rounded-sm font-medium transition-colors duration-100"
           style:height="34px"
           style:padding-inline="14px"

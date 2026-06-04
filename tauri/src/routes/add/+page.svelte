@@ -23,6 +23,7 @@
   import MonoLabel from '$lib/components/MonoLabel.svelte';
   import Btn from '$lib/components/Btn.svelte';
   import CandidateRow from '$lib/components/CandidateRow.svelte';
+  import { gamepadScope } from '$lib/gamepad';
 
   // ── State ──────────────────────────────────────────────────────────────
   let exePath = $state<string | null>(null);
@@ -229,7 +230,10 @@
   }
 </script>
 
-<div class="flex h-screen flex-col bg-bg-0 text-ink-0">
+<div
+  class="flex h-screen flex-col bg-bg-0 text-ink-0"
+  use:gamepadScope={{ onBack: () => history.back() }}
+>
   <AppChrome sub="ADD ENTRY" onback={() => history.back()} />
 
   <main class="flex flex-1 flex-col overflow-hidden">

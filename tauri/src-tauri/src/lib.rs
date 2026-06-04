@@ -33,6 +33,7 @@ mod diagnostics;
 mod config;
 mod error;
 mod gamemode;
+mod gamepad;
 mod headless;
 mod lan;
 mod launcher;
@@ -263,6 +264,7 @@ pub fn run() {
         .manage::<LanServerShutdown>(LanServerShutdown::default())
         .manage::<SyncStatusState>(SyncStatusState::default())
         .manage::<rclone::OAuthState>(rclone::OAuthState::default())
+        .manage::<gamepad::GamepadPresence>(gamepad::GamepadPresence::default())
         .invoke_handler(tauri::generate_handler![
             take_pending_run,
             notify_splash_ready,
@@ -326,6 +328,8 @@ pub fn run() {
             decky_install::install_decky_plugin,
             // open a path with the OS default handler (AppImage-safe)
             system_open::open_path,
+            // gamepad presence (drives the "switch to Gamepad layout?" prompt)
+            gamepad::any_gamepad_connected,
         ])
         .setup(move |app| {
             if attached {
@@ -413,7 +417,13 @@ fn init_tracing() -> tracing_appender::non_blocking::WorkerGuard {
     let (file_writer, guard) = tracing_appender::non_blocking(file_appender);
 
     let env_filter = EnvFilter::try_from_env("SPOOL_LOG").unwrap_or_else(|_| {
-        EnvFilter::new("info,tauri=warn,h2=warn,hyper=warn,hyper_util=warn,reqwest=warn,rustls=warn")
+        // gilrs/gilrs_core clamped to error: their force-feedback thread spams a
+        // benign "force feedback loop took more than 50ms" warning, and we don't
+        // use rumble. Our own "gamepad bridge" logs are under the `spool` target,
+        // so they're unaffected.
+        EnvFilter::new(
+            "info,tauri=warn,h2=warn,hyper=warn,hyper_util=warn,reqwest=warn,rustls=warn,gilrs=error,gilrs_core=error",
+        )
     });
 
     tracing_subscriber::registry()
@@ -500,6 +510,11 @@ fn run_attached_launch(
     // no window to recover from, just a splash.
     restamp_rclone(app.handle());
 
+    // Controller input for the splash (conflict-resolution modal etc.). The
+    // attached path runs none of the normal startup tasks, so start the bridge
+    // here explicitly — this is the surface where controller nav matters most.
+    gamepad::spawn_bridge(app.handle().clone());
+
     // Splash window (the `main` window stays hidden / unused).
     if let Err(e) = tauri::WebviewWindowBuilder::new(
         app,
@@ -573,6 +588,17 @@ fn run_normal_setup(
     if let Some(main) = app.get_webview_window("main") {
         let win = main.clone();
         let app_handle = app.handle().clone();
+        // In Steam Game Mode, gamescope composites a single window onto the
+        // whole output. The window-state plugin restores a *windowed* size from
+        // a prior desktop session, which gamescope then pillarboxes (black bars
+        // on the sides). Force fullscreen so it fills the screen. Fullscreen
+        // isn't one of the persisted window-state flags, so desktop sessions
+        // don't inherit it. Done while still hidden to avoid a windowed flash.
+        if gamemode::is_steam_game_mode() {
+            if let Err(e) = main.set_fullscreen(true) {
+                tracing::warn!(error = %e, "failed to set main window fullscreen in Game Mode");
+            }
+        }
         // `main` is now created hidden — show it explicitly (also removes the
         // startup white-flash).
         let _ = main.show();
@@ -625,6 +651,10 @@ fn spawn_startup_tasks(app: &AppHandle) {
     // socket can't bind (port in use, firewall, etc.) — peer count stays at 0
     // in that case but everything else keeps working.
     lan::spawn_discovery(app.clone());
+
+    // Read the controller in Rust and forward events to the webview as
+    // `gamepad:input` (the webview can't see pads itself on Linux WebKitGTK).
+    gamepad::spawn_bridge(app.clone());
 
     // Backfill accent colours for any legacy entries that have a cover but no
     // extracted accent yet. Cheap no-op when every entry is already filled.

@@ -11,6 +11,8 @@
   import { absDateTime, relDate, fmtSize } from '$lib/format';
   import type { RawConflictDetails } from '$lib/types';
   import { onMount } from 'svelte';
+  import { goto } from '$app/navigation';
+  import { listen, emit } from '@tauri-apps/api/event';
 
   const lib = createLibrary();
 
@@ -27,6 +29,66 @@
     } catch (e) {
       console.error('[library] onboarding check failed:', e);
     }
+  });
+
+  // Offer to switch to the Gamepad layout when a controller is present and the
+  // user is on Auto that resolved to Desktop (e.g. a PC on the TV — no
+  // touchscreen to auto-detect). Only nudges Auto users (an explicit Desktop
+  // choice is respected) and only once per session. The pad is read via the
+  // Rust bridge, since the webview Gamepad API is empty on Linux.
+  let gamepadPrompted = false;
+
+  async function switchToGamepad() {
+    try {
+      const cfg = await api.getConfig();
+      cfg.ui_mode = 'touch';
+      await api.updateConfig(cfg);
+      await emit('config:ui-mode-changed');
+    } catch (e) {
+      console.error('[library] switch to gamepad layout failed:', e);
+    }
+  }
+
+  function maybePromptGamepad() {
+    if (gamepadPrompted) return;
+    if (uiMode.setting !== 'auto' || uiMode.resolved !== 'desktop') return;
+    gamepadPrompted = true;
+    const id = toasts.show({
+      kind: 'info',
+      label: 'CONTROLLER',
+      title: 'Controller detected',
+      sub: 'Switch to the Gamepad layout for bigger targets and controller navigation.',
+      duration: 12000,
+      cta: {
+        label: 'Switch',
+        onClick: () => {
+          toasts.dismiss(id);
+          void switchToGamepad();
+        },
+      },
+    });
+  }
+
+  onMount(() => {
+    // A pad already plugged in at boot (the common TV-PC case) is reported by
+    // the bridge's startup enumeration, not as an event — so query once.
+    api.anyGamepadConnected()
+      .then((present) => {
+        if (present) maybePromptGamepad();
+      })
+      .catch((e) => console.error('[library] gamepad presence check failed:', e));
+
+    // …and catch hotplugs while the app is running.
+    let unlisten: (() => void) | undefined;
+    listen<{ kind: string }>('gamepad:input', (e) => {
+      if (e.payload.kind === 'connected') maybePromptGamepad();
+    })
+      .then((fn) => {
+        unlisten = fn;
+      })
+      .catch((e) => console.error('[library] gamepad listen failed:', e));
+
+    return () => unlisten?.();
   });
 
   $effect(() => {
@@ -82,6 +144,12 @@
 {:else}
   <LibraryDesktop {lib} />
 {/if}
+
+<!-- Temporary entry point for the controller-nav smoke test. Remove once the
+     gamepad input path is settled. -->
+<button class="gamepad-test-link" onclick={() => goto('/gamepad-test')} title="Gamepad smoke test">
+  🎮 Gamepad test
+</button>
 
 {#if showOnboarding}
   <OnboardingModal
@@ -162,3 +230,26 @@
     />
   {/if}
 {/if}
+
+<style>
+  .gamepad-test-link {
+    position: fixed;
+    bottom: 12px;
+    right: 12px;
+    z-index: 9999;
+    padding: 0.4rem 0.7rem;
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: #c9d1d9;
+    background: rgba(22, 27, 34, 0.85);
+    border: 1px solid #30363d;
+    border-radius: 8px;
+    cursor: pointer;
+    backdrop-filter: blur(4px);
+  }
+  .gamepad-test-link:hover {
+    background: rgba(31, 111, 235, 0.85);
+    color: #fff;
+    border-color: #58a6ff;
+  }
+</style>

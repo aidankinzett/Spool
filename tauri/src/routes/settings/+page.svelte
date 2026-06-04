@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, tick } from 'svelte';
   import {
     Check,
     Cloud,
@@ -31,15 +31,22 @@
   import Btn from '$lib/components/Btn.svelte';
   import Pill from '$lib/components/Pill.svelte';
   import TextField from '$lib/components/TextField.svelte';
+  import NumberField from '$lib/components/NumberField.svelte';
   import Toggle from '$lib/components/Toggle.svelte';
   import SettingsCard from '$lib/components/SettingsCard.svelte';
   import SettingsRow from '$lib/components/SettingsRow.svelte';
   import Segmented from '$lib/components/Segmented.svelte';
+  import Slider from '$lib/components/Slider.svelte';
+  import Select, { type SelectOption } from '$lib/components/Select.svelte';
+  import ButtonLegend from '$lib/components/ButtonLegend.svelte';
+  import type { GpButton } from '$lib/components/GamepadButton.svelte';
   import { uiMode } from '$lib/uiMode.svelte';
+  import { gamepadScope, inputMode } from '$lib/gamepad';
 
   let config = $state<ConfigData | null>(null);
   let error = $state<string | null>(null);
   let activeGroup = $state('general');
+  let navEl = $state<HTMLElement>();
   let peers = $state<LanPeer[]>([]);
   let appVersion = $state<string | null>(null);
   let syncStatus = $state<SyncStatus | null>(null);
@@ -59,12 +66,37 @@
   let oauthConnecting = $state(false);
   let remoteExists = $state(false);
 
+  const CLOUD_PROVIDER_OPTIONS: SelectOption[] = [
+    { value: '', label: 'Disabled' },
+    { value: 'custom', label: 'Custom (rclone remote)' },
+    { value: 'google-drive', label: 'Google Drive' },
+    { value: 'onedrive', label: 'OneDrive' },
+    { value: 'dropbox', label: 'Dropbox' },
+    { value: 'box', label: 'Box' },
+    { value: 'ftp', label: 'FTP' },
+    { value: 'smb', label: 'SMB' },
+    { value: 'webdav', label: 'WebDAV' },
+  ];
+  // Default-Proton picker: Auto + each detected build.
+  const protonOptions = $derived<SelectOption[]>([
+    { value: '', label: 'Auto (newest installed)' },
+    ...protonVersions.map((p) => ({ value: p.path, label: p.name })),
+  ]);
+
   onMount(() => {
     let unlisten: (() => void) | undefined;
 
     const setup = async () => {
       try {
         config = await api.getConfig();
+        // Land controller/keyboard focus on the active settings group once the
+        // sidebar is in the DOM. The nav scope's initial autofocus runs before
+        // config loads (only the chrome Back button exists then), so it would
+        // otherwise settle on Back. Mouse users are left undisturbed.
+        await tick();
+        if (inputMode() === 'gamepad' || inputMode() === 'keyboard') {
+          navEl?.querySelector<HTMLElement>('[data-gp-autofocus]')?.focus();
+        }
         peers = await api.listLanPeers();
         appVersion = await getVersion();
         syncStatus = await api.currentSyncStatus();
@@ -116,7 +148,7 @@
     const win = getCurrentWindow();
     if (win.label !== 'main') {
       if (uiMode.resolved === 'touch') {
-        toasts.show({ kind: 'ok', label: 'DISPLAY', title: 'Touch mode on', sub: 'Switched the library to touch layout.' });
+        toasts.show({ kind: 'ok', label: 'DISPLAY', title: 'Gamepad mode on', sub: 'Switched the library to the gamepad layout.' });
         await win.close();
       }
     } else if (uiMode.resolved === 'desktop') {
@@ -127,6 +159,25 @@
   async function refreshDeps() {
     depsLoading = true;
     try { deps = await api.checkDependencies(); } finally { depsLoading = false; }
+  }
+
+  let addingToSteam = $state(false);
+  async function addSpoolToSteam() {
+    addingToSteam = true;
+    try {
+      const r = await api.addSpoolToSteam();
+      const extras = r.extras_placed.length ? ` · ${r.extras_placed.join(', ')} art placed` : '';
+      toasts.show({
+        kind: 'ok',
+        label: 'STEAM',
+        title: 'Added Spool to Steam',
+        sub: `Restart Steam, then launch Spool from your library${extras}. In Game Mode it opens fullscreen.`,
+      });
+    } catch (e) {
+      toasts.show({ kind: 'bad', label: 'STEAM · FAILED', title: "Couldn't add to Steam", sub: String(e) });
+    } finally {
+      addingToSteam = false;
+    }
   }
 
   async function installDeckyPlugin() {
@@ -267,9 +318,32 @@
     network: 'Network',
     advanced: 'Advanced',
   };
+
+  // Bumpers cycle the settings groups, like switching tabs on a console.
+  function switchGroup(dir: -1 | 1) {
+    const ids = NAV_GROUPS.map((g) => g.id);
+    const i = ids.indexOf(activeGroup);
+    if (i === -1) return;
+    activeGroup = ids[(i + dir + ids.length) % ids.length];
+  }
+
+  function settingsButton(btn: string) {
+    if (btn === 'LeftTrigger') switchGroup(-1);
+    else if (btn === 'RightTrigger') switchGroup(1);
+  }
+
+  const settingsLegend: { button: GpButton; label: string }[] = [
+    { button: 'a', label: 'Select' },
+    { button: 'b', label: 'Back' },
+    { button: 'lb', label: 'Prev' },
+    { button: 'rb', label: 'Next' },
+  ];
 </script>
 
-<div class="flex h-screen flex-col bg-bg-0 text-ink-0">
+<div
+  class="flex h-screen flex-col bg-bg-0 text-ink-0"
+  use:gamepadScope={{ onBack: () => history.back(), onButton: settingsButton }}
+>
   <AppChrome sub="SETTINGS" onback={() => history.back()} />
 
   {#if error}
@@ -287,12 +361,13 @@
     <div class="flex flex-1 min-h-0" style="display:grid; grid-template-columns: 264px 1fr">
 
       <!-- ── Sidebar ── -->
-      <nav class="overflow-y-auto border-r border-line-1 bg-bg-1 flex flex-col" style="padding: 16px 12px">
+      <nav bind:this={navEl} class="overflow-y-auto border-r border-line-1 bg-bg-1 flex flex-col" style="padding: 16px 12px">
         <div class="flex flex-col gap-[3px]">
           {#each NAV_GROUPS as group (group.id)}
             {@const isActive = activeGroup === group.id}
             <button
               onclick={() => (activeGroup = group.id)}
+              data-gp-autofocus={isActive ? '' : undefined}
               class="flex items-center gap-[11px] w-full text-left px-[10px] py-[9px] transition-colors"
               style:background={isActive ? 'var(--color-bg-3)' : 'transparent'}
               style:border-left={isActive ? '2px solid var(--color-spool)' : '2px solid transparent'}
@@ -362,12 +437,12 @@
           {#if activeGroup === 'general'}
             <div class="flex flex-col gap-4">
 
-              <!-- Display & touch -->
-              <SettingsCard title="Display & touch" helper="Auto-detects a touchscreen and grows targets for handhelds. Override it for a Deck or Ally docked to a monitor.">
+              <!-- Display & input -->
+              <SettingsCard title="Display" helper="Auto-detects a touchscreen or handheld. Gamepad mode grows targets and turns on controller navigation — good for a Deck, Ally, or a PC on the TV.">
                 {#snippet icon()}<MonitorSmartphone size={14} />{/snippet}
                 <SettingsRow
-                  label="Touch mode"
-                  helper={`Larger buttons, taller rows, tap-friendly spacing. Currently rendering: ${uiMode.resolved}.`}
+                  label="Layout"
+                  helper={`Gamepad mode: bigger targets, controller navigation, couch-friendly spacing. Currently rendering: ${uiMode.resolved === 'touch' ? 'Gamepad' : 'Desktop'}.`}
                 >
                   {#snippet extras()}
                     <Segmented
@@ -376,7 +451,7 @@
                       options={[
                         { value: 'auto', label: 'Auto' },
                         { value: 'desktop', label: 'Desktop' },
-                        { value: 'touch', label: 'Touch' },
+                        { value: 'touch', label: 'Gamepad' },
                       ]}
                     />
                   {/snippet}
@@ -445,14 +520,15 @@
                   helper="How many save backups to retain per game. More gives more rollback points at the cost of disk and cloud upload. 1–10."
                 >
                   {#snippet control()}
-                    <input
-                      type="number"
-                      min="1"
-                      max="10"
-                      bind:value={config!.save_retention_full}
-                      onblur={onRetentionCommit}
-                      class="font-mono h-7 w-24 rounded-sm border border-line-1 bg-bg-2 px-2 text-right text-[12px] text-ink-0 outline-none focus:border-line-3"
-                    />
+                    <div style="max-width: 280px">
+                      <Slider
+                        min={1}
+                        max={10}
+                        step={1}
+                        bind:value={config!.save_retention_full}
+                        oncommit={onRetentionCommit}
+                      />
+                    </div>
                   {/snippet}
                 </SettingsRow>
 
@@ -499,8 +575,10 @@
                     <div class="bg-bg-0 pb-1">
                       <SettingsRow label="Provider" helper="Choose a cloud storage provider or Custom for a custom rclone remote name.">
                         {#snippet extras()}
-                          <select
+                          <Select
                             bind:value={config!.cloud_provider}
+                            options={CLOUD_PROVIDER_OPTIONS}
+                            placeholder="Disabled"
                             onchange={async () => {
                               if (oauthConnecting) await cancelOAuth();
                               remoteExists = false;
@@ -509,19 +587,7 @@
                                 remoteExists = await api.checkCloudRemoteExists(config.cloud_provider);
                               }
                             }}
-                            style="color-scheme: dark"
-                            class="rounded-[4px] border border-line-1 bg-bg-2 px-2 py-1 text-[11.5px] text-ink-0"
-                          >
-                            <option style="background: var(--color-bg-2); color: var(--color-ink-0)" value="">Disabled</option>
-                            <option style="background: var(--color-bg-2); color: var(--color-ink-0)" value="custom">Custom (rclone remote)</option>
-                            <option style="background: var(--color-bg-2); color: var(--color-ink-0)" value="google-drive">Google Drive</option>
-                            <option style="background: var(--color-bg-2); color: var(--color-ink-0)" value="onedrive">OneDrive</option>
-                            <option style="background: var(--color-bg-2); color: var(--color-ink-0)" value="dropbox">Dropbox</option>
-                            <option style="background: var(--color-bg-2); color: var(--color-ink-0)" value="box">Box</option>
-                            <option style="background: var(--color-bg-2); color: var(--color-ink-0)" value="ftp">FTP</option>
-                            <option style="background: var(--color-bg-2); color: var(--color-ink-0)" value="smb">SMB</option>
-                            <option style="background: var(--color-bg-2); color: var(--color-ink-0)" value="webdav">WebDAV</option>
-                          </select>
+                          />
                         {/snippet}
                       </SettingsRow>
 
@@ -603,6 +669,27 @@
           <!-- ════ STEAM DECK & LINUX ════ -->
           {:else if activeGroup === 'deck'}
             <div class="flex flex-col gap-4">
+
+              <!-- Add Spool to Steam -->
+              {#if isLinux}
+                <SettingsCard
+                  title="Add to Steam"
+                  helper="Adds Spool as a non-Steam shortcut so you can launch your library from Steam — including SteamOS Game Mode, where it opens fullscreen."
+                >
+                  {#snippet icon()}<Gamepad2 size={14} />{/snippet}
+                  <SettingsRow
+                    label="Steam shortcut"
+                    helper="Creates a “Spool” entry in your Steam library with its cover art. Restart Steam afterwards to see it."
+                  >
+                    {#snippet extras()}
+                      <Btn variant="primary" onclick={addSpoolToSteam} disabled={addingToSteam}>
+                        {#snippet icon()}<Gamepad2 size={14} />{/snippet}
+                        {addingToSteam ? 'Adding…' : 'Add to Steam'}
+                      </Btn>
+                    {/snippet}
+                  </SettingsRow>
+                </SettingsCard>
+              {/if}
 
               <!-- Game Mode companion (Decky) -->
               {#if isLinux}
@@ -690,17 +777,11 @@
 
                   <SettingsRow label="Default Proton" helper="Used when a game doesn't pick its own version. Auto chooses the newest installed.">
                     {#snippet extras()}
-                      <select
+                      <Select
                         bind:value={config!.default_proton_path}
+                        options={protonOptions}
                         onchange={persist}
-                        style="color-scheme: dark"
-                        class="font-mono rounded-[4px] border border-line-1 bg-bg-2 px-2 py-1 text-[11.5px] text-ink-0"
-                      >
-                        <option style="background: var(--color-bg-2); color: var(--color-ink-0)" value="">Auto (newest installed)</option>
-                        {#each protonVersions as p (p.path)}
-                          <option style="background: var(--color-bg-2); color: var(--color-ink-0)" value={p.path}>{p.name}</option>
-                        {/each}
-                      </select>
+                      />
                     {/snippet}
                   </SettingsRow>
 
@@ -793,13 +874,12 @@
                     <div class="bg-bg-0 pb-1">
                       <SettingsRow label="Port" helper="TCP port peers connect to. Falls back to a random port if taken.">
                         {#snippet control()}
-                          <input
-                            type="number"
-                            min="1024"
-                            max="65535"
+                          <NumberField
+                            min={1024}
+                            max={65535}
+                            width="6rem"
                             bind:value={config!.lan_share_port}
-                            onblur={onLanPortCommit}
-                            class="font-mono h-7 w-24 rounded-sm border border-line-1 bg-bg-2 px-2 text-right text-[12px] text-ink-0 outline-none focus:border-line-3"
+                            oncommit={onLanPortCommit}
                           />
                         {/snippet}
                       </SettingsRow>
@@ -823,23 +903,20 @@
                           : 'Unlimited — transfers use whatever bandwidth they can get.'}
                       >
                         {#snippet control()}
-                          <div class="flex items-center gap-1.5">
-                            <input
-                              type="number"
-                              min="0"
-                              step="1"
-                              bind:value={config!.lan_download_max_mbps}
-                              onblur={() => {
-                                if (!config) return;
-                                if (!Number.isFinite(config.lan_download_max_mbps) || config.lan_download_max_mbps < 0) {
-                                  config.lan_download_max_mbps = 0;
-                                }
-                                persist();
-                              }}
-                              class="font-mono h-7 w-20 rounded-sm border border-line-1 bg-bg-2 px-2 text-right text-[12px] text-ink-0 outline-none focus:border-line-3"
-                            />
-                            <span class="font-mono text-[10px] uppercase tracking-[0.1em] text-ink-3">Mbps</span>
-                          </div>
+                          <NumberField
+                            min={0}
+                            step={1}
+                            width="5rem"
+                            suffix="Mbps"
+                            bind:value={config!.lan_download_max_mbps}
+                            oncommit={() => {
+                              if (!config) return;
+                              if (!Number.isFinite(config.lan_download_max_mbps) || config.lan_download_max_mbps < 0) {
+                                config.lan_download_max_mbps = 0;
+                              }
+                              persist();
+                            }}
+                          />
                         {/snippet}
                       </SettingsRow>
 
@@ -960,7 +1037,11 @@
         <span class="size-[6px] rounded-full bg-ok"></span>
         All changes saved
       </div>
-      <span class="font-mono text-[9.5px] text-ink-3 tracking-[0.08em]">%LOCALAPPDATA%\Spool\config.json</span>
+      {#if uiMode.resolved === 'touch'}
+        <ButtonLegend items={settingsLegend} size={16} />
+      {:else}
+        <span class="font-mono text-[9.5px] text-ink-3 tracking-[0.08em]">%LOCALAPPDATA%\Spool\config.json</span>
+      {/if}
     </div>
   {/if}
 </div>
