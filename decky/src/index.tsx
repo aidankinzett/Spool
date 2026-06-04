@@ -55,7 +55,10 @@ export default definePlugin(() => {
           );
 
           if (typeof container !== "object") return ret;
-          container.props.children.splice(1, 0, createElement(PatchWrapper, null));
+          // Insert as the first child so the zero-height anchor shares the
+          // InnerContainer's top edge — PatchWrapper walks from there to the
+          // hero capsule and floats the bar over it (see patch-wrapper.tsx).
+          container.props.children.splice(0, 0, createElement(PatchWrapper, null));
 
           return ret;
         },
