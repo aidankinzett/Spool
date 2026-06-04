@@ -109,6 +109,9 @@ export function BadgeMenuButton({ game, appid }: { game: LibraryGame; appid: num
 
   return (
     <DialogButton
+      // Sizing only — leave background/focus to the native DialogButton so the
+      // button gets Steam's standard hover/focus fill (overriding `background`
+      // here kept the dark fill on focus, leaving just a black icon).
       style={{
         minWidth: 0,
         width: "36px",
@@ -118,8 +121,6 @@ export function BadgeMenuButton({ game, appid }: { game: LibraryGame; appid: num
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
-        background: "rgba(255,255,255,0.04)",
-        boxShadow: "inset 0 0 0 1px rgba(255,255,255,0.08)",
         borderRadius: "4px",
       }}
       onClick={openMenu}

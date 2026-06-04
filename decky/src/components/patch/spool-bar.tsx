@@ -11,9 +11,10 @@ import { BadgeMenuButton } from "./badge-menu";
 // desktop app extracts); falls back to Spool's tape oxide.
 
 const C = {
-  surface: "rgba(21,24,29,0.92)", // graphite, slightly translucent over the page
-  surfaceHover: "rgba(28,32,39,0.95)",
-  line: "rgba(255,255,255,0.08)",
+  // The bar overlays the page's hero image rather than sitting on its own
+  // panel, so text/glyphs carry a drop shadow for legibility over bright art.
+  shadow: "0 1px 4px rgba(0,0,0,0.85), 0 0 1px rgba(0,0,0,0.6)",
+  line: "rgba(255,255,255,0.22)", // divider — needs to read over the hero image
   ink0: "#f4f4f5",
   ink1: "rgba(244,244,245,0.78)",
   ink3: "rgba(244,244,245,0.40)",
@@ -95,18 +96,26 @@ export function SpoolBar({
         alignItems: "center",
         gap: 14,
         height: 44,
-        padding: "0 8px 0 14px",
+        padding: "0 8px 0 4px",
+        // Overlay directly on the hero image — no panel surface. While backing
+        // up, a faint accent wash fades in from the left to flag activity.
         background: st.backing
-          ? `linear-gradient(90deg, ${accent}12, ${C.surface} 40%)`
-          : C.surface,
+          ? `linear-gradient(90deg, ${accent}26, transparent 45%)`
+          : "transparent",
         borderRadius: 4,
-        borderLeft: `2.5px solid ${accent}`,
-        boxShadow: `inset 0 0 0 1px ${st.backing ? accent + "33" : C.line}`,
         fontFamily: C.ui,
+        textShadow: C.shadow,
       }}
     >
       {/* identity */}
-      <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+      <span
+        style={{
+          display: "inline-flex",
+          alignItems: "center",
+          gap: 8,
+          filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))",
+        }}
+      >
         <SpoolMark size={17} color={C.ink0} tape={accent} />
         <span style={{ fontSize: 14.5, fontWeight: 600, color: C.ink0, letterSpacing: "-0.01em" }}>
           Spool
@@ -116,7 +125,15 @@ export function SpoolBar({
       <Divider />
 
       {/* save state — leads */}
-      <span style={{ display: "inline-flex", alignItems: "center", gap: 7, whiteSpace: "nowrap" }}>
+      <span
+        style={{
+          display: "inline-flex",
+          alignItems: "center",
+          gap: 7,
+          whiteSpace: "nowrap",
+          filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.8))",
+        }}
+      >
         <Reel size={14} color={st.tone} spinning={st.backing} />
         <span style={{ fontSize: 14, fontWeight: 600, color: st.tone }}>{st.word}</span>
         {st.backing && (
