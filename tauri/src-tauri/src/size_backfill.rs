@@ -28,26 +28,24 @@ pub fn spawn_backfill(app: AppHandle) {
 async fn run_backfill(app: AppHandle) {
     // Snapshot entries that need a size — (id, folder_path). Drop
     // the lock before any blocking disk walks.
-    let library_state = app.state::<SharedLibrary>();
-    let todo: Vec<(String, PathBuf)> = {
-        let lib = match library_state.lock() {
-            Ok(g) => g,
-            Err(_) => return,
-        };
-        lib.entries
-            .iter()
-            .filter(|e| e.install_size_mb <= 0.0)
-            .filter_map(|e| {
-                e.game_folder_path.as_ref().and_then(|p| {
-                    if p.is_empty() {
-                        None
-                    } else {
-                        Some((e.id.clone(), PathBuf::from(p)))
-                    }
-                })
-            })
-            .collect()
+    let library = app.state::<SharedLibrary>().inner().clone();
+    let entries = match library.list().await {
+        Ok(e) => e,
+        Err(_) => return,
     };
+    let todo: Vec<(String, PathBuf)> = entries
+        .iter()
+        .filter(|e| e.install_size_mb <= 0.0)
+        .filter_map(|e| {
+            e.game_folder_path.as_ref().and_then(|p| {
+                if p.is_empty() {
+                    None
+                } else {
+                    Some((e.id.clone(), PathBuf::from(p)))
+                }
+            })
+        })
+        .collect();
     if todo.is_empty() {
         return;
     }
@@ -74,30 +72,16 @@ async fn run_backfill(app: AppHandle) {
         return;
     }
 
-    // Apply + save once.
-    let library_state = app.state::<SharedLibrary>();
-    let applied = {
-        let mut lib = match library_state.lock() {
-            Ok(g) => g,
-            Err(_) => return,
-        };
-        let mut applied = 0;
-        for (id, mb) in &results {
-            if let Some(entry) = lib.entries.iter_mut().find(|e| &e.id == id) {
-                // Don't overwrite if a concurrent action set it.
-                if entry.install_size_mb <= 0.0 {
-                    entry.install_size_mb = *mb;
-                    applied += 1;
-                }
-            }
+    // Apply. `set_install_size_if_empty` no-ops when a concurrent action
+    // already recorded a size, so we never clobber.
+    let mut applied = 0;
+    for (id, mb) in &results {
+        match library.set_install_size_if_empty(id, *mb).await {
+            Ok(true) => applied += 1,
+            Ok(false) => {}
+            Err(e) => tracing::warn!(error = %e, "size backfill: update failed"),
         }
-        if applied > 0 {
-            if let Err(e) = lib.save() {
-                tracing::warn!(error = %e, "size backfill: library save failed");
-            }
-        }
-        applied
-    };
+    }
     tracing::info!(applied, "size backfill: done");
 
     if applied > 0 {

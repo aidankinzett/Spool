@@ -266,12 +266,11 @@ async fn announce_loop(
     loop {
         // Read current game count fresh each tick so peers see growth as
         // the user adds games.
-        let game_count = {
-            match app.state::<SharedLibrary>().lock() {
-                Ok(lib) => lib.entries.len() as u32,
-                Err(_) => 0,
-            }
-        };
+        let game_count = app
+            .state::<SharedLibrary>()
+            .count()
+            .await
+            .unwrap_or(0) as u32;
         let packet = AnnouncePacket {
             magic: "spool".into(),
             version: PROTOCOL_VERSION,

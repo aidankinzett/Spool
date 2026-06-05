@@ -11,32 +11,16 @@
 //! endpoint that replaced per-operation subprocess spawns.
 
 use crate::config::{self, Config};
-use crate::library::{Library, SharedLibrary};
+use crate::library::Library;
 use crate::ludusavi::LudusaviClient;
 use crate::{ludusavi_config, paths, rclone, runner, session};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 /// Headless one-shot backup: load config + library, run ludusavi backup for
 /// the named game, mark the session record, then return a process exit code.
 /// No GUI / tray / single-instance. Used by `spool --backup "Name"` (the
 /// Decky plugin's forced-close fallback).
 pub(crate) fn run_backup_headless(game_name: &str) -> i32 {
-    let library = match Library::load() {
-        Ok(l) => l,
-        Err(e) => {
-            tracing::error!(error = %e, "--backup: failed to load library");
-            return 1;
-        }
-    };
-    let Some(game_id) = library
-        .entries
-        .iter()
-        .find(|e| e.game_name == game_name)
-        .map(|e| e.id.clone())
-    else {
-        tracing::error!(name = %game_name, "--backup: no library entry matches");
-        return 1;
-    };
     let Some(ludusavi_exe) = paths::resolve_ludusavi_path() else {
         tracing::error!("--backup: ludusavi sidecar not found");
         return 1;
@@ -48,7 +32,6 @@ pub(crate) fn run_backup_headless(game_name: &str) -> i32 {
     }
 
     let config_dir = paths::ludusavi_config_dir();
-    let lib_state: SharedLibrary = Arc::new(Mutex::new(library));
     let client = LudusaviClient::new();
 
     let rt = match tokio::runtime::Runtime::new() {
@@ -58,6 +41,28 @@ pub(crate) fn run_backup_headless(game_name: &str) -> i32 {
             return 1;
         }
     };
+
+    // Open the shared library DB and resolve the game id.
+    let prepared = rt.block_on(async {
+        let library = match Library::open().await {
+            Ok(l) => Arc::new(l),
+            Err(e) => {
+                tracing::error!(error = %e, "--backup: failed to open library");
+                return None;
+            }
+        };
+        match library.find_id_by_name(game_name).await {
+            Ok(Some(id)) => Some((library, id)),
+            _ => {
+                tracing::error!(name = %game_name, "--backup: no library entry matches");
+                None
+            }
+        }
+    });
+    let Some((lib_state, game_id)) = prepared else {
+        return 1;
+    };
+
     let result = rt.block_on(async {
         runner::backup_game_core(&client, &ludusavi_exe, &config_dir, &lib_state, &game_id).await
     });

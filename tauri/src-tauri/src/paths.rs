@@ -19,6 +19,13 @@ pub fn library_file() -> PathBuf {
     app_data_dir().join("library.json")
 }
 
+/// SQLite database backing the game library. Lives next to the legacy
+/// `library.json`, which is imported once into this DB then renamed to
+/// `library.json.migrated` (see `library::Library::open`).
+pub fn library_db() -> PathBuf {
+    app_data_dir().join("library.db")
+}
+
 #[allow(dead_code)]
 pub fn config_file() -> PathBuf {
     app_data_dir().join("config.json")

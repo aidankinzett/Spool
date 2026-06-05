@@ -23,6 +23,12 @@ tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 chrono = { version = "0.4", features = ["serde"] }
+# Library storage. SQLite via sqlx so multiple Spool processes (the tray GUI,
+# attached `--run` launches, the headless Decky server) can write the same
+# library concurrently without the whole-document JSON clobbering each other.
+# Runtime-checked queries (query/query_as) — no compile-time DATABASE_URL or
+# `.sqlx` offline cache needed, so CI builds unchanged.
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite", "chrono"] }
 dirs = "5"
 thiserror = "2"
 tauri-plugin-dialog = "2.7.1"

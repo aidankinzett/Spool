@@ -90,7 +90,7 @@ pub async fn fetch_and_save_cover(
     };
     let accent = extract_accent_blocking(&path_str).await;
 
-    apply_art(app, game_entry_id, Some(&path_str), None, accent.as_deref())?;
+    apply_art(app, game_entry_id, Some(&path_str), None, accent.as_deref()).await?;
     Ok(Some(path_str))
 }
 
@@ -135,7 +135,8 @@ pub async fn fetch_and_save_cover_and_hero(
         cover.as_deref(),
         hero.as_deref(),
         accent.as_deref(),
-    )?;
+    )
+    .await?;
     Ok(())
 }
 
@@ -240,7 +241,7 @@ pub async fn fetch_and_save_hero(
     let Some(path_str) = download_hero(&client.http, &api_key, sgdb_id, &safe_name).await? else {
         return Ok(None);
     };
-    apply_art(app, game_entry_id, None, Some(&path_str), None)?;
+    apply_art(app, game_entry_id, None, Some(&path_str), None).await?;
     Ok(Some(path_str))
 }
 
@@ -439,9 +440,9 @@ async fn resolve_entry_sgdb_id(
     }
 
     let (name, safe_name, steam_id) = {
-        let lib = library.lock().map_err(|_| AppError::LockPoisoned)?;
-        let entry = lib
+        let entry = library
             .find(game_entry_id)
+            .await?
             .ok_or_else(|| AppError::Other(format!("game not found: {game_entry_id}")))?;
         (
             entry.game_name.clone(),
@@ -519,30 +520,20 @@ async fn extract_accent_blocking(path: &str) -> Option<String> {
 /// Applies any of cover path / hero path / accent to the entry, then persists
 /// and emits `library:changed` once. No-ops the write if the entry vanished
 /// mid-download.
-fn apply_art(
+async fn apply_art(
     app: &AppHandle,
     game_entry_id: &str,
     cover: Option<&str>,
     hero: Option<&str>,
     accent: Option<&str>,
 ) -> AppResult<()> {
-    let library = app.state::<SharedLibrary>();
-    {
-        let mut lib = library.lock().map_err(|_| AppError::LockPoisoned)?;
-        let Some(entry) = lib.entries.iter_mut().find(|e| e.id == game_entry_id) else {
-            tracing::warn!(game_entry_id, "art downloaded but library entry gone; skipping update");
-            return Ok(());
-        };
-        if let Some(c) = cover {
-            entry.cover_image_path = Some(c.to_string());
-        }
-        if let Some(h) = hero {
-            entry.hero_image_path = Some(h.to_string());
-        }
-        if let Some(a) = accent {
-            entry.accent_color = Some(a.to_string());
-        }
-        lib.save()?;
+    let updated = app
+        .state::<SharedLibrary>()
+        .set_art(game_entry_id, cover, hero, accent)
+        .await?;
+    if !updated {
+        tracing::warn!(game_entry_id, "art downloaded but library entry gone; skipping update");
+        return Ok(());
     }
     if let Err(e) = app.emit("library:changed", &game_entry_id.to_string()) {
         tracing::warn!(error = %e, "failed to emit library:changed after art download");

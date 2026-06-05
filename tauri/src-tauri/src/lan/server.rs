@@ -174,9 +174,9 @@ async fn get_games_handler(
     // user's local library can have hundreds of entries; LAN browsing
     // should only see what was deliberately offered.
     let games: Vec<PeerGame> = library
-        .lock()
+        .list()
+        .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-        .entries
         .iter()
         .filter(|g| g.lan_shared)
         .map(PeerGame::from_entry)
@@ -222,10 +222,9 @@ async fn get_manifest_handler(
     // Snapshot the entry so we can drop the library lock before doing
     // I/O. Cloning a GameEntry is cheap relative to a recursive walk.
     let entry = library
-        .lock()
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         .find(&id)
-        .cloned()
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         .ok_or(StatusCode::NOT_FOUND)?;
 
     // Per-game opt-in. Return 404 (not 403) so the existence of the id
@@ -347,10 +346,11 @@ async fn get_file_handler(
     }
 
     let folder = {
-        let lib = library
-            .lock()
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-        let entry = lib.find(&id).ok_or(StatusCode::NOT_FOUND)?;
+        let entry = library
+            .find(&id)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+            .ok_or(StatusCode::NOT_FOUND)?;
         // Re-check the opt-in — a user could flip `lan_shared` off
         // mid-transfer and we honour that on the next file request.
         if !entry.lan_shared {
@@ -535,10 +535,11 @@ async fn serve_artwork_path(
     }
 
     let path = {
-        let lib = library
-            .lock()
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-        let entry = lib.find(&id).ok_or(StatusCode::NOT_FOUND)?;
+        let entry = library
+            .find(&id)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+            .ok_or(StatusCode::NOT_FOUND)?;
         if !entry.lan_shared {
             return Err(StatusCode::NOT_FOUND);
         }

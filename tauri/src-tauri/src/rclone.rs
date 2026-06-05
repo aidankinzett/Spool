@@ -1035,51 +1035,69 @@ pub async fn fold_devices_from_config() -> bool {
     }
 
     let folded = fold_blobs(&blobs);
-    let mut library = match crate::library::Library::load() {
+    let library = match crate::library::Library::open().await {
         Ok(l) => l,
         Err(_) => return false,
     };
+    let entries = library.list().await.unwrap_or_default();
     let mut applied = 0usize;
-    for entry in library.entries.iter_mut() {
+    for entry in &entries {
         let Some(f) = folded.get(&entry.game_name) else {
             continue;
         };
-        let total = f.playtime.min(i32::MAX as i64) as i32;
-        if entry.playtime_minutes != total {
-            entry.playtime_minutes = total;
+        let fields = fold_fields_for(entry, f, &our_device_id);
+        if !fields.is_empty() && library.update_fields(&entry.id, &fields).await.unwrap_or(false) {
             applied += 1;
-        }
-        if let Some(raw) = &f.last_played_raw {
-            if let Ok(parsed) = DateTime::parse_from_rfc3339(raw) {
-                let parsed = parsed.with_timezone(&Utc);
-                if entry.last_played_at.map(|t| parsed > t).unwrap_or(true) {
-                    entry.last_played_at = Some(parsed);
-                    applied += 1;
-                }
-            }
-        }
-        let badge = compute_badge(&our_device_id, f.latest_backer.as_deref());
-        if entry.sync_badge.as_deref() != Some(badge) {
-            entry.sync_badge = Some(badge.to_string());
-            applied += 1;
-        }
-        let (backer, rev) = backer_for_badge(badge, f);
-        if entry.save_last_backer_device != backer {
-            entry.save_last_backer_device = backer;
-            applied += 1;
-        }
-        if entry.save_cloud_revision_at != rev {
-            entry.save_cloud_revision_at = rev;
-            applied += 1;
-        }
-    }
-    if applied > 0 {
-        if let Err(e) = library.save() {
-            tracing::warn!(error = %e, "headless fold: library save failed");
         }
     }
     tracing::info!(applied, devices = blobs.len(), "headless fold: done");
     applied > 0
+}
+
+/// Computes the JSON field updates the cross-device fold should apply to one
+/// library entry — only the fields whose folded value differs from the current
+/// one. Shared by the headless and GUI folds.
+fn fold_fields_for(
+    entry: &crate::library::GameEntry,
+    f: &Folded,
+    our_device_id: &str,
+) -> Vec<(&'static str, serde_json::Value)> {
+    use serde_json::{json, to_value, Value};
+    let mut fields: Vec<(&'static str, Value)> = Vec::new();
+    // playtime = authoritative sum across devices
+    let total = f.playtime.min(i32::MAX as i64) as i32;
+    if entry.playtime_minutes != total {
+        fields.push(("playtime_minutes", json!(total)));
+    }
+    // last-played = max(local, folded)
+    if let Some(raw) = &f.last_played_raw {
+        if let Ok(parsed) = DateTime::parse_from_rfc3339(raw) {
+            let parsed = parsed.with_timezone(&Utc);
+            if entry.last_played_at.map(|t| parsed > t).unwrap_or(true) {
+                fields.push((
+                    "last_played_at",
+                    to_value(Some(parsed)).unwrap_or(Value::Null),
+                ));
+            }
+        }
+    }
+    // badge from the latest backer
+    let badge = compute_badge(our_device_id, f.latest_backer.as_deref());
+    if entry.sync_badge.as_deref() != Some(badge) {
+        fields.push(("sync_badge", json!(badge)));
+    }
+    // backer device + revision time behind a `cloud-newer` badge
+    let (backer, rev) = backer_for_badge(badge, f);
+    if entry.save_last_backer_device != backer {
+        fields.push((
+            "save_last_backer_device",
+            to_value(&backer).unwrap_or(Value::Null),
+        ));
+    }
+    if entry.save_cloud_revision_at != rev {
+        fields.push(("save_cloud_revision_at", to_value(rev).unwrap_or(Value::Null)));
+    }
+    fields
 }
 
 async fn run_startup_fold(app: &AppHandle) {
@@ -1111,50 +1129,16 @@ async fn run_startup_fold(app: &AppHandle) {
 
     let folded = fold_blobs(&blobs);
 
-    let library = app.state::<SharedLibrary>();
+    let library = app.state::<SharedLibrary>().inner().clone();
+    let entries = library.list().await.unwrap_or_default();
     let mut applied = 0usize;
-    if let Ok(mut lib) = library.lock() {
-        for entry in lib.entries.iter_mut() {
-            let Some(f) = folded.get(&entry.game_name) else {
-                continue;
-            };
-            // playtime = authoritative sum across devices
-            let total = f.playtime.min(i32::MAX as i64) as i32;
-            if entry.playtime_minutes != total {
-                entry.playtime_minutes = total;
-                applied += 1;
-            }
-            // last-played = max(local, folded)
-            if let Some(raw) = &f.last_played_raw {
-                if let Ok(parsed) = DateTime::parse_from_rfc3339(raw) {
-                    let parsed = parsed.with_timezone(&Utc);
-                    if entry.last_played_at.map(|t| parsed > t).unwrap_or(true) {
-                        entry.last_played_at = Some(parsed);
-                        applied += 1;
-                    }
-                }
-            }
-            // badge from the latest backer
-            let badge = compute_badge(&our_device_id, f.latest_backer.as_deref());
-            if entry.sync_badge.as_deref() != Some(badge) {
-                entry.sync_badge = Some(badge.to_string());
-                applied += 1;
-            }
-            // backer device + revision time behind a `cloud-newer` badge
-            let (backer, rev) = backer_for_badge(badge, f);
-            if entry.save_last_backer_device != backer {
-                entry.save_last_backer_device = backer;
-                applied += 1;
-            }
-            if entry.save_cloud_revision_at != rev {
-                entry.save_cloud_revision_at = rev;
-                applied += 1;
-            }
-        }
-        if applied > 0 {
-            if let Err(e) = lib.save() {
-                tracing::warn!(error = %e, "startup fold: library save failed");
-            }
+    for entry in &entries {
+        let Some(f) = folded.get(&entry.game_name) else {
+            continue;
+        };
+        let fields = fold_fields_for(entry, f, &our_device_id);
+        if !fields.is_empty() && library.update_fields(&entry.id, &fields).await.unwrap_or(false) {
+            applied += 1;
         }
     }
     tracing::info!(applied, devices = blobs.len(), "startup fold: done");
