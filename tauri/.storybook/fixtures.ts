@@ -16,47 +16,51 @@ import type {
   PeerGame,
 } from '../src/lib/types';
 
-/** A fully-populated GameEntry. Matches the fixture in GameDetail.test.ts. */
+/**
+ * A fully-populated GameEntry. The sample lineup is deliberately limited to
+ * titles sold DRM-free (e.g. on GOG), since those are the ones the LAN
+ * folder-copy transfer can actually move between devices.
+ */
 export function makeGame(over: Partial<GameEntry> = {}): GameEntry {
   return {
     id: 'g1',
     catalog_number: 1,
-    game_name: 'Hollow Knight',
-    exe_path: 'C:/Games/HollowKnight/hollow_knight.exe',
-    safe_name: 'hollow-knight',
+    game_name: 'The Witcher 3: Wild Hunt',
+    exe_path: 'C:/Games/The Witcher 3/bin/x64/witcher3.exe',
+    safe_name: 'the-witcher-3-wild-hunt',
     cover_image_path: null,
     hero_image_path: null,
     added_at: '2026-01-12T09:00:00Z',
     last_played_at: '2026-05-28T21:14:00Z',
     launcher_exe_path: null,
-    game_folder_path: 'C:/Games/HollowKnight',
+    game_folder_path: 'C:/Games/The Witcher 3',
     run_as_admin: false,
     use_proton: false,
     proton_version_path: null,
     wine_prefix_path: null,
     launch_args: null,
     description:
-      'A 2D action-adventure through a vast, ruined kingdom of insects and heroes. Explore twisting caverns, battle tainted creatures and escape ancient labyrinths.',
-    developer: 'Team Cherry',
-    publisher: 'Team Cherry',
-    genres: ['Metroidvania', 'Action', 'Adventure'],
-    release_date: '2017-02-24',
-    install_size_mb: 9216,
+      'An open-world RPG following monster hunter Geralt of Rivia across a war-torn realm, hunting a child of prophecy pursued by an otherworldly cavalcade of riders.',
+    developer: 'CD PROJEKT RED',
+    publisher: 'CD PROJEKT RED',
+    genres: ['RPG', 'Action', 'Open World'],
+    release_date: '2015-05-19',
+    install_size_mb: 51200,
     playtime_minutes: 1873,
     lan_shared: false,
     lan_share_folder: null,
     save_backup_count: 12,
     save_last_backed_up_at: '2026-05-28T23:02:00Z',
     save_backup_size_mb: 34,
-    install_source: 'Steam',
+    install_source: 'GOG',
     lan_install_source_device_name: null,
     lan_install_source_device_id: null,
-    steam_id: 367520,
-    gog_id: null,
+    steam_id: null,
+    gog_id: 1207664643,
     lutris_slug: null,
     manifest_install_dir: null,
-    save_paths: ['C:/Users/you/AppData/LocalLow/Team Cherry/Hollow Knight'],
-    accent_color: '#6fb7c9',
+    save_paths: ['C:/Users/you/Documents/The Witcher 3'],
+    accent_color: '#c9a36f',
     sync_badge: 'synced',
     cloud_sync_baseline: null,
     save_last_backer_device: null,
@@ -97,15 +101,15 @@ export function makeConfig(over: Partial<ConfigData> = {}): ConfigData {
 /** A ludusavi search candidate. */
 export function makeCandidate(over: Partial<SearchCandidate> = {}): SearchCandidate {
   return {
-    name: 'Hollow Knight',
+    name: 'The Witcher 3: Wild Hunt',
     score: 1,
     save_path: null,
-    save_paths: ['C:/Users/you/AppData/LocalLow/Team Cherry/Hollow Knight'],
-    steam_id: 367520,
-    gog_id: null,
+    save_paths: ['C:/Users/you/Documents/The Witcher 3'],
+    steam_id: null,
+    gog_id: 1207664643,
     lutris_slug: null,
-    manifest_install_dir: 'Hollow Knight',
-    manifest_install_dirs: ['Hollow Knight'],
+    manifest_install_dir: 'The Witcher 3',
+    manifest_install_dirs: ['The Witcher 3'],
     install_root: null,
     ...over,
   };
@@ -113,9 +117,9 @@ export function makeCandidate(over: Partial<SearchCandidate> = {}): SearchCandid
 
 /** A ranked candidate list for the Add Game "matches" / "search" states. */
 export const SAMPLE_CANDIDATES: SearchCandidate[] = [
-  makeCandidate({ name: 'Hollow Knight', score: 0.98, steam_id: 367520 }),
-  makeCandidate({ name: 'Hollow Knight: Silksong', score: 0.71, steam_id: 1030300 }),
-  makeCandidate({ name: 'Hollow', score: 0.42, steam_id: 522260 }),
+  makeCandidate({ name: 'The Witcher 3: Wild Hunt', score: 0.98, gog_id: 1207664643 }),
+  makeCandidate({ name: 'The Witcher 3: Wild Hunt - Complete Edition', score: 0.71, gog_id: 1495134320 }),
+  makeCandidate({ name: 'The Witcher 2: Assassins of Kings', score: 0.42, gog_id: null }),
 ];
 
 /** A reachable, fully-found dependency-doctor result (Linux settings). */
@@ -132,14 +136,14 @@ export function makeDownload(over: Partial<DownloadProgress> = {}): DownloadProg
     source_device_id: 'dev-deck',
     source_device_name: 'Steam Deck',
     source_game_id: 'pg1',
-    game_name: 'Celeste',
-    bytes_done: 620 * 1024 * 1024,
-    bytes_total: 1280 * 1024 * 1024,
-    current_file: 'Celeste/Content/textures.bank',
+    game_name: 'Terraria',
+    bytes_done: 124 * 1024 * 1024,
+    bytes_total: 256 * 1024 * 1024,
+    current_file: 'Terraria/Content/Images/UI.xnb',
     status: 'transferring',
     message: null,
     new_game_id: null,
-    bytes_per_second: 48 * 1024 * 1024,
+    bytes_per_second: 22 * 1024 * 1024,
     cover_image_path: null,
     ...over,
   };
@@ -150,12 +154,12 @@ export const SAMPLE_UPLOADS: UploadSnapshot[] = [
   {
     session_id: 'up-1',
     game_id: 'g1',
-    game_name: 'Hollow Knight',
+    game_name: 'The Witcher 3: Wild Hunt',
     peer_addr: '192.168.1.42',
     last_seen_ago_secs: 1,
     cancelled: false,
-    bytes_total: 9216 * 1024 * 1024,
-    bytes_sent: 3100 * 1024 * 1024,
+    bytes_total: 51200 * 1024 * 1024,
+    bytes_sent: 24000 * 1024 * 1024,
   },
   {
     session_id: 'up-2',
@@ -196,14 +200,14 @@ export const SAMPLE_PEER_GAMES: PeerGame[] = [
   {
     id: 'pg1',
     catalog_number: 3,
-    game_name: 'Celeste',
-    developer: 'Maddy Makes Games',
-    publisher: 'Maddy Makes Games',
-    genres: ['Platformer'],
-    install_size_mb: 1280,
-    release_date: '2018-01-25',
-    steam_id: 504230,
-    gog_id: null,
+    game_name: 'Terraria',
+    developer: 'Re-Logic',
+    publisher: 'Re-Logic',
+    genres: ['Sandbox', 'Adventure'],
+    install_size_mb: 256,
+    release_date: '2011-05-16',
+    steam_id: null,
+    gog_id: 1207665503,
     lutris_slug: null,
     shareable: true,
   },
@@ -216,16 +220,28 @@ export const SAMPLE_PEER_GAMES: PeerGame[] = [
     genres: ['Simulation', 'RPG'],
     install_size_mb: 520,
     release_date: '2016-02-26',
-    steam_id: 413150,
-    gog_id: null,
+    steam_id: null,
+    gog_id: 1453375253,
     lutris_slug: null,
     shareable: true,
   },
 ];
 
+/**
+ * Cover/hero art for the Library screen story, loaded straight from Steam's
+ * public CDN (keyed by Steam app id) rather than bundled into the repo — the
+ * art stays © its publishers and never lands in git history, only in whatever
+ * documentation screenshot is captured from the rendered story. The mock's
+ * `passThroughRealUrls` lets these absolute URLs reach the <img> unchanged.
+ * Other stories leave cover/hero null and show the accent placeholder tiles.
+ */
+const STEAM_CDN = 'https://steamcdn-a.akamaihd.net/steam/apps';
+const cover = (appid: number) => `${STEAM_CDN}/${appid}/library_600x900_2x.jpg`;
+const hero = (appid: number) => `${STEAM_CDN}/${appid}/library_hero.jpg`;
+
 /** A multi-entry library for the main-window stories. */
 export const SAMPLE_LIBRARY: GameEntry[] = [
-  makeGame(),
+  makeGame({ cover_image_path: cover(292030), hero_image_path: hero(292030) }),
   makeGame({
     id: 'g2',
     catalog_number: 2,
@@ -235,38 +251,48 @@ export const SAMPLE_LIBRARY: GameEntry[] = [
     publisher: 'ConcernedApe',
     genres: ['Simulation', 'RPG'],
     accent_color: '#8bbf5a',
-    steam_id: 413150,
+    gog_id: 1453375253,
     playtime_minutes: 9042,
     install_size_mb: 520,
     last_played_at: '2026-06-01T19:30:00Z',
     sync_badge: 'cloud-newer',
+    cover_image_path: cover(413150),
+    hero_image_path: hero(413150),
   }),
   makeGame({
     id: 'g3',
     catalog_number: 3,
-    game_name: 'Celeste',
-    safe_name: 'celeste',
-    developer: 'Maddy Makes Games',
-    genres: ['Platformer'],
+    game_name: 'Disco Elysium - The Final Cut',
+    safe_name: 'disco-elysium-the-final-cut',
+    developer: 'ZA/UM',
+    publisher: 'ZA/UM',
+    genres: ['RPG'],
     accent_color: '#c95ec0',
-    steam_id: 504230,
+    gog_id: 1771589310,
     playtime_minutes: 0,
+    install_size_mb: 20480,
     last_played_at: null,
     save_backup_count: 0,
     save_last_backed_up_at: null,
     sync_badge: null,
+    cover_image_path: cover(632470),
+    hero_image_path: hero(632470),
   }),
   makeGame({
     id: 'g4',
     catalog_number: 4,
-    game_name: 'Hades',
-    safe_name: 'hades',
-    developer: 'Supergiant Games',
-    genres: ['Roguelike', 'Action'],
+    game_name: 'Cuphead',
+    safe_name: 'cuphead',
+    developer: 'Studio MDHR',
+    publisher: 'Studio MDHR',
+    genres: ['Action', 'Platformer'],
     accent_color: '#e0703a',
-    steam_id: 1145360,
+    gog_id: 1963513391,
     playtime_minutes: 3120,
+    install_size_mb: 4096,
     last_played_at: '2026-05-20T12:00:00Z',
     sync_badge: 'local-newer',
+    cover_image_path: cover(268910),
+    hero_image_path: hero(268910),
   }),
 ];

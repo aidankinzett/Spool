@@ -24,10 +24,14 @@ silently. If *both* sides changed since the last sync — a genuine conflict —
 stops and shows a conflict picker so you choose which save to keep, rather than
 guessing.
 
+![Spool's cloud save conflict picker, comparing the local and cloud saves by last-modified time and size so you can choose which to keep.](../../../assets/screenshots/cloud-conflict.png)
+
 ## Set up a cloud remote
 
-Open **Settings → Library → Cloud saves**. Spool supports Dropbox, Google Drive,
-OneDrive, Box, FTP, SMB, WebDAV, or a custom rclone remote.
+Open **Settings → Saves**. Spool supports Dropbox, Google Drive, OneDrive, Box,
+FTP, SMB, WebDAV, or a custom rclone remote.
+
+![Spool's Saves settings showing local backups, retention, and a connected Dropbox cloud remote.](../../../assets/screenshots/settings-cloud.png)
 
 ### Google Drive, Dropbox, OneDrive, Box
 

@@ -76,6 +76,8 @@ Quit from the tray menu's **Quit Spool** item.
    saves can be tracked. Pick the right match and add it — or add it without save
    tracking if you'd rather not.
 
+![Spool's Add Game flow after picking an executable, showing ranked ludusavi matches to confirm which game's saves to track.](../../../assets/screenshots/add-game.png)
+
 Once a game is in your library, launching it from Spool restores the latest save
 before play and backs it up when you quit.
 

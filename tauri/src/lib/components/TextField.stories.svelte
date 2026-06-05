@@ -30,7 +30,7 @@
 {/snippet}
 
 <Story name="Empty" args={{ value: '', placeholder: 'Enter text…' }} />
-<Story name="Filled" args={{ value: 'Hollow Knight' }} />
-<Story name="Mono (path)" args={{ value: 'C:\\Games\\HollowKnight', mono: true }} />
+<Story name="Filled" args={{ value: 'The Witcher 3: Wild Hunt' }} />
+<Story name="Mono (path)" args={{ value: 'C:\\Games\\The Witcher 3', mono: true }} />
 <Story name="Masked (API key)" args={{ value: 'sgdb_secret_key', masked: true }} />
 <Story name="Readonly" args={{ value: 'Cannot edit me', readonly: true }} />
