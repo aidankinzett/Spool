@@ -19,6 +19,22 @@ export const getStatus = callable<
   { hasSession: boolean; game?: string; backedUp?: boolean; startedAt?: string }
 >("get_status");
 
+// Pulls a game's latest cloud saves down to this device and restores them to
+// disk, without launching ("Sync now"). Pull-only — never uploads. `outcome`
+// is "pulled" (cloud was ahead, now applied), "up_to_date", "local_newer"
+// (local is ahead, left alone), or "unconfigured" (no cloud remote). `ok` is
+// false (with a `reason`) when the server is down or a true local-vs-cloud
+// divergence needs resolving in the desktop app.
+export const pullCloudSaves = callable<
+  [id: string],
+  {
+    ok: boolean;
+    outcome?: "pulled" | "up_to_date" | "local_newer" | "unconfigured";
+    game_count?: number;
+    reason?: string;
+  }
+>("pull_cloud_saves");
+
 export const getSettings = callable<[], Settings>("get_settings");
 export const setSettings = callable<
   [spool_command: string, notify: boolean],

@@ -608,6 +608,8 @@
       <GameDetail
         game={lib.selectedGame}
         runPhase={lib.runningId === lib.selectedGame.id ? lib.runningPhase : null}
+        cloudConfigured={lib.syncStatus.reachability !== 'unconfigured'}
+        onPullConflict={(id) => (lib.conflictGameId = id)}
       />
     {:else if lib.loaded && lib.games.length === 0}
       <div class="flex flex-col items-center justify-center gap-3 text-center">

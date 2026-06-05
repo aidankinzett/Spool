@@ -19,6 +19,7 @@
   import {
     ChevronDown,
     Cloud,
+    CloudDownload,
     Copy,
     Folder,
     Pencil,
@@ -51,6 +52,8 @@
     game,
     runPhase = null,
     autofocusPlay = false,
+    cloudConfigured = false,
+    onPullConflict,
   }: {
     game: GameEntry;
     /** Current Run-workflow phase for *this* game (null if idle). */
@@ -59,6 +62,13 @@
      *  Set by the touch detail overlay (its own nav scope); desktop leaves it
      *  off so focus stays on the library list. */
     autofocusPlay?: boolean;
+    /** Whether a cloud remote is configured. Gates the "Sync now" pull button —
+     *  there's nothing to pull without a remote. */
+    cloudConfigured?: boolean;
+    /** Called when a "Sync now" pull hits a true local-vs-cloud divergence, so
+     *  the parent can open the `CloudConflictModal` (sets `lib.conflictGameId`).
+     *  Without it the conflict falls back to an error toast. */
+    onPullConflict?: (gameId: string) => void;
   } = $props();
 
   // When the selected game changes, refresh its save-backup stats from
@@ -242,6 +252,74 @@
     revisionsOpen = false;
     revisions = null;
   });
+
+  // "Sync now" — pull the latest cloud saves down to this device and restore
+  // them to disk, without launching. Pull-only: never uploads. A true
+  // divergence opens the conflict modal via `onPullConflict`.
+  let pulling = $state(false);
+  async function pullSaves() {
+    if (pulling || isRunning) return;
+    pulling = true;
+    try {
+      const r = await api.pullCloudSaves(game.id);
+      const catalog = fmtCatalog(game.catalog_number);
+      switch (r.outcome) {
+        case 'pulled':
+          toasts.show({
+            kind: 'ok',
+            label: 'LUDUSAVI · SYNC',
+            title: 'Pulled latest saves',
+            sub: `${game.game_name} · restored from the cloud`,
+            catalog,
+          });
+          break;
+        case 'up_to_date':
+          toasts.show({
+            kind: 'info',
+            label: 'LUDUSAVI · SYNC',
+            title: 'Already up to date',
+            sub: `${game.game_name} · cloud matches this device`,
+            catalog,
+          });
+          break;
+        case 'local_newer':
+          toasts.show({
+            kind: 'info',
+            label: 'LUDUSAVI · SYNC',
+            title: 'Local saves are newer',
+            sub: `${game.game_name} · nothing to pull — play to upload`,
+            catalog,
+          });
+          break;
+        case 'unconfigured':
+          toasts.show({
+            kind: 'warn',
+            label: 'LUDUSAVI · SYNC',
+            title: 'No cloud remote',
+            sub: 'Configure cloud saves in Settings to sync',
+            catalog,
+          });
+          break;
+      }
+    } catch (e) {
+      const msg = String(e);
+      // A true divergence — let the parent open the in-app conflict resolver
+      // rather than dead-ending on a toast.
+      if (/cloud sync conflict/i.test(msg) && onPullConflict) {
+        onPullConflict(game.id);
+      } else {
+        toasts.show({
+          kind: 'bad',
+          label: 'LUDUSAVI · SYNC',
+          title: "Couldn't sync",
+          sub: msg,
+          catalog: fmtCatalog(game.catalog_number),
+        });
+      }
+    } finally {
+      pulling = false;
+    }
+  }
 
   let isWindows = $state(false);
   onMount(async () => {
@@ -495,6 +573,13 @@
       {#snippet icon()}<Play size={14} />{/snippet}
       {addingToSteam ? 'Adding…' : 'Add to Steam'}
     </Btn>
+    {#if cloudConfigured}
+      <!-- Pull the latest cloud saves down to this device without launching. -->
+      <Btn variant="ghost" onclick={pullSaves} disabled={pulling || isRunning}>
+        {#snippet icon()}<CloudDownload size={14} />{/snippet}
+        {pulling ? 'Syncing…' : 'Sync now'}
+      </Btn>
+    {/if}
     <div class="flex-1"></div>
     <Btn variant="ghost" onclick={() => openView('edit', { id: game.id })}>
       {#snippet icon()}<Pencil size={14} />{/snippet}

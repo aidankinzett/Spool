@@ -169,6 +169,8 @@
         game={selectedGame}
         runPhase={lib.runningId === selectedGame.id ? lib.runningPhase : null}
         autofocusPlay
+        cloudConfigured={lib.syncStatus.reachability !== 'unconfigured'}
+        onPullConflict={(id) => (lib.conflictGameId = id)}
       />
     </div>
     <div class="shrink-0 border-t border-line-1 bg-black/30 py-2" style:backdrop-filter="blur(12px)">
