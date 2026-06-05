@@ -1,9 +1,9 @@
 <script lang="ts">
   /**
-   * Install Game — guided repack installer (Linux).
+   * Install Game — guided Windows-installer flow (Linux).
    *
    * Flow:
-   *   1. Configure — pick the repack's setup.exe and confirm a game name
+   *   1. Configure — pick the installer's setup.exe and confirm a game name
    *      (seeds the host install folder under ~/.local/share/Spool/games).
    *   2. Installing — runs setup.exe through Proton/umu with that folder mounted
    *      as a Wine drive. The user installs into the shown drive letter; this
@@ -18,7 +18,7 @@
   import { listen } from '@tauri-apps/api/event';
   import { Folder, HardDrive, Loader2, Package, FileWarning } from '@lucide/svelte';
   import { api } from '$lib/api';
-  import type { SearchCandidate, RepackInstallResult, ProtonVersion } from '$lib/types';
+  import type { SearchCandidate, GuidedInstallResult, ProtonVersion } from '$lib/types';
   import AppChrome from '$lib/components/AppChrome.svelte';
   import MonoLabel from '$lib/components/MonoLabel.svelte';
   import Btn from '$lib/components/Btn.svelte';
@@ -48,7 +48,7 @@
 
   // Set once the installer finishes — carries the host install dir + the prefix
   // the game was installed into (forwarded to add_game).
-  let install = $state<RepackInstallResult | null>(null);
+  let install = $state<GuidedInstallResult | null>(null);
   // Populated early via the install:drive-ready event so the user sees the
   // drive letter before the installer command returns.
   let earlyDriveLetter = $state<string | null>(null);
@@ -72,7 +72,7 @@
   }
 
   /** Guess a game name from the setup.exe's parent folder, dropping the usual
-   *  repack tags like "[FitGirl Repack]" or "(v1.2)". */
+   *  bracketed tags like "[Deluxe Edition]" or "(v1.2)". */
   function guessName(setupPath: string): string {
     const folder = parentDir(setupPath);
     const raw = folder ? baseName(folder) : baseName(setupPath).replace(/\.[^.]+$/, '');
@@ -114,7 +114,7 @@
 
   async function pickSetup(closeOnCancel = false) {
     const result = await openDialog({
-      title: "Pick the repack's installer (setup.exe)",
+      title: 'Pick the installer (setup.exe)',
       multiple: false,
       filters: [
         { name: 'Installer', extensions: ['exe'] },
@@ -134,7 +134,7 @@
     error = null;
     stage = 'installing';
     try {
-      install = await api.runRepackInstaller(setupExe, gameName.trim(), undefined, selectedProton || undefined);
+      install = await api.runGuidedInstaller(setupExe, gameName.trim(), undefined, selectedProton || undefined);
       // Installer finished — pick the installed game exe.
       stage = 'detect';
       await pickGameExe();
@@ -231,12 +231,12 @@
   <main class="flex flex-1 flex-col overflow-hidden">
     <!-- Header -->
     <header class="px-6 pb-3 pt-5">
-      <MonoLabel size={10}>Spool · install repack</MonoLabel>
+      <MonoLabel size={10}>Spool · install game</MonoLabel>
       <h1 class="font-display mt-1.5 mb-1 text-[22px] font-bold leading-tight" style:letter-spacing="-0.02em">
         Install a game
       </h1>
       <p class="m-0 max-w-[540px] text-[12px] leading-relaxed text-ink-2">
-        Run a repack's <code class="font-mono">setup.exe</code> through Proton. Spool makes a clean
+        Run a Windows installer's <code class="font-mono">setup.exe</code> through Proton. Spool makes a clean
         install folder, mounts it into a Wine prefix as a drive, then adds the finished game to your
         library.
       </p>
@@ -263,7 +263,7 @@
               {setupExe ? baseName(setupExe) : 'No installer selected'}
             </div>
             <div class="font-mono mt-1 min-w-0 truncate text-[10.5px] tracking-[0.04em] text-ink-3">
-              {setupExe ?? 'Pick the setup.exe from the repack you downloaded.'}
+              {setupExe ?? "Pick the installer's setup.exe."}
             </div>
           </div>
           <Btn variant="ghost" onclick={() => pickSetup(false)}>
@@ -285,7 +285,7 @@
         <div class="rounded-md border border-line-1 bg-bg-1 px-3.5 py-3">
           <MonoLabel size={10}>Proton version</MonoLabel>
           <p class="m-0 mt-1 mb-2 text-[11.5px] leading-relaxed text-ink-3">
-            GE-Proton is recommended for repacks — it handles DLLs and codecs that stock Proton rejects.
+            GE-Proton is recommended — it handles DLLs and codecs that stock Proton rejects.
           </p>
           <Select bind:value={selectedProton} options={protonOptions} full />
         </div>
@@ -293,7 +293,7 @@
         <!-- GE-Proton not found warning -->
         {#if protonVersions.length > 0 && !hasGeProton}
           <div class="rounded-sm border border-warn/40 bg-warn/10 px-3.5 py-2.5 text-[12px] text-warn">
-            <span class="font-semibold">GE-Proton not found.</span> It's recommended for repacks.
+            <span class="font-semibold">GE-Proton not found.</span> It's recommended for these installers.
             Install it via <span class="font-mono">ProtonUp-Qt</span>, or copy a GE-Proton build into
             <span class="font-mono">~/.local/share/Steam/compatibilitytools.d/</span> and restart Spool.
           </div>

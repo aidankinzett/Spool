@@ -381,8 +381,8 @@ export type NewGame = {
   manifest_install_dir?: string | null;
   save_paths?: string[];
   game_folder_path?: string | null;
-  /** Wine prefix ROOT override (Linux) — set by the guided repack installer so
-   *  the game launches in the prefix it was installed into. */
+  /** Wine prefix ROOT override (Linux) — set by the guided Windows-installer
+   *  flow so the game launches in the prefix it was installed into. */
   wine_prefix_path?: string | null;
   /** Proton build dir used during install — pinned so launches use the same
    *  version the prefix was created with. */
@@ -390,10 +390,10 @@ export type NewGame = {
 };
 
 /**
- * Result of the guided repack installer (`run_repack_installer`). Mirrors the
- * Rust `RepackInstallResult` struct in src-tauri/src/repack_install.rs.
+ * Result of the guided Windows-installer flow (`run_guided_installer`). Mirrors
+ * the Rust `GuidedInstallResult` struct in src-tauri/src/guided_install.rs.
  */
-export type RepackInstallResult = {
+export type GuidedInstallResult = {
   install_dir: string;
   prefix_path: string;
   drive_letter: string;

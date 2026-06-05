@@ -18,7 +18,7 @@
 
   let { lib }: { lib: Library } = $props();
 
-  // The guided repack installer runs through Proton, so the button is Linux-only.
+  // The guided Windows-installer flow runs through Proton, so the button is Linux-only.
   let isLinux = $state(false);
   onMount(() => {
     api.appPlatform().then((p) => (isLinux = p === 'linux'));
@@ -249,7 +249,7 @@
               style:font-size="var(--text-base)"
             >
               <Package size={16} />
-              Install a repack
+              Install a game
             </button>
           {/if}
           <button

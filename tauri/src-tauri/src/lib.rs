@@ -34,6 +34,7 @@ mod config;
 mod error;
 mod gamemode;
 mod gamepad;
+mod guided_install;
 mod headless;
 mod lan;
 mod launcher;
@@ -48,7 +49,6 @@ mod proton;
 mod rclone;
 mod redirects;
 mod registry;
-mod repack_install;
 mod runner;
 mod session;
 mod size_backfill;
@@ -283,7 +283,7 @@ pub fn run() {
             // proton / linux launch
             proton::list_proton_versions,
             proton::install_proton_deps,
-            repack_install::run_repack_installer,
+            guided_install::run_guided_installer,
             // ludusavi
             ludusavi::search_games,
             ludusavi::search_by_exe,
