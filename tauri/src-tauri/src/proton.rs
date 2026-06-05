@@ -328,10 +328,10 @@ pub async fn install_proton_deps(
 ) -> AppResult<String> {
     // Snapshot from state, then drop guards before the long await.
     let (prefix_override, proton_override) = {
-        let library = app.state::<SharedLibrary>();
-        let lib = library.lock().map_err(|_| AppError::LockPoisoned)?;
-        let entry = lib
+        let entry = app
+            .state::<SharedLibrary>()
             .find(&game_id)
+            .await?
             .ok_or_else(|| AppError::Other(format!("game not found: {game_id}")))?;
         (
             entry.wine_prefix_path.clone(),

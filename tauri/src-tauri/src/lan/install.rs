@@ -1024,10 +1024,10 @@ async fn run_install(
 
     let new_id = uuid::Uuid::new_v4().to_string();
     let entry = {
-        let mut lib = library.lock().map_err(|_| AppError::LockPoisoned)?;
         let entry = GameEntry {
             id: new_id.clone(),
-            catalog_number: lib.next_catalog_number(),
+            // 0 → insert() assigns the next catalog number atomically.
+            catalog_number: 0,
             game_name: manifest.game_name.clone(),
             exe_path,
             safe_name: manifest.safe_name.clone(),
@@ -1048,9 +1048,7 @@ async fn run_install(
             lan_install_source_device_name: Some(manifest.source_device_name.clone()),
             ..GameEntry::default()
         };
-        lib.entries.push(entry.clone());
-        lib.save()?;
-        entry
+        library.insert(entry).await?
     };
 
     on_library_changed(&entry.id);
@@ -1100,21 +1098,12 @@ async fn fetch_peer_artwork(
         None
     };
 
-    let library = app.state::<SharedLibrary>();
-    if let Ok(mut lib) = library.lock() {
-        if let Some(entry) = lib.entries.iter_mut().find(|e| e.id == new_game_id) {
-            if let Some(p) = &cover_path {
-                entry.cover_image_path = Some(p.to_string_lossy().to_string());
-            }
-            if let Some(p) = &hero_path {
-                entry.hero_image_path = Some(p.to_string_lossy().to_string());
-            }
-            if let Some(a) = accent {
-                entry.accent_color = Some(a);
-            }
-        }
-        let _ = lib.save();
-    }
+    let cover = cover_path.as_ref().map(|p| p.to_string_lossy().to_string());
+    let hero = hero_path.as_ref().map(|p| p.to_string_lossy().to_string());
+    let _ = app
+        .state::<SharedLibrary>()
+        .set_art(new_game_id, cover.as_deref(), hero.as_deref(), accent.as_deref())
+        .await;
     let _ = app.emit("library:changed", &new_game_id.to_string());
     cover_path.is_some()
 }

@@ -129,13 +129,11 @@ pub async fn fetch_and_save_metadata(app: &AppHandle, game_id: &str) -> AppResul
 
     // Snapshot the steam_id — bail before any network if there's nothing
     // to look up.
-    let steam_id = {
-        let lib = library.lock().map_err(|_| AppError::LockPoisoned)?;
-        let entry = lib
-            .find(game_id)
-            .ok_or_else(|| AppError::Other(format!("game not found: {game_id}")))?;
-        entry.steam_id
-    };
+    let steam_id = library
+        .find(game_id)
+        .await?
+        .ok_or_else(|| AppError::Other(format!("game not found: {game_id}")))?
+        .steam_id;
     let Some(steam_id) = steam_id else {
         return Ok(false);
     };
@@ -144,16 +142,19 @@ pub async fn fetch_and_save_metadata(app: &AppHandle, game_id: &str) -> AppResul
         return Ok(false);
     };
 
-    // Apply to the entry (only empty fields) + persist.
-    let applied = {
-        let mut lib = library.lock().map_err(|_| AppError::LockPoisoned)?;
-        if let Some(entry) = lib.entries.iter_mut().find(|e| e.id == game_id) {
-            let changed = apply_to_entry(entry, &meta);
-            if changed {
-                lib.save()?;
+    // Re-read the entry (it may have changed during the network call), apply
+    // only the empty fields, and persist just those fields.
+    let applied = match library.find(game_id).await? {
+        Some(mut entry) => {
+            if apply_to_entry(&mut entry, &meta) {
+                library
+                    .update_fields(game_id, &metadata_fields(&entry))
+                    .await?
+            } else {
+                false
             }
-            changed
-        } else {
+        }
+        None => {
             tracing::warn!(game_id, "metadata fetched but library entry gone; skipping");
             false
         }
@@ -263,6 +264,23 @@ pub fn apply_to_entry(entry: &mut GameEntry, meta: &GameMetadata) -> bool {
         changed = true;
     }
     changed
+}
+
+/// The JSON field tuples for the metadata [`apply_to_entry`] fills, used to
+/// persist just those fields atomically via `Library::update_fields` (so a
+/// concurrent playtime/backup write isn't clobbered).
+pub fn metadata_fields(entry: &GameEntry) -> Vec<(&'static str, serde_json::Value)> {
+    use serde_json::json;
+    vec![
+        ("description", json!(entry.description)),
+        ("developer", json!(entry.developer)),
+        ("publisher", json!(entry.publisher)),
+        ("genres", json!(entry.genres)),
+        (
+            "release_date",
+            serde_json::to_value(entry.release_date).unwrap_or(serde_json::Value::Null),
+        ),
+    ]
 }
 
 /// Strips a small set of HTML tags/entities Steam sometimes leaves in

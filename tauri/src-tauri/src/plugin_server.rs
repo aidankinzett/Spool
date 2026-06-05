@@ -31,7 +31,7 @@ use axum::{
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpListener;
 use tower_http::{cors::CorsLayer, services::ServeDir};
@@ -46,6 +46,12 @@ use tower_http::{cors::CorsLayer, services::ServeDir};
 #[derive(Clone)]
 struct PluginState {
     ludusavi: Arc<LudusaviClient>,
+    /// The game library, backed by the shared SQLite database — opened once
+    /// here rather than reloaded per request. Because every write goes to the
+    /// same DB (in WAL mode), the running GUI's changes are visible to every
+    /// request without a reload, which is what the old per-request
+    /// `Library::load()` was emulating.
+    library: crate::library::SharedLibrary,
     /// Discovered LAN peers, kept fresh by a background listener spawned in
     /// `serve`. The Decky UI reads it via `GET /lan/peers`.
     lan: Arc<LanState>,
@@ -61,8 +67,22 @@ struct PluginState {
 /// Start the plugin loopback HTTP server and run until killed.
 /// Called from `lib.rs::run_headless_server`.
 pub async fn serve() -> AppResult<()> {
+    let library = match Library::open().await {
+        Ok(l) => Arc::new(l),
+        Err(e) => {
+            // An empty in-memory library keeps the server responsive rather
+            // than refusing to start; library reads just come back empty.
+            tracing::error!(error = %e, "plugin server: failed to open library DB; using empty in-memory library");
+            Arc::new(
+                Library::open_in_memory()
+                    .await
+                    .expect("in-memory library must open"),
+            )
+        }
+    };
     let state = PluginState {
         ludusavi: Arc::new(LudusaviClient::new()),
+        library,
         lan: Arc::new(LanState::new()),
         http: reqwest::Client::new(),
         download: Arc::new(LanDownloadState::default()),
@@ -246,13 +266,12 @@ async fn post_fold() -> Json<Value> {
     Json(json!({ "changed": changed }))
 }
 
-async fn get_library() -> Json<Value> {
-    let library = Library::load().unwrap_or_default();
+async fn get_library(AxState(state): AxState<PluginState>) -> Json<Value> {
+    let entries = state.library.list().await.unwrap_or_default();
     let spool_exe = crate::paths::spool_executable()
         .or_else(|| std::env::current_exe().ok())
         .map(|p| p.to_string_lossy().to_string());
-    let entries: Vec<Value> = library
-        .entries
+    let entries: Vec<Value> = entries
         .iter()
         .map(|entry| {
             let mut v = serde_json::to_value(entry).unwrap_or(Value::Null);
@@ -270,10 +289,11 @@ async fn get_library() -> Json<Value> {
 /// Mirrors the desktop `delete_game_from_disk` command. Loads the library
 /// fresh (the GUI may also be running), applies the same folder-safety guards,
 /// and saves atomically. Returns `{ ok: true }` on success.
-async fn delete_game(AxPath(id): AxPath<String>) -> Result<Json<Value>, StatusCode> {
-    let library: crate::library::SharedLibrary =
-        Arc::new(Mutex::new(Library::load().unwrap_or_default()));
-    match crate::library::delete_game_core(&library, &id).await {
+async fn delete_game(
+    AxState(state): AxState<PluginState>,
+    AxPath(id): AxPath<String>,
+) -> Result<Json<Value>, StatusCode> {
+    match crate::library::delete_game_core(&state.library, &id).await {
         Ok(()) => Ok(Json(json!({ "ok": true }))),
         Err(e) => {
             tracing::warn!(game_id = %id, error = %e, "plugin: delete_game failed");
@@ -291,10 +311,15 @@ async fn delete_game(AxPath(id): AxPath<String>) -> Result<Json<Value>, StatusCo
 /// creation so it can use the live API (no Steam restart) and the appid Steam
 /// returns.
 async fn get_steam_launch_info(
+    AxState(state): AxState<PluginState>,
     AxPath(id): AxPath<String>,
 ) -> Result<Json<Value>, StatusCode> {
-    let library = Library::load().unwrap_or_default();
-    let entry = library.find(&id).ok_or(StatusCode::NOT_FOUND)?;
+    let entry = state
+        .library
+        .find(&id)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .ok_or(StatusCode::NOT_FOUND)?;
 
     let spool_exe = crate::paths::spool_executable().ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
     let start_dir = spool_exe
@@ -321,8 +346,12 @@ async fn get_steam_art(
     AxState(state): AxState<PluginState>,
     AxPath((id, kind)): AxPath<(String, String)>,
 ) -> Result<Json<Value>, StatusCode> {
-    let library = Library::load().unwrap_or_default();
-    let entry = library.find(&id).ok_or(StatusCode::NOT_FOUND)?;
+    let entry = state
+        .library
+        .find(&id)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .ok_or(StatusCode::NOT_FOUND)?;
 
     // Portrait/capsule and hero are kept on disk (downloaded during "Add game"
     // / LAN install), so serve them straight from the file — no SteamGridDB
@@ -417,11 +446,11 @@ struct InstallDepsRequest {
 /// blocking spinner and uses a generous client timeout. Returns
 /// `{ ok: true, message }` on success or `{ ok: false, reason }` on failure.
 async fn post_install_deps(
+    AxState(state): AxState<PluginState>,
     AxPath(id): AxPath<String>,
     Json(body): Json<InstallDepsRequest>,
 ) -> Json<Value> {
-    let library = Library::load().unwrap_or_default();
-    let Some(entry) = library.find(&id) else {
+    let Some(entry) = state.library.find(&id).await.ok().flatten() else {
         return Json(json!({ "ok": false, "reason": "game not in library" }));
     };
     let prefix_override = entry.wine_prefix_path.clone();
@@ -474,26 +503,29 @@ struct SetProtonRequest {
 /// desktop edit page's `update_game` does for this one field. An empty or
 /// absent path clears the override. Returns `{ ok: true }` on success.
 async fn post_set_proton(
+    AxState(state): AxState<PluginState>,
     AxPath(id): AxPath<String>,
     Json(body): Json<SetProtonRequest>,
 ) -> Json<Value> {
-    let mut library = Library::load().unwrap_or_default();
-    let Some(entry) = library.entries.iter_mut().find(|e| e.id == id) else {
-        return Json(json!({ "ok": false, "reason": "game not in library" }));
-    };
-
     let trimmed = body
         .proton_version_path
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty());
-    entry.proton_version_path = trimmed.map(str::to_string);
+    let value = trimmed
+        .map(|s| Value::String(s.to_string()))
+        .unwrap_or(Value::Null);
 
-    match library.save() {
-        Ok(()) => {
+    match state
+        .library
+        .update_fields(&id, &[("proton_version_path", value)])
+        .await
+    {
+        Ok(true) => {
             tracing::info!(game_id = %id, proton = ?trimmed, "plugin: set proton version");
             Json(json!({ "ok": true }))
         }
+        Ok(false) => Json(json!({ "ok": false, "reason": "game not in library" })),
         Err(e) => {
             tracing::warn!(game_id = %id, error = %e, "plugin: set proton version failed");
             Json(json!({ "ok": false, "reason": e.to_string() }))
@@ -596,11 +628,6 @@ async fn post_lan_install(
     };
     let max_bps = config.lan.download_max_mbps * 1_000_000.0 / 8.0;
 
-    // Load the library fresh for this install; the install task writes back
-    // via its own Arc<Mutex<Library>> clone and saves atomically.
-    let library: crate::library::SharedLibrary =
-        Arc::new(Mutex::new(Library::load().unwrap_or_default()));
-
     let token = crate::lan::install::begin_install(
         body.peer_addr,
         body.peer_port,
@@ -611,7 +638,7 @@ async fn post_lan_install(
         Arc::new(|_| {}),
         max_bps,
         install_root,
-        library,
+        state.library.clone(),
         // No library:changed Tauri event in the headless server.
         Arc::new(|_| {}),
         None,
@@ -666,20 +693,7 @@ async fn run_backup(state: &PluginState, game_name: &str, session_id: &str) -> J
     let config = crate::config::Config::load().unwrap_or_default();
     let config_dir = crate::paths::ludusavi_config_dir();
 
-    let library = Library::load().unwrap_or_default();
-    let library = Arc::new(Mutex::new(library));
-
-    let game_id = library
-        .lock()
-        .ok()
-        .and_then(|lib| {
-            lib.entries
-                .iter()
-                .find(|e| e.game_name == game_name)
-                .map(|e| e.id.clone())
-        });
-
-    let Some(game_id) = game_id else {
+    let Some(game_id) = state.library.find_id_by_name(game_name).await.ok().flatten() else {
         tracing::error!(name = %game_name, "plugin backup: game not in library");
         return Json(json!({ "acted": true, "ok": false, "reason": "game not in library" }));
     };
@@ -688,7 +702,7 @@ async fn run_backup(state: &PluginState, game_name: &str, session_id: &str) -> J
         state.ludusavi.as_ref(),
         &ludusavi_exe,
         &config_dir,
-        &library,
+        &state.library,
         &game_id,
     )
     .await

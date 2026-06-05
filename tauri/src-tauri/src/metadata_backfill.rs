@@ -31,18 +31,16 @@ pub fn spawn_backfill(app: AppHandle) {
 async fn run_backfill(app: AppHandle) {
     // Snapshot entries that have a steam_id but are missing the headline
     // metadata fields. Drop the lock before any network work.
-    let library_state = app.state::<SharedLibrary>();
-    let todo: Vec<(String, u64)> = {
-        let lib = match library_state.lock() {
-            Ok(g) => g,
-            Err(_) => return,
-        };
-        lib.entries
-            .iter()
-            .filter(|e| e.description.is_empty() || e.developer.is_empty())
-            .filter_map(|e| e.steam_id.map(|sid| (e.id.clone(), sid)))
-            .collect()
+    let library = app.state::<SharedLibrary>().inner().clone();
+    let entries = match library.list().await {
+        Ok(e) => e,
+        Err(_) => return,
     };
+    let todo: Vec<(String, u64)> = entries
+        .iter()
+        .filter(|e| e.description.is_empty() || e.developer.is_empty())
+        .filter_map(|e| e.steam_id.map(|sid| (e.id.clone(), sid)))
+        .collect();
     if todo.is_empty() {
         return;
     }
@@ -66,29 +64,24 @@ async fn run_backfill(app: AppHandle) {
         return;
     }
 
-    // Apply + save once. Re-resolve by id since the library may have
-    // been mutated by add/remove during our run.
-    let library_state = app.state::<SharedLibrary>();
-    let applied = {
-        let mut lib = match library_state.lock() {
-            Ok(g) => g,
-            Err(_) => return,
+    // Apply. Re-resolve by id (the library may have been mutated during our
+    // run) and persist only the metadata fields so concurrent runtime writes
+    // aren't clobbered.
+    let mut applied = 0;
+    for (id, meta) in &results {
+        let Some(mut entry) = library.find(id).await.ok().flatten() else {
+            continue;
         };
-        let mut applied = 0;
-        for (id, meta) in &results {
-            if let Some(entry) = lib.entries.iter_mut().find(|e| &e.id == id) {
-                if apply_to_entry(entry, meta) {
-                    applied += 1;
-                }
+        if apply_to_entry(&mut entry, meta) {
+            match library
+                .update_fields(id, &crate::metadata::metadata_fields(&entry))
+                .await
+            {
+                Ok(_) => applied += 1,
+                Err(e) => tracing::warn!(error = %e, "metadata backfill: update failed"),
             }
         }
-        if applied > 0 {
-            if let Err(e) = lib.save() {
-                tracing::warn!(error = %e, "metadata backfill: library save failed");
-            }
-        }
-        applied
-    };
+    }
     tracing::info!(applied, "metadata backfill: done");
 
     if applied > 0 {

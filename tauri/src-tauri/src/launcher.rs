@@ -58,20 +58,18 @@ const LAUNCHER_STUB: &[u8] = include_bytes!("../launcher_stub.exe");
 ///   - game id not found → `AppError::Other`
 ///   - filesystem failure (mkdir / write / append) → `AppError::Io`
 #[tauri::command]
-pub fn generate_armoury_launcher(
+pub async fn generate_armoury_launcher(
     app: AppHandle,
     library: State<'_, SharedLibrary>,
     config: State<'_, SharedConfig>,
     game_id: String,
 ) -> AppResult<String> {
-    // Snapshot inputs before any I/O so we drop the locks fast and
-    // don't hold them across filesystem ops.
+    // Snapshot inputs before any I/O so we don't hold the config lock across
+    // filesystem ops.
     let (game_name, exe_path, safe_name) = {
-        let lib = library.lock().map_err(|_| AppError::LockPoisoned)?;
-        let entry = lib
-            .entries
-            .iter()
-            .find(|e| e.id == game_id)
+        let entry = library
+            .find(&game_id)
+            .await?
             .ok_or_else(|| AppError::Other(format!("game not found: {game_id}")))?;
         let safe = if entry.safe_name.is_empty() {
             make_safe_filename(&entry.game_name)
@@ -108,14 +106,13 @@ pub fn generate_armoury_launcher(
 
     let path_str = dest.to_string_lossy().to_string();
 
-    // Update the library entry + persist.
-    {
-        let mut lib = library.lock().map_err(|_| AppError::LockPoisoned)?;
-        if let Some(entry) = lib.entries.iter_mut().find(|e| e.id == game_id) {
-            entry.launcher_exe_path = Some(path_str.clone());
-        }
-        lib.save()?;
-    }
+    // Update the library entry's launcher path.
+    library
+        .update_fields(
+            &game_id,
+            &[("launcher_exe_path", serde_json::json!(path_str))],
+        )
+        .await?;
     if let Err(e) = app.emit("library:changed", &game_id) {
         tracing::warn!(error = %e, "library:changed emit failed after launcher generation");
     }

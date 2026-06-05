@@ -1,15 +1,32 @@
 //! Persistent game library — the heart of the app.
 //!
-//! The on-disk format intentionally mirrors the existing C# `library.json`
-//! produced by the WPF app, field-name for field-name, so an existing user's
-//! library loads without migration. All fields use [`serde(default)`] so older
-//! libraries missing newer fields still parse cleanly.
+//! Stored in a SQLite database (`library.db`) accessed through [`sqlx`]. SQLite
+//! is used instead of a single JSON document because several Spool processes
+//! write the library concurrently — the tray GUI, the per-launch attached
+//! `spool --run` instance, and the headless Decky server. Whole-document JSON
+//! rewrites made those processes clobber each other (last-writer-wins lost
+//! updates); SQLite in WAL mode serialises writers and lets each write touch
+//! only the fields it owns.
+//!
+//! Each game is one row: `id`, `catalog_number`, `game_name`, and a `data`
+//! column holding the whole [`GameEntry`] as JSON. Reads deserialise `data`,
+//! so adding a `GameEntry` field needs no schema migration — old rows still
+//! parse via `serde(default)`, exactly as the old `library.json` did. Targeted
+//! writes use SQLite's `json_set()` to update individual fields atomically, so
+//! a playtime bump in one process can't overwrite a name edit in another.
+//!
+//! On first run the legacy `library.json` is imported once (then renamed to
+//! `library.json.migrated` as a backup) — see [`Library::open`].
 
 use crate::error::{AppError, AppResult};
 use crate::paths;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::sync::{Arc, Mutex};
+use serde_json::{json, Value};
+use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
+use sqlx::{Row, SqlitePool};
+use std::sync::Arc;
+use std::time::Duration;
 use tauri::{AppHandle, Emitter, State};
 
 /// One game in the library. Matches the C# `GameEntry` JSON shape exactly
@@ -22,7 +39,8 @@ pub struct GameEntry {
     /// Sequential shelf catalog number, formatted as `SPL-NNNN` in the UI.
     /// Assigned at add-time and stable for the entry's lifetime; deleting a
     /// game leaves a gap rather than reusing the number. Zero means "not yet
-    /// assigned" — `Library::load` backfills these for legacy entries.
+    /// assigned" — assigned by `Library::insert`, and backfilled for legacy
+    /// entries during the one-time `library.json` import.
     pub catalog_number: u32,
     pub game_name: String,
     pub exe_path: String,
@@ -224,87 +242,406 @@ pub struct NewGame {
     pub proton_version_path: Option<String>,
 }
 
-/// In-memory library, loaded once at startup and held behind a [`Mutex`] in
-/// Tauri state. CRUD methods will grow here as the app surface expands.
-#[derive(Debug, Default)]
+/// JSON paths (under `$.`) of the fields that are owned by the running
+/// workflow / background tasks rather than the game editor: playtime, backup
+/// stats, sync badges, and system-derived art/size. A whole-entry [`replace`]
+/// (the editor's "save") must NOT overwrite these, because another process
+/// (an attached `--run` launch bumping playtime, say) may be writing them at
+/// the same time — clobbering them is the exact multi-process lost update the
+/// SQLite move exists to prevent. [`Library::replace`] re-overlays these from
+/// the existing row so only the editor-owned fields change.
+///
+/// [`replace`]: Library::replace
+const RUNTIME_FIELDS: &[&str] = &[
+    "last_played_at",
+    "playtime_minutes",
+    "save_backup_count",
+    "save_last_backed_up_at",
+    "save_backup_size_mb",
+    "sync_badge",
+    "cloud_sync_baseline",
+    "save_last_backer_device",
+    "save_cloud_revision_at",
+    "accent_color",
+    "install_size_mb",
+    "cover_image_path",
+    "hero_image_path",
+];
+
+/// The game library, backed by a SQLite connection pool. Cheap to clone the
+/// pool (it's an `Arc` internally); the whole `Library` is wrapped in an
+/// [`Arc`] as [`SharedLibrary`] so spawned tasks can hold a handle.
+#[derive(Clone)]
 pub struct Library {
-    pub entries: Vec<GameEntry>,
+    pool: SqlitePool,
 }
 
 impl Library {
-    /// Loads from disk. Missing file → empty library; corrupt file → error.
-    /// Backfills sequential `catalog_number`s for any entries missing one
-    /// (legacy data from before the field existed) and persists if so.
-    pub fn load() -> AppResult<Self> {
-        let path = paths::library_file();
-        if !path.exists() {
-            return Ok(Self::default());
-        }
-        let json = std::fs::read_to_string(&path)?;
-        let entries: Vec<GameEntry> = serde_json::from_str(&json)?;
-        let mut lib = Self { entries };
-        if lib.backfill_catalog_numbers() {
-            let _ = lib.save();
-        }
-        Ok(lib)
-    }
-
-    /// Returns the next catalog number to assign to a new entry. Numbers are
-    /// monotonically increasing; gaps from deletions are preserved.
-    pub fn next_catalog_number(&self) -> u32 {
-        self.entries.iter().map(|e| e.catalog_number).max().unwrap_or(0) + 1
-    }
-
-    /// Assigns sequential catalog numbers to any entries that don't have one.
-    /// Preserves existing assignments. Returns true if any entry was modified.
-    fn backfill_catalog_numbers(&mut self) -> bool {
-        let mut next = self
-            .entries
-            .iter()
-            .map(|e| e.catalog_number)
-            .max()
-            .unwrap_or(0);
-        let mut changed = false;
-        for entry in &mut self.entries {
-            if entry.catalog_number == 0 {
-                next += 1;
-                entry.catalog_number = next;
-                changed = true;
-            }
-        }
-        changed
-    }
-
-    /// Atomic save: write to a temp file then rename, keeping a `.bak` of the
-    /// previous contents. Mirrors the C# implementation's safety guarantees.
-    pub fn save(&self) -> AppResult<()> {
-        let path = paths::library_file();
+    /// Opens (creating if absent) the library database at [`paths::library_db`],
+    /// sets up the schema, and — on a fresh DB — imports the legacy
+    /// `library.json` once, renaming it to `library.json.migrated` afterward.
+    pub async fn open() -> AppResult<Self> {
+        let path = paths::library_db();
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let tmp = path.with_extension("json.tmp");
-        let json = serde_json::to_string_pretty(&self.entries)?;
-        std::fs::write(&tmp, json)?;
+        let opts = SqliteConnectOptions::new()
+            .filename(&path)
+            .create_if_missing(true)
+            // WAL lets concurrent Spool processes read while one writes, and a
+            // busy_timeout makes a writer wait for the lock instead of erroring.
+            .journal_mode(SqliteJournalMode::Wal)
+            .busy_timeout(Duration::from_secs(5));
+        let pool = SqlitePoolOptions::new()
+            .max_connections(5)
+            .connect_with(opts)
+            .await?;
+        let lib = Self { pool };
+        lib.init_schema().await?;
+        lib.import_json_if_needed().await?;
+        Ok(lib)
+    }
 
-        if path.exists() {
-            let bak = path.with_extension("json.bak");
-            let _ = std::fs::rename(&path, &bak);
+    /// In-memory database — used as a graceful fallback when the on-disk DB
+    /// can't be opened, and by unit tests. A single connection so all queries
+    /// see the same memory DB.
+    pub async fn open_in_memory() -> AppResult<Self> {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await?;
+        let lib = Self { pool };
+        lib.init_schema().await?;
+        Ok(lib)
+    }
+
+    /// Creates the `games` + `meta` tables and the triggers that bump
+    /// `meta.version` on every games mutation. Idempotent (`IF NOT EXISTS`).
+    async fn init_schema(&self) -> AppResult<()> {
+        // `data` holds the full GameEntry JSON; `id`/`catalog_number`/`game_name`
+        // are mirrored as columns for cheap lookups and ordering.
+        let stmts = [
+            "CREATE TABLE IF NOT EXISTS games (
+                 id TEXT PRIMARY KEY NOT NULL,
+                 catalog_number INTEGER NOT NULL,
+                 game_name TEXT NOT NULL,
+                 data TEXT NOT NULL
+             )",
+            "CREATE TABLE IF NOT EXISTS meta (
+                 k TEXT PRIMARY KEY NOT NULL,
+                 v INTEGER NOT NULL
+             )",
+            "INSERT OR IGNORE INTO meta (k, v) VALUES ('version', 0)",
+            // `meta.version` is the cross-process change signal: the GUI polls
+            // it to notice writes made by other Spool processes (Tauri events
+            // don't cross process boundaries). Triggers bump it on any change.
+            "CREATE TRIGGER IF NOT EXISTS games_version_ai AFTER INSERT ON games
+             BEGIN UPDATE meta SET v = v + 1 WHERE k = 'version'; END",
+            "CREATE TRIGGER IF NOT EXISTS games_version_au AFTER UPDATE ON games
+             BEGIN UPDATE meta SET v = v + 1 WHERE k = 'version'; END",
+            "CREATE TRIGGER IF NOT EXISTS games_version_ad AFTER DELETE ON games
+             BEGIN UPDATE meta SET v = v + 1 WHERE k = 'version'; END",
+        ];
+        for sql in stmts {
+            sqlx::query(sql).execute(&self.pool).await?;
         }
-        std::fs::rename(&tmp, &path)?;
         Ok(())
     }
 
-    /// Locates an entry by id without removing it.
-    pub fn find(&self, id: &str) -> Option<&GameEntry> {
-        self.entries.iter().find(|e| e.id == id)
+    /// One-time import of the legacy `library.json`. No-op when the DB already
+    /// has games or there's no JSON file. On success the JSON is renamed to
+    /// `library.json.migrated` so it survives as a manual rollback backup.
+    async fn import_json_if_needed(&self) -> AppResult<()> {
+        let existing: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM games")
+            .fetch_one(&self.pool)
+            .await?;
+        if existing > 0 {
+            return Ok(());
+        }
+        let path = paths::library_file();
+        if !path.exists() {
+            return Ok(());
+        }
+        let json = std::fs::read_to_string(&path)?;
+        let mut entries: Vec<GameEntry> = serde_json::from_str(&json)?;
+        backfill_catalog_numbers(&mut entries);
+
+        let mut tx = self.pool.begin().await?;
+        for entry in &entries {
+            let data = serde_json::to_string(entry)?;
+            sqlx::query(
+                "INSERT INTO games (id, catalog_number, game_name, data) VALUES (?1, ?2, ?3, ?4)",
+            )
+            .bind(&entry.id)
+            .bind(entry.catalog_number as i64)
+            .bind(&entry.game_name)
+            .bind(&data)
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
+
+        let migrated = path.with_extension("json.migrated");
+        if let Err(e) = std::fs::rename(&path, &migrated) {
+            tracing::warn!(error = %e, "library import: couldn't rename library.json to .migrated");
+        }
+        tracing::info!(count = entries.len(), "imported library.json into SQLite");
+        Ok(())
+    }
+
+    /// All games, ordered by catalog number (their stable shelf order).
+    pub async fn list(&self) -> AppResult<Vec<GameEntry>> {
+        let rows = sqlx::query("SELECT data FROM games ORDER BY catalog_number")
+            .fetch_all(&self.pool)
+            .await?;
+        let mut out = Vec::with_capacity(rows.len());
+        for row in rows {
+            let data: String = row.get("data");
+            out.push(serde_json::from_str(&data)?);
+        }
+        Ok(out)
+    }
+
+    /// One game by id, or `None` if absent.
+    pub async fn find(&self, id: &str) -> AppResult<Option<GameEntry>> {
+        let row = sqlx::query("SELECT data FROM games WHERE id = ?1")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?;
+        match row {
+            Some(row) => {
+                let data: String = row.get("data");
+                Ok(Some(serde_json::from_str(&data)?))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// The id of the first game with an exact `game_name` match.
+    pub async fn find_id_by_name(&self, name: &str) -> AppResult<Option<String>> {
+        let row = sqlx::query("SELECT id FROM games WHERE game_name = ?1 LIMIT 1")
+            .bind(name)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row.map(|r| r.get::<String, _>("id")))
+    }
+
+    /// Number of games in the library.
+    pub async fn count(&self) -> AppResult<usize> {
+        let c: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM games")
+            .fetch_one(&self.pool)
+            .await?;
+        Ok(c as usize)
+    }
+
+    /// Current value of the `meta.version` counter — bumped by every games
+    /// mutation (including ones made by other processes). The GUI polls this
+    /// to refresh after an external write.
+    pub async fn version(&self) -> AppResult<i64> {
+        let v: i64 = sqlx::query_scalar("SELECT v FROM meta WHERE k = 'version'")
+            .fetch_one(&self.pool)
+            .await?;
+        Ok(v)
+    }
+
+    /// Inserts a new entry. When `catalog_number` is 0 it's assigned
+    /// `max + 1` inside the transaction so concurrent adds don't collide.
+    /// Returns the stored entry (with its assigned catalog number).
+    pub async fn insert(&self, mut entry: GameEntry) -> AppResult<GameEntry> {
+        let mut tx = self.pool.begin().await?;
+        if entry.catalog_number == 0 {
+            let max: Option<i64> = sqlx::query_scalar("SELECT MAX(catalog_number) FROM games")
+                .fetch_one(&mut *tx)
+                .await?;
+            entry.catalog_number = (max.unwrap_or(0) as u32) + 1;
+        }
+        let data = serde_json::to_string(&entry)?;
+        sqlx::query("INSERT INTO games (id, catalog_number, game_name, data) VALUES (?1, ?2, ?3, ?4)")
+            .bind(&entry.id)
+            .bind(entry.catalog_number as i64)
+            .bind(&entry.game_name)
+            .bind(&data)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(entry)
+    }
+
+    /// Replaces an entry from the editor. Writes every editor-owned field but
+    /// re-overlays the [`RUNTIME_FIELDS`] from the existing row, so a
+    /// concurrent playtime/backup/sync write from another process is preserved.
+    /// Atomic: a single `UPDATE` whose `json_set` reads the old row's runtime
+    /// values. Returns `false` if no row matched the id.
+    pub async fn replace(&self, entry: &GameEntry) -> AppResult<bool> {
+        let base = serde_json::to_string(entry)?;
+        // Build json_set(?1, '$.f', json_extract(data,'$.f'), …) nesting so the
+        // incoming blob (?1) keeps the existing row's runtime field values.
+        let mut expr = "?1".to_string();
+        for f in RUNTIME_FIELDS {
+            expr = format!("json_set({expr}, '$.{f}', json_extract(data, '$.{f}'))");
+        }
+        let sql = format!("UPDATE games SET game_name = ?2, data = {expr} WHERE id = ?3");
+        let res = sqlx::query(&sql)
+            .bind(&base)
+            .bind(&entry.game_name)
+            .bind(&entry.id)
+            .execute(&self.pool)
+            .await?;
+        Ok(res.rows_affected() > 0)
+    }
+
+    /// Removes an entry by id. Returns whether a row was deleted.
+    pub async fn remove(&self, id: &str) -> AppResult<bool> {
+        let res = sqlx::query("DELETE FROM games WHERE id = ?1")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(res.rows_affected() > 0)
+    }
+
+    /// Atomically sets one or more JSON fields on a single entry, leaving every
+    /// other field (in particular the runtime counters other processes write)
+    /// untouched. Each value is round-tripped through `json()` so numbers,
+    /// strings, arrays and null all land with their proper JSON type. Returns
+    /// whether a row matched.
+    pub async fn update_fields(&self, id: &str, fields: &[(&str, Value)]) -> AppResult<bool> {
+        if fields.is_empty() {
+            return Ok(false);
+        }
+        // data is wrapped left-to-right: json_set(json_set(data,'$.a',?2),'$.b',?3)…
+        let mut expr = "data".to_string();
+        for (i, (path, _)) in fields.iter().enumerate() {
+            let p = i + 2; // ?1 is the id
+            expr = format!("json_set({expr}, '$.{path}', json(?{p}))");
+        }
+        let sql = format!("UPDATE games SET data = {expr} WHERE id = ?1");
+        let mut q = sqlx::query(&sql).bind(id);
+        for (_, v) in fields {
+            q = q.bind(serde_json::to_string(v)?);
+        }
+        let res = q.execute(&self.pool).await?;
+        Ok(res.rows_affected() > 0)
+    }
+
+    /// Records a finished play session: adds `minutes` to playtime and sets
+    /// `last_played_at`. The increment is done in SQL so two processes can't
+    /// lose each other's minutes.
+    pub async fn bump_session(
+        &self,
+        id: &str,
+        last_played: DateTime<Utc>,
+        minutes: i32,
+    ) -> AppResult<bool> {
+        let sql = "UPDATE games SET data = json_set(
+                data,
+                '$.playtime_minutes', COALESCE(json_extract(data, '$.playtime_minutes'), 0) + ?2,
+                '$.last_played_at', json(?3)
+             ) WHERE id = ?1";
+        let res = sqlx::query(sql)
+            .bind(id)
+            .bind(minutes as i64)
+            .bind(serde_json::to_string(&last_played)?)
+            .execute(&self.pool)
+            .await?;
+        Ok(res.rows_affected() > 0)
+    }
+
+    /// Persists post-backup stats. `size_mb` is optional — `None` leaves the
+    /// existing recorded size in place (the refresh-only path doesn't know it).
+    pub async fn record_backup_stats(
+        &self,
+        id: &str,
+        count: i32,
+        last_at: Option<DateTime<Utc>>,
+        size_mb: Option<f64>,
+    ) -> AppResult<bool> {
+        let mut fields = vec![
+            ("save_backup_count", json!(count)),
+            ("save_last_backed_up_at", serde_json::to_value(last_at)?),
+        ];
+        if let Some(mb) = size_mb {
+            fields.push(("save_backup_size_mb", json!(mb)));
+        }
+        self.update_fields(id, &fields).await
+    }
+
+    /// Sets the cross-device sync badge ("synced" / "local-newer" / …).
+    pub async fn set_sync_badge(&self, id: &str, badge: &str) -> AppResult<bool> {
+        self.update_fields(id, &[("sync_badge", json!(badge))]).await
+    }
+
+    /// Records the cloud-sync merge-base for fast-forward vs. divergence
+    /// detection.
+    pub async fn set_cloud_baseline(&self, id: &str, tip: &str) -> AppResult<bool> {
+        self.update_fields(id, &[("cloud_sync_baseline", json!(tip))])
+            .await
+    }
+
+    /// Updates any of cover path / hero path / accent colour that are `Some`.
+    pub async fn set_art(
+        &self,
+        id: &str,
+        cover: Option<&str>,
+        hero: Option<&str>,
+        accent: Option<&str>,
+    ) -> AppResult<bool> {
+        let mut fields = Vec::new();
+        if let Some(c) = cover {
+            fields.push(("cover_image_path", json!(c)));
+        }
+        if let Some(h) = hero {
+            fields.push(("hero_image_path", json!(h)));
+        }
+        if let Some(a) = accent {
+            fields.push(("accent_color", json!(a)));
+        }
+        self.update_fields(id, &fields).await
+    }
+
+    /// Sets the accent colour only if the entry doesn't already have one — so a
+    /// concurrent SteamGridDB refresh that already set it isn't overwritten by
+    /// the startup backfill.
+    pub async fn set_accent_if_empty(&self, id: &str, color: &str) -> AppResult<bool> {
+        let sql = "UPDATE games SET data = json_set(data, '$.accent_color', ?2)
+                   WHERE id = ?1 AND json_extract(data, '$.accent_color') IS NULL";
+        let res = sqlx::query(sql)
+            .bind(id)
+            .bind(color)
+            .execute(&self.pool)
+            .await?;
+        Ok(res.rows_affected() > 0)
+    }
+
+    /// Sets the install size only if the entry doesn't already have one (> 0).
+    pub async fn set_install_size_if_empty(&self, id: &str, mb: f64) -> AppResult<bool> {
+        let sql = "UPDATE games SET data = json_set(data, '$.install_size_mb', ?2)
+                   WHERE id = ?1 AND COALESCE(json_extract(data, '$.install_size_mb'), 0) <= 0";
+        let res = sqlx::query(sql)
+            .bind(id)
+            .bind(mb)
+            .execute(&self.pool)
+            .await?;
+        Ok(res.rows_affected() > 0)
     }
 }
 
-/// Shared library state. The outer [`Arc`] lets callers clone a handle into
-/// spawned tasks without touching Tauri's `State<'_, _>` lifetime — in
-/// particular `lan/install.rs`'s download task and the headless plugin
-/// server both need to push a new entry after the partial rename.
-pub type SharedLibrary = Arc<Mutex<Library>>;
+/// Assigns sequential catalog numbers to any entries missing one (0).
+/// Preserves existing assignments. Used during the one-time JSON import.
+fn backfill_catalog_numbers(entries: &mut [GameEntry]) {
+    let mut next = entries.iter().map(|e| e.catalog_number).max().unwrap_or(0);
+    for entry in entries.iter_mut() {
+        if entry.catalog_number == 0 {
+            next += 1;
+            entry.catalog_number = next;
+        }
+    }
+}
+
+/// Shared library state. The [`Arc`] lets callers clone a handle into spawned
+/// tasks without touching Tauri's `State<'_, _>` lifetime — in particular
+/// `lan/install.rs`'s download task and the headless plugin server both need to
+/// add a new entry after the partial rename.
+pub type SharedLibrary = Arc<Library>;
 
 /// Filesystem-safe filename derived from a game name.
 ///
@@ -354,46 +691,41 @@ pub fn make_safe_filename(name: &str) -> String {
 // ── Tauri commands ──────────────────────────────────────────────────────────
 
 #[tauri::command]
-pub fn list_games(state: State<'_, SharedLibrary>) -> AppResult<Vec<GameEntry>> {
-    let lib = state.lock().map_err(|_| AppError::LockPoisoned)?;
-    Ok(lib.entries.clone())
+pub async fn list_games(state: State<'_, SharedLibrary>) -> AppResult<Vec<GameEntry>> {
+    state.list().await
 }
 
-/// Adds a new game. Assigns id/catalog/timestamps server-side; persists
-/// atomically; emits `library.changed` so any open windows can refresh.
+/// Adds a new game. Assigns id/catalog/timestamps server-side; persists;
+/// emits `library:changed` so any open windows can refresh.
 #[tauri::command]
-pub fn add_game(
+pub async fn add_game(
     state: State<'_, SharedLibrary>,
     app: AppHandle,
     new_game: NewGame,
 ) -> AppResult<GameEntry> {
-    let entry = {
-        let mut lib = state.lock().map_err(|_| AppError::LockPoisoned)?;
-        let entry = GameEntry {
-            id: uuid::Uuid::new_v4().to_string(),
-            catalog_number: lib.next_catalog_number(),
-            game_name: new_game.game_name.clone(),
-            exe_path: new_game.exe_path,
-            safe_name: make_safe_filename(&new_game.game_name),
-            added_at: Some(Utc::now()),
-            steam_id: new_game.steam_id,
-            gog_id: new_game.gog_id,
-            lutris_slug: new_game.lutris_slug,
-            manifest_install_dir: new_game.manifest_install_dir,
-            save_paths: new_game.save_paths,
-            game_folder_path: new_game.game_folder_path,
-            wine_prefix_path: new_game.wine_prefix_path,
-            proton_version_path: new_game.proton_version_path,
-            // Newly added games are shared on the LAN by default; the user can
-            // turn this off per-game in the editor. Sharing only actually
-            // streams when game_folder_path is set (auto-detected on add).
-            lan_shared: true,
-            ..GameEntry::default()
-        };
-        lib.entries.push(entry.clone());
-        lib.save()?;
-        entry
+    let entry = GameEntry {
+        id: uuid::Uuid::new_v4().to_string(),
+        // 0 → insert() assigns the next catalog number atomically.
+        catalog_number: 0,
+        game_name: new_game.game_name.clone(),
+        exe_path: new_game.exe_path,
+        safe_name: make_safe_filename(&new_game.game_name),
+        added_at: Some(Utc::now()),
+        steam_id: new_game.steam_id,
+        gog_id: new_game.gog_id,
+        lutris_slug: new_game.lutris_slug,
+        manifest_install_dir: new_game.manifest_install_dir,
+        save_paths: new_game.save_paths,
+        game_folder_path: new_game.game_folder_path,
+        wine_prefix_path: new_game.wine_prefix_path,
+        proton_version_path: new_game.proton_version_path,
+        // Newly added games are shared on the LAN by default; the user can
+        // turn this off per-game in the editor. Sharing only actually
+        // streams when game_folder_path is set (auto-detected on add).
+        lan_shared: true,
+        ..GameEntry::default()
     };
+    let entry = state.insert(entry).await?;
     if let Err(e) = app.emit("library:changed", &entry.id) {
         tracing::warn!(error = %e, "failed to emit library:changed after add_game");
     }
@@ -429,22 +761,18 @@ pub fn add_game(
 /// `entry` is the lookup key; mismatches between in-memory state and
 /// disk are resolved by overwriting.
 #[tauri::command]
-pub fn update_game(
+pub async fn update_game(
     state: State<'_, SharedLibrary>,
     app: AppHandle,
     entry: GameEntry,
 ) -> AppResult<GameEntry> {
-    let updated = {
-        let mut lib = state.lock().map_err(|_| AppError::LockPoisoned)?;
-        let idx = lib
-            .entries
-            .iter()
-            .position(|e| e.id == entry.id)
-            .ok_or_else(|| AppError::Other(format!("game with id {} not found", entry.id)))?;
-        lib.entries[idx] = entry.clone();
-        lib.save()?;
-        entry
-    };
+    if !state.replace(&entry).await? {
+        return Err(AppError::Other(format!(
+            "game with id {} not found",
+            entry.id
+        )));
+    }
+    let updated = entry;
     if let Err(e) = app.emit("library:changed", &updated.id) {
         tracing::warn!(error = %e, "failed to emit library:changed after update_game");
     }
@@ -454,22 +782,12 @@ pub fn update_game(
 /// Removes an entry by id. No-op if the id isn't present (returns false).
 /// Emits `library.changed` when something was actually removed.
 #[tauri::command]
-pub fn remove_game(
+pub async fn remove_game(
     state: State<'_, SharedLibrary>,
     app: AppHandle,
     id: String,
 ) -> AppResult<bool> {
-    let removed = {
-        let mut lib = state.lock().map_err(|_| AppError::LockPoisoned)?;
-        let before = lib.entries.len();
-        lib.entries.retain(|e| e.id != id);
-        if lib.entries.len() < before {
-            lib.save()?;
-            true
-        } else {
-            false
-        }
-    };
+    let removed = state.remove(&id).await?;
     if removed {
         if let Err(e) = app.emit("library:changed", &id) {
             tracing::warn!(error = %e, "failed to emit library:changed after remove_game");
@@ -520,11 +838,9 @@ pub async fn delete_game_core(library: &SharedLibrary, id: &str) -> AppResult<()
     // path is resolved (and later deleted) on Linux alone — a populated
     // `wine_prefix_path` override on Windows/macOS must never be recurse-deleted.
     let (folder, prefix_root) = {
-        let lib = library.lock().map_err(|_| AppError::LockPoisoned)?;
-        let entry = lib
-            .entries
-            .iter()
-            .find(|e| e.id == id)
+        let entry = library
+            .find(id)
+            .await?
             .ok_or_else(|| AppError::Other(format!("game with id {id} not found")))?;
         // Per-game Proton prefix: the override if set, else the default
         // `prefixes/<id>` under Spool's data dir.
@@ -569,12 +885,8 @@ pub async fn delete_game_core(library: &SharedLibrary, id: &str) -> AppResult<()
         }
     }
 
-    // Folder gone (or already absent) — now forget the entry. Reuse the same
-    // retain + save path as remove_game.
-    let id = id.to_string();
-    let mut lib = library.lock().map_err(|_| AppError::LockPoisoned)?;
-    lib.entries.retain(|e| e.id != id);
-    lib.save()?;
+    // Folder gone (or already absent) — now forget the entry.
+    library.remove(id).await?;
     Ok(())
 }
 
@@ -678,5 +990,95 @@ mod tests {
         // A path that doesn't exist is treated as already-deleted.
         let missing = std::env::temp_dir().join("spool-delete-test-does-not-exist-xyz");
         assert!(delete_install_dir(&missing.to_string_lossy()).is_ok());
+    }
+
+    fn sample(id: &str, name: &str) -> GameEntry {
+        GameEntry {
+            id: id.to_string(),
+            game_name: name.to_string(),
+            safe_name: make_safe_filename(name),
+            ..GameEntry::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn insert_assigns_catalog_and_round_trips() {
+        let lib = Library::open_in_memory().await.unwrap();
+        let a = lib.insert(sample("a", "Hades")).await.unwrap();
+        let b = lib.insert(sample("b", "Celeste")).await.unwrap();
+        assert_eq!(a.catalog_number, 1);
+        assert_eq!(b.catalog_number, 2);
+
+        let all = lib.list().await.unwrap();
+        assert_eq!(all.len(), 2);
+        let found = lib.find("a").await.unwrap().unwrap();
+        assert_eq!(found.game_name, "Hades");
+        assert_eq!(lib.find_id_by_name("Celeste").await.unwrap().as_deref(), Some("b"));
+    }
+
+    #[tokio::test]
+    async fn remove_deletes_and_bumps_version() {
+        let lib = Library::open_in_memory().await.unwrap();
+        lib.insert(sample("a", "Hades")).await.unwrap();
+        let v0 = lib.version().await.unwrap();
+        assert!(lib.remove("a").await.unwrap());
+        assert!(!lib.remove("a").await.unwrap()); // already gone
+        assert!(lib.version().await.unwrap() > v0);
+        assert_eq!(lib.count().await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn targeted_update_does_not_clobber_other_fields() {
+        // A backup-stats write must not lose a concurrent playtime bump — the
+        // whole point of the SQLite move. Simulate the two writes interleaving.
+        let lib = Library::open_in_memory().await.unwrap();
+        lib.insert(sample("a", "Hades")).await.unwrap();
+
+        lib.bump_session("a", Utc::now(), 30).await.unwrap();
+        lib.record_backup_stats("a", 3, Some(Utc::now()), Some(12.5))
+            .await
+            .unwrap();
+
+        let e = lib.find("a").await.unwrap().unwrap();
+        assert_eq!(e.playtime_minutes, 30); // survived the backup write
+        assert_eq!(e.save_backup_count, 3);
+        assert_eq!(e.save_backup_size_mb, 12.5);
+    }
+
+    #[tokio::test]
+    async fn replace_preserves_runtime_fields() {
+        // The editor saving an entry must not wipe playtime/backup counters set
+        // by the run workflow after the editor loaded its (stale) copy.
+        let lib = Library::open_in_memory().await.unwrap();
+        lib.insert(sample("a", "Hades")).await.unwrap();
+        lib.bump_session("a", Utc::now(), 45).await.unwrap();
+
+        // Editor loaded the entry before the session and saves a renamed copy
+        // whose playtime is still 0.
+        let mut edited = sample("a", "Hades Renamed");
+        edited.playtime_minutes = 0;
+        assert!(lib.replace(&edited).await.unwrap());
+
+        let e = lib.find("a").await.unwrap().unwrap();
+        assert_eq!(e.game_name, "Hades Renamed"); // editor change applied
+        assert_eq!(e.playtime_minutes, 45); // runtime field preserved
+        assert_eq!(lib.find_id_by_name("Hades Renamed").await.unwrap().as_deref(), Some("a"));
+    }
+
+    #[tokio::test]
+    async fn set_if_empty_guards() {
+        let lib = Library::open_in_memory().await.unwrap();
+        lib.insert(sample("a", "Hades")).await.unwrap();
+
+        assert!(lib.set_accent_if_empty("a", "#ff0000").await.unwrap());
+        // Second call no-ops because accent is already set.
+        assert!(!lib.set_accent_if_empty("a", "#00ff00").await.unwrap());
+        let e = lib.find("a").await.unwrap().unwrap();
+        assert_eq!(e.accent_color.as_deref(), Some("#ff0000"));
+
+        assert!(lib.set_install_size_if_empty("a", 500.0).await.unwrap());
+        assert!(!lib.set_install_size_if_empty("a", 999.0).await.unwrap());
+        let e = lib.find("a").await.unwrap().unwrap();
+        assert_eq!(e.install_size_mb, 500.0);
     }
 }

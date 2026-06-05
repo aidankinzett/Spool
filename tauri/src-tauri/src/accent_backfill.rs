@@ -36,26 +36,24 @@ async fn run_backfill(app: AppHandle) {
     // the library mutex during disk + CPU work. The State binding
     // has to live for the whole `lib.lock()` borrow, hence the
     // explicit `library_state` variable rather than a chained call.
-    let library_state = app.state::<SharedLibrary>();
-    let todo: Vec<(String, PathBuf)> = {
-        let lib = match library_state.lock() {
-            Ok(g) => g,
-            Err(_) => return,
-        };
-        lib.entries
-            .iter()
-            .filter(|e| e.accent_color.is_none())
-            .filter_map(|e| {
-                e.cover_image_path.as_ref().and_then(|p| {
-                    if p.is_empty() {
-                        None
-                    } else {
-                        Some((e.id.clone(), PathBuf::from(p)))
-                    }
-                })
-            })
-            .collect()
+    let library = app.state::<SharedLibrary>().inner().clone();
+    let entries = match library.list().await {
+        Ok(e) => e,
+        Err(_) => return,
     };
+    let todo: Vec<(String, PathBuf)> = entries
+        .iter()
+        .filter(|e| e.accent_color.is_none())
+        .filter_map(|e| {
+            e.cover_image_path.as_ref().and_then(|p| {
+                if p.is_empty() {
+                    None
+                } else {
+                    Some((e.id.clone(), PathBuf::from(p)))
+                }
+            })
+        })
+        .collect();
     if todo.is_empty() {
         return;
     }
@@ -81,32 +79,16 @@ async fn run_backfill(app: AppHandle) {
         return;
     }
 
-    // Apply results + save once. Re-resolve entries by id since the
-    // library may have been mutated by add/remove during our run.
-    let library_state = app.state::<SharedLibrary>();
-    let applied = {
-        let mut lib = match library_state.lock() {
-            Ok(g) => g,
-            Err(_) => return,
-        };
-        let mut applied = 0;
-        for (id, accent) in &results {
-            if let Some(entry) = lib.entries.iter_mut().find(|e| &e.id == id) {
-                // Don't overwrite if a concurrent update has already
-                // set the accent (e.g. via SteamGridDB refresh).
-                if entry.accent_color.is_none() {
-                    entry.accent_color = Some(accent.clone());
-                    applied += 1;
-                }
-            }
+    // Apply results. `set_accent_if_empty` is a no-op when a concurrent update
+    // (e.g. a SteamGridDB refresh) already set the accent, so we never clobber.
+    let mut applied = 0;
+    for (id, accent) in &results {
+        match library.set_accent_if_empty(id, accent).await {
+            Ok(true) => applied += 1,
+            Ok(false) => {}
+            Err(e) => tracing::warn!(error = %e, "accent backfill: update failed"),
         }
-        if applied > 0 {
-            if let Err(e) = lib.save() {
-                tracing::warn!(error = %e, "accent backfill: library save failed");
-            }
-        }
-        applied
-    };
+    }
     tracing::info!(applied, "accent backfill: done");
 
     if applied > 0 {

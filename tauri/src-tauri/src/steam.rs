@@ -356,9 +356,9 @@ pub async fn add_to_steam(
 ) -> AppResult<AddToSteamResult> {
     // 1. Snapshot the data we need from the library (drop lock fast).
     let (app_name, exe_path, save_path_str, cover_image_path, steam_id) = {
-        let lib = library.lock().map_err(|_| AppError::LockPoisoned)?;
-        let entry = lib
+        let entry = library
             .find(&game_id)
+            .await?
             .ok_or_else(|| AppError::Other(format!("game not found: {game_id}")))?;
         (
             entry.game_name.clone(),

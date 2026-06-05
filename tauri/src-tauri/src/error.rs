@@ -15,6 +15,9 @@ pub enum AppError {
     #[error("json error: {0}")]
     Json(#[from] serde_json::Error),
 
+    #[error("database error: {0}")]
+    Db(#[from] sqlx::Error),
+
     #[error("library lock poisoned")]
     LockPoisoned,
 

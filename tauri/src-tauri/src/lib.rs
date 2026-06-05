@@ -68,7 +68,7 @@ use ludusavi::LudusaviClient;
 use runner::RunState;
 use std::sync::{Arc, Mutex};
 use steamgriddb::SteamGridDbClient;
-use tauri::{AppHandle, Manager, RunEvent, State, WindowEvent};
+use tauri::{AppHandle, Emitter, Manager, RunEvent, State, WindowEvent};
 
 /// Holds a game id queued for launch at startup. The cold-start path
 /// for `spool --run "Name" "Exe"` writes here; the frontend's library
@@ -171,10 +171,12 @@ pub fn run() {
     // an update relocates the file. No-op on native installs.
     let _ = paths::refresh_appimage_launcher();
 
-    // Load persistent state synchronously — both files are small.
-    let library = Library::load().unwrap_or_else(|err| {
-        tracing::warn!(error = %err, "failed to load library, starting empty");
-        Library::default()
+    // Open the library database (config is a small single-writer JSON file).
+    // block_on: this runs on the main thread before Tauri's runtime spins up.
+    let library = tauri::async_runtime::block_on(Library::open()).unwrap_or_else(|err| {
+        tracing::error!(error = %err, "failed to open library database; starting with an empty in-memory library");
+        tauri::async_runtime::block_on(Library::open_in_memory())
+            .expect("in-memory library must open")
     });
     let config = Config::load().unwrap_or_else(|err| {
         tracing::warn!(error = %err, "failed to load config, starting with defaults");
@@ -239,7 +241,7 @@ pub fn run() {
         }));
     }
     let app = builder
-        .manage::<SharedLibrary>(Arc::new(Mutex::new(library)))
+        .manage::<SharedLibrary>(Arc::new(library))
         .manage::<SharedConfig>(Mutex::new(config))
         .manage::<LudusaviClient>(LudusaviClient::new())
         .manage::<SteamGridDbClient>(SteamGridDbClient::new())
@@ -368,12 +370,12 @@ pub fn run() {
 }
 
 /// Looks up a game by exact `game_name` match. Returns the entry id.
+/// Sync wrapper (block_on) for the cold-start / single-instance callback paths,
+/// which run on the main thread rather than inside the async runtime.
 fn find_game_id_by_name(library: &SharedLibrary, name: &str) -> Option<String> {
-    let lib = library.lock().ok()?;
-    lib.entries
-        .iter()
-        .find(|e| e.game_name == name)
-        .map(|e| e.id.clone())
+    tauri::async_runtime::block_on(library.find_id_by_name(name))
+        .ok()
+        .flatten()
 }
 
 /// Re-stamp the rclone binary path **and** its timeout arguments into Spool's
@@ -706,4 +708,31 @@ fn spawn_startup_tasks(app: &AppHandle) {
     // playtime / take max last-played / derive the badge, merge into the
     // library. Runs ~4 s after launch, after the startup reachability probe.
     rclone::spawn_startup_fold(app.clone());
+
+    // Notice library writes made by *other* Spool processes (the attached
+    // `--run` launch, the headless Decky server) by polling the DB's version
+    // counter — Tauri's `library:changed` event only reaches this process.
+    spawn_library_change_poll(app.clone());
+}
+
+/// Polls the library DB's `meta.version` counter and re-emits `library:changed`
+/// whenever it advances, so the GUI refreshes after another Spool process
+/// writes the shared database. In-process mutations emit `library:changed`
+/// directly for instant feedback; this only covers external writers (it may
+/// fire one extra refresh shortly after a local write, which is harmless).
+fn spawn_library_change_poll(app: AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        let library = app.state::<SharedLibrary>().inner().clone();
+        let mut last = library.version().await.unwrap_or(0);
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            match library.version().await {
+                Ok(v) if v != last => {
+                    last = v;
+                    let _ = app.emit("library:changed", &());
+                }
+                _ => {}
+            }
+        }
+    });
 }
