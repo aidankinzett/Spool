@@ -77,9 +77,38 @@ const SHOTS = [
     width: 1440,
     height: 900,
     htmlMode: 'desktop',
-    open: 'button[aria-label="Transfers"]',
+    click: 'button[aria-label="Transfers"]',
     panel: '[role="dialog"][aria-label="Transfers"]',
     pad: { top: 58, right: 28, bottom: 52, left: 160 },
+  },
+  {
+    // Settings → Saves (cloud sync) — click the nav group, then the full page.
+    file: 'settings-cloud.png',
+    title: 'Screens/Settings',
+    name: 'Cloud configured',
+    width: 1180,
+    height: 820,
+    htmlMode: 'desktop',
+    click: 'nav button:has-text("Backups & cloud sync")',
+  },
+  {
+    // Settings → Network (LAN sharing).
+    file: 'settings-sharing.png',
+    title: 'Screens/Settings',
+    name: 'Default (Windows)',
+    width: 1180,
+    height: 820,
+    htmlMode: 'desktop',
+    click: 'nav button:has-text("LAN sharing")',
+  },
+  {
+    // The Add Game flow with ranked save-match candidates.
+    file: 'add-game.png',
+    title: 'Screens/Add Game',
+    name: 'Matches',
+    width: 760,
+    height: 700,
+    htmlMode: 'desktop',
   },
 ];
 
@@ -202,14 +231,20 @@ async function capture(browser, port, index, shot) {
   const dest = join(outDir, shot.file);
   let logicalWidth = shot.width;
   let logicalHeight = shot.height;
-  if (shot.open) {
-    // Open a control, then clip to the revealed panel grown by `pad` so the
-    // shot frames the panel with a slice of the surrounding UI for context.
-    await page.locator(shot.open).first().click();
+  // Optional UI driving before capture (e.g. open a popover, switch a settings
+  // tab). `click` accepts one selector or a list, applied in order.
+  if (shot.click) {
+    for (const sel of [].concat(shot.click)) {
+      await page.locator(sel).first().click();
+      await page.waitForTimeout(150);
+    }
+    await waitForReady(page); // any imagery the click revealed
+  }
+  if (shot.panel) {
+    // Clip to the revealed panel grown by `pad` so the shot frames the panel
+    // with a slice of the surrounding UI for context.
     const el = page.locator(shot.panel).first();
     await el.waitFor({ state: 'visible' });
-    await waitForReady(page); // panel's covers
-    await page.waitForTimeout(150);
     const box = await el.boundingBox();
     const pad = shot.pad ?? {};
     const x = Math.max(0, box.x - (pad.left ?? 0));

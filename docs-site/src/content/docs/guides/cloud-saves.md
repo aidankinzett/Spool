@@ -28,8 +28,10 @@ guessing.
 
 ## Set up a cloud remote
 
-Open **Settings → Library → Cloud saves**. Spool supports Dropbox, Google Drive,
-OneDrive, Box, FTP, SMB, WebDAV, or a custom rclone remote.
+Open **Settings → Saves**. Spool supports Dropbox, Google Drive, OneDrive, Box,
+FTP, SMB, WebDAV, or a custom rclone remote.
+
+![Spool's Saves settings showing local backups, retention, and a connected Dropbox cloud remote.](../../../assets/screenshots/settings-cloud.png)
 
 ### Google Drive, Dropbox, OneDrive, Box
 
