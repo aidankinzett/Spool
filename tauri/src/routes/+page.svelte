@@ -163,7 +163,6 @@
   {#if conflictGame}
     <CloudConflictModal
       gameName={conflictGame.game_name}
-      catalogId={conflictGame.catalog_number ? `SPL-${String(conflictGame.catalog_number).padStart(4, '0')}` : undefined}
       accent={conflictGame.accent_color}
       coverUrl={assetUrl(conflictGame.cover_image_path)}
       cloudNewer={cloudNewer}

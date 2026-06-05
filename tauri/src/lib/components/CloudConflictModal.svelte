@@ -10,7 +10,7 @@
   }
 
   export type ConflictSide = 'local' | 'cloud';
-  export type ConflictPhase = 'choose' | 'applying' | 'done' | 'error';
+  export type ConflictPhase = 'choose' | 'applying' | 'error';
 
   /** A resolved choice-card model (one per side). */
   interface SideModel {
@@ -33,28 +33,28 @@
    * overwritten. Lives over two surfaces (desktop library window + the
    * full-screen Game Mode splash) and runs a small state machine:
    *
-   *   choose → applying → done | error
+   *   choose → applying → (auto-close) | error
    *
    * Presentational + self-driven: the component owns the state machine and
    * card animations, but the actual upload/download work is delegated to the
    * `resolve` callback (kept out of here so the backend command can land
-   * separately). On success it advances to `done`; on a thrown error it falls
-   * to `error`, where the working "Open Ludusavi" fallback still lives.
+   * separately). While applying, the primary button shows an inline loading
+   * state; on success it calls `onContinue` straight away so the host closes
+   * the modal (no extra success screen). On a thrown error it falls to
+   * `error`, where the working "Open Ludusavi" fallback still lives.
    *
    * Mirrors the Cloud Save Conflict design (Space Grotesk / Geist / JetBrains
    * Mono, graphite surface, per-game accent, cassette reel + tape primitives).
    */
-  import { Check, Clock, Cloud, ExternalLink, HardDrive, RotateCw, X } from '@lucide/svelte';
+  import { Check, Clock, Cloud, ExternalLink, HardDrive, LoaderCircle, RotateCw, X } from '@lucide/svelte';
   import { shadeHex } from '$lib/tokens';
   import SpoolMark from '$lib/components/SpoolMark.svelte';
-  import CatalogId from '$lib/components/CatalogId.svelte';
   import { gamepadScope } from '$lib/gamepad';
 
   const BRAND_SPOOL = '#d7c9a0';
 
   let {
     gameName,
-    catalogId = undefined,
     accent = null,
     coverUrl = null,
     cloudNewer = true,
@@ -62,7 +62,6 @@
     cloudMeta = null,
     context = 'desktop',
     showLudusavi = true,
-    progress = null,
     resolve,
     onCancel,
     onContinue,
@@ -71,8 +70,6 @@
   }: {
     /** Display name of the game in conflict. */
     gameName: string;
-    /** Pre-formatted catalog id ("SPL-0028"). Hidden when omitted. */
-    catalogId?: string;
     /** Cover-art accent hex; falls back to the brand spool colour. */
     accent?: string | null;
     /** Webview-loadable cover URL (via `assetUrl`); placeholder when null. */
@@ -87,13 +84,11 @@
     context?: 'desktop' | 'gamemode';
     /** Show the tertiary "Resolve in Ludusavi" fallback link on the choose step. */
     showLudusavi?: boolean;
-    /** 0–100 real progress override during `applying`; null ⇒ internal ramp. */
-    progress?: number | null;
-    /** Perform the resolve. Resolve → `done`, throw → `error`. */
+    /** Perform the resolve. Resolve → auto-continue, throw → `error`. */
     resolve: (side: ConflictSide) => Promise<void>;
     /** User cancelled (choose step Cancel, or error step "Cancel launch"). */
     onCancel: () => void;
-    /** User acknowledged success ("Continue launch" / "Done"). */
+    /** Resolve succeeded — host closes the modal and continues the launch. */
     onContinue: () => void;
     /** Open the ludusavi GUI fallback. */
     onLudusavi: () => void;
@@ -104,7 +99,6 @@
   // ── State machine ─────────────────────────────────────────────────────────
   let phase = $state<ConflictPhase>('choose');
   let selected = $state<ConflictSide | null>(null);
-  let internalPct = $state(0); // 0–1, used when no `progress` prop is supplied
   let hover = $state<Record<string, boolean>>({});
 
   const acc = $derived(accent ?? BRAND_SPOOL);
@@ -129,39 +123,12 @@
     },
   });
 
-  // Bar fill: real progress when provided, else the internal decelerating ramp.
-  const barPct = $derived(
-    progress != null ? Math.max(0, Math.min(1, progress / 100)) : internalPct,
-  );
-
   // Outcome tag for a given card. The winner reads "win"; the loser reflects
-  // the live phase so its badge tracks OVERWRITING → REPLACED / UNCHANGED.
+  // the live phase so its badge tracks OVERWRITING (applying) → UNCHANGED (error).
   function outcomeFor(key: ConflictSide): 'win' | ConflictPhase | null {
     if (!locked || !selected) return null;
     return key === selected ? 'win' : phase;
   }
-
-  // Internal progress ramp while applying (keyed on phase only, so prop
-  // changes never re-trigger it — and never re-fire `resolve`).
-  $effect(() => {
-    if (phase !== 'applying') return;
-    internalPct = 0;
-    const start = performance.now();
-    let raf = 0;
-    let cancelled = false;
-    const tick = (now: number) => {
-      if (cancelled) return;
-      const p = Math.min(1, (now - start) / 3000);
-      // Ease out, capped at 95% — the resolve completion snaps it to 100%.
-      internalPct = (1 - Math.pow(1 - p, 1.8)) * 0.95;
-      if (p < 1) raf = requestAnimationFrame(tick);
-    };
-    raf = requestAnimationFrame(tick);
-    return () => {
-      cancelled = true;
-      if (raf) cancelAnimationFrame(raf);
-    };
-  });
 
   async function runResolve() {
     const side = selected;
@@ -169,8 +136,9 @@
     phase = 'applying';
     try {
       await resolve(side);
-      internalPct = 1;
-      phase = 'done';
+      // Success — hand straight back to the host, which closes this modal and
+      // continues the launch. No separate success screen.
+      onContinue();
     } catch (e) {
       console.error('[cloud-conflict] resolve failed:', e);
       phase = 'error';
@@ -208,59 +176,16 @@
     else onClose?.();
   }
 
-  // Reel spinner spokes (port of the design's ReelHub, size 26).
-  const REEL_SPOKES = (() => {
-    const size = 26;
-    const cx = size / 2;
-    const cy = size / 2;
-    const r1 = size * 0.16;
-    const r2 = size * 0.36;
-    return Array.from({ length: 6 }, (_, k) => {
-      const a = (k * Math.PI) / 3;
-      return {
-        x1: cx + Math.cos(a) * r1,
-        y1: cy + Math.sin(a) * r1,
-        x2: cx + Math.cos(a) * r2,
-        y2: cy + Math.sin(a) * r2,
-      };
-    });
-  })();
 </script>
 
 <svelte:window onkeydown={handleKey} />
-
-<!-- ── Reel spinner ────────────────────────────────────────────────────── -->
-{#snippet reelHub(color: string)}
-  <svg
-    width="26"
-    height="26"
-    viewBox="0 0 26 26"
-    class="cc-reel block shrink-0"
-    style:color
-  >
-    <circle cx="13" cy="13" r="11.44" fill="transparent" stroke="currentColor" stroke-width="1.4" />
-    {#each REEL_SPOKES as s (s.x1)}
-      <line
-        x1={s.x1}
-        y1={s.y1}
-        x2={s.x2}
-        y2={s.y2}
-        stroke="currentColor"
-        stroke-width="1.4"
-        stroke-linecap="round"
-      />
-    {/each}
-    <circle cx="13" cy="13" r="10.4" fill="none" stroke="currentColor" stroke-width="0.98" opacity="0.4" />
-    <circle cx="13" cy="13" r="3.38" fill="currentColor" />
-  </svg>
-{/snippet}
 
 <!-- ── One choice card ─────────────────────────────────────────────────── -->
 {#snippet choiceCard(side: SideModel)}
   {@const outcome = outcomeFor(side.key)}
   {@const active = selected === side.key}
   {@const winning = outcome === 'win'}
-  {@const losing = outcome === 'applying' || outcome === 'done' || outcome === 'error'}
+  {@const losing = outcome === 'applying' || outcome === 'error'}
   {@const h = hover[`card-${side.key}`] && !locked}
   {@const borderCol = active || winning
     ? acc
@@ -278,11 +203,9 @@
         : 'var(--color-bg-1)'}
   {@const loseBadge = outcome === 'applying'
     ? 'OVERWRITING'
-    : outcome === 'done'
-      ? 'REPLACED'
-      : outcome === 'error'
-        ? 'UNCHANGED'
-        : ''}
+    : outcome === 'error'
+      ? 'UNCHANGED'
+      : ''}
   {@const loseBadgeCol = outcome === 'error' ? 'var(--color-ink-3)' : 'var(--color-warn)'}
   <button
     type="button"
@@ -449,17 +372,19 @@
 {/snippet}
 
 <!-- ── Footer buttons (ghost + primary), 34px tall to match the design ─── -->
-{#snippet ghostBtn(key: string, label: string, onclick: () => void)}
+{#snippet ghostBtn(key: string, label: string, onclick: () => void, disabled = false)}
   <button
     type="button"
     {onclick}
-    class="inline-flex cursor-pointer items-center justify-center gap-1.5 whitespace-nowrap rounded-sm font-medium transition-colors duration-100"
+    {disabled}
+    class="inline-flex items-center justify-center gap-1.5 whitespace-nowrap rounded-sm font-medium transition-colors duration-100 disabled:pointer-events-none disabled:opacity-50"
     style:height="34px"
     style:padding-inline="12px"
     style:font-size="13px"
+    style:cursor={disabled ? 'default' : 'pointer'}
     style:color="var(--color-ink-2)"
     style:border="1px solid var(--color-line-1)"
-    style:background={hover[key] ? 'rgb(255 255 255 / 0.06)' : 'transparent'}
+    style:background={hover[key] && !disabled ? 'rgb(255 255 255 / 0.06)' : 'transparent'}
     onmouseenter={() => (hover[key] = true)}
     onmouseleave={() => (hover[key] = false)}
   >
@@ -510,7 +435,7 @@
         onclick={() => {
           if (phase === 'choose' || phase === 'error') onClose?.();
         }}
-        disabled={phase === 'applying' || phase === 'done'}
+        disabled={phase === 'applying'}
         aria-label="Close"
         class="inline-flex items-center justify-center rounded-sm border-none bg-transparent text-ink-2 transition-colors hover:bg-bad/20 hover:text-[#ff9b9b] disabled:pointer-events-none disabled:opacity-50"
         style:width="28px"
@@ -527,15 +452,6 @@
       style:border-bottom="1px solid var(--color-line-1)"
     >
       <div class="min-w-0 flex-1">
-        <div class="flex items-center gap-2" style:margin-bottom="9px">
-          {#if catalogId}<CatalogId id={catalogId} accent={accent ?? undefined} />{/if}
-          <span
-            class="font-mono whitespace-nowrap uppercase"
-            style:font-size="9.5px"
-            style:letter-spacing="0.12em"
-            style:color="var(--color-warn)">BOTH COPIES CHANGED</span
-          >
-        </div>
         <h1
           id="cc-modal-title"
           class="font-display"
@@ -582,90 +498,7 @@
 
     <!-- footer / status -->
     <div style:padding="16px 24px 22px" style:border-top="1px solid var(--color-line-1)" style:background="rgba(0,0,0,0.18)">
-      {#if phase === 'applying'}
-        {@const win = selected ? sides[selected] : null}
-        {@const verb = selected === 'local' ? 'Uploading' : 'Downloading'}
-        {@const prep = selected === 'local' ? 'to your cloud remote' : 'from your cloud remote'}
-        {@const other = selected === 'local' ? 'cloud' : 'local'}
-        <div class="flex flex-col" style:gap="12px">
-          <div class="flex items-center gap-3">
-            {@render reelHub(acc)}
-            <div class="min-w-0 flex-1">
-              <div class="font-mono" style:font-size="10px" style:letter-spacing="0.16em" style:color={acc}>
-                {verb.toUpperCase()}
-              </div>
-              <div style:margin-top="3px" style:font-size="13px" style:color="var(--color-ink-1)">
-                {#if win?.meta}
-                  {verb} <strong class="font-semibold text-ink-0">{win.meta.size}</strong>
-                  {prep} — the {other} copy is being replaced.
-                {:else}
-                  {verb} your saves {prep} — the {other} copy is being replaced.
-                {/if}
-              </div>
-            </div>
-          </div>
-          <!-- tape bar -->
-          <div class="w-full">
-            <div
-              class="relative overflow-hidden rounded-[1px] bg-bg-0"
-              style:height="5px"
-              style:box-shadow="inset 0 0 0 1px rgba(255,255,255,0.05)"
-            >
-              <div
-                class="absolute left-0 top-0 bottom-0 rounded-[1px] transition-[width] duration-100 ease-linear"
-                style:width="{Math.round(barPct * 100)}%"
-                style:background={acc}
-                style:box-shadow="0 0 10px {acc}77"
-              ></div>
-            </div>
-            <div
-              class="pointer-events-none"
-              style:height="2px"
-              style:margin-top="3px"
-              style:background-image="repeating-linear-gradient(to right, rgba(255,255,255,0.10) 0 1px, transparent 1px 12.5%)"
-            ></div>
-          </div>
-          <div class="font-mono" style:font-size="9.5px" style:letter-spacing="0.06em" style:color="var(--color-ink-3)">
-            Keep Spool open — this can take a few seconds.
-          </div>
-        </div>
-      {:else if phase === 'done'}
-        <div class="flex items-center" style:gap="14px">
-          <span
-            class="inline-flex shrink-0 items-center justify-center rounded-full"
-            style:width="30px"
-            style:height="30px"
-            style:background="color-mix(in srgb, var(--color-ok) 11%, transparent)"
-            style:color="var(--color-ok)"
-          >
-            <Check size={15} />
-          </span>
-          <div class="min-w-0 flex-1">
-            <div class="font-mono" style:font-size="10px" style:letter-spacing="0.16em" style:color="var(--color-ok)">
-              SAVES IN SYNC
-            </div>
-            <div style:margin-top="3px" style:font-size="13px" style:color="var(--color-ink-1)">
-              This device and the cloud now match.{context === 'gamemode' ? ' Continuing launch…' : ''}
-            </div>
-          </div>
-          <button
-            type="button"
-            onclick={onContinue}
-            class="inline-flex cursor-pointer items-center justify-center whitespace-nowrap rounded-sm font-medium transition-colors duration-100"
-            style:height="34px"
-            style:min-width="132px"
-            style:padding-inline="12px"
-            style:font-size="13px"
-            style:color="#0b0c0e"
-            style:border="1px solid transparent"
-            style:background={hover['done-cta'] ? shadeHex('#7ee2a4', -10) : 'var(--color-ok)'}
-            onmouseenter={() => (hover['done-cta'] = true)}
-            onmouseleave={() => (hover['done-cta'] = false)}
-          >
-            {context === 'gamemode' ? 'Continue launch' : 'Done'}
-          </button>
-        </div>
-      {:else if phase === 'error'}
+      {#if phase === 'error'}
         {@const local = selected === 'local'}
         <div class="flex flex-col" style:gap="14px">
           <div class="flex items-start gap-3">
@@ -713,8 +546,9 @@
           </div>
         </div>
       {:else}
-        <!-- choose -->
+        <!-- choose / applying -->
         {@const sel = selected ? sides[selected] : null}
+        {@const applying = phase === 'applying'}
         <div class="flex flex-col" style:gap="12px">
           <div
             class="flex items-center gap-2 rounded-sm"
@@ -728,33 +562,38 @@
             </span>
           </div>
           <div class="flex items-center" style:gap="10px">
-            {#if showLudusavi}
+            {#if showLudusavi && !applying}
               {@render linkBtn('choose-ludusavi', 'Resolve in Ludusavi', onLudusavi)}
             {/if}
             <div class="flex-1"></div>
-            {@render ghostBtn('choose-cancel', 'Cancel', cancel)}
+            {@render ghostBtn('choose-cancel', 'Cancel', cancel, applying)}
             <button
               type="button"
               onclick={confirm}
-              disabled={!sel}
-              class="inline-flex items-center justify-center whitespace-nowrap rounded-sm font-medium transition-colors duration-100"
+              disabled={!sel || applying}
+              class="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-sm font-medium transition-colors duration-100"
               style:height="34px"
               style:min-width="196px"
               style:padding-inline="12px"
               style:font-size="13px"
-              style:cursor={sel ? 'pointer' : 'not-allowed'}
+              style:cursor={applying ? 'default' : sel ? 'pointer' : 'not-allowed'}
               style:opacity={sel ? 1 : 0.7}
               style:color={sel ? '#0b0c0e' : 'var(--color-ink-3)'}
               style:border={sel ? '1px solid transparent' : '1px solid var(--color-line-2)'}
               style:background={sel
-                ? hover['choose-confirm']
+                ? hover['choose-confirm'] && !applying
                   ? shadeHex(acc, -10)
                   : acc
                 : 'var(--color-bg-2)'}
               onmouseenter={() => (hover['choose-confirm'] = true)}
               onmouseleave={() => (hover['choose-confirm'] = false)}
             >
-              {sel ? `Keep ${sel.confirm} saves` : 'Select a copy to keep'}
+              {#if applying}
+                <span class="cc-reel inline-flex"><LoaderCircle size={14} /></span>
+                Keeping {sel?.confirm} saves…
+              {:else}
+                {sel ? `Keep ${sel.confirm} saves` : 'Select a copy to keep'}
+              {/if}
             </button>
           </div>
         </div>
