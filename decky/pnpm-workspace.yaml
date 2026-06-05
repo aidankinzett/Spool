@@ -1,0 +1,12 @@
+# pnpm 11 reads package-level settings from here rather than the package.json
+# "pnpm" field. esbuild (pulled in by Vite/Storybook) needs its postinstall to
+# run; allow it so `pnpm install` doesn't fail with ERR_PNPM_IGNORED_BUILDS.
+allowBuilds:
+  esbuild: true
+
+# Mirrors the package.json "pnpm.peerDependencyRules" the plugin already used:
+# React/ReactDOM are provided by Decky Loader at runtime, not bundled.
+peerDependencyRules:
+  ignoreMissing:
+    - react
+    - react-dom

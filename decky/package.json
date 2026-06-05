@@ -7,6 +7,8 @@
   "scripts": {
     "build": "rollup -c",
     "watch": "rollup -c -w",
+    "storybook": "storybook dev -p 6006",
+    "build-storybook": "storybook build",
     "deploy": "rollup -c && rsync -av dist/ deck@192.168.86.113:/tmp/spool-backup-dist/ && ssh -t deck@192.168.86.113 'sudo rsync -av --delete /tmp/spool-backup-dist/ ~/homebrew/plugins/spool-backup/dist/ && sudo systemctl restart plugin_loader'",
     "deploy:local": "rollup -c && sudo mkdir -p ~/homebrew/plugins/spool-backup && sudo rsync -a --delete dist/ ~/homebrew/plugins/spool-backup/dist/ && sudo cp plugin.json package.json main.py ~/homebrew/plugins/spool-backup/ && sudo chown -R root:root ~/homebrew/plugins/spool-backup && sudo systemctl restart plugin_loader"
   },
@@ -20,14 +22,17 @@
     "@decky/rollup": "^1.0.2",
     "@decky/ui": "^4.11.0",
     "@rollup/rollup-linux-x64-musl": "^4.53.3",
+    "@storybook/addon-essentials": "^8.6.14",
+    "@storybook/react": "^8.6.18",
+    "@storybook/react-vite": "^8.6.18",
     "@types/react": "19.1.1",
     "@types/react-dom": "19.1.1",
+    "@vitejs/plugin-react": "^4.7.0",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
     "rollup": "^4.53.3",
-    "typescript": "^5.6.2"
-  },
-  "pnpm": {
-    "peerDependencyRules": {
-      "ignoreMissing": ["react", "react-dom"]
-    }
+    "storybook": "^8.6.18",
+    "typescript": "^5.6.2",
+    "vite": "^5.4.21"
   }
 }
