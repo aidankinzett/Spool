@@ -1,0 +1,88 @@
+name: Screenshots
+
+# Regenerate the README screenshots from Storybook and open a PR with the diff
+# (never commit straight to master). Design notes:
+#
+#   * Triggers on master pushes that touch the UI (stories/components/fixtures/
+#     the capture script) plus manual dispatch. The capture pulls real cover art
+#     from Steam's CDN, so the runner needs network — GitHub runners have it.
+#   * The job writes docs/screenshots/*.png + README.md, then create-pull-request
+#     pushes them to a fixed `bot/readme-screenshots` branch and opens/updates a
+#     PR against master. Nothing lands on master without a human merging the PR.
+#   * No loop: the path filter below matches only UI source. The bot's push is to
+#     bot/readme-screenshots (not master), and merging the screenshot PR touches
+#     only docs/screenshots + README.md — neither path re-triggers this workflow.
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - master
+    paths:
+      - 'tauri/src/**'
+      - 'tauri/.storybook/**'
+      - 'tauri/scripts/screenshots.mjs'
+      - '.github/workflows/screenshots.yml'
+
+# One run at a time; newer UI pushes supersede an in-flight capture.
+concurrency:
+  group: screenshots
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  screenshots:
+    runs-on: ubuntu-latest
+    env:
+      BUN_INSTALL_CACHE_DIR: "${{ github.workspace }}/.bun-cache"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.x"
+
+      - name: Bun cache
+        uses: actions/cache@v5
+        with:
+          path: ${{ github.workspace }}/.bun-cache
+          key: bun-${{ runner.os }}-${{ hashFiles('tauri/bun.lock') }}
+          restore-keys: |
+            bun-${{ runner.os }}-
+
+      - name: Install frontend dependencies
+        working-directory: tauri
+        run: bun install --frozen-lockfile
+
+      - name: Install Playwright Chromium
+        working-directory: tauri
+        run: bunx playwright install --with-deps chromium
+
+      - name: Regenerate screenshots
+        working-directory: tauri
+        run: bun run screenshots
+
+      - name: Open PR with screenshot diff
+        uses: peter-evans/create-pull-request@v7
+        with:
+          # RELEASE_TOKEN (a PAT) for the same reason release.yml uses it: the
+          # default GITHUB_TOKEN 403s on this repo's write operations.
+          token: ${{ secrets.RELEASE_TOKEN }}
+          branch: bot/readme-screenshots
+          base: master
+          delete-branch: true
+          add-paths: |
+            docs/screenshots/**
+            README.md
+          commit-message: "Update README screenshots from Storybook"
+          title: "Update README screenshots"
+          body: |
+            Regenerated from the current Storybook stories by the **Screenshots**
+            workflow. Review the visual diff and merge if it looks right.
+
+            Empty visual diff → no PR is opened (or the existing one is closed).
+          labels: screenshots
