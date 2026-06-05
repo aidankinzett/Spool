@@ -7,6 +7,10 @@
 //!
 //!   GAMEID=umu-<id>  WINEPREFIX=<prefix root>  PROTONPATH=<proton dir>  umu-run <exe> [args]
 //!
+//! The launch env also caps umu's per-launch network calls (`UMU_HTTP_TIMEOUT`
+//! / `UMU_HTTP_RETRIES`) so an offline launch fails fast and falls back to the
+//! cached runtime instead of stalling — see [`build_umu_launch`].
+//!
 //! Each game gets its own prefix under `paths::proton_prefixes_dir()/<id>`
 //! (mirrors Steam's compatdata-per-appid model) so saves and config stay
 //! isolated and ludusavi can target a single prefix per game.
@@ -301,6 +305,26 @@ pub fn build_umu_launch(
         env.push(("PROTONPATH".to_string(), proton_path.to_string_lossy().to_string()));
     }
 
+    // Bound umu-run's network touches so an offline launch fails fast instead
+    // of stalling a Game-Mode boot. umu contacts the network on each launch to
+    // check for a Steam Runtime update and to look up the GAMEID in the umu
+    // database (protonfixes); with its defaults (5 s timeout × 3 retries) every
+    // one of those waits the full budget when there's no connectivity. We leave
+    // the update check itself *enabled* (UMU_RUNTIME_UPDATE) so a cached runtime
+    // still updates when online — only the per-request timeout and retry count
+    // are capped, so an offline launch loses a few seconds and then umu falls
+    // back to the already-downloaded runtime on its own. (The very first run on
+    // a machine still needs the network to download the runtime — bounding
+    // can't conjure a runtime that was never fetched.) Mirrors the rclone
+    // fail-fast timeouts in `ludusavi_config::ensure_rclone_timeouts`. Both keys
+    // defer to an explicit user override if one is already set in the env.
+    if std::env::var_os("UMU_HTTP_TIMEOUT").is_none() {
+        env.push(("UMU_HTTP_TIMEOUT".to_string(), "4".to_string()));
+    }
+    if std::env::var_os("UMU_HTTP_RETRIES").is_none() {
+        env.push(("UMU_HTTP_RETRIES".to_string(), "1".to_string()));
+    }
+
     UmuLaunch {
         program: umu_run.to_path_buf(),
         args,
@@ -451,6 +475,14 @@ mod tests {
         assert_eq!(get("GAMEID"), Some("umu-abc".to_string()));
         assert_eq!(get("WINEPREFIX"), Some("/prefixes/abc".to_string()));
         assert_eq!(get("PROTONPATH"), Some("/proton/Experimental".to_string()));
+        // Network-bounding defaults are injected (unless the user overrode them
+        // in the env — not set in the test environment).
+        if std::env::var_os("UMU_HTTP_TIMEOUT").is_none() {
+            assert_eq!(get("UMU_HTTP_TIMEOUT"), Some("4".to_string()));
+        }
+        if std::env::var_os("UMU_HTTP_RETRIES").is_none() {
+            assert_eq!(get("UMU_HTTP_RETRIES"), Some("1".to_string()));
+        }
     }
 
     #[test]

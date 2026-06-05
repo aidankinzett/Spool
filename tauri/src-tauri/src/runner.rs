@@ -418,6 +418,245 @@ pub async fn manual_restore(app: AppHandle, game_id: String) -> AppResult<Manual
     Ok(ManualRestoreResult { game_count })
 }
 
+/// Outcome of a pull-from-cloud sync, so the UI can tell the user what (if
+/// anything) changed without launching the game.
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PullOutcome {
+    /// No cloud remote configured — nothing to pull.
+    Unconfigured,
+    /// Local and cloud already matched — nothing changed on disk.
+    UpToDate,
+    /// Cloud was ahead; its saves were pulled down and restored to disk.
+    Pulled,
+    /// Local saves are newer than the cloud — left untouched (a pull never
+    /// pushes; the user can play to upload, or resolve a conflict explicitly).
+    LocalNewer,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PullResult {
+    pub outcome: PullOutcome,
+    pub game_count: i32,
+}
+
+/// Pull cloud saves down to this device and restore them to disk, **without**
+/// launching the game. The marquee feature's pre-launch restore already does
+/// this as part of a play session; this command exposes the same "get the
+/// latest saves from the cloud" step on its own, for the "Sync now" buttons on
+/// the game pages and the Decky Quick Access menu.
+///
+/// Guarded by the single-launch lock so a pull can't race a running session.
+/// After a successful pull the entry's backup metadata is refreshed (which
+/// emits `library:changed`) so the card repaints. See [`pull_cloud_saves_core`]
+/// for the pull-only semantics.
+#[tauri::command]
+pub async fn pull_cloud_saves(app: AppHandle, game_id: String) -> AppResult<PullResult> {
+    let run_state = app.state::<RunState>();
+    let _guard = run_state.try_acquire(&game_id)?;
+
+    let ludusavi_exe = crate::paths::resolve_ludusavi_path().ok_or_else(|| {
+        AppError::Other("Ludusavi sidecar not found — reinstall Spool.".into())
+    })?;
+    let config_dir = crate::paths::ludusavi_config_dir();
+    let library = app.state::<SharedLibrary>();
+    let ludusavi_client = app.state::<LudusaviClient>();
+
+    let result = pull_cloud_saves_core(
+        ludusavi_client.inner(),
+        &ludusavi_exe,
+        &config_dir,
+        &library,
+        &game_id,
+    )
+    .await?;
+
+    // Refresh backup count / last-backed-up from ludusavi truth and emit
+    // `library:changed` so the card repaints. Best-effort — the pull already
+    // succeeded if this no-ops. Skipped when nothing landed (unconfigured /
+    // local-newer leave the local store untouched).
+    if matches!(result.outcome, PullOutcome::Pulled | PullOutcome::UpToDate) {
+        let _ = refresh_save_metadata(app.clone(), game_id.clone()).await;
+    }
+    Ok(result)
+}
+
+/// Pull-only sync core, shared by the [`pull_cloud_saves`] command and the
+/// headless plugin server (Decky). Never uploads.
+///
+/// `ludusavi restore --cloud-sync` pulls the remote into the local backup store
+/// and lands the tip on disk. A clean run means we were already in sync. A
+/// reported cloud conflict is reconciled against the last-synced baseline:
+///   * cloud cleanly ahead → download + re-restore (the actual pull),
+///   * local cleanly ahead → leave both sides alone and report `LocalNewer`
+///     (pushing would be the opposite of a pull),
+///   * both moved → return a "cloud sync conflict" error so the caller's UI
+///     opens the same `CloudConflictModal` the launch path uses.
+///
+/// On a successful pull the entry's `cloud_sync_baseline` is advanced and its
+/// `sync_badge` set to `synced`. Does not emit events or refresh ludusavi
+/// metadata — that's the caller's job (the headless server has no event bus).
+pub async fn pull_cloud_saves_core(
+    ludusavi_client: &LudusaviClient,
+    ludusavi_exe: &Path,
+    config_dir: &Path,
+    library: &SharedLibrary,
+    game_id: &str,
+) -> AppResult<PullResult> {
+    // Without a remote there is nothing to pull — report it so the UI can hint
+    // the user to configure cloud saves rather than showing a misleading
+    // "up to date".
+    if !ludusavi_config::cloud_remote_is_configured() {
+        return Ok(PullResult {
+            outcome: PullOutcome::Unconfigured,
+            game_count: 0,
+        });
+    }
+
+    // Snapshot what the restore needs from the library (game name, the Proton
+    // prefix for cross-device redirects, and the install folder).
+    let (game_name, wine_prefix, game_folder) = {
+        let entry = library
+            .find(game_id)
+            .await?
+            .ok_or_else(|| AppError::Other(format!("game not found: {game_id}")))?;
+        let wine_prefix: Option<PathBuf> = if entry.uses_proton() {
+            Some(
+                entry
+                    .wine_prefix_path
+                    .clone()
+                    .filter(|p| !p.trim().is_empty())
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| crate::proton::game_prefix_path(game_id)),
+            )
+        } else {
+            None
+        };
+        let game_folder = entry.game_folder_path.as_ref().map(PathBuf::from);
+        (entry.game_name.clone(), wine_prefix, game_folder)
+    };
+
+    // ── Pass 1: restore --cloud-sync (pulls the remote, lands the tip) ────────
+    let out = restore_with_redirects(
+        ludusavi_client,
+        ludusavi_exe,
+        config_dir,
+        &game_name,
+        wine_prefix.as_deref(),
+        game_folder.as_deref(),
+        None,
+    )
+    .await
+    .map_err(|e| AppError::Other(format!("ludusavi restore: {e}")))?;
+
+    let conflict = out
+        .errors
+        .as_ref()
+        .and_then(|e| e.cloud_conflict.as_ref())
+        .is_some();
+
+    if !conflict {
+        // Clean pull — local now reflects the cloud tip. Record it as the synced
+        // baseline so the next conflict check is exact, then mark the badge.
+        let backup_dir = ludusavi_config::backup_dir();
+        if let Some(tip) = redirects::read_local_backup_tip(&backup_dir, &game_name) {
+            let _ = set_baseline_in(library, game_id, &tip.name).await;
+        }
+        mark_synced_badge(library, game_id).await;
+        let game_count = out.overall.as_ref().map(|o| o.total_games).unwrap_or(0);
+        return Ok(PullResult {
+            outcome: PullOutcome::UpToDate,
+            game_count,
+        });
+    }
+
+    // local ≠ cloud — reconcile against the baseline.
+    let backup_dir = ludusavi_config::backup_dir();
+    let local_tip = redirects::read_local_backup_tip(&backup_dir, &game_name);
+    let cloud_tip = fetch_cloud_backup_tip(&game_name).await;
+    let base = library
+        .find(game_id)
+        .await?
+        .and_then(|e| e.cloud_sync_baseline);
+    let decision = decide_cloud_sync(base.as_deref(), local_tip.as_ref(), cloud_tip.as_ref());
+    tracing::info!(
+        game_name,
+        ?decision,
+        base = ?base,
+        local = ?local_tip.as_ref().map(|t| t.name.as_str()),
+        cloud = ?cloud_tip.as_ref().map(|t| t.name.as_str()),
+        "pull_cloud_saves reconciliation"
+    );
+    match decision {
+        CloudSyncDecision::InSync => {
+            mark_synced_badge(library, game_id).await;
+            Ok(PullResult {
+                outcome: PullOutcome::UpToDate,
+                game_count: 0,
+            })
+        }
+        CloudSyncDecision::FastForwardDownload => {
+            // Cloud cleanly ahead — pull it down and re-restore to disk.
+            ludusavi_client
+                .cloud_resolve(
+                    ludusavi_exe,
+                    config_dir,
+                    crate::ludusavi::CloudOp::Download,
+                    &game_name,
+                )
+                .await
+                .map_err(|e| AppError::Other(format!("ludusavi cloud download: {e}")))?;
+            let out = restore_with_redirects(
+                ludusavi_client,
+                ludusavi_exe,
+                config_dir,
+                &game_name,
+                wine_prefix.as_deref(),
+                game_folder.as_deref(),
+                None,
+            )
+            .await
+            .map_err(|e| AppError::Other(format!("ludusavi restore: {e}")))?;
+            if out
+                .errors
+                .as_ref()
+                .and_then(|e| e.cloud_conflict.as_ref())
+                .is_some()
+            {
+                return Err(AppError::Other(
+                    "Cloud sync conflict — local and cloud saves both changed.".into(),
+                ));
+            }
+            if let Some(tip) = cloud_tip.as_ref() {
+                let _ = set_baseline_in(library, game_id, &tip.name).await;
+            }
+            mark_synced_badge(library, game_id).await;
+            let game_count = out.overall.as_ref().map(|o| o.total_games).unwrap_or(0);
+            Ok(PullResult {
+                outcome: PullOutcome::Pulled,
+                game_count,
+            })
+        }
+        CloudSyncDecision::FastForwardUpload => {
+            // Local cleanly ahead — a pull never pushes. Leave both sides as they
+            // are; the user can play (which uploads on exit) to publish.
+            Ok(PullResult {
+                outcome: PullOutcome::LocalNewer,
+                game_count: 0,
+            })
+        }
+        CloudSyncDecision::Diverged => Err(AppError::Other(
+            "Cloud sync conflict — local and cloud saves have both changed.".into(),
+        )),
+    }
+}
+
+/// Set a game's `sync_badge` to `synced` and persist (only writes on a change).
+/// Best-effort: a poisoned/failed library lock leaves the badge untouched.
+async fn mark_synced_badge(library: &SharedLibrary, game_id: &str) {
+    let _ = library.set_sync_badge(game_id, "synced").await;
+}
+
 /// List the save revisions ludusavi currently retains for a game, newest
 /// first, with the tip flagged. Backs the in-app "restore an earlier save"
 /// picker in the game detail card. Reflects the local backup store, so
@@ -880,9 +1119,14 @@ fn decide_cloud_sync(
 
 /// Record `tip_name` as the cloud-sync baseline for `game_id`.
 async fn set_cloud_baseline(app: &AppHandle, game_id: &str, tip_name: &str) -> AppResult<()> {
-    app.state::<SharedLibrary>()
-        .set_cloud_baseline(game_id, tip_name)
-        .await?;
+    set_baseline_in(&app.state::<SharedLibrary>(), game_id, tip_name).await
+}
+
+/// Library-based variant of [`set_cloud_baseline`] for callers that hold the
+/// `SharedLibrary` directly rather than an `AppHandle` (e.g. the headless
+/// plugin server).
+async fn set_baseline_in(library: &SharedLibrary, game_id: &str, tip_name: &str) -> AppResult<()> {
+    library.set_cloud_baseline(game_id, tip_name).await?;
     Ok(())
 }
 

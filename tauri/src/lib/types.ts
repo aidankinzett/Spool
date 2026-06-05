@@ -421,3 +421,20 @@ export type RawConflictDetails = {
   local: RawSaveDetails | null;
   cloud: RawSaveDetails | null;
 };
+
+/** Outcome of a pull-from-cloud sync (`api.pullCloudSaves`). Mirrors the Rust
+ *  `PullOutcome` in `runner.rs`. */
+export type PullOutcome =
+  /** No cloud remote configured — nothing to pull. */
+  | 'unconfigured'
+  /** Local and cloud already matched — nothing changed on disk. */
+  | 'up_to_date'
+  /** Cloud was ahead; its saves were pulled down and restored to disk. */
+  | 'pulled'
+  /** Local saves are newer than the cloud — left untouched (a pull never pushes). */
+  | 'local_newer';
+
+export type PullResult = {
+  outcome: PullOutcome;
+  game_count: number;
+};

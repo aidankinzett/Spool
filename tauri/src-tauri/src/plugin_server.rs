@@ -106,6 +106,10 @@ pub async fn serve() -> AppResult<()> {
         .route("/session", get(get_session))
         .route("/session/game-stopped", post(post_game_stopped))
         .route("/session/backup-now", post(post_backup_now))
+        // Pull cloud saves for a game down to this device without launching it,
+        // for the Quick Access "Sync now" action. Mirrors the desktop
+        // `pull_cloud_saves` command. Pull-only — never uploads.
+        .route("/games/:id/pull", post(post_pull_cloud_saves))
         .route("/library", get(get_library))
         .route("/games/:id", delete(delete_game))
         .route("/fold", post(post_fold))
@@ -256,6 +260,45 @@ async fn post_backup_now(AxState(state): AxState<PluginState>) -> Json<Value> {
         return Json(json!({ "acted": false, "ok": false, "reason": "no active session" }));
     };
     run_backup(&state, &rec.game, &rec.session_id).await
+}
+
+/// Pull cloud saves for a game down to this device and restore them to disk,
+/// without launching. Mirrors the desktop `pull_cloud_saves` command via the
+/// shared [`crate::runner::pull_cloud_saves_core`]. Loads the library fresh (the
+/// GUI may also be running) and reports the outcome so the Decky UI can toast
+/// "Pulled latest saves" / "Already up to date" / "Local saves are newer", or a
+/// conflict the user must resolve in the desktop app.
+async fn post_pull_cloud_saves(AxPath(id): AxPath<String>, AxState(state): AxState<PluginState>) -> Json<Value> {
+    let Some(ludusavi_exe) = crate::paths::resolve_ludusavi_path() else {
+        return Json(json!({ "ok": false, "reason": "ludusavi sidecar not found" }));
+    };
+    if let Err(e) = crate::ludusavi_config::ensure_config() {
+        tracing::warn!(error = %e, "plugin pull: ensure_config warning");
+    }
+    let config_dir = crate::paths::ludusavi_config_dir();
+
+    match crate::runner::pull_cloud_saves_core(
+        state.ludusavi.as_ref(),
+        &ludusavi_exe,
+        &config_dir,
+        &state.library,
+        &id,
+    )
+    .await
+    {
+        Ok(r) => {
+            let outcome = serde_json::to_value(r.outcome)
+                .ok()
+                .and_then(|v| v.as_str().map(str::to_string))
+                .unwrap_or_default();
+            tracing::info!(game_id = %id, outcome = %outcome, "plugin pull: complete");
+            Json(json!({ "ok": true, "outcome": outcome, "game_count": r.game_count }))
+        }
+        Err(e) => {
+            tracing::warn!(game_id = %id, error = %e, "plugin pull: failed");
+            Json(json!({ "ok": false, "reason": e.to_string() }))
+        }
+    }
 }
 
 /// Triggers a cross-device rclone fold and waits for it to complete. The

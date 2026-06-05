@@ -321,6 +321,7 @@ pub fn run() {
             runner::manual_backup,
             runner::refresh_save_metadata,
             runner::manual_restore,
+            runner::pull_cloud_saves,
             runner::list_save_revisions,
             runner::restore_save_revision,
             runner::resolve_cloud_conflict,
