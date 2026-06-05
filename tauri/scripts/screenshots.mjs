@@ -65,7 +65,7 @@ const SHOTS = [
     name: 'Download + uploads',
     width: 720,
     height: 600,
-    selector: '#storybook-root',
+    selector: '[role="dialog"]',
   },
 ];
 
@@ -223,9 +223,13 @@ async function updateReadme(captured) {
       if (!c) return whole;
       updated++;
       const alt = shotId.replace(/-/g, ' ').replace(/\b\w/g, (ch) => ch.toUpperCase());
+      // Emit width only (no height): rendering environments that apply
+      // `max-width:100%` without `height:auto` (e.g. VS Code's markdown
+      // preview) distort a fixed-height image when the pane is narrower than
+      // the width. With width alone, height stays proportional everywhere.
       return (
         `<!-- spool:shot id=${shotId} -->\n` +
-        `<img src="docs/screenshots/${c.file}" alt="${alt}" width="${c.width}" height="${c.height}" />\n` +
+        `<img src="docs/screenshots/${c.file}" alt="${alt}" width="${c.width}" />\n` +
         `<!-- spool:endshot -->`
       );
     },

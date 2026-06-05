@@ -9,7 +9,7 @@
 </p>
 
 <!-- spool:shot id=library-desktop -->
-<img src="docs/screenshots/library-desktop.png" alt="Library Desktop" width="1440" height="900" />
+<img src="docs/screenshots/library-desktop.png" alt="Library Desktop" width="1440" />
 <!-- spool:endshot -->
 
 ---
@@ -33,7 +33,7 @@ overwriting yourself. If both sides changed, Spool shows a conflict picker inste
 of guessing.
 
 <!-- spool:shot id=cloud-conflict -->
-<img src="docs/screenshots/cloud-conflict.png" alt="Cloud Conflict" width="640" height="518" />
+<img src="docs/screenshots/cloud-conflict.png" alt="Cloud Conflict" width="640" />
 <!-- spool:endshot -->
 
 
@@ -47,7 +47,7 @@ Transfers verify every file, resume if interrupted, and add the game to your lib
 automatically when done.
 
 <!-- spool:shot id=transfers -->
-<img src="docs/screenshots/transfers.png" alt="Transfers" width="386" height="378" />
+<img src="docs/screenshots/transfers.png" alt="Transfers" width="460" />
 <!-- spool:endshot -->
 
 

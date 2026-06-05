@@ -23,7 +23,9 @@
 </script>
 
 {#snippet template(args: ComponentProps<typeof TransfersPanel>)}
-  <div style="width: 360px">
+  <!-- The panel is a fixed-width (460px) component; match the wrapper to it so
+       nothing overflows/clips in the story or in captured screenshots. -->
+  <div style="width: 460px">
     <TransfersPanel {...args} />
   </div>
 {/snippet}
