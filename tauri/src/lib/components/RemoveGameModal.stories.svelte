@@ -13,7 +13,6 @@
     parameters: { layout: 'fullscreen' },
     args: {
       gameName: 'The Witcher 3: Wild Hunt',
-      catalogId: 'SPL-0001',
       accent: '#c9a36f',
       coverUrl: null,
       folderPath: 'C:/Games/The Witcher 3',

@@ -21,14 +21,12 @@
   import { BookMarked, HardDrive, Trash2, X } from '@lucide/svelte';
   import { shadeHex } from '$lib/tokens';
   import SpoolMark from '$lib/components/SpoolMark.svelte';
-  import CatalogId from '$lib/components/CatalogId.svelte';
   import { gamepadScope } from '$lib/gamepad';
 
   const BRAND_SPOOL = '#d7c9a0';
 
   let {
     gameName,
-    catalogId = undefined,
     accent = null,
     coverUrl = null,
     folderPath = null,
@@ -37,8 +35,6 @@
   }: {
     /** Display name of the game being removed. */
     gameName: string;
-    /** Pre-formatted catalog id ("SPL-0028"). Hidden when omitted. */
-    catalogId?: string;
     /** Cover-art accent hex; falls back to the brand spool colour. */
     accent?: string | null;
     /** Webview-loadable cover URL (via `assetUrl`); placeholder when null. */
@@ -277,9 +273,6 @@
       style:border-bottom="1px solid var(--color-line-1)"
     >
       <div class="min-w-0 flex-1">
-        <div class="flex items-center gap-2" style:margin-bottom="9px">
-          {#if catalogId}<CatalogId id={catalogId} accent={accent ?? undefined} />{/if}
-        </div>
         <h1
           id="rg-modal-title"
           class="font-display"

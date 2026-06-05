@@ -203,7 +203,6 @@
     <SuspendedLockModal
       gameName={suspendedGame.game_name}
       deviceName={sc.deviceName}
-      catalogId={suspendedGame.catalog_number ? `SPL-${String(suspendedGame.catalog_number).padStart(4, '0')}` : undefined}
       accent={suspendedGame.accent_color}
       coverUrl={assetUrl(suspendedGame.cover_image_path)}
       context={uiMode.resolved === 'touch' ? 'gamemode' : 'desktop'}
