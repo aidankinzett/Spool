@@ -19,23 +19,37 @@
 //! Non-Linux targets get a no-op watcher: the returned handle is an
 //! already-finished task, so the caller's unconditional `.abort()` is harmless.
 
+use std::sync::atomic::AtomicI64;
+use std::sync::Arc;
 use tauri::AppHandle;
 use tokio::task::JoinHandle;
+
+/// Total seconds the system spent suspended during a session. The watcher adds
+/// each resume−sleep interval to this; the runner subtracts it from the
+/// wall-clock session length so time asleep isn't counted as play time.
+pub type SuspendedSecs = Arc<AtomicI64>;
 
 /// Starts a per-session task that marks the play-state lock suspended when the
 /// system sleeps. The returned handle is aborted by the runner when the session
 /// ends (see `run_workflow`). No-op when sync is unconfigured — the inner calls
 /// short-circuit on a missing server/device id.
-pub fn start_suspend_watcher(app: AppHandle, game_name: String) -> JoinHandle<()> {
+///
+/// `suspended_secs` accumulates the total time spent asleep across the session
+/// (Linux only); on other platforms it stays zero.
+pub fn start_suspend_watcher(
+    app: AppHandle,
+    game_name: String,
+    suspended_secs: SuspendedSecs,
+) -> JoinHandle<()> {
     #[cfg(target_os = "linux")]
     {
-        tokio::spawn(linux::watch(app, game_name))
+        tokio::spawn(linux::watch(app, game_name, suspended_secs))
     }
     #[cfg(not(target_os = "linux"))]
     {
         // No suspend integration off Linux; hand back a completed task so the
         // caller's `.abort()` is a harmless no-op.
-        let _ = (&app, &game_name);
+        let _ = (&app, &game_name, &suspended_secs);
         tokio::spawn(async {})
     }
 }
@@ -44,6 +58,8 @@ pub fn start_suspend_watcher(app: AppHandle, game_name: String) -> JoinHandle<()
 mod linux {
     use super::*;
     use crate::rclone;
+    use chrono::Utc;
+    use std::sync::atomic::Ordering;
     use zbus::zvariant::OwnedFd;
     use zbus::{Connection, Proxy};
 
@@ -75,7 +91,7 @@ mod linux {
         }
     }
 
-    pub async fn watch(app: AppHandle, game_name: String) {
+    pub async fn watch(app: AppHandle, game_name: String, suspended_secs: SuspendedSecs) {
         let conn = match Connection::system().await {
             Ok(c) => c,
             Err(e) => {
@@ -103,6 +119,9 @@ mod linux {
         // next suspend. Re-taken after each resume.
         let mut inhibitor = take_delay_inhibitor(&proxy).await;
 
+        // When we last went to sleep, so resume can accumulate the asleep span.
+        let mut slept_at = None;
+
         use futures_util::StreamExt;
         while let Some(msg) = signal.next().await {
             // PrepareForSleep carries a single bool: true = about to sleep,
@@ -117,12 +136,21 @@ mod linux {
 
             if about_to_sleep {
                 tracing::info!(game = %game_name, "suspend: system sleeping — marking session suspended");
+                slept_at = Some(Utc::now());
                 rclone::mark_session_suspended(&app, &game_name).await;
                 // Release the inhibitor so the suspend can proceed now that the
                 // marker is updated. Re-taken on resume.
                 inhibitor = None;
             } else {
-                tracing::info!(game = %game_name, "suspend: system resumed — refreshing session marker");
+                // Add the span we just spent asleep so the runner can subtract
+                // it from the session's wall-clock play time.
+                if let Some(start) = slept_at.take() {
+                    let secs = (Utc::now() - start).num_seconds().max(0);
+                    suspended_secs.fetch_add(secs, Ordering::Relaxed);
+                    tracing::info!(game = %game_name, asleep_secs = secs, "suspend: system resumed — refreshing session marker");
+                } else {
+                    tracing::info!(game = %game_name, "suspend: system resumed — refreshing session marker");
+                }
                 // Re-assert our marker immediately rather than waiting up to
                 // 60s for the next heartbeat. If another device took over the
                 // session while we slept, warn the user; the local game keeps
