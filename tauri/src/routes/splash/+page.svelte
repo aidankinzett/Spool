@@ -68,14 +68,18 @@
   let progressRaf = $state<number | null>(null);
 
   let windowHeight = $state(800);
-  // The splash only ever renders in attached / Game-Mode launches, where
-  // gamescope drops the desktop's display scaling (e.g. KDE's 150%) — the same
-  // reason the library window gets a webview zoom. A WebKit zoom would just
-  // shrink the reported innerHeight and cancel this windowHeight-based scaling,
-  // so instead bake the bump straight into the scale factor. Keep in sync with
-  // gamemode::DEFAULT_GAME_MODE_ZOOM on the backend.
-  const GAME_MODE_ZOOM = 1.5;
-  let s = $derived((windowHeight / 800) * GAME_MODE_ZOOM);
+  // The splash's own layout already scales to whatever resolution gamescope
+  // (or a streaming host) hands it — `--s` is driven off the window height, so
+  // it fills the screen on a handheld, a Deck, or a desktop monitor without any
+  // extra Game-Mode zoom. (An earlier 1.5× bump here double-counted that and
+  // blew the splash up, worst of all on tall displays like an ultrawide.)
+  let s = $derived(windowHeight / 800);
+  // The cloud-conflict modal is a shared component sized in fixed desktop px, so
+  // it doesn't follow `--s` and looks small against the scaled splash. Zoom it
+  // up to roughly match, but clamp it: at least readable on short windows, and
+  // capped so a tall display (where `s` climbs toward 2) can't push it off the
+  // edges of the screen.
+  let modalZoom = $derived(Math.min(Math.max(s, 1), 1.4));
   let syncStatus = $state<'online' | 'offline' | 'unconfigured'>('online');
   // Cloud upload failure (local backup ok, remote upload failed) also renders as offline.
   let net = $derived(syncStatus === 'offline' || cloudUploadFailed ? 'offline' : 'online');
@@ -590,10 +594,10 @@
   {#if isCloudConflict}
     <!-- CloudConflictModal is a shared component sized in fixed px (it renders
          at desktop density in the main window), so it doesn't read the splash's
-         --s scale. Wrap it in a CSS `zoom` so it matches the rest of the
-         zoomed-up Game-Mode splash. `zoom` scales the modal's fixed-position
-         scrim too, unlike `transform`. -->
-    <div style="zoom: {s};">
+         --s scale and looks small against the scaled splash. Wrap it in a CSS
+         `zoom` (clamped) so it's comfortably readable. `zoom` scales the modal's
+         fixed-position scrim too, unlike `transform`. -->
+    <div style="zoom: {modalZoom};">
     <CloudConflictModal
       gameName={game?.game_name ?? 'Game'}
       catalogId={game?.catalog_number ? catalogId(game.catalog_number) : undefined}
