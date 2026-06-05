@@ -47,7 +47,7 @@ Transfers verify every file, resume if interrupted, and add the game to your lib
 automatically when done.
 
 <!-- spool:shot id=transfers -->
-<img src="docs/screenshots/transfers.png" alt="Transfers" width="460" />
+<img src="docs/screenshots/transfers.png" alt="Transfers" width="648" />
 <!-- spool:endshot -->
 
 

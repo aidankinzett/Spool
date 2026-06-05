@@ -41,6 +41,10 @@ const skipReadme = args.has('--no-readme');
  * index.json. `page` mode screenshots the whole viewport (for `fullscreen`
  * layout stories); otherwise `selector` is element-cropped to that node.
  * `htmlMode` sets `<html data-mode>` so density-scaled CSS matches the layout.
+ *
+ * A shot may instead drive the UI: `open` clicks a control, then the capture
+ * is clipped to `panel`'s box grown by `pad` (top/right/bottom/left CSS px) —
+ * used to frame an opened popover with a bit of the surrounding chrome.
  */
 const SHOTS = [
   {
@@ -60,12 +64,18 @@ const SHOTS = [
     selector: '[role="dialog"]',
   },
   {
+    // The transfers panel shown where it lives: open the chrome's transfer
+    // pill in the full library, then frame the panel plus a slice of the
+    // window around it. Uploads resolve real covers from the library.
     file: 'transfers.png',
-    title: 'Transfers/TransfersPanel',
-    name: 'Download + uploads',
-    width: 720,
-    height: 600,
-    selector: '[role="dialog"]',
+    title: 'Screens/Library',
+    name: 'Desktop · transfers',
+    width: 1440,
+    height: 900,
+    htmlMode: 'desktop',
+    open: 'button[aria-label="Transfers"]',
+    panel: '[role="dialog"][aria-label="Transfers"]',
+    pad: { top: 58, right: 28, bottom: 52, left: 160 },
   },
 ];
 
@@ -188,7 +198,24 @@ async function capture(browser, port, index, shot) {
   const dest = join(outDir, shot.file);
   let logicalWidth = shot.width;
   let logicalHeight = shot.height;
-  if (shot.selector) {
+  if (shot.open) {
+    // Open a control, then clip to the revealed panel grown by `pad` so the
+    // shot frames the panel with a slice of the surrounding UI for context.
+    await page.locator(shot.open).first().click();
+    const el = page.locator(shot.panel).first();
+    await el.waitFor({ state: 'visible' });
+    await waitForReady(page); // panel's covers
+    await page.waitForTimeout(150);
+    const box = await el.boundingBox();
+    const pad = shot.pad ?? {};
+    const x = Math.max(0, box.x - (pad.left ?? 0));
+    const y = Math.max(0, box.y - (pad.top ?? 0));
+    const right = Math.min(shot.width, box.x + box.width + (pad.right ?? 0));
+    const bottom = Math.min(shot.height, box.y + box.height + (pad.bottom ?? 0));
+    logicalWidth = Math.round(right - x);
+    logicalHeight = Math.round(bottom - y);
+    await page.screenshot({ path: dest, clip: { x, y, width: right - x, height: bottom - y } });
+  } else if (shot.selector) {
     const el = page.locator(shot.selector).first();
     await el.waitFor({ state: 'visible' });
     const box = await el.boundingBox();
