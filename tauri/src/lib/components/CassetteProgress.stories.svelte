@@ -25,7 +25,7 @@
   </div>
 {/snippet}
 
-<Story name="Download (LAN)" args={{ dir: 'down', sourceKind: 'lan', source: 'Celeste · Steam Deck' }} />
-<Story name="Upload (LAN)" args={{ dir: 'up', sourceKind: 'lan', accent: '#7ee2a4', label: '3.0 GB / 9.0 GB · 60 MB/s', source: 'Hollow Knight · ROG Ally' }} />
+<Story name="Download (LAN)" args={{ dir: 'down', sourceKind: 'lan', source: 'Terraria · Steam Deck' }} />
+<Story name="Upload (LAN)" args={{ dir: 'up', sourceKind: 'lan', accent: '#7ee2a4', label: '24.0 GB / 50.0 GB · 60 MB/s', source: 'The Witcher 3 · ROG Ally' }} />
 <Story name="Cloud sync" args={{ dir: 'up', sourceKind: 'cloud', accent: '#7ec6ff', label: 'Mirroring to remote…', source: 'Dropbox' }} />
-<Story name="Complete" args={{ percent: 100, label: 'Done', sourceKind: 'lan', source: 'Celeste · Steam Deck' }} />
+<Story name="Complete" args={{ percent: 100, label: 'Done', sourceKind: 'lan', source: 'Terraria · Steam Deck' }} />

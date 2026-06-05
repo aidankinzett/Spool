@@ -15,9 +15,9 @@
     tags: ['!autodocs'],
     parameters: { layout: 'fullscreen' },
     args: {
-      gameName: 'Hollow Knight',
+      gameName: 'The Witcher 3: Wild Hunt',
       catalogId: 'SPL-0001',
-      accent: '#6fb7c9',
+      accent: '#c9a36f',
       coverUrl: null,
       cloudNewer: true,
       localMeta: LOCAL,

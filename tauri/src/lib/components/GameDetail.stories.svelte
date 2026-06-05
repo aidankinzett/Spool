@@ -19,7 +19,7 @@
       case 'add_to_steam':
         return { extras_placed: ['cover', 'hero'] };
       case 'generate_armoury_launcher':
-        return 'C:/Users/you/AppData/Local/Spool/launchers/hollow-knight.exe';
+        return 'C:/Users/you/AppData/Local/Spool/launchers/the-witcher-3-wild-hunt.exe';
       case 'remove_game':
         return true;
       default:
@@ -44,6 +44,7 @@
     accent_color: null,
     sync_badge: null,
     steam_id: null,
+    gog_id: null,
     install_source: 'Manual',
   };
 
@@ -92,10 +93,10 @@
       save_backup_count: 12,
       save_backup_size_mb: 34,
       save_last_backed_up_at: '2026-05-28T23:02:00Z',
-      save_paths: ['C:/Users/you/AppData/LocalLow/Team Cherry/Hollow Knight'],
-      accent_color: '#6fb7c9',
-      steam_id: 367520,
-      install_source: 'Steam',
+      save_paths: ['C:/Users/you/Documents/The Witcher 3'],
+      accent_color: '#c9a36f',
+      gog_id: 1207664643,
+      install_source: 'GOG',
     }),
   }}
 />
