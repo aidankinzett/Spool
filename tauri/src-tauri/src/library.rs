@@ -211,10 +211,10 @@ pub struct NewGame {
     /// something to stream — see `PeerGame::from_entry` in `lan/mod.rs`.
     #[serde(default)]
     pub game_folder_path: Option<String>,
-    /// Override for the Wine prefix ROOT (Linux). Set by the guided repack
-    /// installer (`repack_install.rs`) so the game launches in the very prefix
-    /// it was installed into — keeping any vcredist/dotnet/registry state the
-    /// installer set up. `None` for the normal Add flow (the runner then uses
+    /// Override for the Wine prefix ROOT (Linux). Set by the guided
+    /// Windows-installer flow (`guided_install.rs`) so the game launches in the
+    /// very prefix it was installed into — keeping any vcredist/dotnet/registry
+    /// state the installer set up. `None` for the normal Add flow (the runner then uses
     /// the default `prefixes/<id>`).
     #[serde(default)]
     pub wine_prefix_path: Option<String>,

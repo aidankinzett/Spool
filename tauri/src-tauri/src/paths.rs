@@ -60,10 +60,10 @@ pub fn proton_prefixes_dir() -> PathBuf {
     app_data_dir().join("prefixes")
 }
 
-/// Default root for games installed through the guided repack installer
-/// (`repack_install.rs`): `~/.local/share/Spool/games/<name>` on Linux. Each
+/// Default root for games installed through the guided Windows-installer flow
+/// (`guided_install.rs`): `~/.local/share/Spool/games/<name>` on Linux. Each
 /// install gets its own subfolder, mounted into the Wine prefix as a drive so
-/// the repack's `setup.exe` can write there.
+/// the installer's `setup.exe` can write there.
 #[allow(dead_code)]
 pub fn installed_games_dir() -> PathBuf {
     app_data_dir().join("games")

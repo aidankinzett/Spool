@@ -30,7 +30,7 @@
   let { lib }: { lib: Library } = $props();
 
   // UI-only state (not in controller)
-  // The guided repack installer runs through Proton, so the button is Linux-only.
+  // The guided Windows-installer flow runs through Proton, so the button is Linux-only.
   let isLinux = $state(false);
   let lanOpen = $state(false);
   let transfersOpen = $state(false);
@@ -623,7 +623,7 @@
               class="inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-sm border border-line-2 bg-bg-1 px-3 text-[12.5px] font-medium text-ink-1 transition-colors hover:bg-bg-2 hover:text-ink-0"
             >
               <Package size={14} />
-              Install a repack
+              Install a game
             </button>
           {/if}
           <button
