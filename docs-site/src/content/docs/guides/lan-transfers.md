@@ -28,6 +28,8 @@ there's nothing to pair.
 3. Watch the transfer progress. When it finishes, the game is added to your
    library automatically and is ready to launch.
 
+![The transfers panel open in the Spool library, showing an incoming download and two outgoing uploads with per-file progress.](../../../assets/screenshots/transfers.png)
+
 ## What makes it safe to retry
 
 - **Every file is verified.** The sender hashes each file; the receiver checks the

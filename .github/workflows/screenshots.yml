@@ -77,6 +77,7 @@ jobs:
           delete-branch: true
           add-paths: |
             docs/screenshots/**
+            docs-site/src/assets/screenshots/**
             README.md
           commit-message: "Update README screenshots from Storybook"
           title: "Update README screenshots"

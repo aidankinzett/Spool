@@ -19,7 +19,7 @@
  */
 import { spawnSync } from 'node:child_process';
 import { createServer } from 'node:http';
-import { readFile, writeFile, mkdir, stat } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, stat, copyFile } from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve, join, extname } from 'node:path';
@@ -31,6 +31,10 @@ const repoRoot = resolve(tauriDir, '..');
 const staticDir = join(tauriDir, 'storybook-static');
 const outDir = join(repoRoot, 'docs', 'screenshots');
 const readmePath = join(repoRoot, 'README.md');
+// The docs site is a separate Astro project, so it can only optimise images
+// that live inside its own src/. Mirror the captures there too; the guide
+// markdown references these copies with stable relative paths.
+const docsAssetsDir = join(repoRoot, 'docs-site', 'src', 'assets', 'screenshots');
 
 const args = new Set(process.argv.slice(2));
 const skipBuild = args.has('--no-build');
@@ -292,6 +296,13 @@ async function main() {
     const n = await updateReadme(captured);
     log(`▶ README: updated ${n} screenshot block(s).`);
   }
+
+  // Mirror the captures into the docs site so its guides can embed them.
+  await mkdir(docsAssetsDir, { recursive: true });
+  for (const c of captured) {
+    await copyFile(join(outDir, c.file), join(docsAssetsDir, c.file));
+  }
+  log(`▶ docs-site: mirrored ${captured.length} image(s) to src/assets/screenshots/.`);
   log(`✓ Done. PNGs in docs/screenshots/`);
 }
 
