@@ -8,7 +8,9 @@
   A game library that keeps your saves in sync between your Steam Deck and your PC.
 </p>
 
-<img width="1282" height="936" alt="image" src="https://github.com/user-attachments/assets/cf168909-4668-4769-8691-167f1b28d222" />
+<!-- spool:shot id=library-desktop -->
+<img src="docs/screenshots/library-desktop.png" alt="Library Desktop" width="1440" height="900" />
+<!-- spool:endshot -->
 
 ---
 
@@ -30,7 +32,9 @@ pushed after you quit, so you can stop on the Deck and pick up on the PC without
 overwriting yourself. If both sides changed, Spool shows a conflict picker instead
 of guessing.
 
-<img width="649" height="523" alt="image" src="https://github.com/user-attachments/assets/f0595c7b-94a1-4f39-883a-adb08cad27ea" />
+<!-- spool:shot id=cloud-conflict -->
+<img src="docs/screenshots/cloud-conflict.png" alt="Cloud Conflict" width="640" height="518" />
+<!-- spool:endshot -->
 
 
 ### LAN transfers between devices
@@ -42,7 +46,9 @@ This makes getting a game onto the Steam Deck much faster than downloading it ag
 Transfers verify every file, resume if interrupted, and add the game to your library
 automatically when done.
 
-<img width="342" height="221" alt="image" src="https://github.com/user-attachments/assets/435503f6-9623-433a-959f-8d18dbef1138" />
+<!-- spool:shot id=transfers -->
+<img src="docs/screenshots/transfers.png" alt="Transfers" width="386" height="378" />
+<!-- spool:endshot -->
 
 
 ### Decky plugin for Game Mode
