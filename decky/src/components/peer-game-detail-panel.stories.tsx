@@ -1,4 +1,4 @@
-import type { Meta, StoryObj } from "@storybook/react";
+import type { Meta, StoryObj } from "@storybook/react-vite";
 import { PeerGameDetailPage } from "./peer-game-detail-panel";
 import { PEERS, PEER_GAMES, registerDeckyCallables, installFetchMock } from "../../.storybook/mocks/fixtures";
 import { clearCallables } from "../../.storybook/mocks/registry";

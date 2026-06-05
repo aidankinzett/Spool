@@ -1,4 +1,4 @@
-import type { Meta, StoryObj } from "@storybook/react";
+import type { Meta, StoryObj } from "@storybook/react-vite";
 import { LanPage } from "./lan-view";
 import { PEERS, registerDeckyCallables, installFetchMock } from "../../.storybook/mocks/fixtures";
 import { clearCallables } from "../../.storybook/mocks/registry";

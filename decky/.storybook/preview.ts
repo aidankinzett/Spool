@@ -1,4 +1,4 @@
-import type { Preview } from "@storybook/react";
+import type { Preview } from "@storybook/react-vite";
 
 // A free near-match for Steam's proprietary "Motiva Sans" (see
 // preview-head.html), with a system fallback if the webfont is unreachable.
@@ -18,16 +18,21 @@ if (typeof document !== "undefined") {
 const preview: Preview = {
   parameters: {
     backgrounds: {
-      default: "steam",
-      values: [
-        { name: "steam", value: "#1a1d23" },
-        { name: "black", value: "#000000" },
-      ],
+      options: {
+        steam: { name: "steam", value: "#1a1d23" },
+        black: { name: "black", value: "#000000" }
+      }
     },
     controls: {
       matchers: { color: /(background|color)$/i, date: /Date$/i },
     },
   },
+
+  initialGlobals: {
+    backgrounds: {
+      value: "steam"
+    }
+  }
 };
 
 export default preview;

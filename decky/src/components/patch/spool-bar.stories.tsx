@@ -1,4 +1,4 @@
-import type { Meta, StoryObj } from "@storybook/react";
+import type { Meta, StoryObj } from "@storybook/react-vite";
 import { SpoolBar } from "./spool-bar";
 import { ensureReelKeyframes } from "./reel";
 import { makeGame, registerDeckyCallables } from "../../../.storybook/mocks/fixtures";

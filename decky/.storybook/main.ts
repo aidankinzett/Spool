@@ -9,7 +9,7 @@ const deckyApi = fileURLToPath(new URL("./mocks/decky-api.tsx", import.meta.url)
 
 const config: StorybookConfig = {
   stories: ["../src/**/*.stories.@(ts|tsx)"],
-  addons: ["@storybook/addon-essentials"],
+  addons: ["@storybook/addon-docs"],
   framework: {
     name: "@storybook/react-vite",
     options: {},

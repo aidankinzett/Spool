@@ -1,4 +1,4 @@
-import type { Meta, StoryObj } from "@storybook/react";
+import type { Meta, StoryObj } from "@storybook/react-vite";
 import { SpoolMark } from "./spool-mark";
 
 const meta: Meta<typeof SpoolMark> = {

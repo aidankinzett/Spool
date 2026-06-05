@@ -1,4 +1,4 @@
-import type { Meta, StoryObj } from "@storybook/react";
+import type { Meta, StoryObj } from "@storybook/react-vite";
 import { Reel, TapeMeter, ensureReelKeyframes } from "./reel";
 
 // The spin/sheen animations reference keyframes that the live code injects into

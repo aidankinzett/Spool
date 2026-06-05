@@ -1,4 +1,4 @@
-import type { Meta, StoryObj } from "@storybook/react";
+import type { Meta, StoryObj } from "@storybook/react-vite";
 import { InstallDepsModal } from "./install-deps-modal";
 import { makeGame, registerDeckyCallables } from "../../.storybook/mocks/fixtures";
 import { clearCallables, setCallable } from "../../.storybook/mocks/registry";

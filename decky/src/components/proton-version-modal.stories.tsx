@@ -1,4 +1,4 @@
-import type { Meta, StoryObj } from "@storybook/react";
+import type { Meta, StoryObj } from "@storybook/react-vite";
 import { ProtonVersionModal } from "./proton-version-modal";
 import type { LibraryGame, ProtonVersion } from "../types";
 import { setCallable, clearCallables } from "../../.storybook/mocks/registry";

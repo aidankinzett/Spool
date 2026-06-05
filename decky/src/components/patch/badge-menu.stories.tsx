@@ -1,4 +1,4 @@
-import type { Meta, StoryObj } from "@storybook/react";
+import type { Meta, StoryObj } from "@storybook/react-vite";
 import { BadgeMenuButton } from "./badge-menu";
 import { makeGame, registerDeckyCallables } from "../../../.storybook/mocks/fixtures";
 import { clearCallables } from "../../../.storybook/mocks/registry";
