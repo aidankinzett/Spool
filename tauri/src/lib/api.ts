@@ -20,6 +20,7 @@ import type {
   SearchCandidate,
   RawConflictDetails,
   SaveRevision,
+  PullResult,
 } from './types';
 
 /** Status of the companion Spool Backup Decky plugin (mirrors the Rust
@@ -157,6 +158,16 @@ export const api = {
     invoke('manual_backup', { gameId }),
   manualRestore: (gameId: string): Promise<{ game_count: number }> =>
     invoke('manual_restore', { gameId }),
+  /**
+   * Pull cloud saves down to this device and restore them to disk, without
+   * launching the game ("Sync now"). Pull-only — never uploads. The `outcome`
+   * tells the caller what happened: `pulled` (cloud was ahead, now applied),
+   * `up_to_date`, `local_newer` (local is ahead, left untouched), or
+   * `unconfigured` (no cloud remote). A true divergence rejects with a "cloud
+   * sync conflict" error so the caller can open the conflict modal.
+   */
+  pullCloudSaves: (gameId: string): Promise<PullResult> =>
+    invoke('pull_cloud_saves', { gameId }),
   /** List the save revisions ludusavi retains for a game, newest first. */
   listSaveRevisions: (gameId: string): Promise<SaveRevision[]> =>
     invoke('list_save_revisions', { gameId }),

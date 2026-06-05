@@ -10,7 +10,7 @@ import {
 } from "@decky/ui";
 import { FaEllipsisVertical } from "react-icons/fa6";
 import type { LibraryGame } from "../../types";
-import { backupNow, deleteGame } from "../../api/callables";
+import { backupNow, deleteGame, pullCloudSaves } from "../../api/callables";
 import { backupStarted, backupFinished } from "../../lib/backup-status";
 import { forgetAppid } from "../../lib/appid-map";
 import { steamApps } from "../../lib/steam";
@@ -41,6 +41,42 @@ export function BadgeMenuButton({ game, appid }: { game: LibraryGame; appid: num
           toaster.toast({ title: "Spool", body: "No active session to back up." });
         } else {
           toaster.toast({ title: "Spool", body: `Backup failed: ${res.reason || "unknown error"}` });
+        }
+      } finally {
+        backupFinished(appid);
+      }
+    })();
+  };
+
+  // Pull the latest cloud saves down to this device without launching. Pull-
+  // only — never uploads. A true divergence is reported as a conflict the user
+  // resolves in the desktop app (the Deck has no conflict modal).
+  const runPull = () => {
+    void (async () => {
+      backupStarted(appid);
+      try {
+        const res = await pullCloudSaves(game.id);
+        if (!res.ok) {
+          const reason = res.reason || "unknown error";
+          const body = /cloud sync conflict/i.test(reason)
+            ? "Cloud conflict — resolve it in the Spool desktop app."
+            : `Sync failed: ${reason}`;
+          toaster.toast({ title: "Spool", body });
+          return;
+        }
+        switch (res.outcome) {
+          case "pulled":
+            toaster.toast({ title: "Spool", body: `Pulled latest saves for ${game.game_name} ✓` });
+            break;
+          case "up_to_date":
+            toaster.toast({ title: "Spool", body: `${game.game_name} is already up to date` });
+            break;
+          case "local_newer":
+            toaster.toast({ title: "Spool", body: "Local saves are newer — nothing to pull." });
+            break;
+          case "unconfigured":
+            toaster.toast({ title: "Spool", body: "No cloud remote configured." });
+            break;
         }
       } finally {
         backupFinished(appid);
@@ -86,6 +122,7 @@ export function BadgeMenuButton({ game, appid }: { game: LibraryGame; appid: num
     showContextMenu(
       <Menu label="Spool">
         <MenuItem onSelected={runBackup}>Back up now</MenuItem>
+        <MenuItem onSelected={runPull}>Sync now (pull)</MenuItem>
         {canInstallDeps && (
           <MenuItem onSelected={() => showModal(<ProtonVersionModal game={game} />)}>
             Proton version

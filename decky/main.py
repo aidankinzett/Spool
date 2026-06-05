@@ -379,6 +379,18 @@ class Plugin:
             return {"ok": False, "reason": "server unavailable"}
         return result
 
+    async def pull_cloud_saves(self, game_id: str) -> dict:
+        """Pull a game's latest cloud saves down to this device and restore them
+        to disk, without launching ("Sync now"). Forwards to the headless
+        server's POST /games/<id>/pull, which runs the same pull-only sync as
+        the desktop app — never uploads. Can take a few seconds (rclone pull +
+        restore), so the timeout is generous."""
+        path = f"/games/{quote(game_id, safe='')}/pull"
+        result = await _spool("POST", path, timeout=120.0)
+        if result is None:
+            return {"ok": False, "reason": "server unavailable"}
+        return result
+
     async def install_deps(self, game_id: str, verbs: str) -> dict:
         """Install Windows runtime deps (winetricks verbs, e.g. "vcrun2022")
         into a game's Proton prefix so the user doesn't need desktop mode.
