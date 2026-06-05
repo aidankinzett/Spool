@@ -15,7 +15,6 @@
   import { AlertTriangle, MoonStar, X } from '@lucide/svelte';
   import Btn from '$lib/components/Btn.svelte';
   import SpoolMark from '$lib/components/SpoolMark.svelte';
-  import CatalogId from '$lib/components/CatalogId.svelte';
   import { gamepadScope } from '$lib/gamepad';
 
   const BRAND_SPOOL = '#d7c9a0';
@@ -23,7 +22,6 @@
   let {
     gameName,
     deviceName,
-    catalogId = undefined,
     accent = null,
     coverUrl = null,
     context = 'desktop',
@@ -34,8 +32,6 @@
     gameName: string;
     /** Name of the other device with the unsynced session. */
     deviceName: string;
-    /** Pre-formatted catalog id ("SPL-0028"). Hidden when omitted. */
-    catalogId?: string;
     /** Cover-art accent hex; falls back to the brand spool colour. */
     accent?: string | null;
     /** Webview-loadable cover URL (via `assetUrl`); placeholder when null. */
@@ -124,7 +120,6 @@
     >
       <div class="min-w-0 flex-1">
         <div class="flex items-center gap-2" style:margin-bottom="9px">
-          {#if catalogId}<CatalogId id={catalogId} accent={accent ?? undefined} />{/if}
           <span
             class="font-mono inline-flex items-center gap-1.5 whitespace-nowrap uppercase"
             style:font-size="9.5px"

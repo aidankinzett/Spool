@@ -600,7 +600,6 @@
     <div style="zoom: {modalZoom};">
     <CloudConflictModal
       gameName={game?.game_name ?? 'Game'}
-      catalogId={game?.catalog_number ? catalogId(game.catalog_number) : undefined}
       accent={accent}
       coverUrl={assetUrl(game?.cover_image_path)}
       cloudNewer={cloudNewer}
