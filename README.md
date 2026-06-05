@@ -66,10 +66,6 @@ from Spool's settings.
 
 <img width="1030" height="585" alt="image" src="https://github.com/user-attachments/assets/45d80f6a-0977-414b-84d6-2b1036bfea0b" />
 
-
-<img width="1029" height="583" alt="Screenshot 2026-06-02 at 10 04 49 PM" src="https://github.com/user-attachments/assets/3c1e9660-8c5e-4e5b-9f8d-50a6082bc3cb" />
-
-
 ## Download
 
 Grab the latest build from the [Releases](../../releases) page:
