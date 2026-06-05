@@ -40,9 +40,12 @@ use tower_http::{cors::CorsLayer, services::ServeDir};
 
 /// State shared across all request handlers.
 ///
-/// Config and library are intentionally **not** cached here — they are
-/// reloaded from disk on every request so the server always sees changes made
-/// by the main Spool GUI (new games, updated paths, etc.) without a restart.
+/// The `library` is cached here as a shared SQLite connection pool
+/// (`SharedLibrary`), opened once when the server starts — not reloaded per
+/// request. WAL mode means the running GUI's writes are still visible to every
+/// request without a restart, so caching the pool costs no freshness. Config,
+/// by contrast, is a small JSON file reloaded from disk per request where it's
+/// needed.
 #[derive(Clone)]
 struct PluginState {
     ludusavi: Arc<LudusaviClient>,

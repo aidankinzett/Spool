@@ -31,11 +31,10 @@ pub fn spawn_backfill(app: AppHandle) {
 }
 
 async fn run_backfill(app: AppHandle) {
-    // Snapshot the entries that need a backfill — id + cover path.
-    // Drop the lock before any spawn_blocking so we're not holding
-    // the library mutex during disk + CPU work. The State binding
-    // has to live for the whole `lib.lock()` borrow, hence the
-    // explicit `library_state` variable rather than a chained call.
+    // Snapshot the entries that need a backfill — id + cover path — with a
+    // single `library.list().await`, then work off that owned `Vec`. The async
+    // borrow is dropped before any `spawn_blocking` below, so we never hold a
+    // library reference across the disk + CPU work of decoding covers.
     let library = app.state::<SharedLibrary>().inner().clone();
     let entries = match library.list().await {
         Ok(e) => e,

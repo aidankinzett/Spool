@@ -832,11 +832,10 @@ pub async fn delete_game_from_disk(
 /// command and the Decky plugin server's `DELETE /games/:id`. Does not emit
 /// `library:changed` — the caller does that where a Tauri `AppHandle` exists.
 pub async fn delete_game_core(library: &SharedLibrary, id: &str) -> AppResult<()> {
-    // Snapshot the folder + prefix paths under the lock, then drop the guard
-    // before any blocking IO or await (lock discipline: never hold a std Mutex
-    // across await). The Proton prefix is only ever managed on Linux, so its
-    // path is resolved (and later deleted) on Linux alone — a populated
-    // `wine_prefix_path` override on Windows/macOS must never be recurse-deleted.
+    // Capture the folder + prefix paths before any blocking IO. The Proton
+    // prefix is only ever managed on Linux, so its path is resolved (and later
+    // deleted) on Linux alone — a populated `wine_prefix_path` override on
+    // Windows/macOS must never be recurse-deleted.
     let (folder, prefix_root) = {
         let entry = library
             .find(id)

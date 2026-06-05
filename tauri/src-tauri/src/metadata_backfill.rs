@@ -77,7 +77,9 @@ async fn run_backfill(app: AppHandle) {
                 .update_fields(id, &crate::metadata::metadata_fields(&entry))
                 .await
             {
-                Ok(_) => applied += 1,
+                Ok(true) => applied += 1,
+                // The entry vanished between find and update — nothing written.
+                Ok(false) => {}
                 Err(e) => tracing::warn!(error = %e, "metadata backfill: update failed"),
             }
         }
