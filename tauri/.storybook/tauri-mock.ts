@@ -45,6 +45,23 @@ function defaultHandlers(): TauriHandlers {
   };
 }
 
+/**
+ * `mockConvertFileSrc` `encodeURIComponent`s every path into a dead
+ * `asset.localhost` URL — fine for local filesystem paths (the covers simply
+ * don't load), but it also mangles fixtures that point a cover/hero at a real
+ * `http(s)`/`data:` URL. Wrap the installed mock so absolute URLs round-trip
+ * unchanged, letting the Library screen story render real cover imagery for
+ * documentation screenshots while every other story keeps the placeholder look.
+ */
+function passThroughRealUrls(): void {
+  const internals = (globalThis as unknown as {
+    __TAURI_INTERNALS__: { convertFileSrc: (p: string, protocol?: string) => string };
+  }).__TAURI_INTERNALS__;
+  const mocked = internals.convertFileSrc;
+  internals.convertFileSrc = (path, protocol) =>
+    /^(https?|data|blob):/i.test(path) ? path : mocked(path, protocol);
+}
+
 function resolve(handler: TauriHandler, args: Record<string, unknown>): unknown {
   return typeof handler === 'function'
     ? (handler as (a: Record<string, unknown>) => unknown)(args)
@@ -59,6 +76,7 @@ function resolve(handler: TauriHandler, args: Record<string, unknown>): unknown 
 export function installTauriMock(handlers: TauriHandlers = {}): void {
   const merged = { ...defaultHandlers(), ...handlers };
   mockConvertFileSrc('windows');
+  passThroughRealUrls();
   // So getCurrentWindow() (used by WindowChrome via AppChrome) resolves a label
   // instead of throwing on undefined metadata.
   mockWindows('main');

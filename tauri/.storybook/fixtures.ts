@@ -227,9 +227,21 @@ export const SAMPLE_PEER_GAMES: PeerGame[] = [
   },
 ];
 
+/**
+ * Cover/hero art for the Library screen story, loaded straight from Steam's
+ * public CDN (keyed by Steam app id) rather than bundled into the repo — the
+ * art stays © its publishers and never lands in git history, only in whatever
+ * documentation screenshot is captured from the rendered story. The mock's
+ * `passThroughRealUrls` lets these absolute URLs reach the <img> unchanged.
+ * Other stories leave cover/hero null and show the accent placeholder tiles.
+ */
+const STEAM_CDN = 'https://steamcdn-a.akamaihd.net/steam/apps';
+const cover = (appid: number) => `${STEAM_CDN}/${appid}/library_600x900_2x.jpg`;
+const hero = (appid: number) => `${STEAM_CDN}/${appid}/library_hero.jpg`;
+
 /** A multi-entry library for the main-window stories. */
 export const SAMPLE_LIBRARY: GameEntry[] = [
-  makeGame(),
+  makeGame({ cover_image_path: cover(292030), hero_image_path: hero(292030) }),
   makeGame({
     id: 'g2',
     catalog_number: 2,
@@ -244,6 +256,8 @@ export const SAMPLE_LIBRARY: GameEntry[] = [
     install_size_mb: 520,
     last_played_at: '2026-06-01T19:30:00Z',
     sync_badge: 'cloud-newer',
+    cover_image_path: cover(413150),
+    hero_image_path: hero(413150),
   }),
   makeGame({
     id: 'g3',
@@ -261,6 +275,8 @@ export const SAMPLE_LIBRARY: GameEntry[] = [
     save_backup_count: 0,
     save_last_backed_up_at: null,
     sync_badge: null,
+    cover_image_path: cover(632470),
+    hero_image_path: hero(632470),
   }),
   makeGame({
     id: 'g4',
@@ -276,5 +292,7 @@ export const SAMPLE_LIBRARY: GameEntry[] = [
     install_size_mb: 4096,
     last_played_at: '2026-05-20T12:00:00Z',
     sync_badge: 'local-newer',
+    cover_image_path: cover(268910),
+    hero_image_path: hero(268910),
   }),
 ];
