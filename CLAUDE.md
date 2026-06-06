@@ -34,7 +34,18 @@ bun run tauri build
 cd tauri/src-tauri
 cargo check
 cargo clippy --all-targets -- -D warnings  # CI fails on any warning
-cargo test
+cargo test   # run on Linux/WSL — see note below
+
+# NOTE: `cargo test` does not run on Windows. The lib test exe gets no
+# application manifest, so it loads comctl32 v5 (no `TaskDialogIndirect`,
+# which rfd — via tauri-plugin-dialog — statically imports since the
+# windows-sys 0.61 bump) and dies at launch with STATUS_ENTRYPOINT_NOT_FOUND
+# (0xC0000139) before any test runs. There's no clean build-time fix:
+# embedding a Common-Controls v6 manifest would have to be unscoped, which
+# collides with Tauri's own manifest on spool.exe (CVT1100 duplicate
+# resource) and breaks the release link. The shipped app is fine (Tauri
+# embeds its manifest) and CI runs `cargo test --all` on Linux. Run the Rust
+# suite under WSL/Linux locally. Windows CI only does clippy + build.
 
 # Frontend-only checks
 cd tauri
