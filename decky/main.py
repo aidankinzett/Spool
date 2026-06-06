@@ -422,6 +422,28 @@ class Plugin:
             return {"ok": False, "reason": "server unavailable"}
         return result
 
+    async def list_save_revisions(self, game_id: str) -> dict:
+        """List the save revisions ludusavi retains locally for a game (newest-
+        first, tip flagged) for the "restore an earlier save" picker. Forwards
+        to GET /games/<id>/revisions."""
+        path = f"/games/{quote(game_id, safe='')}/revisions"
+        result = await _spool("GET", path, timeout=15.0)
+        if result is None:
+            return {"ok": False, "reason": "server unavailable"}
+        return result
+
+    async def restore_save_revision(self, game_id: str, backup_name: str) -> dict:
+        """Roll a game back to an earlier save revision and pin it as the new
+        tip (restore + cloud-synced backup). Forwards to POST /games/<id>/restore.
+        Runs restore + backup + upload, so the timeout is generous and the UI
+        shows a spinner meanwhile."""
+        path = f"/games/{quote(game_id, safe='')}/restore"
+        body = {"backup_name": backup_name}
+        result = await _spool("POST", path, body, timeout=120.0)
+        if result is None:
+            return {"ok": False, "reason": "server unavailable"}
+        return result
+
     async def get_settings(self) -> dict:
         s = _load_settings()
         return {
