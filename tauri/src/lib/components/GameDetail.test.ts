@@ -33,6 +33,7 @@ function makeGame(over: Partial<GameEntry> = {}): GameEntry {
     last_played_at: null,
     launcher_exe_path: null,
     game_folder_path: null,
+    installed: true,
     run_as_admin: false,
     use_proton: false,
     proton_version_path: null,

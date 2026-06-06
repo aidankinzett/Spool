@@ -76,10 +76,14 @@ export function SpoolBar({
   game,
   backingUp,
   appid,
+  onChanged,
 }: {
   game: LibraryGame;
   backingUp: boolean;
   appid: number;
+  /** Re-fetch the library after a mutation (e.g. uninstall) so the cached game
+   *  snapshot — and the menu's folder-gated items — reflect the new state. */
+  onChanged?: () => void;
 }) {
   const accent = game.accent_color || C.spool;
   const st = resolveState(game, backingUp, accent);
@@ -143,7 +147,7 @@ export function SpoolBar({
         </span>
       )}
 
-      <BadgeMenuButton game={game} appid={appid} />
+      <BadgeMenuButton game={game} appid={appid} onChanged={onChanged} />
     </div>
   );
 }

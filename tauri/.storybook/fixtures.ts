@@ -35,6 +35,7 @@ export function makeGame(over: Partial<GameEntry> = {}): GameEntry {
     last_played_at: '2026-05-28T21:14:00Z',
     launcher_exe_path: null,
     game_folder_path: 'C:/Games/The Witcher 3',
+    installed: true,
     run_as_admin: false,
     use_proton: false,
     proton_version_path: null,

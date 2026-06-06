@@ -294,6 +294,36 @@ pub async fn backup_game_core(
     })
 }
 
+/// Backs up a game's saves, then removes its install files but KEEPS the
+/// library entry (the "Remove from disk" option). The backup runs FIRST so
+/// unbacked-up or newer-than-last-backup saves — including the live state inside
+/// the Proton prefix, which the wipe also deletes — are captured in the ludusavi
+/// backup tree (which survives the uninstall). It's the same snapshot the
+/// right-click "Back up saves now" takes, so a game with no save tracking is a
+/// harmless no-op (`game_count == 0`).
+///
+/// A hard backup failure ABORTS the uninstall: better to keep the files than to
+/// wipe saves we couldn't protect. A cloud-sync conflict/failure is NOT a hard
+/// failure — the LOCAL backup still captured the saves, which is what matters
+/// for the wipe — so [`backup_game_core`] returns `Ok` there and we proceed.
+pub async fn uninstall_game_with_backup(
+    ludusavi_client: &LudusaviClient,
+    ludusavi_exe: &Path,
+    config_dir: &Path,
+    library: &SharedLibrary,
+    game_id: &str,
+) -> AppResult<()> {
+    backup_game_core(ludusavi_client, ludusavi_exe, config_dir, library, game_id)
+        .await
+        .map_err(|e| {
+            AppError::Other(format!(
+                "Couldn't back up saves before removing from disk: {e}. Your files are untouched — \
+                 try again, or use \"Remove from disk and library\" if you no longer need the saves."
+            ))
+        })?;
+    crate::library::uninstall_game_core(library, game_id).await
+}
+
 /// Manual backup — runs `ludusavi backup` for a single game outside
 /// the full play workflow. Used by the right-click "Back up saves
 /// now" action so users can snapshot saves before risky operations
@@ -1419,6 +1449,11 @@ pub async fn launch_game_inner_steal(
             .find(game_id)
             .await?
             .ok_or_else(|| AppError::Other(format!("game not found: {game_id}")))?;
+        if !entry.installed {
+            return Err(AppError::Other(
+                "This game isn't installed — reinstall it first.".into(),
+            ));
+        }
         if entry.exe_path.is_empty() {
             return Err(AppError::Other("Game has no executable configured".into()));
         }

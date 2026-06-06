@@ -10,7 +10,13 @@ import {
 } from "@decky/ui";
 import { FaEllipsisVertical } from "react-icons/fa6";
 import type { LibraryGame } from "../../types";
-import { backupNow, deleteGame, pullCloudSaves } from "../../api/callables";
+import {
+  backupNow,
+  deleteGame,
+  forgetGame,
+  pullCloudSaves,
+  uninstallGame,
+} from "../../api/callables";
 import { backupStarted, backupFinished } from "../../lib/backup-status";
 import { forgetAppid } from "../../lib/appid-map";
 import { steamApps } from "../../lib/steam";
@@ -22,7 +28,18 @@ import { RevisionPickerModal } from "../revision-picker-modal";
 // Steam context menu (showContextMenu) anchored to itself with Spool actions
 // for the matched game. (Action logic unchanged from the original; only the
 // trigger button is resized to sit inline in the compact bar.)
-export function BadgeMenuButton({ game, appid }: { game: LibraryGame; appid: number }) {
+export function BadgeMenuButton({
+  game,
+  appid,
+  onChanged,
+}: {
+  game: LibraryGame;
+  appid: number;
+  // Re-fetch the library after a removal so the cached game snapshot (and the
+  // folder-gated menu items) reflect the new state — uninstall keeps the entry,
+  // so without this the bar would keep showing the pre-uninstall snapshot.
+  onChanged?: () => void;
+}) {
   // Winetricks only applies to Windows `.exe` games launched through Proton;
   // native Linux games don't use a prefix.
   const canInstallDeps = game.exe_path?.toLowerCase().endsWith(".exe") ?? false;
@@ -87,31 +104,95 @@ export function BadgeMenuButton({ game, appid }: { game: LibraryGame; appid: num
     })();
   };
 
+  // The badge lives on the game's own Steam page, so `appid` is its non-Steam
+  // shortcut. When the library entry goes away (forget / delete), drop the
+  // shortcut and the stored mapping too. NOT called for "remove from disk",
+  // which keeps the entry (and so the shortcut/badge).
+  const removeShortcutAndForget = () => {
+    try {
+      steamApps()?.RemoveShortcut?.(appid);
+    } catch (e) {
+      console.warn("[Spool] RemoveShortcut failed", e);
+    }
+    forgetAppid(game.id);
+  };
+
+  // Remove from disk, keep the library entry — frees space but keeps playtime,
+  // artwork and save backups; re-adding reuses the entry. The shortcut/badge
+  // stay so the kept entry is still reachable.
+  const confirmUninstall = () => {
+    showModal(
+      <ConfirmModal
+        strTitle={`Remove ${game.game_name} from disk?`}
+        strDescription={
+          "This backs up your saves, then deletes the installed files" +
+          (game.game_folder_path ? `\n${game.game_folder_path}` : "") +
+          "\nbut keeps the library entry — your playtime and artwork stay. Add it again any time to reinstall."
+        }
+        strOKButtonText="Remove from disk"
+        strCancelButtonText="Cancel"
+        onOK={() => {
+          void (async () => {
+            const res = await uninstallGame(game.id);
+            if (res.ok) {
+              toaster.toast({ title: "Spool", body: `Removed ${game.game_name} from disk — entry kept` });
+              onChanged?.();
+            } else {
+              toaster.toast({ title: "Spool", body: `Couldn't remove: ${res.reason ?? "unknown error"}` });
+            }
+          })();
+        }}
+      />,
+    );
+  };
+
+  // Forget the entry, leave the files on disk.
+  const confirmForget = () => {
+    showModal(
+      <ConfirmModal
+        strTitle={`Remove ${game.game_name} from library?`}
+        strDescription={
+          "This forgets the entry but leaves the installed files on disk. You can add it again later."
+        }
+        strOKButtonText="Remove from library"
+        strCancelButtonText="Cancel"
+        bDestructiveWarning
+        onOK={() => {
+          void (async () => {
+            const res = await forgetGame(game.id);
+            if (res.ok) {
+              removeShortcutAndForget();
+              toaster.toast({ title: "Spool", body: `Removed ${game.game_name} from library` });
+              onChanged?.();
+            } else {
+              toaster.toast({ title: "Spool", body: `Couldn't remove: ${res.reason ?? "unknown error"}` });
+            }
+          })();
+        }}
+      />,
+    );
+  };
+
+  // Delete the files AND forget the entry — the original destructive action.
   const confirmDelete = () => {
     showModal(
       <ConfirmModal
-        strTitle={`Delete ${game.game_name} from disk?`}
+        strTitle={`Delete ${game.game_name} from disk and library?`}
         strDescription={
           "This permanently removes the install folder" +
           (game.game_folder_path ? `\n${game.game_folder_path}` : "") +
-          "\nand its library entry. This can't be undone."
+          "\nand forgets its library entry. This can't be undone."
         }
-        strOKButtonText="Delete from disk"
+        strOKButtonText="Delete everything"
         strCancelButtonText="Cancel"
         bDestructiveWarning
         onOK={() => {
           void (async () => {
             const res = await deleteGame(game.id);
             if (res.ok) {
-              // This badge lives on the game's own Steam page, so `appid` is its
-              // non-Steam shortcut. Remove it too and forget the stored mapping.
-              try {
-                steamApps()?.RemoveShortcut?.(appid);
-              } catch (e) {
-                console.warn("[Spool] RemoveShortcut failed", e);
-              }
-              forgetAppid(game.id);
+              removeShortcutAndForget();
               toaster.toast({ title: "Spool", body: `Deleted ${game.game_name} from disk` });
+              onChanged?.();
             } else {
               toaster.toast({ title: "Spool", body: `Couldn't delete: ${res.reason ?? "unknown error"}` });
             }
@@ -152,10 +233,16 @@ export function BadgeMenuButton({ game, appid }: { game: LibraryGame; appid: num
             Install dependencies
           </MenuItem>
         )}
-        {canDelete && <MenuSeparator />}
+        <MenuSeparator />
+        {canDelete && (
+          <MenuItem onSelected={confirmUninstall}>Remove from disk (keep entry)</MenuItem>
+        )}
+        <MenuItem tone="destructive" onSelected={confirmForget}>
+          Remove from library
+        </MenuItem>
         {canDelete && (
           <MenuItem tone="destructive" onSelected={confirmDelete}>
-            Delete from disk
+            Remove from disk and library
           </MenuItem>
         )}
       </Menu>,

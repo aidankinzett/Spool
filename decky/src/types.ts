@@ -19,6 +19,8 @@ export interface LibraryGame {
   last_played_at: string | null;
   sync_badge: string | null;
   game_folder_path: string | null;
+  // False after "Remove from disk" (uninstall): files gone, entry kept.
+  installed: boolean;
   save_backup_count: number;
   save_last_backed_up_at: string | null;
   save_backup_size_mb: number;

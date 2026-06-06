@@ -1,24 +1,28 @@
 <script lang="ts" module>
-  export type RemoveChoice = 'library' | 'disk';
+  export type RemoveChoice = 'disk' | 'library' | 'both';
 </script>
 
 <script lang="ts">
   /**
-   * Remove-game chooser — in-app popup for the GameDetail "Remove" action.
+   * Remove-game chooser — the popup behind every "Remove…" action.
    *
-   * Presents the two ways to get a game out of the library:
-   *   - Remove from library: forget the entry, leave files + save backups alone.
-   *   - Delete from disk: forget the entry *and* recursively delete the install
-   *     folder (and, on Linux, the game's Proton prefix). Destructive, can't be
-   *     undone — only offered when an install folder is on record.
+   * Presents the three ways to get a game out of the library:
+   *   - Remove from disk: delete the installed files but KEEP the entry
+   *     (playtime, art, save backups survive; the game greys out until it's
+   *     re-added, which reuses this same entry). Needs an install folder.
+   *   - Remove from library: forget the entry, leave files + save backups.
+   *   - Remove from disk and library: forget the entry *and* recursively delete
+   *     the install folder (and, on Linux, the game's Proton prefix).
+   *     Destructive, can't be undone — only offered with a folder on record.
    *
    * Self-driven over a small state machine (choose → working → error). The
-   * actual `removeGame` / `deleteGameFromDisk` IPC is delegated to the `perform`
-   * callback so this component stays presentational. Mirrors the design
-   * language of CloudConflictModal (graphite surface, per-game accent, mono
-   * labels, cassette chrome).
+   * actual `uninstallGame` / `removeGame` / `deleteGameFromDisk` IPC is delegated
+   * to the `perform` callback so this component stays presentational. Mirrors the
+   * design language of CloudConflictModal (graphite surface, per-game accent,
+   * mono labels, cassette chrome).
    */
   import { BookMarked, HardDrive, Trash2, X } from '@lucide/svelte';
+  import type { Component } from 'svelte';
   import { shadeHex } from '$lib/tokens';
   import SpoolMark from '$lib/components/SpoolMark.svelte';
   import { gamepadScope } from '$lib/gamepad';
@@ -39,7 +43,7 @@
     accent?: string | null;
     /** Webview-loadable cover URL (via `assetUrl`); placeholder when null. */
     coverUrl?: string | null;
-    /** Install folder on record; the disk-delete option is disabled without it. */
+    /** Install folder on record; the disk options are disabled without it. */
     folderPath?: string | null;
     /** Run the chosen removal. Resolve → close; throw → `error` step. */
     perform: (choice: RemoveChoice) => Promise<void>;
@@ -52,15 +56,22 @@
 
   type Phase = 'choose' | 'working' | 'error';
   let phase = $state<Phase>('choose');
-  let selected = $state<RemoveChoice>('library');
+  // Pre-select "Remove from disk" — the headline option that keeps the entry.
+  let selected = $state<RemoveChoice>('disk');
   let errorMsg = $state('');
   let hover = $state<Record<string, boolean>>({});
 
   const locked = $derived(phase === 'working');
 
+  // The disk-based options need a folder; with none, fall back to the
+  // always-available "remove from library" choice.
+  $effect(() => {
+    if (!canDelete && selected !== 'library') selected = 'library';
+  });
+
   function pick(choice: RemoveChoice) {
     if (locked) return;
-    if (choice === 'disk' && !canDelete) return;
+    if ((choice === 'disk' || choice === 'both') && !canDelete) return;
     selected = choice;
   }
 
@@ -86,38 +97,60 @@
     sub: string;
     danger: boolean;
     disabled: boolean;
+    icon: Component;
+    showFolder: boolean;
   }
 
   const cards = $derived<CardModel[]>([
+    {
+      key: 'disk',
+      label: 'Remove from disk',
+      sub: canDelete
+        ? 'Back up your saves, then delete the installed files to free up space. Your library entry, playtime and artwork stay — reinstall any time.'
+        : 'No install folder is on record, so there are no files to remove.',
+      danger: false,
+      disabled: !canDelete,
+      icon: HardDrive,
+      showFolder: canDelete,
+    },
     {
       key: 'library',
       label: 'Remove from library',
       sub: 'Forget this entry. Your files on disk and save backups are left untouched — you can add it again later.',
       danger: false,
       disabled: false,
+      icon: BookMarked,
+      showFolder: false,
     },
     {
-      key: 'disk',
-      label: 'Delete from disk',
+      key: 'both',
+      label: 'Remove from disk and library',
       sub: canDelete
-        ? "Forget the entry and permanently delete the install folder. This can't be undone."
+        ? "Delete the install folder and forget the entry. This can't be undone."
         : 'No install folder is on record for this game, so there’s nothing to delete.',
       danger: true,
       disabled: !canDelete,
+      icon: Trash2,
+      showFolder: canDelete,
     },
   ]);
 
-  const danger = $derived(selected === 'disk');
+  const danger = $derived(selected === 'both');
   const ctaCol = $derived(danger ? 'var(--color-bad)' : acc);
-  const confirmLabel = $derived(
-    phase === 'working'
-      ? selected === 'disk'
-        ? 'Deleting…'
-        : 'Removing…'
-      : selected === 'disk'
-        ? 'Delete from disk'
-        : 'Remove from library',
+  const CtaIcon = $derived<Component>(
+    selected === 'library' ? BookMarked : selected === 'disk' ? HardDrive : Trash2,
   );
+  const confirmLabel = $derived.by(() => {
+    if (phase === 'working') return selected === 'both' ? 'Deleting…' : 'Removing…';
+    switch (selected) {
+      case 'disk':
+        return 'Remove from disk';
+      case 'library':
+        return 'Remove from library';
+      case 'both':
+        return 'Remove from disk and library';
+    }
+  });
 </script>
 
 <svelte:window onkeydown={handleKey} />
@@ -125,6 +158,7 @@
 {#snippet choiceCard(card: CardModel)}
   {@const active = selected === card.key}
   {@const dangerCol = 'var(--color-bad)'}
+  {@const Icon = card.icon}
   {@const borderCol = card.disabled
     ? 'var(--color-line-1)'
     : active
@@ -177,11 +211,7 @@
             ? acc
             : 'var(--color-ink-1)'}
       >
-        {#if card.danger}
-          <Trash2 size={15} />
-        {:else}
-          <BookMarked size={15} />
-        {/if}
+        <Icon size={15} />
       </span>
       <div class="min-w-0 flex-1">
         <div
@@ -195,7 +225,7 @@
         <div style:margin-top="4px" style:font-size="12px" style:color="var(--color-ink-2)" style:line-height="1.4">
           {card.sub}
         </div>
-        {#if card.key === 'disk' && canDelete}
+        {#if card.showFolder}
           <div
             class="font-mono mt-2 flex items-center gap-1.5 truncate"
             style:font-size="10px"
@@ -250,7 +280,7 @@
       <span
         class="font-mono whitespace-nowrap uppercase text-ink-2"
         style:font-size="10.5px"
-        style:letter-spacing="0.12em">REMOVE · ENTRY</span
+        style:letter-spacing="0.12em">REMOVE · GAME</span
       >
       <div class="flex-1"></div>
       <button
@@ -332,7 +362,7 @@
             {errorMsg}
           </span>
         </div>
-      {:else if selected === 'disk'}
+      {:else if selected === 'both'}
         <div
           class="mb-3 flex items-center gap-2 rounded-sm"
           style:padding="9px 12px"
@@ -342,6 +372,18 @@
           <span class="shrink-0 rounded-full" style:width="6px" style:height="6px" style:background="var(--color-bad)"></span>
           <span class="flex-1" style:font-size="12px" style:color="var(--color-ink-1)">
             The install folder will be <strong class="font-semibold" style:color="var(--color-bad)">permanently deleted</strong>.
+          </span>
+        </div>
+      {:else if selected === 'disk'}
+        <div
+          class="mb-3 flex items-center gap-2 rounded-sm"
+          style:padding="9px 12px"
+          style:border="1px solid {acc}3d"
+          style:background="linear-gradient(90deg, {acc}14, transparent 70%)"
+        >
+          <span class="shrink-0 rounded-full" style:width="6px" style:height="6px" style:background={acc}></span>
+          <span class="flex-1" style:font-size="12px" style:color="var(--color-ink-1)">
+            Your saves are <strong class="font-semibold">backed up first</strong>, then the installed files are deleted — the library entry stays.
           </span>
         </div>
       {/if}
@@ -371,7 +413,7 @@
           disabled={locked}
           class="inline-flex items-center justify-center gap-1.5 whitespace-nowrap rounded-sm font-medium transition-colors duration-100 disabled:opacity-70"
           style:height="34px"
-          style:min-width="170px"
+          style:min-width="200px"
           style:padding-inline="14px"
           style:font-size="13px"
           style:color={danger ? '#fff' : '#0b0c0e'}
@@ -381,7 +423,7 @@
           onmouseenter={() => (hover['confirm'] = true)}
           onmouseleave={() => (hover['confirm'] = false)}
         >
-          {#if !locked}<Trash2 size={14} />{/if}
+          {#if !locked}<CtaIcon size={14} />{/if}
           {confirmLabel}
         </button>
       </div>

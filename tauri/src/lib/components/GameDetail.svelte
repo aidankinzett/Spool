@@ -22,6 +22,7 @@
     CloudDownload,
     Copy,
     Folder,
+    HardDriveDownload,
     Pencil,
     Play,
     RotateCcw,
@@ -47,7 +48,7 @@
   import Btn from './Btn.svelte';
   import DetailCard from './DetailCard.svelte';
   import CrossDeviceActivityCard from './CrossDeviceActivityCard.svelte';
-  import RemoveGameModal, { type RemoveChoice } from './RemoveGameModal.svelte';
+  import { removeGameDialog } from '$lib/removeGame.svelte';
 
   let {
     game,
@@ -83,6 +84,8 @@
   });
 
   const isRunning = $derived(runPhase != null);
+  // Launchable only when installed, with an exe, and not already running.
+  const canPlay = $derived(!isRunning && !!game.exe_path && game.installed);
   const playLabel = $derived.by(() => {
     switch (runPhase) {
       case 'restoring':
@@ -101,7 +104,7 @@
   });
 
   async function launch() {
-    if (!game.exe_path) return;
+    if (!canPlay) return;
     try {
       await api.launchGame(game.id);
     } catch (e) {
@@ -147,33 +150,9 @@
   }
 
   // ── Remove / delete ─────────────────────────────────────────────────────
-  // The Remove button opens a chooser: forget the entry (leaving files +
-  // backups), or delete the install folder from disk. The modal calls back
-  // into `runRemoval` for the chosen action; on success `library:changed`
-  // clears the parent page's selection.
-  let removeOpen = $state(false);
-
-  async function runRemoval(choice: RemoveChoice) {
-    if (choice === 'disk') {
-      await api.deleteGameFromDisk(game.id);
-      toasts.show({
-        kind: 'ok',
-        label: 'DELETE · DONE',
-        title: 'Deleted from disk',
-        sub: game.game_name,
-        catalog: fmtCatalog(game.catalog_number),
-      });
-    } else {
-      await api.removeGame(game.id);
-    }
-    // library:changed event will cause the parent page to clear selection.
-  }
-
-  // Reset the chooser when switching games so it never carries over.
-  $effect(() => {
-    void game.id;
-    removeOpen = false;
-  });
+  // The Remove button opens the three-option chooser (remove from disk / from
+  // library / from disk and library), hosted globally by RemoveGameHost. On
+  // success `library:changed` clears the parent page's selection.
 
   // ── Restore an earlier save (rollback) ──────────────────────────────────
   // Lazily loaded when the user expands the picker. The backend lists
@@ -463,28 +442,52 @@
           <button
             type="button"
             data-testid="play-button"
-            data-gp-autofocus={autofocusPlay && !isRunning && !!game.exe_path ? '' : undefined}
+            data-gp-autofocus={autofocusPlay && canPlay ? '' : undefined}
             onclick={launch}
-            disabled={isRunning || !game.exe_path}
+            disabled={!canPlay}
             class="font-sans inline-flex items-center gap-2.5 rounded-md border-none font-semibold transition-opacity"
             style:height="var(--control-h)"
             style:padding-inline="calc(var(--space-unit) * 4)"
             style:font-size="var(--text-base)"
-            class:cursor-pointer={!isRunning && !!game.exe_path}
-            class:cursor-not-allowed={isRunning || !game.exe_path}
-            class:opacity-70={isRunning || !game.exe_path}
+            class:cursor-pointer={canPlay}
+            class:cursor-not-allowed={!canPlay}
+            class:opacity-70={!canPlay}
             style:background={accentHex}
             style:color="#0b0c0e"
             style:box-shadow="0 6px 20px color-mix(in srgb, {accentHex} 26%, transparent)"
-            title={!game.exe_path
-              ? 'No executable set'
-              : isRunning
-                ? playLabel
-                : 'Restore saves, launch game, back up on exit'}
+            title={!game.installed
+              ? 'Not installed — reinstall to play'
+              : !game.exe_path
+                ? 'No executable set'
+                : isRunning
+                  ? playLabel
+                  : 'Restore saves, launch game, back up on exit'}
           >
             <Play size={16} fill="currentColor" />
             {playLabel}
           </button>
+
+          {#if !game.installed}
+            <!-- Uninstalled: Play is greyed; offer a Reinstall affordance that
+                 opens the Add flow (which reuses this same library entry). -->
+            <button
+              type="button"
+              data-testid="reinstall-button"
+              data-gp-autofocus=""
+              onclick={() => openView('add', { reinstall: game.id })}
+              class="font-sans inline-flex cursor-pointer items-center gap-2 rounded-md font-semibold transition-colors"
+              style:height="var(--control-h)"
+              style:padding-inline="calc(var(--space-unit) * 4)"
+              style:font-size="var(--text-base)"
+              style:color={accentHex}
+              style:background="transparent"
+              style:border="1px solid color-mix(in srgb, {accentHex} 45%, transparent)"
+              title="Add the game again to reinstall — your saves, playtime and artwork are kept"
+            >
+              <HardDriveDownload size={15} />
+              Reinstall…
+            </button>
+          {/if}
 
           <div class="flex flex-col gap-px">
             <MonoLabel size={9.5}>
@@ -586,7 +589,7 @@
       {#snippet icon()}<Pencil size={14} />{/snippet}
       Edit
     </Btn>
-    <Btn variant="danger" onclick={() => (removeOpen = true)}>
+    <Btn variant="danger" onclick={() => removeGameDialog.request(game)}>
       {#snippet icon()}<Trash2 size={14} />{/snippet}
       Remove
     </Btn>
@@ -817,14 +820,3 @@
     </div>
   </div>
 </div>
-
-{#if removeOpen}
-  <RemoveGameModal
-    gameName={game.game_name}
-    accent={accentHex}
-    coverUrl={assetUrl(game.cover_image_path)}
-    folderPath={folderForGame(game)}
-    perform={runRemoval}
-    onClose={() => (removeOpen = false)}
-  />
-{/if}

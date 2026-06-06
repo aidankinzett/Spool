@@ -526,6 +526,7 @@
                 ? `color-mix(in srgb, ${rowAccent} 12%, transparent)`
                 : 'transparent'}
               style:border-left-color={selected ? rowAccent : 'transparent'}
+              style:opacity={g.installed ? 1 : 0.45}
             >
               <div
                 class="relative h-11 w-8 shrink-0 overflow-hidden rounded-sm border border-line-1 bg-bg-2"

@@ -121,6 +121,8 @@ pub async fn serve() -> AppResult<()> {
         .route("/games/{id}/restore", post(post_restore))
         .route("/library", get(get_library))
         .route("/games/{id}", delete(delete_game))
+        .route("/games/{id}/uninstall", post(post_uninstall_game))
+        .route("/games/{id}/forget", post(post_forget_game))
         .route("/fold", post(post_fold))
         // Steam-shortcut launch info: the UI uses this to create a non-Steam
         // shortcut live (via SteamClient.Apps) and launch it, reusing the
@@ -428,6 +430,54 @@ async fn delete_game(
         Ok(()) => Ok(Json(json!({ "ok": true }))),
         Err(e) => {
             tracing::warn!(game_id = %id, error = %e, "plugin: delete_game failed");
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
+/// Removes a game's install folder from disk but KEEPS its library entry
+/// (dimmed, not launchable until re-added). Mirrors the desktop `uninstall_game`
+/// command: backs the saves up first (the wipe also deletes the Proton prefix),
+/// aborting the uninstall if that backup fails. Returns `{ ok: true }` on
+/// success, or `{ ok: false, reason }` (so the Decky toast shows why).
+async fn post_uninstall_game(
+    AxState(state): AxState<PluginState>,
+    AxPath(id): AxPath<String>,
+) -> Result<Json<Value>, StatusCode> {
+    let Some(ludusavi_exe) = crate::paths::resolve_ludusavi_path() else {
+        return Ok(Json(json!({ "ok": false, "reason": "ludusavi sidecar not found" })));
+    };
+    let config_dir = crate::paths::ludusavi_config_dir();
+    match crate::runner::uninstall_game_with_backup(
+        &state.ludusavi,
+        &ludusavi_exe,
+        &config_dir,
+        &state.library,
+        &id,
+    )
+    .await
+    {
+        Ok(()) => Ok(Json(json!({ "ok": true }))),
+        Err(e) => {
+            tracing::warn!(game_id = %id, error = %e, "plugin: uninstall_game failed");
+            Ok(Json(json!({ "ok": false, "reason": e.to_string() })))
+        }
+    }
+}
+
+/// Forgets a game's library entry but leaves its files on disk. Mirrors the
+/// desktop `remove_game` command. Returns `{ ok: true }` when a row was
+/// removed, `{ ok: false, reason }` when the id wasn't in the library (so the
+/// plugin doesn't drop a Steam shortcut for an entry it never actually forgot).
+async fn post_forget_game(
+    AxState(state): AxState<PluginState>,
+    AxPath(id): AxPath<String>,
+) -> Result<Json<Value>, StatusCode> {
+    match state.library.remove(&id).await {
+        Ok(true) => Ok(Json(json!({ "ok": true }))),
+        Ok(false) => Ok(Json(json!({ "ok": false, "reason": "game not in library" }))),
+        Err(e) => {
+            tracing::warn!(game_id = %id, error = %e, "plugin: forget_game failed");
             Err(StatusCode::INTERNAL_SERVER_ERROR)
         }
     }

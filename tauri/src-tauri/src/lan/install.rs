@@ -1058,8 +1058,56 @@ async fn run_install(
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_default();
 
-    let new_id = uuid::Uuid::new_v4().to_string();
-    let entry = {
+    let folder_path = final_dir.to_string_lossy().to_string();
+    let install_size_mb = (manifest.total_bytes as f64) / (1024.0 * 1024.0);
+
+    // Re-add reuse: if an *uninstalled* entry already exists for this game
+    // (same steam id, else same name), reinstall it in place so its catalog
+    // number, playtime, art, and save backups carry over instead of creating a
+    // duplicate — mirroring the desktop Add flow. Otherwise insert a new entry.
+    let game_id = if let Some(existing) = library
+        .find_reusable_entry(manifest.steam_id, &manifest.game_name)
+        .await?
+    {
+        let mut fields: Vec<(&str, serde_json::Value)> = vec![
+            ("installed", serde_json::json!(true)),
+            ("exe_path", serde_json::json!(exe_path)),
+            ("game_folder_path", serde_json::json!(folder_path)),
+            ("install_size_mb", serde_json::json!(install_size_mb)),
+            ("install_source", serde_json::json!("lan")),
+            (
+                "lan_install_source_device_id",
+                serde_json::json!(manifest.source_device_id.clone()),
+            ),
+            (
+                "lan_install_source_device_name",
+                serde_json::json!(manifest.source_device_name.clone()),
+            ),
+        ];
+        // Refresh manifest-derived metadata only when the peer supplied it, so
+        // an existing entry's identification isn't blanked by a sparse share.
+        if manifest.steam_id.is_some() {
+            fields.push(("steam_id", serde_json::json!(manifest.steam_id)));
+        }
+        if manifest.gog_id.is_some() {
+            fields.push(("gog_id", serde_json::json!(manifest.gog_id)));
+        }
+        if manifest.lutris_slug.is_some() {
+            fields.push(("lutris_slug", serde_json::json!(manifest.lutris_slug.clone())));
+        }
+        if manifest.manifest_install_dir.is_some() {
+            fields.push((
+                "manifest_install_dir",
+                serde_json::json!(manifest.manifest_install_dir.clone()),
+            ));
+        }
+        if !manifest.save_paths.is_empty() {
+            fields.push(("save_paths", serde_json::json!(manifest.save_paths.clone())));
+        }
+        library.update_fields(&existing.id, &fields).await?;
+        existing.id
+    } else {
+        let new_id = uuid::Uuid::new_v4().to_string();
         let entry = GameEntry {
             id: new_id.clone(),
             // 0 → insert() assigns the next catalog number atomically.
@@ -1068,7 +1116,7 @@ async fn run_install(
             exe_path,
             safe_name: manifest.safe_name.clone(),
             added_at: Some(Utc::now()),
-            game_folder_path: Some(final_dir.to_string_lossy().to_string()),
+            game_folder_path: Some(folder_path),
             steam_id: manifest.steam_id,
             gog_id: manifest.gog_id,
             lutris_slug: manifest.lutris_slug.clone(),
@@ -1078,17 +1126,18 @@ async fn run_install(
             publisher: manifest.publisher.clone(),
             genres: manifest.genres.clone(),
             release_date: manifest.release_date,
-            install_size_mb: (manifest.total_bytes as f64) / (1024.0 * 1024.0),
+            install_size_mb,
             install_source: "lan".to_string(),
             lan_install_source_device_id: Some(manifest.source_device_id.clone()),
             lan_install_source_device_name: Some(manifest.source_device_name.clone()),
             ..GameEntry::default()
         };
-        library.insert(entry).await?
+        library.insert(entry).await?;
+        new_id
     };
 
-    on_library_changed(&entry.id);
-    Ok(new_id)
+    on_library_changed(&game_id);
+    Ok(game_id)
 }
 
 /// Fetches cover + hero artwork from a peer and writes them into the
