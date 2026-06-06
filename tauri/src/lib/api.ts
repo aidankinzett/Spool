@@ -194,6 +194,44 @@ export const api = {
   refreshSaveMetadata: (gameId: string): Promise<void> =>
     invoke('refresh_save_metadata', { gameId }),
   /**
+   * Classify a picked save folder into a portable ludusavi template (preview
+   * for the Saves editor). Returns a placeholder token like
+   * `<winLocalAppData>/MyGame` when the folder sits in a known location, or the
+   * literal path otherwise.
+   */
+  deriveSaveTemplate: (gameId: string, pickedPath: string): Promise<string> =>
+    invoke('derive_save_template', { gameId, pickedPath }),
+  /**
+   * Best directory to open the save-folder picker at for a game — deep inside
+   * its Proton prefix (the user profile, where AppData / Documents / Saved Games
+   * live) when applicable, else the install folder or home. `null` when nothing
+   * suitable exists yet (e.g. a Proton game that hasn't been launched once).
+   */
+  savePickerStartDir: (gameId: string): Promise<string | null> =>
+    invoke('save_picker_start_dir', { gameId }),
+  /**
+   * Whether a Proton game's Wine prefix has been generated yet (its user
+   * profile exists). `false` means the game hasn't been launched once, so its
+   * save folder doesn't exist yet — the Saves editor hints to play it first.
+   * Always `true` for native games / on Windows.
+   */
+  prefixReady: (gameId: string): Promise<boolean> =>
+    invoke('prefix_ready', { gameId }),
+  /**
+   * Track a custom save location for a non-manifest game: persist it, register
+   * it with ludusavi so the next session backs it up, and replicate the
+   * definition to your other devices so you only pick the folder once. `files`
+   * are ludusavi templates (see `deriveSaveTemplate`); `registry` is usually [].
+   */
+  setCustomSave: (
+    gameId: string,
+    files: string[],
+    registry: string[] = [],
+  ): Promise<void> => invoke('set_custom_save', { gameId, files, registry }),
+  /** Stop tracking a custom save location and remove the replicated definition. */
+  clearCustomSave: (gameId: string): Promise<void> =>
+    invoke('clear_custom_save', { gameId }),
+  /**
    * Resolve a cloud-sync conflict in-app by picking which copy wins, then
    * land the reconciled saves. `side` is `'local'` (keep this device, upload)
    * or `'cloud'` (keep the cloud, download). Throws if the resolve fails —

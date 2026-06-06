@@ -86,6 +86,17 @@ export type PlaySession = {
   duration_secs: number;
 };
 
+/**
+ * A user-defined save location for a non-manifest game. Mirrors the Rust
+ * `CustomSave`. `files` are ludusavi path templates (placeholder tokens like
+ * `<winLocalAppData>/MyGame`, `<base>/Saves`, or a literal path); `registry`
+ * are Windows registry keys (usually empty).
+ */
+export type CustomSave = {
+  files: string[];
+  registry: string[];
+};
+
 // Mirror of the Rust `GameEntry` struct in src-tauri/src/library.rs.
 // Keep field names in lockstep — `serde` on the Rust side serializes with
 // these exact snake_case names.
@@ -144,6 +155,14 @@ export type GameEntry = {
   lutris_slug: string | null;
   manifest_install_dir: string | null;
   save_paths: string[];
+
+  /**
+   * User-defined save location for a game ludusavi's manifest doesn't cover.
+   * `null` = track via the manifest as usual (or not at all). Set via the Saves
+   * editor; the same definition is replicated to every device so the user only
+   * picks the folder once. Mirrors the Rust `CustomSave`.
+   */
+  custom_save: CustomSave | null;
 
   /** Dominant cover-art colour as `#rrggbb`, or null to use the brand default. */
   accent_color: string | null;
@@ -409,6 +428,9 @@ export type NewGame = {
   /** Proton build dir used during install — pinned so launches use the same
    *  version the prefix was created with. */
   proton_version_path?: string | null;
+  /** Optional custom save location set at add-time (rarely used; usually
+   *  adopted from a cross-device definition instead). */
+  custom_save?: CustomSave | null;
 };
 
 /**

@@ -27,6 +27,7 @@
 
 mod accent_backfill;
 mod cli;
+mod custom_saves;
 mod decky_install;
 mod plugin_server;
 mod diagnostics;
@@ -51,6 +52,7 @@ mod rclone;
 mod redirects;
 mod registry;
 mod runner;
+mod save_template;
 mod session;
 mod size_backfill;
 mod steam;
@@ -330,6 +332,12 @@ pub fn run() {
             runner::restore_save_revision,
             runner::resolve_cloud_conflict,
             runner::get_cloud_conflict_details,
+            // custom save locations (non-manifest games)
+            custom_saves::set_custom_save,
+            custom_saves::clear_custom_save,
+            custom_saves::derive_save_template,
+            custom_saves::save_picker_start_dir,
+            custom_saves::prefix_ready,
             // decky plugin installer (Linux / SteamOS)
             decky_install::decky_plugin_status,
             decky_install::install_decky_plugin,
@@ -740,6 +748,11 @@ fn spawn_startup_tasks(app: &AppHandle) {
     // playtime / take max last-played / derive the badge, merge into the
     // library. Runs ~4 s after launch, after the startup reachability probe.
     rclone::spawn_startup_fold(app.clone());
+
+    // Adopt any cross-device custom-save definitions (so a save folder picked on
+    // another device applies here without re-picking), then write the
+    // `customGames` block so non-manifest games are recognised by ludusavi.
+    custom_saves::spawn_startup_adopt(app.clone());
 
     // Notice library writes made by *other* Spool processes (the attached
     // `--run` launch, the headless Decky server) by polling the DB's version
