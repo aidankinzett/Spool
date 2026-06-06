@@ -25,8 +25,14 @@ use crate::paths;
 use serde::Serialize;
 use std::env;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 use tauri::{AppHandle, Manager};
 use tokio::process::Command;
+
+/// Overall ceiling on a `winetricks` install. Downloads can legitimately take
+/// many minutes, but a wedged umu-run / wineserver or a stdin prompt that never
+/// comes would otherwise hang the Tauri command future forever — so bound it.
+const WINETRICKS_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
 /// A discovered Proton install. Mirrored to `types.ts` as `ProtonVersion`.
 #[derive(Debug, Clone, Serialize)]
@@ -453,10 +459,33 @@ pub async fn install_proton_deps_core(
     // runs as an AppImage umu-run's Python aborts instantly with "failed to
     // import encodings module" and the install never starts.
     crate::process::strip_appimage_env(&mut cmd);
-    let output = cmd
-        .output()
-        .await
+    // Bound umu's per-request HTTP like the launch path (build_umu_launch) so a
+    // network stall mid-download fails fast instead of hanging the whole install.
+    // Defer to an explicit user override if one is already set. (#281)
+    if std::env::var_os("UMU_HTTP_TIMEOUT").is_none() {
+        cmd.env("UMU_HTTP_TIMEOUT", "4");
+    }
+    if std::env::var_os("UMU_HTTP_RETRIES").is_none() {
+        cmd.env("UMU_HTTP_RETRIES", "1");
+    }
+    // kill_on_drop so the child is reaped when the timeout below drops its future,
+    // rather than being left running detached. (#281)
+    cmd.kill_on_drop(true);
+    let child = cmd
+        .spawn()
         .map_err(|e| AppError::Other(format!("failed to run umu-run winetricks: {e}")))?;
+    let output = match tokio::time::timeout(WINETRICKS_TIMEOUT, child.wait_with_output()).await {
+        Ok(res) => {
+            res.map_err(|e| AppError::Other(format!("failed to run umu-run winetricks: {e}")))?
+        }
+        Err(_) => {
+            tracing::warn!(game_id, verbs, "winetricks install timed out");
+            return Err(AppError::Other(format!(
+                "winetricks install timed out after {} minutes — the download may have stalled or a prompt is waiting for input. Check your network and try again.",
+                WINETRICKS_TIMEOUT.as_secs() / 60
+            )));
+        }
+    };
 
     if output.status.success() {
         tracing::info!(game_id, verbs, "winetricks install succeeded");
