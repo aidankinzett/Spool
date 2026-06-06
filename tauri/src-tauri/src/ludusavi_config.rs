@@ -46,9 +46,13 @@ pub struct Redirect {
 ///     revision is independently restorable, with no differential chain to
 ///     reconstruct. Always pinned to 0.
 ///   * `backup.retention.full`           — how many revisions to keep. We seed
-///     a default (3) only when absent, so the user's Settings choice
+///     a default (5) only when absent, so the user's Settings choice
 ///     (`save_retention_full`, applied via [`set_retention`]) survives the next
-///     startup instead of being stomped back to 3.
+///     startup instead of being stomped back to the default. The floor is 3,
+///     never 1: `full == 1` makes ludusavi reuse a single in-place backup and
+///     overwrite the save files directly, so a mid-backup kill can truncate the
+///     only copy. From 2+ each run writes a fresh generation, leaving the prior
+///     good backup intact (see [`apply_retention`]).
 ///   * `cloud:` block present            — Phase 4 fills in the remote
 pub fn ensure_config() -> AppResult<()> {
     let dir = paths::ludusavi_config_dir();
@@ -74,7 +78,7 @@ pub fn ensure_config() -> AppResult<()> {
     );
     // Seed the revision count only if absent — the user's Settings value is
     // applied via `set_retention` and must not be clobbered on every startup.
-    changed |= ensure_key_exists(&mut v, &["backup", "retention", "full"], Value::Number(3.into()));
+    changed |= ensure_key_exists(&mut v, &["backup", "retention", "full"], Value::Number(5.into()));
     // Differentials always off (see invariants above).
     changed |= set_path(&mut v, &["backup", "retention", "differential"], Value::Number(0.into()));
 
@@ -109,10 +113,11 @@ pub fn ensure_config() -> AppResult<()> {
 
 /// Write the save-revision retention count (`backup.retention.full`) into the
 /// owned config.yaml. Called from `update_config` when the user changes the
-/// "save revisions to keep" setting. Clamped to 1–10 so a stray value can't
-/// disable backups (0) or balloon disk/cloud use. Differentials are left
-/// untouched (always 0 — see [`ensure_config`]). Lowering the count prunes on
-/// the next backup; raising it accumulates going forward.
+/// "save revisions to keep" setting. Clamped to 3–10 so a stray value can't
+/// disable backups (0), drop to the unsafe in-place `full == 1` mode, or
+/// balloon disk/cloud use. Differentials are left untouched (always 0 — see
+/// [`ensure_config`]). Lowering the count prunes on the next backup; raising it
+/// accumulates going forward.
 pub fn set_retention(full: u32) -> AppResult<()> {
     let mut v = read_value_or_empty();
     apply_retention(&mut v, full);
@@ -120,9 +125,11 @@ pub fn set_retention(full: u32) -> AppResult<()> {
 }
 
 /// Pure value-mutation half of [`set_retention`] — no file IO, so it can be
-/// unit tested. Clamps `full` to 1–10 and writes `backup.retention.full`.
+/// unit tested. Clamps `full` to 3–10 and writes `backup.retention.full`. The
+/// floor of 3 (not 1) keeps ludusavi out of its single in-place backup mode,
+/// where a mid-backup kill could truncate the only copy.
 fn apply_retention(v: &mut Value, full: u32) {
-    let clamped = full.clamp(1, 10);
+    let clamped = full.clamp(3, 10);
     set_path(
         v,
         &["backup", "retention", "full"],
@@ -418,8 +425,10 @@ mod tests {
                 .and_then(|r| r.get("full"))
                 .and_then(|n| n.as_u64())
         };
-        apply_retention(&mut v, 0); // below floor → 1
-        assert_eq!(full(&v), Some(1));
+        apply_retention(&mut v, 0); // below floor → 3
+        assert_eq!(full(&v), Some(3));
+        apply_retention(&mut v, 1); // unsafe in-place mode → floored to 3
+        assert_eq!(full(&v), Some(3));
         apply_retention(&mut v, 99); // above ceiling → 10
         assert_eq!(full(&v), Some(10));
         apply_retention(&mut v, 5); // in range → 5
