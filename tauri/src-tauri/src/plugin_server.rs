@@ -112,39 +112,39 @@ pub async fn serve() -> AppResult<()> {
         // Pull cloud saves for a game down to this device without launching it,
         // for the Quick Access "Sync now" action. Mirrors the desktop
         // `pull_cloud_saves` command. Pull-only — never uploads.
-        .route("/games/:id/pull", post(post_pull_cloud_saves))
+        .route("/games/{id}/pull", post(post_pull_cloud_saves))
         // Save rollback: list a game's retained backups (newest-first), and
         // roll back to one — restoring it then pinning it as the new tip.
         // Mirrors the desktop `list_save_revisions` / `restore_save_revision`
         // commands so a Deck user can recover an earlier save from Game Mode.
-        .route("/games/:id/revisions", get(get_revisions))
-        .route("/games/:id/restore", post(post_restore))
+        .route("/games/{id}/revisions", get(get_revisions))
+        .route("/games/{id}/restore", post(post_restore))
         .route("/library", get(get_library))
-        .route("/games/:id", delete(delete_game))
+        .route("/games/{id}", delete(delete_game))
         .route("/fold", post(post_fold))
         // Steam-shortcut launch info: the UI uses this to create a non-Steam
         // shortcut live (via SteamClient.Apps) and launch it, reusing the
         // exact exe/launch-options the desktop "Add to Steam" would write.
-        .route("/games/:id/steam-launch-info", get(get_steam_launch_info))
+        .route("/games/{id}/steam-launch-info", get(get_steam_launch_info))
         // SteamGridDB art for a library game, transcoded to PNG/JPEG for the
         // live `SteamClient.Apps.SetCustomArtworkForApp` call.
-        .route("/games/:id/steam-art/:kind", get(get_steam_art))
+        .route("/games/{id}/steam-art/{kind}", get(get_steam_art))
         // Install Windows runtime deps (winetricks verbs) into a game's Proton
         // prefix, so a Deck user can do it from Game Mode without dropping to
         // desktop. Mirrors the desktop `install_proton_deps` command.
-        .route("/games/:id/install-deps", post(post_install_deps))
+        .route("/games/{id}/install-deps", post(post_install_deps))
         // Per-game Proton version: list the installed builds for a picker, and
         // pin the one a game launches with. Mirrors the desktop edit page's
         // Proton dropdown so a Deck user can switch versions from Game Mode.
         .route("/proton-versions", get(get_proton_versions))
-        .route("/games/:id/proton", post(post_set_proton))
+        .route("/games/{id}/proton", post(post_set_proton))
         // LAN browsing: list discovered peers, and proxy a peer's game list /
         // covers server-side (the UI can't reach a peer's non-loopback http
         // directly — mixed content). See `lan/server.rs` for the peer API.
         .route("/lan/peers", get(get_lan_peers))
-        .route("/lan/peers/:addr/:port/games", get(get_lan_peer_games))
+        .route("/lan/peers/{addr}/{port}/games", get(get_lan_peer_games))
         .route(
-            "/lan/peers/:addr/:port/games/:id/cover",
+            "/lan/peers/{addr}/{port}/games/{id}/cover",
             get(get_lan_peer_cover),
         )
         // LAN download: start an install, poll progress, and cancel.

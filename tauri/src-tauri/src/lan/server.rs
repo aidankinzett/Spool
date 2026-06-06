@@ -114,11 +114,11 @@ pub(super) async fn start_http_server(app: AppHandle, preferred_port: u16) -> Ap
     let router = Router::new()
         .route("/healthz", get(|| async { "ok" }))
         .route("/games", get(get_games_handler))
-        .route("/games/:id/manifest", get(get_manifest_handler))
-        .route("/games/:id/files/*path", get(get_file_handler))
-        .route("/games/:id/cover", get(get_cover_handler))
-        .route("/games/:id/hero", get(get_hero_handler))
-        .route("/games/:id/cancel-check", get(get_cancel_check_handler));
+        .route("/games/{id}/manifest", get(get_manifest_handler))
+        .route("/games/{id}/files/{*path}", get(get_file_handler))
+        .route("/games/{id}/cover", get(get_cover_handler))
+        .route("/games/{id}/hero", get(get_hero_handler))
+        .route("/games/{id}/cancel-check", get(get_cancel_check_handler));
 
     // Pull the shutdown bits off managed state before `app` moves into
     // ServerState. The Notify lives on managed state so the tray quit
