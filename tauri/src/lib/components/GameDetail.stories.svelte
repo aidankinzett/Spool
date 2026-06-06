@@ -3,7 +3,7 @@
   import { defineMeta } from '@storybook/addon-svelte-csf';
   import { mockIPC } from '@tauri-apps/api/mocks';
   import type { GameEntry } from '$lib/types';
-  import { makeGame as makePlayedGame } from '../../../.storybook/fixtures';
+  import { makeGame as makePlayedGame, makePlaySessions } from '../../../.storybook/fixtures';
   import GameDetail from './GameDetail.svelte';
 
   // GameDetail reaches into Tauri on mount (app_platform gates the Armoury
@@ -11,11 +11,16 @@
   // Crate, Remove). Re-`mockIPC` here (overriding preview.ts's no-op default)
   // so the platform probe reports a Windows host and handlers resolve with
   // plausible payloads instead of throwing if clicked while exploring.
-  mockIPC((cmd) => {
+  mockIPC((cmd, args) => {
     switch (cmd) {
       // Pretend we're on Windows so the "Armoury Crate" button renders.
       case 'app_platform':
         return 'windows';
+      // Fill the cross-device activity card's timeline + session count.
+      case 'list_play_sessions':
+        return makePlaySessions(
+          String((args as Record<string, unknown>)?.gameName ?? ''),
+        );
       case 'add_to_steam':
         return { extras_placed: ['cover', 'hero'] };
       case 'generate_armoury_launcher':
