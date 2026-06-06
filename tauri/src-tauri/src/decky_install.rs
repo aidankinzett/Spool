@@ -46,7 +46,7 @@ const PLUGIN_DIR_NAME: &str = "spool-backup";
 // ── Embedded plugin payload (Linux only) ────────────────────────────────────
 // include_str! paths are relative to THIS source file. `../../../` climbs
 // src-tauri/src → src-tauri → tauri → repo root, where `decky/` lives. On Linux
-// these require the plugin to have been built (`pnpm build` → dist/index.js)
+// these require the plugin to have been built (`bun run build` → dist/index.js)
 // before Spool is compiled; CI's Linux build does this. The whole block is
 // cfg'd out on Windows/macOS so their builds never reference the files.
 #[cfg(target_os = "linux")]

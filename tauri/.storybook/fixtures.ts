@@ -86,6 +86,7 @@ export function makeConfig(over: Partial<ConfigData> = {}): ConfigData {
     ui_mode: 'auto',
     tray_intro_seen: true,
     onboarding_completed: true,
+    decky_update_notified_version: '',
     cloud_provider: '',
     cloud_remote: '',
     cloud_base_path: 'spool',

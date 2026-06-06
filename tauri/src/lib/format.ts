@@ -81,3 +81,20 @@ export function fmtRate(bytesPerSec: number | null | undefined): string {
 export function fmtCatalog(num: number): string {
   return `SPL-${num.toString().padStart(4, '0')}`;
 }
+
+/**
+ * True when dotted-numeric version `a` is strictly newer than `b`
+ * (e.g. "1.10.0" > "1.4.0"). Compares segment by segment; non-numeric or
+ * missing segments count as 0. Used for the Decky plugin's bundled-vs-installed
+ * check so an update is flagged on a real version bump, not a string mismatch.
+ */
+export function isNewerVersion(a: string, b: string): boolean {
+  const pa = a.split('.').map((n) => parseInt(n, 10) || 0);
+  const pb = b.split('.').map((n) => parseInt(n, 10) || 0);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const x = pa[i] ?? 0;
+    const y = pb[i] ?? 0;
+    if (x !== y) return x > y;
+  }
+  return false;
+}

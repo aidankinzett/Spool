@@ -32,6 +32,11 @@ export type ConfigData = {
    * the flow); a fresh install starts false so onboarding shows. */
   onboarding_completed: boolean;
 
+  /** Bundled Decky plugin version the user was last nudged to update to
+   * (Linux). Lets the "plugin update available" toast fire once per bundled
+   * version instead of on every launch. Empty until first shown. */
+  decky_update_notified_version: string;
+
   cloud_provider: string;
   cloud_remote: string;
   /** Base folder on the remote. Saves → `<base>/ludusavi-backup`; Spool's
