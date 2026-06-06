@@ -22,6 +22,7 @@
   import { toasts } from '$lib/toasts.svelte';
   import type { CustomSave } from '$lib/types';
   import Btn from './Btn.svelte';
+  import EditRow from './EditRow.svelte';
   import TextField from './TextField.svelte';
 
   let {
@@ -55,6 +56,17 @@
   const registry = $derived(customSave?.registry ?? []);
   const hasCustom = $derived(files.length > 0);
 
+  // A SAVES toast; the label flips to "FAILED" for errors. Closes over catalog.
+  function notify(kind: 'ok' | 'bad' | 'info', title: string, sub: string) {
+    toasts.show({
+      kind,
+      label: kind === 'bad' ? 'SAVES · FAILED' : 'SAVES',
+      title,
+      sub,
+      catalog: fmtCatalog(catalogNumber),
+    });
+  }
+
   // Pick a save folder; the backend opens the picker inside the prefix and
   // turns the chosen folder into a portable template, filled into the add row
   // so the user can review/tweak it before adding.
@@ -65,12 +77,18 @@
     } catch (e) {
       console.error('[saves] savePickerStartDir failed:', e);
     }
-    const picked = await openDialog({
-      title: 'Pick the save folder',
-      directory: true,
-      multiple: false,
-      defaultPath,
-    });
+    let picked: Awaited<ReturnType<typeof openDialog>>;
+    try {
+      picked = await openDialog({
+        title: 'Pick the save folder',
+        directory: true,
+        multiple: false,
+        defaultPath,
+      });
+    } catch (e) {
+      console.error('[saves] folder picker failed:', e);
+      return;
+    }
     if (typeof picked !== 'string') return;
     try {
       saveTemplate = await api.deriveSaveTemplate(gameId, picked);
@@ -93,12 +111,7 @@
       }
       return true;
     } catch (e) {
-      toasts.show({
-        kind: 'bad',
-        label: 'SAVES · FAILED',
-        title: "Couldn't update save locations",
-        sub: String(e),
-      });
+      notify('bad', "Couldn't update save locations", String(e));
       return false;
     } finally {
       savesBusy = false;
@@ -110,67 +123,36 @@
     if (!token || savesBusy) return;
     if (files.includes(token)) {
       saveTemplate = '';
-      toasts.show({
-        kind: 'info',
-        label: 'SAVES',
-        title: 'Already added',
-        sub: token,
-        catalog: fmtCatalog(catalogNumber),
-      });
+      notify('info', 'Already added', token);
       return;
     }
     if (await commit([...files, token])) {
       saveTemplate = '';
-      toasts.show({
-        kind: 'ok',
-        label: 'SAVES',
-        title: 'Save location added',
-        sub: `${token} — synced to your devices`,
-        catalog: fmtCatalog(catalogNumber),
-      });
+      notify('ok', 'Save location added', `${token} — synced to your devices`);
     }
   }
 
   async function removePath(token: string) {
     if (savesBusy) return;
     if (await commit(files.filter((f) => f !== token))) {
-      toasts.show({
-        kind: 'info',
-        label: 'SAVES',
-        title: 'Save location removed',
-        sub: token,
-        catalog: fmtCatalog(catalogNumber),
-      });
+      notify('info', 'Save location removed', token);
     }
   }
 
   async function stopTracking() {
     if (savesBusy) return;
     if (await commit([])) {
-      toasts.show({
-        kind: 'info',
-        label: 'SAVES',
-        title: 'Stopped tracking custom saves',
-        sub: 'Saves are no longer backed up for this game.',
-        catalog: fmtCatalog(catalogNumber),
-      });
+      notify(
+        'info',
+        'Stopped tracking custom saves',
+        'Saves are no longer backed up for this game.',
+      );
     }
   }
 </script>
 
 {#snippet field(label: string, helper: string, control: Snippet)}
-  <div
-    class="grid items-start gap-4 border-b border-dashed border-line-1 py-2.5"
-    style:grid-template-columns="160px 1fr"
-  >
-    <div class="pt-1.5">
-      <div class="text-[12.5px] font-medium text-ink-0">{label}</div>
-      {#if helper}
-        <div class="mt-0.5 text-[11px] leading-snug text-ink-2">{helper}</div>
-      {/if}
-    </div>
-    <div>{@render control()}</div>
-  </div>
+  <EditRow {label} {helper} children={control} />
 {/snippet}
 
 {@render field('Save tracking', '', savesStatus)}

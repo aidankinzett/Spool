@@ -55,6 +55,13 @@ pub fn backup_lock_file() -> PathBuf {
     app_data_dir().join("backup.lock")
 }
 
+/// Marker file for the machine-wide lock serialising read-modify-write updates
+/// to the Spool-owned ludusavi `config.yaml` across processes. Same lifecycle as
+/// [`backup_lock_file`] — only its lock state matters, never its contents.
+pub fn ludusavi_config_lock_file() -> PathBuf {
+    app_data_dir().join("ludusavi-config.lock")
+}
+
 pub fn covers_dir() -> PathBuf {
     app_data_dir().join("covers")
 }

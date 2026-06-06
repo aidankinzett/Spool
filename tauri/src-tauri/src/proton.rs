@@ -261,6 +261,33 @@ pub fn game_prefix_path(game_id: &str) -> PathBuf {
     paths::proton_prefixes_dir().join(game_id)
 }
 
+/// The user-profile subpath inside a Proton/Wine prefix: `<prefix>/drive_c` +
+/// this is where AppData / Documents / Saved Games live. umu-launcher uses the
+/// fixed Steam user name `steamuser`. One constant so the runner, redirects, and
+/// the custom-saves picker don't each spell it out.
+pub const WINE_STEAMUSER_PROFILE: &str = "drive_c/users/steamuser";
+
+/// The Proton/Wine prefix ROOT for a game (the dir containing `drive_c`), or
+/// `None` when it doesn't launch through Proton. Single source of truth for the
+/// `wine_prefix_path`-override-or-default-`game_prefix_path(id)` resolution,
+/// shared by the run workflow, the backup/restore paths, and the custom-saves
+/// folder picker (which previously each re-implemented it).
+pub fn resolve_prefix_root(
+    uses_proton: bool,
+    wine_prefix_override: Option<&str>,
+    game_id: &str,
+) -> Option<PathBuf> {
+    if !uses_proton {
+        return None;
+    }
+    Some(
+        wine_prefix_override
+            .filter(|p| !p.trim().is_empty())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| game_prefix_path(game_id)),
+    )
+}
+
 /// Whether a game's executable should launch through Proton.
 ///
 /// On Windows, games always run natively, so this is always `false`. On Linux,

@@ -112,8 +112,15 @@ pub fn classify(
     if let Some(root) = prefix_root {
         let drive_c = format!("{}/drive_c", norm(root));
         if let Some(rest) = strip_prefix_ci(&p, &drive_c) {
-            let tok = drive_c_known_folder(rest);
-            return tok.unwrap_or(p);
+            if let Some(tok) = drive_c_known_folder(rest) {
+                return tok;
+            }
+            // Under the prefix but not a recognised known folder — fall through
+            // rather than returning the literal here, so a game *installed inside
+            // the prefix* whose save sits under its install folder still becomes
+            // the portable `<base>/…` (step 3). Step 4 (real home) is skipped for
+            // Proton games, so a genuinely unanchored prefix path lands as a
+            // literal at step 5 just as before.
         }
     }
 
@@ -450,6 +457,19 @@ mod tests {
         // literal (the raw prefix path), which is at least correct on this device.
         let picked = format!("{PFX}/drive_c/Program Files/Game/save");
         assert_eq!(classify(&picked, Some(PFX), None, None), picked);
+    }
+
+    #[test]
+    fn install_dir_inside_prefix_uses_base() {
+        // A Windows game installed *into* the prefix (game_folder under drive_c):
+        // a save under the install folder must still become the portable <base>/…
+        // rather than a device-local literal embedding prefixes/<id>.
+        let game_folder = format!("{PFX}/drive_c/Program Files/ULTRAKILL");
+        let picked = format!("{game_folder}/Saves/Slot1");
+        assert_eq!(
+            classify(&picked, Some(PFX), Some(&game_folder), None),
+            "<base>/Saves/Slot1"
+        );
     }
 
     // ── expand_base ─────────────────────────────────────────────────────────

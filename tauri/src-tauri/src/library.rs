@@ -640,6 +640,30 @@ impl Library {
         self.update_fields(id, &[("custom_save", value)]).await
     }
 
+    /// Sets the custom save only when the entry doesn't already have one. Used by
+    /// the cross-device adopt path so it can't clobber a custom save the user set
+    /// during the (network) fetch — the check-and-write is one atomic conditional
+    /// UPDATE rather than a find()-then-set() race. Returns whether a row was set.
+    pub async fn set_custom_save_if_absent(
+        &self,
+        id: &str,
+        custom: &CustomSave,
+    ) -> AppResult<bool> {
+        let deduped = CustomSave {
+            files: dedup_preserve_order(&custom.files),
+            registry: dedup_preserve_order(&custom.registry),
+        };
+        let value = serde_json::to_string(&deduped)?;
+        let sql = "UPDATE games SET data = json_set(data, '$.custom_save', json(?2))
+                   WHERE id = ?1 AND json_extract(data, '$.custom_save') IS NULL";
+        let res = sqlx::query(sql)
+            .bind(id)
+            .bind(value)
+            .execute(&self.pool)
+            .await?;
+        Ok(res.rows_affected() > 0)
+    }
+
     /// Updates any of cover path / hero path / accent colour that are `Some`.
     pub async fn set_art(
         &self,
@@ -827,14 +851,18 @@ pub async fn add_game(
 
     // Adopt a cross-device custom-save definition for this game name, if another
     // device published one — so a non-manifest game's save location only has to
-    // be picked once. Best-effort; no-op when added with its own custom save,
-    // when none is published, or when cloud isn't configured.
-    let app_for_adopt = app.clone();
-    let id_for_adopt = entry.id.clone();
-    let name_for_adopt = entry.game_name.clone();
-    tauri::async_runtime::spawn(async move {
-        crate::custom_saves::adopt_for_new_game(&app_for_adopt, &id_for_adopt, &name_for_adopt).await;
-    });
+    // be picked once. Best-effort; no-op when added with its own custom save or
+    // when none is published. Gated on cloud being configured so the common
+    // no-cloud add doesn't spawn a task with no remote to read.
+    if crate::ludusavi_config::cloud_remote_is_configured() {
+        let app_for_adopt = app.clone();
+        let id_for_adopt = entry.id.clone();
+        let name_for_adopt = entry.game_name.clone();
+        tauri::async_runtime::spawn(async move {
+            crate::custom_saves::adopt_for_new_game(&app_for_adopt, &id_for_adopt, &name_for_adopt)
+                .await;
+        });
+    }
 
     Ok(entry)
 }
@@ -1161,5 +1189,56 @@ mod tests {
         assert!(!lib.set_install_size_if_empty("a", 999.0).await.unwrap());
         let e = lib.find("a").await.unwrap().unwrap();
         assert_eq!(e.install_size_mb, 500.0);
+    }
+
+    #[tokio::test]
+    async fn custom_save_dedups_and_survives_editor_save() {
+        let lib = Library::open_in_memory().await.unwrap();
+        lib.insert(sample("a", "Hades")).await.unwrap();
+
+        // Duplicate paths are deduped on write so the UI's keyed list can't crash.
+        let cs = CustomSave {
+            files: vec![
+                "<winLocalAppData>/Hades".into(),
+                "<winLocalAppData>/Hades".into(),
+                "<home>/Saved Games/Hades".into(),
+            ],
+            registry: vec![],
+        };
+        assert!(lib.set_custom_save("a", Some(&cs)).await.unwrap());
+        let e = lib.find("a").await.unwrap().unwrap();
+        assert_eq!(
+            e.custom_save.unwrap().files,
+            vec![
+                "<winLocalAppData>/Hades".to_string(),
+                "<home>/Saved Games/Hades".to_string(),
+            ]
+        );
+
+        // custom_save is a runtime field — a whole-entry editor save re-overlays it.
+        assert!(lib.replace(&sample("a", "Hades Renamed")).await.unwrap());
+        let e = lib.find("a").await.unwrap().unwrap();
+        assert_eq!(e.game_name, "Hades Renamed");
+        assert!(e.custom_save.is_some(), "custom_save preserved across editor save");
+    }
+
+    #[tokio::test]
+    async fn set_custom_save_if_absent_is_conditional() {
+        let lib = Library::open_in_memory().await.unwrap();
+        lib.insert(sample("a", "Hades")).await.unwrap();
+        let a = CustomSave { files: vec!["<winLocalAppData>/A".into()], registry: vec![] };
+        let b = CustomSave { files: vec!["<winLocalAppData>/B".into()], registry: vec![] };
+
+        // First adopt wins; a later/racing adopt can't clobber it.
+        assert!(lib.set_custom_save_if_absent("a", &a).await.unwrap());
+        assert!(!lib.set_custom_save_if_absent("a", &b).await.unwrap());
+        let e = lib.find("a").await.unwrap().unwrap();
+        assert_eq!(e.custom_save.unwrap().files, vec!["<winLocalAppData>/A".to_string()]);
+
+        // Once cleared, it's "absent" again and can be set.
+        assert!(lib.set_custom_save("a", None).await.unwrap());
+        assert!(lib.set_custom_save_if_absent("a", &b).await.unwrap());
+        let e = lib.find("a").await.unwrap().unwrap();
+        assert_eq!(e.custom_save.unwrap().files, vec!["<winLocalAppData>/B".to_string()]);
     }
 }

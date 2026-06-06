@@ -16,7 +16,9 @@
 use crate::error::{AppError, AppResult};
 use crate::paths;
 use serde_yaml::Value;
+use std::fs::{File, TryLockError};
 use std::path::PathBuf;
+use std::time::Duration;
 
 // ── Public API ───────────────────────────────────────────────────────────────
 
@@ -66,6 +68,7 @@ pub struct CustomGameDef {
 ///     startup instead of being stomped back to 3.
 ///   * `cloud:` block present            — Phase 4 fills in the remote
 pub fn ensure_config() -> AppResult<()> {
+    let _lock = lock_config();
     let dir = paths::ludusavi_config_dir();
     std::fs::create_dir_all(&dir)?;
 
@@ -129,6 +132,7 @@ pub fn ensure_config() -> AppResult<()> {
 /// untouched (always 0 — see [`ensure_config`]). Lowering the count prunes on
 /// the next backup; raising it accumulates going forward.
 pub fn set_retention(full: u32) -> AppResult<()> {
+    let _lock = lock_config();
     let mut v = read_value_or_empty();
     apply_retention(&mut v, full);
     write_value(&v)
@@ -155,6 +159,7 @@ pub fn set_cloud(
     rclone_path: Option<&str>,
     rclone_args: Option<&str>,
 ) -> AppResult<()> {
+    let _lock = lock_config();
     let mut v = read_value_or_empty();
     apply_cloud(&mut v, provider, remote, path, rclone_path, rclone_args);
     write_value(&v)
@@ -262,6 +267,7 @@ pub fn ensure_rclone_timeouts(user_args: &str) -> String {
 /// completely, there are no user-authored redirects to preserve — the list
 /// is always regenerated from scratch so stale entries can never accumulate.
 pub fn set_redirects(redirects: &[Redirect]) -> AppResult<()> {
+    let _lock = lock_config();
     let mut v = read_value_or_empty();
     let list: Value = Value::Sequence(
         redirects
@@ -287,6 +293,7 @@ pub fn set_redirects(redirects: &[Redirect]) -> AppResult<()> {
 /// entry can never linger. Unlike `redirects`, this block is *persistent* (the
 /// run workflow never clears it). An empty slice writes `customGames: []`.
 pub fn set_custom_games(games: &[CustomGameDef]) -> AppResult<()> {
+    let _lock = lock_config();
     let mut v = read_value_or_empty();
     // Skip the rewrite when the block is unchanged: avoids churning config.yaml
     // (+ its `.bak`) on every launch/boot, and narrows the window for losing a
@@ -347,6 +354,48 @@ pub fn backup_dir() -> PathBuf {
 }
 
 // ── Internal helpers ─────────────────────────────────────────────────────────
+
+/// Held guard over the machine-wide config-write lock. Dropping it (at the end
+/// of a mutator) releases the lock; the OS also frees it if the process exits.
+struct ConfigLock {
+    file: Option<File>,
+}
+
+impl Drop for ConfigLock {
+    fn drop(&mut self) {
+        if let Some(f) = &self.file {
+            let _ = f.unlock();
+        }
+    }
+}
+
+/// Serialise the read-modify-write of the shared `config.yaml` against other
+/// Spool processes (tray GUI, attached `--run`, headless Decky server), which
+/// each own different keys (`redirects`, `cloud`, `customGames`, …) but rewrite
+/// the whole file — so an unsynchronised interleave can drop one writer's block.
+///
+/// Best-effort and sync (the mutators are sync): tries the OS advisory lock with
+/// a brief bounded spin, and on contention/timeout proceeds *without* the lock
+/// rather than failing a startup/launch config write — the blocks self-heal on
+/// the next regeneration, so completing the write is safer than aborting it.
+/// Hold time is sub-millisecond, so in practice the first `try_lock` wins.
+fn lock_config() -> ConfigLock {
+    let path = paths::ludusavi_config_lock_file();
+    let Ok(file) = File::create(&path) else {
+        return ConfigLock { file: None };
+    };
+    // ~1s ceiling (50 × 20ms); only ever approached if another process is stuck
+    // holding it, in which case proceeding unlocked is the lesser evil.
+    for _ in 0..50 {
+        match file.try_lock() {
+            Ok(()) => return ConfigLock { file: Some(file) },
+            Err(TryLockError::WouldBlock) => std::thread::sleep(Duration::from_millis(20)),
+            Err(TryLockError::Error(_)) => return ConfigLock { file: None },
+        }
+    }
+    tracing::warn!("ludusavi config lock stayed contended — writing without it");
+    ConfigLock { file: None }
+}
 
 fn read_value() -> AppResult<Value> {
     let raw = std::fs::read_to_string(paths::ludusavi_config_file())?;

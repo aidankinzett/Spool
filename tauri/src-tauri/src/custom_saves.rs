@@ -80,19 +80,12 @@ pub async fn sync_best_effort(library: &SharedLibrary) {
 /// `None` when it doesn't launch through Proton. Mirrors the resolution the
 /// runner and `backup_game_core` use.
 fn prefix_root_for(entry: &GameEntry) -> Option<String> {
-    if !entry.uses_proton() {
-        return None;
-    }
-    let root = entry
-        .wine_prefix_path
-        .clone()
-        .filter(|p| !p.trim().is_empty())
-        .unwrap_or_else(|| {
-            crate::proton::game_prefix_path(&entry.id)
-                .to_string_lossy()
-                .into_owned()
-        });
-    Some(root)
+    crate::proton::resolve_prefix_root(
+        entry.uses_proton(),
+        entry.wine_prefix_path.as_deref(),
+        &entry.id,
+    )
+    .map(|p| p.to_string_lossy().into_owned())
 }
 
 /// Classify a picked folder into a portable save template (preview for the
@@ -140,7 +133,7 @@ fn pick_start_dir(entry: &GameEntry) -> Option<String> {
     let mut candidates: Vec<PathBuf> = Vec::new();
     if let Some(prefix) = prefix_root_for(entry) {
         let pfx = PathBuf::from(prefix);
-        candidates.push(pfx.join("drive_c/users/steamuser"));
+        candidates.push(pfx.join(crate::proton::WINE_STEAMUSER_PROFILE));
         candidates.push(pfx.join("drive_c"));
         candidates.push(pfx);
     }
@@ -178,7 +171,11 @@ pub async fn prefix_ready(
         return Ok(true);
     }
     Ok(prefix_root_for(&entry)
-        .map(|p| std::path::Path::new(&p).join("drive_c/users/steamuser").is_dir())
+        .map(|p| {
+            std::path::Path::new(&p)
+                .join(crate::proton::WINE_STEAMUSER_PROFILE)
+                .is_dir()
+        })
         .unwrap_or(false))
 }
 
@@ -260,7 +257,9 @@ pub async fn adopt_for_new_game(app: &AppHandle, game_id: &str, game_name: &str)
     let Some(def) = rclone::fetch_custom_save(app, game_name).await else {
         return;
     };
-    if library.set_custom_save(game_id, Some(&def)).await.unwrap_or(false) {
+    // Conditional write: if the user set a custom save during the network fetch,
+    // don't clobber it (the earlier is_none check was a TOCTOU).
+    if library.set_custom_save_if_absent(game_id, &def).await.unwrap_or(false) {
         sync_best_effort(&library).await;
         let _ = app.emit("library:changed", game_id);
         tracing::info!(game_name, "adopted published custom-save definition");

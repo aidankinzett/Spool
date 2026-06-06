@@ -924,6 +924,11 @@ pub async fn record_session(app: &AppHandle, game_name: &str, session_minutes: i
 
 // ── Custom-save definitions (cross-device "specify once") ────────────────────
 
+/// Current custom-save blob schema. A blob written by a newer Spool (higher
+/// `schema`) is ignored on read rather than adopted with templates this version
+/// might not understand.
+const CUSTOM_SAVE_SCHEMA: u32 = 1;
+
 /// A replicated custom-save definition: `_spool/custom-saves/<blake3(name)>.json`.
 /// Name-keyed (like session markers) so a game added on any device finds the
 /// definition published from another. The `files`/`registry` are *portable*
@@ -959,7 +964,7 @@ pub async fn publish_custom_save(
         files: files.to_vec(),
         registry: registry.to_vec(),
         updated_at: Utc::now().to_rfc3339(),
-        schema: 1,
+        schema: CUSTOM_SAVE_SCHEMA,
     };
     if let Ok(body) = serde_json::to_vec(&blob) {
         rcat(&remote.exe, &remote.custom_save_target(game_name), &body).await;
@@ -982,10 +987,38 @@ pub async fn fetch_custom_save(app: &AppHandle, game_name: &str) -> Option<crate
     let remote = resolve_remote(app)?;
     let body = cat(&remote.exe, &remote.custom_save_target(game_name)).await?;
     let blob: CustomSaveBlob = serde_json::from_str(&body).ok()?;
-    if blob.files.is_empty() && blob.registry.is_empty() {
+    if blob.schema > CUSTOM_SAVE_SCHEMA || (blob.files.is_empty() && blob.registry.is_empty()) {
         return None;
     }
     Some(crate::library::CustomSave { files: blob.files, registry: blob.registry })
+}
+
+/// List a control-plane subdir and read+parse every `*.json` blob in it as
+/// `(file-stem, T)` pairs — the stem is the device id under `_spool/devices/`,
+/// the name hash under `_spool/custom-saves/`. Empty on a missing/unreadable
+/// dir. One place for the list→cat→parse loop the device fold and custom-save
+/// fold both need (previously copied in each).
+async fn read_json_blobs<T: serde::de::DeserializeOwned>(
+    remote: &RcloneRemote,
+    dir: &str,
+) -> Vec<(String, T)> {
+    let Some(entries) = lsjson(&remote.exe, dir).await else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for e in entries {
+        if e.is_dir || !e.name.ends_with(".json") {
+            continue;
+        }
+        let stem = e.name.trim_end_matches(".json").to_string();
+        let target = format!("{dir}/{}", e.name);
+        if let Some(body) = cat(&remote.exe, &target).await {
+            if let Ok(blob) = serde_json::from_str::<T>(&body) {
+                out.push((stem, blob));
+            }
+        }
+    }
+    out
 }
 
 /// Adopt published custom-save definitions into local library entries that don't
@@ -997,27 +1030,21 @@ pub async fn fold_custom_saves(app: &AppHandle) -> usize {
     let Some(remote) = resolve_remote(app) else {
         return 0;
     };
-    let Some(entries) = lsjson(&remote.exe, &remote.custom_saves_dir()).await else {
-        return 0;
-    };
+    let blobs: Vec<(String, CustomSaveBlob)> =
+        read_json_blobs(&remote, &remote.custom_saves_dir()).await;
     let mut defs: std::collections::HashMap<String, crate::library::CustomSave> =
         std::collections::HashMap::new();
-    for e in entries {
-        if e.is_dir || !e.name.ends_with(".json") {
+    for (_, blob) in blobs {
+        // Skip a blob from a newer schema we can't safely interpret, and any
+        // empty/nameless one.
+        let has_paths = !blob.files.is_empty() || !blob.registry.is_empty();
+        if blob.schema > CUSTOM_SAVE_SCHEMA || blob.name.is_empty() || !has_paths {
             continue;
         }
-        let target = format!("{}/{}", remote.custom_saves_dir(), e.name);
-        if let Some(body) = cat(&remote.exe, &target).await {
-            if let Ok(blob) = serde_json::from_str::<CustomSaveBlob>(&body) {
-                let has_paths = !blob.files.is_empty() || !blob.registry.is_empty();
-                if !blob.name.is_empty() && has_paths {
-                    defs.insert(
-                        blob.name.clone(),
-                        crate::library::CustomSave { files: blob.files, registry: blob.registry },
-                    );
-                }
-            }
-        }
+        defs.insert(
+            blob.name.clone(),
+            crate::library::CustomSave { files: blob.files, registry: blob.registry },
+        );
     }
     if defs.is_empty() {
         return 0;
@@ -1030,7 +1057,9 @@ pub async fn fold_custom_saves(app: &AppHandle) -> usize {
             continue;
         }
         if let Some(def) = defs.get(&entry.game_name) {
-            if library.set_custom_save(&entry.id, Some(def)).await.unwrap_or(false) {
+            // Conditional write so it can't clobber a custom save set since we
+            // listed the library.
+            if library.set_custom_save_if_absent(&entry.id, def).await.unwrap_or(false) {
                 applied += 1;
             }
         }
@@ -1136,22 +1165,7 @@ pub async fn fold_devices_from_config() -> bool {
     };
     let our_device_id = config.device_id.clone();
 
-    let Some(entries) = lsjson(&remote.exe, &remote.devices_dir()).await else {
-        return false;
-    };
-    let mut blobs: Vec<(String, DeviceBlob)> = Vec::new();
-    for e in entries {
-        if e.is_dir || !e.name.ends_with(".json") {
-            continue;
-        }
-        let device_id = e.name.trim_end_matches(".json").to_string();
-        let target = remote.device_target(&device_id);
-        if let Some(body) = cat(&remote.exe, &target).await {
-            if let Ok(blob) = serde_json::from_str::<DeviceBlob>(&body) {
-                blobs.push((device_id, blob));
-            }
-        }
-    }
+    let blobs: Vec<(String, DeviceBlob)> = read_json_blobs(&remote, &remote.devices_dir()).await;
     if blobs.is_empty() {
         return false;
     }
@@ -1229,22 +1243,7 @@ async fn run_startup_fold(app: &AppHandle) {
     let (our_device_id, _) = device_identity(app);
 
     // List device files, then cat each.
-    let Some(entries) = lsjson(&remote.exe, &remote.devices_dir()).await else {
-        return;
-    };
-    let mut blobs: Vec<(String, DeviceBlob)> = Vec::new();
-    for e in entries {
-        if e.is_dir || !e.name.ends_with(".json") {
-            continue;
-        }
-        let device_id = e.name.trim_end_matches(".json").to_string();
-        let target = remote.device_target(&device_id);
-        if let Some(body) = cat(&remote.exe, &target).await {
-            if let Ok(blob) = serde_json::from_str::<DeviceBlob>(&body) {
-                blobs.push((device_id, blob));
-            }
-        }
-    }
+    let blobs: Vec<(String, DeviceBlob)> = read_json_blobs(&remote, &remote.devices_dir()).await;
     if blobs.is_empty() {
         return;
     }

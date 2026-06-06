@@ -34,6 +34,7 @@
   import TextField from '$lib/components/TextField.svelte';
   import Toggle from '$lib/components/Toggle.svelte';
   import Select, { type SelectOption } from '$lib/components/Select.svelte';
+  import EditRow from '$lib/components/EditRow.svelte';
   import SavesPanel from '$lib/components/SavesPanel.svelte';
   import { gamepadScope } from '$lib/gamepad';
 
@@ -135,6 +136,25 @@
       .catch((e) => console.error('[edit] registry probe failed:', e));
   });
 
+  // Re-check whether the Proton prefix exists whenever the exe (or platform)
+  // changes — a native↔.exe edit flips whether a prefix is involved at all, so
+  // a one-shot mount fetch would leave the Saves tab's "launch first" hint
+  // stale. Native/Windows games have no prefix → always ready.
+  $effect(() => {
+    const exe = form?.exe_path ?? '';
+    const id = form?.id;
+    if (!isLinux || !exe.toLowerCase().endsWith('.exe') || !id) {
+      prefixReady = true;
+      return;
+    }
+    api
+      .prefixReady(id)
+      .then((v) => {
+        prefixReady = v;
+      })
+      .catch((e) => console.error('[edit] prefixReady probe failed:', e));
+  });
+
   onMount(async () => {
     try {
       const params = new URLSearchParams(window.location.search);
@@ -158,15 +178,11 @@
       form.wine_prefix_path ??= '';
       form.launch_args ??= '';
 
-      // Linux-only Proton settings.
+      // Linux-only Proton settings. (prefixReady is handled by its own $effect,
+      // which re-probes whenever the exe changes.)
       try {
         isLinux = (await api.appPlatform()) === 'linux';
-        if (isLinux) {
-          protonVersions = await api.listProtonVersions();
-          // Whether the prefix (and so the save folder) exists yet — drives the
-          // "launch the game once first" hint on the Saves tab.
-          prefixReady = await api.prefixReady(id);
-        }
+        if (isLinux) protonVersions = await api.listProtonVersions();
       } catch (e) {
         console.error('[edit] proton init failed:', e);
       }
@@ -438,18 +454,7 @@
       <!-- Tab content -->
       <div class="flex-1 overflow-y-auto px-5 py-4">
         {#snippet field(label: string, helper: string, control: import('svelte').Snippet)}
-          <div
-            class="grid items-start gap-4 border-b border-dashed border-line-1 py-2.5"
-            style:grid-template-columns="160px 1fr"
-          >
-            <div class="pt-1.5">
-              <div class="text-[12.5px] font-medium text-ink-0">{label}</div>
-              {#if helper}
-                <div class="mt-0.5 text-[11px] leading-snug text-ink-2">{helper}</div>
-              {/if}
-            </div>
-            <div>{@render control()}</div>
-          </div>
+          <EditRow {label} {helper} children={control} />
         {/snippet}
 
         {#if tab === 'identity'}
