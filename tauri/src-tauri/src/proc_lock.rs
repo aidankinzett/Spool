@@ -96,6 +96,23 @@ pub async fn acquire_backup(timeout: Duration) -> AppResult<FileLock> {
     .await
 }
 
+/// Non-blocking attempt to take the machine-wide backup/upload lock. Returns
+/// `Ok(Some(guard))` when it's free and was acquired, `Ok(None)` when another
+/// Spool process currently holds it, and `Err` only if the lock file can't be
+/// opened. The launch restore phase uses this to detect a concurrent backup
+/// (e.g. the Decky forced-close `--backup` fallback) so it can show a
+/// "waiting for backup" splash message before blocking on [`acquire_backup`].
+pub fn try_acquire_backup() -> AppResult<Option<FileLock>> {
+    let path = paths::backup_lock_file();
+    let file = File::create(&path)
+        .map_err(|e| AppError::Other(format!("lock: open {}: {e}", path.display())))?;
+    match file.try_lock() {
+        Ok(()) => Ok(Some(FileLock { file })),
+        Err(TryLockError::WouldBlock) => Ok(None),
+        Err(TryLockError::Error(e)) => Err(AppError::Other(format!("lock: {e}"))),
+    }
+}
+
 /// Acquire the machine-wide control-plane lock, serialising the brief
 /// read-modify-write of this device's cross-device blob
 /// (`_spool/devices/<id>.json`) against other Spool processes on the machine.
