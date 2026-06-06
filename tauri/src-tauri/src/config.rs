@@ -274,15 +274,24 @@ pub type SharedConfig = Mutex<Config>;
 
 /// Assigns a stable device id (uuid v4) and device name (OS hostname).
 /// Returns true if anything was written.
+///
+/// `device_name` is re-derived not only when empty but also when it's still the
+/// literal `DEFAULT_DEVICE_NAME` fallback: configs created before the hostname
+/// lookup read the OS (it previously only saw shell env vars, unset for GUI
+/// launches) were stuck on that fallback, so once a real hostname is available
+/// we adopt it. A name the user actually set is left untouched.
 fn ensure_device_identity(data: &mut ConfigData) -> bool {
     let mut changed = false;
     if data.device_id.is_empty() {
         data.device_id = uuid::Uuid::new_v4().to_string();
         changed = true;
     }
-    if data.device_name.is_empty() {
-        data.device_name = hostname();
-        changed = true;
+    if data.device_name.is_empty() || data.device_name == DEFAULT_DEVICE_NAME {
+        let name = hostname();
+        if name != data.device_name {
+            data.device_name = name;
+            changed = true;
+        }
     }
     changed
 }
@@ -390,13 +399,30 @@ fn migrate_onboarding_completed(raw_json: Option<&str>, data: &mut ConfigData) -
     true
 }
 
+/// Last-resort device name when neither the OS hostname syscall nor the env
+/// vars yield anything. `ensure_device_identity` treats a stored name still
+/// equal to this as re-derivable, so a later successful lookup can replace it.
+const DEFAULT_DEVICE_NAME: &str = "Spool device";
+
 fn hostname() -> String {
-    // %COMPUTERNAME% on Windows, $HOSTNAME / $HOST elsewhere — fall back
-    // to "Spool device" if nothing's set.
+    // The OS hostname via gethostname(2) (GetComputerNameExW on Windows) is the
+    // authoritative source on both platforms. The env vars are only a fallback:
+    // $HOSTNAME / $HOST are shell variables that interactive shells set but don't
+    // export, so a GUI / Game-Mode launch sees neither — which is why Linux used
+    // to land on the fallback every time. %COMPUTERNAME% is a real process env
+    // var on Windows, kept as a secondary path. Final fallback is a literal so
+    // device identity is never empty.
+    let from_os = gethostname::gethostname().to_string_lossy().trim().to_string();
+    if !from_os.is_empty() {
+        return from_os;
+    }
     env::var("COMPUTERNAME")
         .or_else(|_| env::var("HOSTNAME"))
         .or_else(|_| env::var("HOST"))
-        .unwrap_or_else(|_| "Spool device".to_string())
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| DEFAULT_DEVICE_NAME.to_string())
 }
 
 // ── Tauri commands ──────────────────────────────────────────────────────────
@@ -561,5 +587,37 @@ mod tests {
         assert_eq!(parsed.lan.share_port, 50000);
         assert_eq!(parsed.lan.download_max_mbps, 12.5);
         assert_eq!(parsed.launch.default_proton_path, "/opt/proton");
+    }
+
+    #[test]
+    fn device_name_rederived_from_stuck_fallback() {
+        // A config left on the literal fallback by the old env-only lookup is
+        // re-derived once a real hostname is available, and the write is flagged.
+        let mut data = ConfigData {
+            device_id: "fixed".to_string(),
+            device_name: DEFAULT_DEVICE_NAME.to_string(),
+            ..ConfigData::default()
+        };
+        let changed = ensure_device_identity(&mut data);
+        if hostname() == DEFAULT_DEVICE_NAME {
+            // No real hostname on this box either — nothing to adopt.
+            assert!(!changed);
+            assert_eq!(data.device_name, DEFAULT_DEVICE_NAME);
+        } else {
+            assert!(changed);
+            assert_ne!(data.device_name, DEFAULT_DEVICE_NAME);
+        }
+        assert_eq!(data.device_id, "fixed"); // never regenerated when present
+    }
+
+    #[test]
+    fn user_chosen_device_name_is_preserved() {
+        let mut data = ConfigData {
+            device_id: "fixed".to_string(),
+            device_name: "Living Room Deck".to_string(),
+            ..ConfigData::default()
+        };
+        assert!(!ensure_device_identity(&mut data));
+        assert_eq!(data.device_name, "Living Room Deck");
     }
 }
