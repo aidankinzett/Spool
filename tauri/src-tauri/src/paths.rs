@@ -47,6 +47,14 @@ pub fn plugin_http_port_path() -> PathBuf {
     app_data_dir().join("plugin-http-port")
 }
 
+/// Lock file backing the machine-wide save backup/upload mutex (see
+/// `proc_lock.rs`). An empty marker file whose only purpose is to be `flock`ed;
+/// it's never read or written. The OS releases the advisory lock when the
+/// holding process exits, so a crashed/force-killed holder can't wedge it.
+pub fn backup_lock_file() -> PathBuf {
+    app_data_dir().join("backup.lock")
+}
+
 pub fn covers_dir() -> PathBuf {
     app_data_dir().join("covers")
 }

@@ -245,6 +245,15 @@ pub async fn backup_game_core(
         None
     };
 
+    // Serialise the ludusavi backup + cloud sync against any other Spool
+    // process on this machine (an attached `--run` workflow, the Decky
+    // `--backup` fallback). Best-effort: proceed even if the lock is
+    // contended past the timeout — skipping the backup would lose the save.
+    let _backup_lock = crate::proc_lock::acquire_backup(std::time::Duration::from_secs(180))
+        .await
+        .inspect_err(|e| tracing::warn!(error = %e, "proceeding without cross-process backup lock"))
+        .ok();
+
     let out = ludusavi_client
         .backup(ludusavi_exe, config_dir, &game_name, wine_prefix.as_deref())
         .await
@@ -2082,6 +2091,16 @@ async fn phase_backup(ctx: &WorkflowCtx<'_>, no_saves: bool, timing: &SessionTim
                 }
             }
         }
+
+        // Serialise the local backup + cloud upload against any other Spool
+        // process on this machine. Held across both legs so the local-write +
+        // upload pair is atomic versus a concurrent `--backup` fallback. Drops
+        // at the end of this block (after the upload). Best-effort — see the
+        // `backup_game_core` call site for the timeout rationale.
+        let _backup_lock = crate::proc_lock::acquire_backup(std::time::Duration::from_secs(180))
+            .await
+            .inspect_err(|e| tracing::warn!(error = %e, "proceeding without cross-process backup lock"))
+            .ok();
 
         tracing::info!(game_name = ctx.game_name, "ludusavi backup (local)");
         let backup_outcome =
