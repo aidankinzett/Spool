@@ -16,12 +16,16 @@
 //! automatically when the holding process exits — including a crash or a Steam
 //! force-kill in Game Mode — so a dead holder never deadlocks the next backup.
 //!
-//! The lock is **best-effort serialisation, not a hard mutex**: callers acquire
-//! it, hold the guard across their ludusavi/rclone work, and proceed even if
-//! acquisition times out (skipping a backup loses a save, which is worse than a
-//! rare unsynchronised one). Contention is itself uncommon — one game runs at a
-//! time, and the Decky forced-close fallback only fires *after* the attached
-//! run is already dead.
+//! Acquisition is **fail-safe**: callers take the lock *before* touching
+//! ludusavi or the remote and, if it stays contended past the timeout, give up
+//! rather than run unlocked. Running unlocked would do the exact concurrent
+//! ludusavi/rclone write the lock exists to prevent — and the live save is on
+//! local disk regardless, so the right move is to defer and retry, not to risk
+//! corrupting the backup or clobbering the remote. A timeout means nothing was
+//! written (so there's nothing half-finished to reconcile) and that another
+//! Spool process holds the lock — i.e. is *already* backing up. Contention is
+//! itself uncommon: one game runs at a time, and the Decky forced-close
+//! fallback only fires *after* the attached run is already dead.
 
 use crate::error::{AppError, AppResult};
 use crate::paths;
@@ -44,13 +48,14 @@ impl Drop for BackupLock {
 
 /// Acquire the machine-wide backup/upload lock, polling until a holder in
 /// another process finishes or `timeout` elapses. Returns an error on timeout
-/// (or if the lock file can't be opened) so the caller can log-and-continue
-/// rather than block a backup forever — the OS would in any case free the lock
-/// if the holder had died.
+/// (or if the lock file can't be opened) — callers fail the backup and let the
+/// user retry rather than run unlocked. The poll-and-sleep (instead of a
+/// blocking `lock()`) keeps a bounded timeout the OS can't give us directly,
+/// and degrades a same-process re-entry to a timeout instead of a hard hang.
 ///
 /// `flock` is per *open file description*, so two `BackupLock`s held at once
-/// within the same process would deadlock against each other. Don't nest calls:
-/// the backup paths that take this lock never call into one another.
+/// within the same process would block each other until this timeout. Don't
+/// nest calls: the backup paths that take this lock never call into one another.
 pub async fn acquire_backup(timeout: Duration) -> AppResult<BackupLock> {
     let path = paths::backup_lock_file();
     let file = File::create(&path).map_err(|e| {
@@ -67,7 +72,8 @@ pub async fn acquire_backup(timeout: Duration) -> AppResult<BackupLock> {
             Err(TryLockError::WouldBlock) => {
                 if waited >= timeout {
                     return Err(AppError::Other(
-                        "backup lock: timed out waiting for another Spool process".into(),
+                        "Another backup is already running on this device. Try again in a moment."
+                            .into(),
                     ));
                 }
                 tokio::time::sleep(step).await;
