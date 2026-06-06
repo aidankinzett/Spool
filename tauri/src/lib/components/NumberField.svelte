@@ -29,6 +29,19 @@
 
   let focused = $state(false);
 
+  // Coerce + clamp on commit so the field never bubbles null/NaN (clearing the
+  // box makes `bind:value` write null) or an out-of-range number — the `min`/`max`
+  // props are only HTML attributes, which the browser doesn't enforce
+  // programmatically, so each caller would otherwise have to re-sanitise. (#287)
+  function commit() {
+    let v = Number(value);
+    if (!Number.isFinite(v)) v = min ?? 0;
+    if (min !== undefined && v < min) v = min;
+    if (max !== undefined && v > max) v = max;
+    value = v; // correct the displayed value (e.g. a cleared field → min/0)
+    oncommit?.(v);
+  }
+
   function handleKeydown(e: KeyboardEvent) {
     if (e.key === 'Enter' && e.currentTarget instanceof HTMLInputElement) {
       e.currentTarget.blur();
@@ -52,7 +65,7 @@
     onfocus={() => (focused = true)}
     onblur={() => {
       focused = false;
-      oncommit?.(value);
+      commit();
     }}
     onkeydown={handleKeydown}
     class="font-mono min-w-0 bg-transparent text-right text-ink-0 outline-none placeholder:text-ink-3"

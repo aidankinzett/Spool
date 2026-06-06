@@ -52,6 +52,13 @@
   let appVersion = $state<string | null>(null);
   let syncStatus = $state<SyncStatus | null>(null);
 
+  // WebDAV URL/username/password are local state, NOT bound to `config`. They
+  // reach the backend only via connectWebdav() → setCloudWebdav (which persists
+  // them server-side), so a partial edit can never silently ride along on an
+  // unrelated field's save or be lost on close. Seeded from config on load and
+  // re-seeded after a successful connect. (#295)
+  let webdavUrl = $state('');
+  let webdavUsername = $state('');
   let webdavPassword = $state('');
   let webdavConnecting = $state(false);
 
@@ -106,6 +113,7 @@
     const setup = async () => {
       try {
         config = await api.getConfig();
+        seedWebdavFields();
         // Land controller/keyboard focus on the active settings group once the
         // sidebar is in the DOM. The nav scope's initial autofocus runs before
         // config loads (only the chrome Back button exists then), so it would
@@ -215,13 +223,22 @@
     }
   }
 
+  // Copy the persisted WebDAV URL/username into the local edit fields. Called on
+  // load and after a successful connect (which re-fetches config). (#295)
+  function seedWebdavFields() {
+    if (!config) return;
+    webdavUrl = config.cloud_webdav_url ?? '';
+    webdavUsername = config.cloud_webdav_username ?? '';
+  }
+
   async function connectWebdav() {
     if (!config) return;
     webdavConnecting = true;
     try {
-      await api.setCloudWebdav(config.cloud_webdav_url.trim(), config.cloud_webdav_username.trim(), webdavPassword, 'other');
+      await api.setCloudWebdav(webdavUrl.trim(), webdavUsername.trim(), webdavPassword, 'other');
       webdavPassword = '';
       config = await api.getConfig();
+      seedWebdavFields();
       toasts.show({ kind: 'ok', label: 'CLOUD', title: 'WebDAV connected', sub: 'Saves will sync to this remote.' });
     } catch (e) {
       toasts.show({ kind: 'bad', label: 'CLOUD · WEBDAV', title: "Couldn't connect", sub: String(e) });
@@ -651,12 +668,12 @@
                       {#if config.cloud_provider === 'webdav'}
                         <SettingsRow label="WebDAV URL" helper="e.g. https://nextcloud.example.com/remote.php/dav/files/me">
                           {#snippet control()}
-                            <TextField bind:value={config!.cloud_webdav_url} placeholder="https://host/webdav" mono full />
+                            <TextField bind:value={webdavUrl} placeholder="https://host/webdav" mono full />
                           {/snippet}
                         </SettingsRow>
                         <SettingsRow label="Username">
                           {#snippet control()}
-                            <TextField bind:value={config!.cloud_webdav_username} placeholder="username" mono />
+                            <TextField bind:value={webdavUsername} placeholder="username" mono />
                           {/snippet}
                         </SettingsRow>
                         <SettingsRow label="Password" helper="Stored obscured by rclone, never saved in Spool's config.">
@@ -665,7 +682,7 @@
                             <Btn
                               variant="primary"
                               onclick={connectWebdav}
-                              disabled={webdavConnecting || !config!.cloud_webdav_url || !config!.cloud_webdav_username}
+                              disabled={webdavConnecting || !webdavUrl || !webdavUsername}
                             >
                               {#snippet icon()}<Check size={14} />{/snippet}
                               {webdavConnecting ? 'Connecting…' : 'Connect'}
