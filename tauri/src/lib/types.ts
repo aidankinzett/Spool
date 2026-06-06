@@ -71,6 +71,21 @@ export type SaveRevision = {
   is_current: boolean;
 };
 
+// Mirror of the Rust `PlaySession` struct in src-tauri/src/library.rs — one
+// finished launch on one device. The cross-device activity timeline reads these.
+export type PlaySession = {
+  /** Globally unique: `<device_id>:<started_at_millis>`. */
+  session_id: string;
+  device_id: string;
+  device_name: string;
+  game_name: string;
+  /** RFC 3339 timestamps. */
+  started_at: string;
+  ended_at: string;
+  /** Wall-clock seconds played, mid-session suspend time subtracted. */
+  duration_secs: number;
+};
+
 /**
  * A user-defined save location for a non-manifest game. Mirrors the Rust
  * `CustomSave`. `files` are ludusavi path templates (placeholder tokens like

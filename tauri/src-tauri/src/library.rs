@@ -304,6 +304,53 @@ const RUNTIME_FIELDS: &[&str] = &[
     "custom_save",
 ];
 
+/// One finished play session — an immutable record of a single launch on a
+/// single device. Sessions are append-only facts: each is created exactly once,
+/// by exactly one device, and never edited afterwards. That makes the
+/// cross-device store conflict-free (a union of per-device rows keyed by
+/// `session_id`), so syncing them needs no database merge — see
+/// `rclone::sync_play_history`. The `play_sessions` table is the source of
+/// truth; the per-device rclone history blob is just a projection of it.
+///
+/// `#[serde(default)]` at the container level keeps older blobs loadable when a
+/// field is added later — the same JSON-shape rule the rest of the persisted
+/// state follows, important because rows round-trip across devices that may run
+/// different Spool versions.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PlaySession {
+    /// Globally unique across devices: `<device_id>:<started_at_millis>`.
+    pub session_id: String,
+    pub device_id: String,
+    pub device_name: String,
+    /// Match key shared with the rest of the control plane (markers, blobs).
+    pub game_name: String,
+    pub started_at: DateTime<Utc>,
+    pub ended_at: DateTime<Utc>,
+    /// Wall-clock seconds played, with any mid-session suspend time subtracted.
+    pub duration_secs: i64,
+}
+
+/// Deserialise a `play_sessions` row into a [`PlaySession`]. Timestamps are
+/// stored as RFC 3339 text; a row that can't parse is a corrupt write we'd
+/// rather surface than silently drop, so this returns a result.
+fn row_to_session(row: &sqlx::sqlite::SqliteRow) -> AppResult<PlaySession> {
+    let parse = |s: String| {
+        DateTime::parse_from_rfc3339(&s)
+            .map(|d| d.with_timezone(&Utc))
+            .map_err(|e| AppError::Other(format!("bad session timestamp {s:?}: {e}")))
+    };
+    Ok(PlaySession {
+        session_id: row.get("session_id"),
+        device_id: row.get("device_id"),
+        device_name: row.get("device_name"),
+        game_name: row.get("game_name"),
+        started_at: parse(row.get("started_at"))?,
+        ended_at: parse(row.get("ended_at"))?,
+        duration_secs: row.get("duration_secs"),
+    })
+}
+
 /// Returns `items` with duplicates removed, preserving first-seen order.
 fn dedup_preserve_order(items: &[String]) -> Vec<String> {
     let mut seen = std::collections::HashSet::new();
@@ -383,6 +430,22 @@ impl Library {
              BEGIN UPDATE meta SET v = v + 1 WHERE k = 'version'; END",
             "CREATE TRIGGER IF NOT EXISTS games_version_ad AFTER DELETE ON games
              BEGIN UPDATE meta SET v = v + 1 WHERE k = 'version'; END",
+            // Append-only log of finished play sessions, one row per launch.
+            // Keyed by a globally-unique `session_id` so re-folding a peer's
+            // history (INSERT OR IGNORE) is idempotent. Deliberately *not* wired
+            // to `meta.version`: a session insert / cross-device fold shouldn't
+            // trigger a full library reload in every Spool process.
+            "CREATE TABLE IF NOT EXISTS play_sessions (
+                 session_id  TEXT PRIMARY KEY NOT NULL,
+                 device_id   TEXT NOT NULL,
+                 device_name TEXT NOT NULL,
+                 game_name   TEXT NOT NULL,
+                 started_at  TEXT NOT NULL,
+                 ended_at    TEXT NOT NULL,
+                 duration_secs INTEGER NOT NULL
+             )",
+            "CREATE INDEX IF NOT EXISTS play_sessions_game ON play_sessions (game_name)",
+            "CREATE INDEX IF NOT EXISTS play_sessions_device ON play_sessions (device_id)",
         ];
         for sql in stmts {
             sqlx::query(sql).execute(&self.pool).await?;
@@ -588,6 +651,95 @@ impl Library {
         Ok(res.rows_affected() > 0)
     }
 
+    /// Records a finished play session. `INSERT OR IGNORE` so re-recording the
+    /// same `session_id` (e.g. folding a peer's history that includes a session
+    /// we already have) is a no-op rather than an error. Returns whether a new
+    /// row was actually inserted.
+    pub async fn insert_session(&self, s: &PlaySession) -> AppResult<bool> {
+        let res = sqlx::query(
+            "INSERT OR IGNORE INTO play_sessions
+                 (session_id, device_id, device_name, game_name, started_at, ended_at, duration_secs)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        )
+        .bind(&s.session_id)
+        .bind(&s.device_id)
+        .bind(&s.device_name)
+        .bind(&s.game_name)
+        .bind(s.started_at.to_rfc3339())
+        .bind(s.ended_at.to_rfc3339())
+        .bind(s.duration_secs)
+        .execute(&self.pool)
+        .await?;
+        Ok(res.rows_affected() > 0)
+    }
+
+    /// Bulk-insert sessions (the cross-device fold). Each is `INSERT OR IGNORE`d
+    /// in one transaction. Returns the number of *new* rows added.
+    pub async fn upsert_sessions(&self, sessions: &[PlaySession]) -> AppResult<usize> {
+        if sessions.is_empty() {
+            return Ok(0);
+        }
+        let mut tx = self.pool.begin().await?;
+        let mut added = 0usize;
+        for s in sessions {
+            let res = sqlx::query(
+                "INSERT OR IGNORE INTO play_sessions
+                     (session_id, device_id, device_name, game_name, started_at, ended_at, duration_secs)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            )
+            .bind(&s.session_id)
+            .bind(&s.device_id)
+            .bind(&s.device_name)
+            .bind(&s.game_name)
+            .bind(s.started_at.to_rfc3339())
+            .bind(s.ended_at.to_rfc3339())
+            .bind(s.duration_secs)
+            .execute(&mut *tx)
+            .await?;
+            added += res.rows_affected() as usize;
+        }
+        tx.commit().await?;
+        Ok(added)
+    }
+
+    /// All sessions recorded by `device_id`, oldest first. The rclone history
+    /// blob is built from this (a projection of the local rows for our device).
+    pub async fn sessions_for_device(&self, device_id: &str) -> AppResult<Vec<PlaySession>> {
+        let rows = sqlx::query(
+            "SELECT session_id, device_id, device_name, game_name, started_at, ended_at, duration_secs
+             FROM play_sessions WHERE device_id = ?1 ORDER BY started_at",
+        )
+        .bind(device_id)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(row_to_session).collect()
+    }
+
+    /// All sessions across every device, oldest first. When `game_name` is
+    /// `Some`, only that game's sessions. Feeds the cross-device timeline chart.
+    pub async fn list_sessions(&self, game_name: Option<&str>) -> AppResult<Vec<PlaySession>> {
+        let rows = match game_name {
+            Some(name) => {
+                sqlx::query(
+                    "SELECT session_id, device_id, device_name, game_name, started_at, ended_at, duration_secs
+                     FROM play_sessions WHERE game_name = ?1 ORDER BY started_at",
+                )
+                .bind(name)
+                .fetch_all(&self.pool)
+                .await?
+            }
+            None => {
+                sqlx::query(
+                    "SELECT session_id, device_id, device_name, game_name, started_at, ended_at, duration_secs
+                     FROM play_sessions ORDER BY started_at",
+                )
+                .fetch_all(&self.pool)
+                .await?
+            }
+        };
+        rows.iter().map(row_to_session).collect()
+    }
+
     /// Persists post-backup stats. `size_mb` is optional — `None` leaves the
     /// existing recorded size in place (the refresh-only path doesn't know it).
     pub async fn record_backup_stats(
@@ -780,6 +932,16 @@ pub fn make_safe_filename(name: &str) -> String {
 #[tauri::command]
 pub async fn list_games(state: State<'_, SharedLibrary>) -> AppResult<Vec<GameEntry>> {
     state.list().await
+}
+
+/// All recorded play sessions across every device, oldest first. Pass
+/// `game_name` to scope to one game. Feeds the cross-device activity timeline.
+#[tauri::command]
+pub async fn list_play_sessions(
+    state: State<'_, SharedLibrary>,
+    game_name: Option<String>,
+) -> AppResult<Vec<PlaySession>> {
+    state.list_sessions(game_name.as_deref()).await
 }
 
 /// Adds a new game. Assigns id/catalog/timestamps server-side; persists;
@@ -1189,6 +1351,68 @@ mod tests {
         assert!(!lib.set_install_size_if_empty("a", 999.0).await.unwrap());
         let e = lib.find("a").await.unwrap().unwrap();
         assert_eq!(e.install_size_mb, 500.0);
+    }
+
+    fn session(id: &str, device: &str, game: &str, start: &str, mins: i64) -> PlaySession {
+        let started = DateTime::parse_from_rfc3339(start).unwrap().with_timezone(&Utc);
+        PlaySession {
+            session_id: id.to_string(),
+            device_id: device.to_string(),
+            device_name: format!("{device}-name"),
+            game_name: game.to_string(),
+            started_at: started,
+            ended_at: started + chrono::Duration::minutes(mins),
+            duration_secs: mins * 60,
+        }
+    }
+
+    #[tokio::test]
+    async fn insert_session_is_idempotent_by_id() {
+        let lib = Library::open_in_memory().await.unwrap();
+        let s = session("deck:1", "deck", "Hades", "2026-05-01T10:00:00Z", 30);
+        assert!(lib.insert_session(&s).await.unwrap(), "first insert is new");
+        assert!(!lib.insert_session(&s).await.unwrap(), "same id is a no-op");
+        assert_eq!(lib.list_sessions(None).await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn list_sessions_filters_by_game_and_orders_by_start() {
+        let lib = Library::open_in_memory().await.unwrap();
+        // Insert out of chronological order to prove ORDER BY started_at.
+        lib.insert_session(&session("deck:2", "deck", "Hades", "2026-05-02T10:00:00Z", 10)).await.unwrap();
+        lib.insert_session(&session("deck:1", "deck", "Hades", "2026-05-01T10:00:00Z", 20)).await.unwrap();
+        lib.insert_session(&session("pc:1", "pc", "Celeste", "2026-05-01T12:00:00Z", 5)).await.unwrap();
+
+        let hades = lib.list_sessions(Some("Hades")).await.unwrap();
+        assert_eq!(hades.len(), 2);
+        assert_eq!(hades[0].session_id, "deck:1", "oldest first");
+        assert_eq!(hades[1].session_id, "deck:2");
+
+        assert_eq!(lib.list_sessions(None).await.unwrap().len(), 3, "all games");
+    }
+
+    #[tokio::test]
+    async fn sessions_for_device_scopes_to_one_device() {
+        let lib = Library::open_in_memory().await.unwrap();
+        lib.insert_session(&session("deck:1", "deck", "Hades", "2026-05-01T10:00:00Z", 20)).await.unwrap();
+        lib.insert_session(&session("pc:1", "pc", "Hades", "2026-05-01T12:00:00Z", 5)).await.unwrap();
+        let deck = lib.sessions_for_device("deck").await.unwrap();
+        assert_eq!(deck.len(), 1);
+        assert_eq!(deck[0].device_id, "deck");
+    }
+
+    #[tokio::test]
+    async fn upsert_sessions_skips_existing_and_counts_new() {
+        let lib = Library::open_in_memory().await.unwrap();
+        lib.insert_session(&session("deck:1", "deck", "Hades", "2026-05-01T10:00:00Z", 20)).await.unwrap();
+        // Folding a peer batch that re-includes deck:1 only adds the new rows.
+        let batch = [
+            session("deck:1", "deck", "Hades", "2026-05-01T10:00:00Z", 20),
+            session("pc:1", "pc", "Hades", "2026-05-02T10:00:00Z", 15),
+            session("pc:2", "pc", "Celeste", "2026-05-03T10:00:00Z", 5),
+        ];
+        assert_eq!(lib.upsert_sessions(&batch).await.unwrap(), 2, "only the two new rows");
+        assert_eq!(lib.list_sessions(None).await.unwrap().len(), 3);
     }
 
     #[tokio::test]
