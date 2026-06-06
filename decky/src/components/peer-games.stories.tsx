@@ -6,9 +6,12 @@ import {
   makeDownload,
   registerDeckyCallables,
   installFetchMock,
+  installCoverArtMock,
 } from "../../.storybook/mocks/fixtures";
 import { clearCallables } from "../../.storybook/mocks/registry";
 import { setRouteParams } from "../../.storybook/mocks/decky-ui";
+import { withSteamChrome } from "../../.storybook/steam-chrome";
+import { SafeArea } from "./safe-area";
 
 // Route params drive which peer this page shows (matched against PEERS[0]).
 // Route order matters: the game-list URL contains both "/lan/peers" and
@@ -16,6 +19,7 @@ import { setRouteParams } from "../../.storybook/mocks/decky-ui";
 const page = (downloadBody: unknown = null) => {
   clearCallables();
   registerDeckyCallables();
+  installCoverArtMock();
   setRouteParams({ peerAddr: "192.168.1.20", peerPort: "47632" });
   installFetchMock({
     "/games": PEER_GAMES,
@@ -23,8 +27,10 @@ const page = (downloadBody: unknown = null) => {
     "/lan/peers": PEERS,
   });
   return (
-    <div style={{ minHeight: 600, background: "#0c0f14", color: "#fff" }}>
-      <PeerGamesPage />
+    <div style={{ minHeight: "100vh", background: "#0c0f14", color: "#fff" }}>
+      <SafeArea>
+        <PeerGamesPage />
+      </SafeArea>
     </div>
   );
 };
@@ -33,6 +39,7 @@ const meta: Meta<typeof PeerGamesPage> = {
   title: "LAN/PeerGames",
   component: PeerGamesPage,
   parameters: { layout: "fullscreen" },
+  decorators: [withSteamChrome],
 };
 export default meta;
 
@@ -55,8 +62,10 @@ export const NothingShared: Story = {
     setRouteParams({ peerAddr: "192.168.1.20", peerPort: "47632" });
     installFetchMock({ "/games": [], "/lan/download": null, "/lan/peers": PEERS });
     return (
-      <div style={{ minHeight: 600, background: "#0c0f14", color: "#fff" }}>
-        <PeerGamesPage />
+      <div style={{ minHeight: "100vh", background: "#0c0f14", color: "#fff" }}>
+        <SafeArea>
+          <PeerGamesPage />
+        </SafeArea>
       </div>
     );
   },

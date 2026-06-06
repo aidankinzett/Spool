@@ -37,8 +37,29 @@ export const PEER_GAMES: PeerGame[] = [
   { id: "pg1", game_name: "Hades", install_size_mb: 14_000, shareable: true },
   { id: "pg2", game_name: "Celeste", install_size_mb: 1_300, shareable: true },
   { id: "pg3", game_name: "Stardew Valley", install_size_mb: 980, shareable: true },
-  { id: "pg4", game_name: "Big Open World RPG", install_size_mb: 92_000, shareable: false },
+  { id: "pg4", game_name: "Baldur's Gate 3", install_size_mb: 122_000, shareable: false },
 ];
+
+// Cover art for the LAN stories, loaded straight from Steam's public CDN (keyed
+// by Steam app id) rather than bundled into the repo — the art stays © its
+// publishers and never lands in git history, only in whatever documentation
+// screenshot is captured from the rendered story. Mirrors the desktop fixtures'
+// `cover()`/`hero()` helpers.
+const STEAM_CDN = "https://steamcdn-a.akamaihd.net/steam/apps";
+export const cover = (appid: number): string => `${STEAM_CDN}/${appid}/library_600x900_2x.jpg`;
+export const hero = (appid: number): string => `${STEAM_CDN}/${appid}/library_hero.jpg`;
+
+// Steam app ids for the sample peer games, so the LAN cover grid shows real
+// portrait art in stories. Every PEER_GAMES id is mapped — the grid always
+// builds a cover URL (it has no null/placeholder path of its own), so an
+// unmapped id would render a broken-image icon. The accent-placeholder fallback
+// is exercised directly in `cover-grid.stories.tsx` via `coverUrl: null`.
+export const PEER_COVER_APPIDS: Record<string, number> = {
+  pg1: 1145360, // Hades
+  pg2: 504230, // Celeste
+  pg3: 413150, // Stardew Valley
+  pg4: 1086940, // Baldur's Gate 3
+};
 
 export function makeDownload(overrides: Partial<DownloadProgress> = {}): DownloadProgress {
   return {
@@ -94,4 +115,72 @@ export function installFetchMock(routes: Record<string, RouteValue>): void {
     }
     return json(null);
   };
+}
+
+// The LAN components build cover URLs themselves as `<base>/games/<id>/cover`
+// and load them either through a plain <img> or a CSS `background-image: url(…)`
+// — neither of which hits installFetchMock's window.fetch stub. To show real
+// art in stories the way the desktop fixtures do (absolute Steam CDN URLs
+// straight in `cover_image_path`), a MutationObserver watches the rendered DOM
+// and rewrites any cover-endpoint URL it sees to a Steam CDN portrait keyed by
+// game id — on `<img src>` and on inline `background-image` alike. Rewriting
+// reads the final DOM, so it doesn't matter how React set the value. URLs whose
+// id isn't mapped pass through untouched. The CDN URL no longer matches the
+// pattern, so a rewrite never re-triggers itself.
+let coverAppids: Record<string, number> = { ...PEER_COVER_APPIDS };
+let coverObserver: MutationObserver | null = null;
+// Match a whole cover-endpoint URL — scheme through `/cover` — capturing the
+// game id. The path between host and `/games/` is arbitrary (the live peer base
+// is `<server-base>/lan/peers/<addr>/<port>`), so the wildcard spans it lazily
+// and the entire URL is swapped, not just the suffix. In the DOM both <img src>
+// and
+// `background-image: url(…)` resolve to absolute URLs, so requiring a scheme is
+// safe and keeps the match from straying past a `url(…)` wrapper.
+const COVER_RE = /https?:\/\/[^\s)"']*?\/games\/([^/?#)"'\s]+)\/cover/g;
+
+function rewriteCoverUrl(value: string): string {
+  if (!value.includes("/cover")) return value;
+  return value.replace(COVER_RE, (match, id: string) => {
+    const appid = coverAppids[id];
+    return appid ? cover(appid) : match;
+  });
+}
+
+function rewriteCoverNode(node: Node): void {
+  if (!(node instanceof HTMLElement)) return;
+  const els: HTMLElement[] = [node, ...Array.from(node.querySelectorAll<HTMLElement>("*"))];
+  for (const el of els) {
+    if (el instanceof HTMLImageElement && el.src) {
+      const next = rewriteCoverUrl(el.src);
+      if (next !== el.src) el.src = next;
+    }
+    const bg = el.style.backgroundImage;
+    if (bg) {
+      const next = rewriteCoverUrl(bg);
+      if (next !== bg) el.style.backgroundImage = next;
+    }
+  }
+}
+
+export function installCoverArtMock(appids: Record<string, number> = PEER_COVER_APPIDS): void {
+  coverAppids = { ...appids };
+  if (coverObserver) {
+    rewriteCoverNode(document.body); // re-sweep with the (possibly new) mapping
+    return;
+  }
+  coverObserver = new MutationObserver((records) => {
+    for (const rec of records) {
+      if (rec.type === "attributes" && rec.target) {
+        rewriteCoverNode(rec.target);
+      }
+      rec.addedNodes.forEach(rewriteCoverNode);
+    }
+  });
+  coverObserver.observe(document.body, {
+    subtree: true,
+    childList: true,
+    attributes: true,
+    attributeFilter: ["src", "style"],
+  });
+  rewriteCoverNode(document.body); // initial sweep for already-mounted nodes
 }

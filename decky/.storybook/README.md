@@ -112,8 +112,28 @@ A **layout / prop / state harness**, not a visual oracle.
   app-detail DOM (`findTopCapsule`, ResizeObserver/MutationObserver on Steam's
   capsule) and returns `null` without it. Its *children* (`SpoolBar`, `Reel`,
   `BadgeMenuButton`) have stories; the wrapper itself only works in Game Mode.
-- **LAN cover art** won't load — thumbnails are `<img src>` pointing at peer
-  HTTP URLs the component builds itself; the grid/layout still reads correctly.
+- **LAN cover art** — the components build their own cover URLs
+  (`<base>/games/<id>/cover`), loaded via `<img src>` and a blurred
+  `background-image`, neither of which reaches `installFetchMock`'s `fetch`
+  stub. Stories that call `installCoverArtMock()` (the LAN peer-games and
+  detail stories) patch the image `src` setter *and* the inline-style
+  `background-image` to rewrite those URLs to real Steam CDN portraits keyed by
+  game id (`PEER_COVER_APPIDS`). Every sample peer game is mapped, since the
+  cover grid always builds a URL and an unmapped id would show a broken-image
+  icon; the genuine no-cover fallback tile is exercised in `CoverGrid`'s own
+  story via `coverUrl: null`. Stories that don't install the mock render the
+  unrewritten peer URLs.
+- **Steam chrome bars** — `steam-chrome.tsx` exports `withSteamChrome`, a
+  decorator that overlays Game Mode's top header (40px, the right-aligned status
+  cluster) and bottom footer (42px, translucent + blur, MENU/BACK hints) fixed
+  to the canvas edges, with the same z-index stacking Steam uses. The full-screen
+  LAN stories add it (and render at `100vh`) so a screen can be checked for
+  content sliding under the chrome. Steam's real header is transparent, but the
+  harness paints it opaque so content that collides with it is visibly clipped. Heights are pinned
+  in pixels: Big Picture's root font-size is a fixed 16px even at the Deck's
+  1280x800, so 40/42px is exact on a real Deck. The controller glyphs are
+  approximations; the bar metrics and stacking are faithful (read off the
+  debugger).
 
 ## Deck CEF debugger (for matching real styles)
 

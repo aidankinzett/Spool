@@ -22,13 +22,25 @@ import { LanPage } from "./components/lan-view";
 import { PeerGamesPage } from "./components/peer-games";
 import { PeerGameDetailPage } from "./components/peer-game-detail-panel";
 import { PatchWrapper } from "./components/patch/patch-wrapper";
+import { SafeArea } from "./components/safe-area";
 
 export default definePlugin(() => {
   // Register the full-screen LAN browse routes. The QAM "Browse LAN games"
   // button navigates to them; we remove them on dismount to avoid duplicate
   // patches across hot-reloads.
-  routerHook.addRoute(SPOOL_LAN_ROUTE, LanPage, { exact: true });
-  routerHook.addRoute(SPOOL_LAN_PEER_ROUTE, PeerGamesPage, { exact: true });
+  // The header/footer chrome overlays page content, so the top-to-bottom
+  // content pages are wrapped in SafeArea to clear it. The detail panel paints
+  // full-bleed and manages its own footer inset, so it routes unwrapped.
+  routerHook.addRoute(SPOOL_LAN_ROUTE, () => (
+    <SafeArea>
+      <LanPage />
+    </SafeArea>
+  ), { exact: true });
+  routerHook.addRoute(SPOOL_LAN_PEER_ROUTE, () => (
+    <SafeArea>
+      <PeerGamesPage />
+    </SafeArea>
+  ), { exact: true });
   routerHook.addRoute(SPOOL_LAN_GAME_ROUTE, PeerGameDetailPage);
 
   // Patch the Steam game-detail page to inject Spool's cross-device playtime

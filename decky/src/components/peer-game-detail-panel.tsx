@@ -4,6 +4,7 @@ import type { LanPeer, PeerGame } from "../types";
 import { fmtBytes } from "../lib/format";
 import { useServerBase } from "../hooks/use-server-base";
 import { useParams } from "../lib/steam";
+import { STEAM_FOOTER_HEIGHT } from "../lib/steam-chrome";
 
 export function PeerGameDetailPage() {
   const { peerAddr, peerPort, gameId } =
@@ -133,7 +134,8 @@ export function PeerGameDetailPage() {
           display: "flex",
           flexDirection: "column",
           justifyContent: "flex-end",
-          padding: "1rem 1.5rem calc(42px + 1.5rem)",
+          // Clear the Game-Mode footer bar that overlays the bottom of the page.
+          padding: `1rem 1.5rem calc(${STEAM_FOOTER_HEIGHT}px + 1.5rem)`,
         }}
       >
         {/* Portrait cover thumbnail */}
