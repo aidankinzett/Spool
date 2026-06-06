@@ -101,6 +101,49 @@ pub async fn derive_save_template(
     ))
 }
 
+/// The directory the Saves folder-picker should open at: deep inside the game's
+/// Proton prefix (its user profile, where AppData / Documents / Saved Games
+/// live) when it launches through Proton, else the install folder or the home
+/// dir. Returns the deepest path that actually exists so the dialog opens
+/// somewhere valid — the prefix's user dir only appears after the first launch,
+/// so we fall back outward. `None` when nothing suitable exists yet.
+#[tauri::command]
+pub async fn save_picker_start_dir(
+    library: State<'_, SharedLibrary>,
+    game_id: String,
+) -> AppResult<Option<String>> {
+    let entry = library
+        .find(&game_id)
+        .await?
+        .ok_or_else(|| AppError::Other(format!("game not found: {game_id}")))?;
+    Ok(pick_start_dir(&entry))
+}
+
+fn pick_start_dir(entry: &GameEntry) -> Option<String> {
+    use std::path::PathBuf;
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Some(prefix) = prefix_root_for(entry) {
+        let pfx = PathBuf::from(prefix);
+        candidates.push(pfx.join("drive_c/users/steamuser"));
+        candidates.push(pfx.join("drive_c"));
+        candidates.push(pfx);
+    }
+    if let Some(folder) = entry
+        .game_folder_path
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+    {
+        candidates.push(PathBuf::from(folder));
+    }
+    if let Some(home) = dirs::home_dir() {
+        candidates.push(home);
+    }
+    candidates
+        .into_iter()
+        .find(|p| p.is_dir())
+        .map(|p| p.to_string_lossy().into_owned())
+}
+
 /// Set (or replace) a game's custom save location: persist it, refresh
 /// ludusavi's `customGames` block so the next backup tracks it, and publish the
 /// portable definition so other devices adopt it.

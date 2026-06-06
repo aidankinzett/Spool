@@ -227,10 +227,19 @@
   // template (e.g. <winLocalAppData>/MyGame) so it works on every device/OS.
   async function pickSaveFolder() {
     if (!form) return;
+    // Open the picker inside the game's Proton prefix (its user profile) so the
+    // user just navigates to the save, rather than hunting for the prefix.
+    let defaultPath: string | undefined;
+    try {
+      defaultPath = (await api.savePickerStartDir(form.id)) ?? undefined;
+    } catch (e) {
+      console.error('[edit] savePickerStartDir failed:', e);
+    }
     const picked = await openDialog({
       title: 'Pick the save folder',
       directory: true,
       multiple: false,
+      defaultPath,
     });
     if (typeof picked !== 'string') return;
     try {

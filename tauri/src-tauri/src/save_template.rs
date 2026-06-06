@@ -27,9 +27,14 @@
 //! | `…/Documents/X` | `<winDocuments>/X` |
 //! | `…/users/Public/X` or `C:/Users/Public/X` | `<winPublic>/X` |
 //! | `…/ProgramData/X` or `C:/ProgramData/X` | `<winProgramData>/X` |
+//! | anything else under the user profile (e.g. `…/users/<u>/Saved Games/X`) | `<home>/Saved Games/X` |
 //! | under the game's install folder | `<base>/X` (expanded per device) |
-//! | under the Linux home dir | `<home>/X` (portable across Linux users) |
+//! | under the Linux home dir (native, non-Proton game) | `<home>/X` |
 //! | anything else | the literal path (works locally; may not cross OSes) |
+//!
+//! `<home>` is portable in both directions: ludusavi's `parse_paths` maps it to
+//! the prefix's `drive_c/users/steamuser` under `--wine-prefix` and to the real
+//! profile (`C:/Users/<u>`) on Windows — so a "Saved Games" pick round-trips.
 
 /// Normalise to forward slashes and drop a trailing slash (but keep a bare `/`).
 fn norm(p: &str) -> String {
@@ -96,16 +101,16 @@ pub fn classify(
 ) -> String {
     let p = norm(picked);
 
-    // 1. Inside the game's Proton/Wine prefix → Windows known folder in drive_c.
+    // 1. Inside the game's Proton/Wine prefix → a portable token. ludusavi maps
+    //    <home> / <winXxx> back into the prefix's drive_c under --wine-prefix, so
+    //    any folder under the user profile round-trips. A folder under the prefix
+    //    that isn't a recognised location stays literal (device-local) — never
+    //    mapped via the real-home <home> in step 4.
     if let Some(root) = prefix_root {
         let drive_c = format!("{}/drive_c", norm(root));
         if let Some(rest) = strip_prefix_ci(&p, &drive_c) {
-            if let Some(tok) = drive_c_known_folder(rest) {
-                return tok;
-            }
-            // Under the prefix but not a recognised known folder — keep it
-            // prefix-relative is meaningless across devices, so fall through to
-            // the install-folder / literal handling below.
+            let tok = drive_c_known_folder(rest);
+            return tok.unwrap_or(p);
         }
     }
 
@@ -124,11 +129,15 @@ pub fn classify(
         }
     }
 
-    // 4. Under the Linux home dir → `<home>/rest` (portable across Linux users).
-    if let Some(h) = home.filter(|h| !h.trim().is_empty()) {
-        let h = norm(h);
-        if let Some(rest) = strip_prefix_ci(&p, &h) {
-            return join("<home>", rest);
+    // 4. Under the Linux home dir → `<home>/rest`. Only for non-Proton games:
+    //    under --wine-prefix ludusavi resolves <home> into the prefix, so a
+    //    real-home path for a Proton game must stay literal, not become <home>.
+    if prefix_root.is_none() {
+        if let Some(h) = home.filter(|h| !h.trim().is_empty()) {
+            let h = norm(h);
+            if let Some(rest) = strip_prefix_ci(&p, &h) {
+                return join("<home>", rest);
+            }
         }
     }
 
@@ -137,45 +146,50 @@ pub fn classify(
     p
 }
 
-/// Map a path *relative to a prefix's `drive_c`* onto a Windows placeholder.
-/// e.g. `users/steamuser/AppData/Local/X` → `<winLocalAppData>/X`.
+/// Map a path *relative to a prefix's `drive_c`* onto a portable token.
+/// e.g. `users/steamuser/AppData/Local/X` → `<winLocalAppData>/X`,
+/// `users/steamuser/Saved Games/X` → `<home>/Saved Games/X`. `None` for
+/// locations outside the user profile / ProgramData (e.g. `Program Files`).
 fn drive_c_known_folder(rest: &str) -> Option<String> {
-    // users/Public/…  → <winPublic>
-    if let Some(tail) = strip_prefix_ci(rest, "users/Public") {
-        return Some(join("<winPublic>", tail));
-    }
-    // ProgramData/…   → <winProgramData>
+    // ProgramData/…   → <winProgramData> (outside the user profile)
     if let Some(tail) = strip_prefix_ci(rest, "ProgramData") {
         return Some(join("<winProgramData>", tail));
     }
-    // users/<name>/…  → strip the user segment, then match the known folder.
-    if let Some(after_users) = strip_prefix_ci(rest, "users") {
-        let (_, after_user) = split_first_segment(after_users);
-        if let Some(tok) = windows_known_folder(after_user) {
-            return Some(tok);
-        }
-    }
-    None
+    profile_token(strip_prefix_ci(rest, "users"))
 }
 
-/// Map a Windows drive path (`C:/…`) onto a Windows placeholder.
+/// Map a Windows drive path (`C:/…`) onto a portable token.
 fn windows_drive_known_folder(p: &str) -> Option<String> {
-    // C:/Users/Public/…
-    if let Some(tail) = strip_prefix_ci(p, "C:/Users/Public") {
-        return Some(join("<winPublic>", tail));
-    }
     // C:/ProgramData/…
     if let Some(tail) = strip_prefix_ci(p, "C:/ProgramData") {
         return Some(join("<winProgramData>", tail));
     }
-    // C:/Users/<name>/…
-    if let Some(after_users) = strip_prefix_ci(p, "C:/Users") {
-        let (_, after_user) = split_first_segment(after_users);
-        if let Some(tok) = windows_known_folder(after_user) {
-            return Some(tok);
-        }
+    profile_token(strip_prefix_ci(p, "C:/Users"))
+}
+
+/// Shared user-profile classifier for both the prefix and Windows-drive paths.
+/// `after_users` is the part after `users/` (or `C:/Users/`): `<name>/<rest>`.
+///   * `Public/…`              → `<winPublic>/…`
+///   * a Windows known folder  → `<winLocalAppData>` / `<winDocuments>` / …
+///   * anything else (Saved Games, game-specific dirs, the profile root) →
+///     `<home>/…`, which ludusavi resolves into the prefix on Linux and to the
+///     real profile on Windows.
+///
+/// `None` when there's no user segment at all (e.g. `…/users` itself).
+fn profile_token(after_users: Option<&str>) -> Option<String> {
+    let after_users = after_users?;
+    if after_users.is_empty() {
+        return None; // `…/users` with no profile under it — no portable anchor.
     }
-    None
+    let (user, after_user) = split_first_segment(after_users);
+    if user.eq_ignore_ascii_case("Public") {
+        return Some(join("<winPublic>", after_user));
+    }
+    if let Some(tok) = windows_known_folder(after_user) {
+        return Some(tok);
+    }
+    // The profile root itself, or a folder we don't have a <winXxx> token for.
+    Some(join("<home>", after_user))
 }
 
 /// Split `a/b/c` into (`a`, `b/c`); ("", "") when empty.
@@ -259,6 +273,53 @@ mod tests {
             classify(&pd_pick, Some(PFX), None, None),
             "<winProgramData>/Game/save"
         );
+    }
+
+    #[test]
+    fn prefix_saved_games_uses_home() {
+        // "Saved Games" has no <winXxx> token, but <home> resolves into the
+        // prefix under --wine-prefix, so it's still portable.
+        let picked = format!("{PFX}/drive_c/users/steamuser/Saved Games/MyGame");
+        assert_eq!(
+            classify(&picked, Some(PFX), None, None),
+            "<home>/Saved Games/MyGame"
+        );
+    }
+
+    #[test]
+    fn prefix_game_specific_profile_dir_uses_home() {
+        // A folder dropped straight under the user profile.
+        let picked = format!("{PFX}/drive_c/users/steamuser/MyGameSaves");
+        assert_eq!(classify(&picked, Some(PFX), None, None), "<home>/MyGameSaves");
+    }
+
+    #[test]
+    fn prefix_profile_root_is_home() {
+        let picked = format!("{PFX}/drive_c/users/steamuser");
+        assert_eq!(classify(&picked, Some(PFX), None, None), "<home>");
+    }
+
+    #[test]
+    fn prefix_users_root_without_profile_is_literal() {
+        // `.../users` with no profile under it has no portable anchor.
+        let picked = format!("{PFX}/drive_c/users");
+        assert_eq!(classify(&picked, Some(PFX), None, None), picked);
+    }
+
+    #[test]
+    fn windows_saved_games_uses_home() {
+        assert_eq!(
+            classify("C:/Users/Alice/Saved Games/MyGame", None, None, None),
+            "<home>/Saved Games/MyGame"
+        );
+    }
+
+    #[test]
+    fn proton_real_home_path_stays_literal() {
+        // A Proton game writing to the real Linux home (not the prefix) must stay
+        // literal — <home> would be misread as the prefix under --wine-prefix.
+        let picked = "/home/deck/.config/MyGame";
+        assert_eq!(classify(picked, Some(PFX), None, Some("/home/deck")), picked);
     }
 
     // ── Windows drive paths → placeholders ──────────────────────────────────

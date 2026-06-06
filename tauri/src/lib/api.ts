@@ -197,6 +197,14 @@ export const api = {
   deriveSaveTemplate: (gameId: string, pickedPath: string): Promise<string> =>
     invoke('derive_save_template', { gameId, pickedPath }),
   /**
+   * Best directory to open the save-folder picker at for a game — deep inside
+   * its Proton prefix (the user profile, where AppData / Documents / Saved Games
+   * live) when applicable, else the install folder or home. `null` when nothing
+   * suitable exists yet (e.g. a Proton game that hasn't been launched once).
+   */
+  savePickerStartDir: (gameId: string): Promise<string | null> =>
+    invoke('save_picker_start_dir', { gameId }),
+  /**
    * Track a custom save location for a non-manifest game: persist it, register
    * it with ludusavi so the next session backs it up, and replicate the
    * definition to your other devices so you only pick the folder once. `files`
