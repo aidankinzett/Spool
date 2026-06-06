@@ -340,24 +340,33 @@ jobs:
 
       - name: Generate changelog
         id: changelog
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
-          if [ -n "$PREV_TAG" ]; then
-            RANGE="$PREV_TAG..HEAD"
-          else
-            RANGE="HEAD"
-          fi
-          COMMITS=$(git log "$RANGE" --pretty=format:'%s' | grep -v '^$' || true)
 
-          FEATURES=$(printf '%s\n' "$COMMITS" | grep -E '^feat' | sed 's/^/- /' || true)
-          FIXES=$(printf '%s\n' "$COMMITS" | grep -E '^fix' | sed 's/^/- /' || true)
-          OTHER=$(printf '%s\n' "$COMMITS" | grep -vE '^feat|^fix' | sed 's/^/- /' || true)
+          if [ -n "$PREV_TAG" ]; then
+            # Find when the previous tag was created so we can bound the PR search.
+            AFTER=$(git log -1 --format=%aI "$PREV_TAG")
+            SEARCH="merged:>${AFTER}"
+          else
+            SEARCH="is:merged"
+          fi
+
+          PRS=$(gh pr list \
+            --repo "$REPO" \
+            --state merged \
+            --search "$SEARCH" \
+            --json number,title \
+            --limit 200)
 
           : > notes.md
-          if [ -n "$FEATURES" ]; then printf '### Features\n%s\n\n' "$FEATURES" >> notes.md; fi
-          if [ -n "$FIXES" ];    then printf '### Bug Fixes\n%s\n\n' "$FIXES"    >> notes.md; fi
-          if [ -n "$OTHER" ];    then printf '### Other\n%s\n\n' "$OTHER"        >> notes.md; fi
+          LINES=$(echo "$PRS" | jq -r 'sort_by(.number) | .[] | "- \(.title) (#\(.number))"')
+          if [ -n "$LINES" ]; then
+            printf '%s\n' "$LINES" >> notes.md
+          fi
 
       - name: Create GitHub release
         # tauri-action's release-creation path ignores GITHUB_TOKEN
