@@ -41,11 +41,17 @@
 
   let sessions = $state<PlaySession[]>([]);
 
-  // Reload the per-session history whenever the selected game changes. Keyed on
-  // game.id alone so unrelated entry-field updates don't refetch. Best-effort:
-  // a failure just leaves the timeline empty (totals still render).
+  // Reload the per-session history when the selected game changes, AND when this
+  // game's aggregate moves — a session just ended (or a peer's session was folded
+  // in) bumps playtime_minutes / last_played_at and re-emits library:changed, but
+  // not game_name. Depending on those fields keeps the session count, device
+  // chip, and weekly bars in step with the total playtime instead of going stale
+  // until the game is reselected. Best-effort: a failure leaves the timeline
+  // empty (totals still render). (#270)
   $effect(() => {
     const name = game.game_name;
+    void game.last_played_at;
+    void game.playtime_minutes;
     let stale = false;
     api
       .listPlaySessions(name)
