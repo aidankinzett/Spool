@@ -54,16 +54,42 @@ export async function checkForUpdateOnStartup(): Promise<void> {
 }
 
 async function installUpdate(update: Update): Promise<void> {
-  toasts.show({
+  const id = toasts.show({
     kind: 'info',
     label: 'UPDATE',
     title: 'Downloading update…',
     sub: `v${update.version} — Spool will restart when done.`,
     duration: 0,
+    progress: 0,
   });
 
+  // The updater streams download events: a `Started` carrying the total
+  // content length, then a `Progress` per chunk, then `Finished`. Sum the
+  // chunk lengths against the total to drive the toast's progress bar.
+  // `contentLength` can be missing (chunked/unknown-length responses); in
+  // that case we leave the bar at 0 and just let the toast spin until done.
+  let downloaded = 0;
+  let total = 0;
+
   try {
-    await update.downloadAndInstall();
+    await update.downloadAndInstall((event) => {
+      switch (event.event) {
+        case 'Started':
+          total = event.data.contentLength ?? 0;
+          break;
+        case 'Progress':
+          downloaded += event.data.chunkLength;
+          if (total > 0) toasts.update(id, { progress: downloaded / total });
+          break;
+        case 'Finished':
+          toasts.update(id, {
+            progress: 1,
+            title: 'Installing update…',
+            sub: `v${update.version} — Spool will restart shortly.`,
+          });
+          break;
+      }
+    });
     // On Windows the NSIS installer relaunches Spool itself after
     // running silently, so the process is usually gone by now. On the
     // Linux AppImage (and macOS) the updater just swaps the bundle in
@@ -73,6 +99,7 @@ async function installUpdate(update: Update): Promise<void> {
     await relaunch();
   } catch (e) {
     console.error('[updater] downloadAndInstall failed:', e);
+    toasts.dismiss(id);
     toasts.show({
       kind: 'bad',
       label: 'UPDATE · FAILED',

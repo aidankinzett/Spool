@@ -28,6 +28,13 @@
     toasts.tick;
     return fmtToastTime(toast.createdAt);
   });
+
+  // Determinate progress bar, shown only when `progress` is set.
+  // Clamp to 0–1 so a stray value can't overflow the track.
+  const hasProgress = $derived(toast.progress !== undefined);
+  const progressPct = $derived(
+    Math.round(Math.min(1, Math.max(0, toast.progress ?? 0)) * 100),
+  );
 </script>
 
 <div
@@ -72,11 +79,34 @@
     </div>
     <div
       class="text-[11.5px] text-ink-2"
-      class:mb-2.5={!!toast.cta}
+      class:mb-2.5={!!toast.cta || hasProgress}
       style:line-height="1.45"
     >
       {toast.sub}
     </div>
+
+    {#if hasProgress}
+      <div class="flex items-center gap-2">
+        <div
+          class="h-1 flex-1 overflow-hidden rounded-full bg-white/10"
+          role="progressbar"
+          aria-valuenow={progressPct}
+          aria-valuemin="0"
+          aria-valuemax="100"
+        >
+          <div
+            class="h-full rounded-full transition-[width] duration-150 ease-out"
+            style:width="{progressPct}%"
+            style:background={accent}
+          ></div>
+        </div>
+        <span
+          class="font-mono shrink-0 text-[9.5px] tabular-nums text-ink-3"
+        >
+          {progressPct}%
+        </span>
+      </div>
+    {/if}
 
     {#if toast.cta}
       <div class="flex gap-1.5">
