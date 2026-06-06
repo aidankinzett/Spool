@@ -46,6 +46,7 @@
   import CatalogId from './CatalogId.svelte';
   import Btn from './Btn.svelte';
   import DetailCard from './DetailCard.svelte';
+  import CrossDeviceActivityCard from './CrossDeviceActivityCard.svelte';
   import RemoveGameModal, { type RemoveChoice } from './RemoveGameModal.svelte';
 
   let {
@@ -749,6 +750,8 @@
     </div>
 
     <div class="flex min-w-0 flex-col gap-3.5">
+      <CrossDeviceActivityCard {game} {accent} />
+
       <DetailCard title="ENTRY · DETAILS" {accent}>
         <div class="flex flex-col">
           {#snippet row(

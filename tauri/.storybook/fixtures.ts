@@ -8,6 +8,7 @@
 import type {
   ConfigData,
   GameEntry,
+  PlaySession,
   SearchCandidate,
   DepStatus,
   DownloadProgress,
@@ -298,3 +299,95 @@ export const SAMPLE_LIBRARY: GameEntry[] = [
     hero_image_path: hero(268910),
   }),
 ];
+
+/**
+ * Per-session play history for the cross-device activity card
+ * (CrossDeviceActivityCard → `list_play_sessions`). Generated rather than
+ * hand-listed so the 14-week timeline always lands inside its window: sessions
+ * are placed relative to `Date.now()`, so the chart stays filled whenever the
+ * screenshots run, while a name-seeded PRNG keeps the exact layout
+ * reproducible (no visual-diff churn).
+ *
+ * Weekly bar heights follow `ACTIVITY_SHAPE`; the per-game session count and
+ * durations scale to that game's `playtime_minutes` (looked up in
+ * `SAMPLE_LIBRARY`), so "TOTAL PLAYTIME · N sessions" reads consistently. Two
+ * devices, with the most-recent week pinned to "Studio PC" so the card's LAST
+ * PLAYED chip resolves to a stable device. A never-played game (playtime 0)
+ * returns `[]`, so its card correctly doesn't render.
+ */
+const ACTIVITY_SHAPE = [0, 8, 22, 40, 30, 55, 70, 48, 62, 88, 74, 90, 60, 42];
+
+const PLAY_DEVICES = [
+  { id: 'dev-studio', name: 'Studio PC' },
+  { id: 'dev-deck', name: 'Steam Deck' },
+];
+
+/** Deterministic 0–1 PRNG (mulberry32) so a given seed always lays out the same. */
+function mulberry32(seed: number): () => number {
+  let a = seed >>> 0;
+  return () => {
+    a |= 0;
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function hashString(s: string): number {
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 16777619);
+  return h >>> 0;
+}
+
+export function makePlaySessions(gameName: string): PlaySession[] {
+  const game = SAMPLE_LIBRARY.find((g) => g.game_name === gameName);
+  const totalMinutes = game?.playtime_minutes ?? 1873;
+  if (totalMinutes <= 0) return [];
+
+  const rng = mulberry32(hashString(gameName));
+  const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
+  const now = Date.now();
+  const shapeSum = ACTIVITY_SHAPE.reduce((a, b) => a + b, 0);
+  // ~90-minute average session, clamped to a sensible range.
+  const totalSessions = Math.min(140, Math.max(14, Math.round(totalMinutes / 90)));
+
+  const sessions: PlaySession[] = [];
+  let counter = 0;
+
+  ACTIVITY_SHAPE.forEach((weight, idx) => {
+    if (weight === 0) return;
+    const weeksAgo = ACTIVITY_SHAPE.length - 1 - idx;
+    const weekMinutes = Math.round((weight / shapeSum) * totalMinutes);
+    const nSessions = Math.max(1, Math.round((weight / shapeSum) * totalSessions));
+    let remaining = weekMinutes;
+
+    for (let k = 0; k < nSessions; k++) {
+      const left = nSessions - k;
+      const dur =
+        k === nSessions - 1
+          ? Math.max(15, remaining)
+          : Math.max(15, Math.round((remaining / left) * (0.7 + rng() * 0.6)));
+      remaining = Math.max(0, remaining - dur);
+
+      // Most-recent week is always Studio PC so LAST PLAYED is stable; older
+      // weeks bias to Studio PC but mix in the Deck.
+      const dev = weeksAgo === 0 ? PLAY_DEVICES[0] : PLAY_DEVICES[rng() < 0.62 ? 0 : 1];
+      // Spread within the week but keep the offset under a full week so the
+      // session stays in its intended bucket.
+      const startMs = now - weeksAgo * WEEK_MS - Math.floor(rng() * WEEK_MS * 0.85);
+
+      sessions.push({
+        session_id: `${dev.id}:${startMs}-${counter++}`,
+        device_id: dev.id,
+        device_name: dev.name,
+        game_name: gameName,
+        started_at: new Date(startMs).toISOString(),
+        ended_at: new Date(startMs + dur * 60 * 1000).toISOString(),
+        duration_secs: dur * 60,
+      });
+    }
+  });
+
+  return sessions;
+}
