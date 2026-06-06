@@ -131,7 +131,13 @@
   async function persist(): Promise<boolean> {
     if (!config) return false;
     try {
-      config = await api.updateConfig($state.snapshot(config));
+      // Don't reassign `config` from the response. updateConfig echoes back
+      // the snapshot it was sent, so overwriting the live object with the
+      // resolved (now-stale) echo would silently discard any field the user
+      // edited while this round-trip was in flight — every field commits via
+      // its own async persist(). The local `config` is already the source of
+      // truth the snapshot was built from. (#272)
+      await api.updateConfig($state.snapshot(config));
       return true;
     } catch (e) {
       error = String(e);

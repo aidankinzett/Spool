@@ -268,9 +268,21 @@
         catalog: fmtCatalog(form.catalog_number),
       });
       // Pull the entry again so we see the new path + accent immediately.
+      // Patch ONLY the artwork fields — replacing the whole form would wipe
+      // any in-progress edits (title, paths, launch settings). Update
+      // `original` too so the dirty-compare baseline stays correct. (#271)
       const all = await api.listGames();
       const next = all.find((g) => g.id === form!.id);
-      if (next) form = { ...next };
+      if (next && form) {
+        form.cover_image_path = next.cover_image_path;
+        form.hero_image_path = next.hero_image_path;
+        form.accent_color = next.accent_color;
+        if (original) {
+          original.cover_image_path = next.cover_image_path;
+          original.hero_image_path = next.hero_image_path;
+          original.accent_color = next.accent_color;
+        }
+      }
     } catch (e) {
       toasts.show({
         kind: 'bad',

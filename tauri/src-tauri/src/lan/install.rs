@@ -4,6 +4,7 @@
 //! a new library entry. Single in-flight install slot with a cooperative
 //! cancel flag.
 
+use super::server::safe_join;
 use super::{PeerFile, PeerGame, PeerGameManifest};
 use crate::config::ConfigData;
 use crate::error::{AppError, AppResult};
@@ -338,6 +339,34 @@ fn resolve_install_dirs(root: &Path, safe_name: &str) -> (PathBuf, PathBuf, bool
     (final_dir, partial, false)
 }
 
+/// Returns the first manifest path (a file path or the exe path) that would
+/// escape the install directory, or `None` if every path is safe to write.
+///
+/// Manifest paths come straight off the network in `PeerGameManifest`. A
+/// malicious or compromised peer can send `../` components (or an absolute /
+/// Windows-prefixed path) to make the receiver write outside the install
+/// root — an arbitrary file write, e.g. into an autostart/config location.
+/// The host validates outbound paths with [`safe_join`]; the receiver must
+/// do the same on the way in, *before* any directory is created or byte
+/// written. blake3 verification is no defence — the attacker controls the
+/// hash too. See issue #267.
+fn first_unsafe_manifest_path(manifest: &PeerGameManifest) -> Option<&str> {
+    // The root is irrelevant to the safety check (we only care whether the
+    // join is rejected), so an empty root keeps this a pure function.
+    let probe = Path::new("");
+    for file in &manifest.files {
+        if safe_join(probe, &file.path).is_none() {
+            return Some(&file.path);
+        }
+    }
+    if let Some(rel) = manifest.exe_relative_path.as_deref() {
+        if safe_join(probe, rel).is_none() {
+            return Some(rel);
+        }
+    }
+    None
+}
+
 /// Formats a reqwest error including its full cause chain. reqwest's own
 /// Display only shows the top-level wrapper ("error sending request for
 /// url (...)"), which hides whether the underlying problem was a timeout,
@@ -535,7 +564,10 @@ async fn download_one_file(
     last_emit: Arc<Mutex<Instant>>,
     max_bps: f64,
 ) -> AppResult<()> {
-    let target = partial_dir.join(file.path.replace('/', std::path::MAIN_SEPARATOR_STR));
+    // Validated up front in `run_install`; re-checked here so this write
+    // site can never escape the staging dir even if reached another way.
+    let target = safe_join(&partial_dir, &file.path)
+        .ok_or_else(|| AppError::Other(format!("unsafe file path in manifest: {:?}", file.path)))?;
     if let Some(parent) = target.parent() {
         tokio::fs::create_dir_all(parent)
             .await
@@ -876,6 +908,14 @@ async fn run_install(
     library: SharedLibrary,
     on_library_changed: Arc<dyn Fn(&str) + Send + Sync>,
 ) -> AppResult<String> {
+    // Refuse a poisoned manifest before creating any directory or writing a
+    // single byte. See `first_unsafe_manifest_path` for the why.
+    if let Some(bad) = first_unsafe_manifest_path(&manifest) {
+        return Err(AppError::Other(format!(
+            "refusing LAN install: manifest path escapes the install dir: {bad:?}"
+        )));
+    }
+
     tokio::fs::create_dir_all(&install_root)
         .await
         .map_err(|e| AppError::Other(format!("create install root: {e}")))?;
@@ -1013,13 +1053,9 @@ async fn run_install(
     // Build the library entry.
     let exe_path = manifest
         .exe_relative_path
-        .as_ref()
-        .map(|rel| {
-            final_dir
-                .join(rel.replace('/', std::path::MAIN_SEPARATOR_STR))
-                .to_string_lossy()
-                .to_string()
-        })
+        .as_deref()
+        .and_then(|rel| safe_join(&final_dir, rel))
+        .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_default();
 
     let new_id = uuid::Uuid::new_v4().to_string();
@@ -1473,5 +1509,61 @@ mod tests {
         assert_eq!(final_dir, root.path().join("Hades (2)"));
         assert_eq!(partial, root.path().join("Hades (2).partial"));
         assert!(!resuming);
+    }
+
+    fn pf(path: &str) -> PeerFile {
+        PeerFile {
+            path: path.to_string(),
+            size: 0,
+            hash: String::new(),
+            mtime_unix_ms: 0,
+        }
+    }
+
+    #[test]
+    fn manifest_paths_accept_normal_relative_paths() {
+        let m = PeerGameManifest {
+            files: vec![pf("saves/profile.sav"), pf("data\\bin\\game.dat")],
+            exe_relative_path: Some("bin/game.exe".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(first_unsafe_manifest_path(&m), None);
+    }
+
+    #[test]
+    fn manifest_paths_reject_parent_traversal_in_file() {
+        let m = PeerGameManifest {
+            files: vec![pf("ok.dat"), pf("../../../../etc/cron.d/evil")],
+            ..Default::default()
+        };
+        assert_eq!(
+            first_unsafe_manifest_path(&m),
+            Some("../../../../etc/cron.d/evil")
+        );
+    }
+
+    #[test]
+    fn manifest_paths_reject_absolute_and_backslash_escape() {
+        let abs = PeerGameManifest {
+            files: vec![pf("/etc/passwd")],
+            ..Default::default()
+        };
+        assert!(first_unsafe_manifest_path(&abs).is_some());
+
+        let backslash = PeerGameManifest {
+            files: vec![pf("a\\..\\..\\Start Menu\\evil.lnk")],
+            ..Default::default()
+        };
+        assert!(first_unsafe_manifest_path(&backslash).is_some());
+    }
+
+    #[test]
+    fn manifest_paths_reject_traversal_in_exe_path() {
+        let m = PeerGameManifest {
+            files: vec![pf("game.dat")],
+            exe_relative_path: Some("../../evil.exe".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(first_unsafe_manifest_path(&m), Some("../../evil.exe"));
     }
 }
