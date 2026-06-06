@@ -2,13 +2,13 @@
   import type { ComponentProps } from 'svelte';
   import { defineMeta } from '@storybook/addon-svelte-csf';
   import { mockIPC } from '@tauri-apps/api/mocks';
-  import SavesPanel from './SavesPanel.svelte';
+  import SavesPanelHarness from '../../../.storybook/SavesPanelHarness.svelte';
 
   // The panel reaches into Tauri from its actions: it asks the backend where to
   // open the folder picker, turns a picked folder into a portable template, and
-  // sets/clears the custom save. Mock those so exploring the story — Browse,
-  // typing a template, "Use this location", "Stop tracking" — resolves with
-  // plausible values instead of throwing.
+  // sets/clears the custom save. Mock those so the story is fully interactive —
+  // Browse (then Add) appends a location, the trash icons remove them, and
+  // "Stop tracking" clears the list.
   mockIPC((cmd) => {
     switch (cmd) {
       case 'save_picker_start_dir':
@@ -27,61 +27,53 @@
     }
   });
 
+  // Stories render the stateful harness (not SavesPanel directly) so Add/Remove
+  // actually mutate the list; args are the harness's props.
   const { Story } = defineMeta({
     title: 'Detail/SavesPanel',
-    component: SavesPanel,
+    component: SavesPanelHarness,
     render: template,
     parameters: { layout: 'fullscreen' },
   });
-
-  const BASE = {
-    gameId: 'g1',
-    catalogNumber: 12,
-    savePaths: [],
-    usesProton: true,
-    prefixReady: true,
-    customSave: null,
-    onChange: () => {},
-  } satisfies ComponentProps<typeof SavesPanel>;
 </script>
 
 <!-- Match the editor's dark surface + content column so the rows look right. -->
-{#snippet template(args: ComponentProps<typeof SavesPanel>)}
+{#snippet template(args: ComponentProps<typeof SavesPanelHarness>)}
   <div class="bg-bg-0 text-ink-0 min-h-screen px-5 py-4">
     <div style="max-width: 640px;">
-      <SavesPanel {...args} />
+      <SavesPanelHarness {...args} />
     </div>
   </div>
 {/snippet}
 
-<!-- Non-manifest game, prefix already generated: folder picker + manual entry. -->
-<Story name="Not tracked" args={BASE} />
+<!-- Non-manifest game, prefix already generated. Browse → Add a location, type
+     another template and Add it, remove with the trash icons. -->
+<Story name="Not tracked" args={{ savePaths: [], usesProton: true, prefixReady: true, customSave: null }} />
 
 <!-- Proton game never launched: the prefix (and save folder) don't exist yet,
      so a hint tells the user to play it once first. -->
-<Story name="Not tracked · launch first" args={{ ...BASE, prefixReady: false }} />
+<Story name="Not tracked · launch first" args={{ usesProton: true, prefixReady: false, customSave: null }} />
 
-<!-- A custom save folder is already set: shows the location + Stop tracking. -->
+<!-- One custom location set: the list shows it with a remove (trash) button. -->
 <Story
-  name="Custom folder set"
-  args={{ ...BASE, customSave: { files: ['<winLocalAppData>/MyGame'], registry: [] } }}
+  name="One custom path"
+  args={{ customSave: { files: ['<winLocalAppData>/MyGame'], registry: [] } }}
 />
 
-<!-- A custom save with several locations (e.g. AppData + Saved Games). -->
+<!-- A game that saves in several places — the list with per-item delete + Add. -->
 <Story
-  name="Custom · multiple paths"
+  name="Multiple custom paths"
   args={{
-    ...BASE,
     customSave: {
-      files: ['<winLocalAppData>/MyGame', '<home>/Saved Games/MyGame'],
+      files: ['<winLocalAppData>/MyGame', '<home>/Saved Games/MyGame', '<winDocuments>/My Games/MyGame'],
       registry: [],
     },
   }}
 />
 
-<!-- ludusavi already covers this game (Windows): status notes manifest tracking,
-     and the picker is offered as an override. -->
+<!-- ludusavi already covers this game (Windows): status notes manifest
+     tracking, and locations can still be added as an override. -->
 <Story
   name="Manifest tracked"
-  args={{ ...BASE, usesProton: false, savePaths: ['%LOCALAPPDATA%/MyGame'] }}
+  args={{ usesProton: false, savePaths: ['%LOCALAPPDATA%/MyGame'], customSave: null }}
 />
