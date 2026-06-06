@@ -19,7 +19,7 @@
    */
   import { onMount } from 'svelte';
   import { SvelteSet } from 'svelte/reactivity';
-  import { Check, Download, Folder, FolderX, RefreshCw, Trash2 } from '@lucide/svelte';
+  import { Check, Download, Folder, FolderX, Info, RefreshCw, Trash2 } from '@lucide/svelte';
   import { open as openDialog } from '@tauri-apps/plugin-dialog';
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import { api, assetUrl } from '$lib/api';
@@ -53,6 +53,10 @@
   // picker or typed directly) and a busy flag for the set/clear actions.
   let saveTemplate = $state('');
   let savesBusy = $state(false);
+  // Whether a Proton game's Wine prefix exists yet (false → not launched once,
+  // so its save folder doesn't exist). Defaults true so native/Windows games
+  // never show the "launch first" hint. Fetched on mount.
+  let prefixReady = $state(true);
 
   // Proton picker: Auto + each detected build.
   const protonOptions = $derived<SelectOption[]>([
@@ -160,7 +164,12 @@
       // Linux-only Proton settings.
       try {
         isLinux = (await api.appPlatform()) === 'linux';
-        if (isLinux) protonVersions = await api.listProtonVersions();
+        if (isLinux) {
+          protonVersions = await api.listProtonVersions();
+          // Whether the prefix (and so the save folder) exists yet — drives the
+          // "launch the game once first" hint on the Saves tab.
+          prefixReady = await api.prefixReady(id);
+        }
       } catch (e) {
         console.error('[edit] proton init failed:', e);
       }
@@ -760,6 +769,20 @@
           {/snippet}
           {#snippet savesPicker()}
             <div class="flex flex-col gap-2">
+              {#if isLinux && exeIsWindows && !prefixReady}
+                <div
+                  class="flex items-start gap-2 rounded-[4px] border border-warn/30 bg-warn/10 px-2.5 py-2 text-[11.5px] leading-relaxed text-ink-1"
+                >
+                  <Info size={14} class="mt-0.5 shrink-0 text-warn" />
+                  <span>
+                    Launch this game once first — its Proton prefix and save folder
+                    are created on the first run. After you've played and made a save,
+                    come back and browse to it. You can also type a template like
+                    <span class="font-mono text-ink-0">&lt;winLocalAppData&gt;/Game</span>
+                    now.
+                  </span>
+                </div>
+              {/if}
               <div class="flex gap-1.5">
                 <TextField
                   bind:value={saveTemplate}

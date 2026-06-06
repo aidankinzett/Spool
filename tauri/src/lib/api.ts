@@ -205,6 +205,14 @@ export const api = {
   savePickerStartDir: (gameId: string): Promise<string | null> =>
     invoke('save_picker_start_dir', { gameId }),
   /**
+   * Whether a Proton game's Wine prefix has been generated yet (its user
+   * profile exists). `false` means the game hasn't been launched once, so its
+   * save folder doesn't exist yet — the Saves editor hints to play it first.
+   * Always `true` for native games / on Windows.
+   */
+  prefixReady: (gameId: string): Promise<boolean> =>
+    invoke('prefix_ready', { gameId }),
+  /**
    * Track a custom save location for a non-manifest game: persist it, register
    * it with ludusavi so the next session backs it up, and replicate the
    * definition to your other devices so you only pick the folder once. `files`

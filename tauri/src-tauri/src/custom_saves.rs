@@ -144,6 +144,28 @@ fn pick_start_dir(entry: &GameEntry) -> Option<String> {
         .map(|p| p.to_string_lossy().into_owned())
 }
 
+/// Whether a Proton game's Wine prefix has been generated yet — i.e. its user
+/// profile (`drive_c/users/steamuser`) exists. Drives a hint in the Saves editor
+/// telling the user to launch the game once before picking a save folder, since
+/// the prefix (and therefore the save location) is created on the first run.
+/// Always `true` for native games / on Windows, where no prefix is involved.
+#[tauri::command]
+pub async fn prefix_ready(
+    library: State<'_, SharedLibrary>,
+    game_id: String,
+) -> AppResult<bool> {
+    let entry = library
+        .find(&game_id)
+        .await?
+        .ok_or_else(|| AppError::Other(format!("game not found: {game_id}")))?;
+    if !entry.uses_proton() {
+        return Ok(true);
+    }
+    Ok(prefix_root_for(&entry)
+        .map(|p| std::path::Path::new(&p).join("drive_c/users/steamuser").is_dir())
+        .unwrap_or(false))
+}
+
 /// Set (or replace) a game's custom save location: persist it, refresh
 /// ludusavi's `customGames` block so the next backup tracks it, and publish the
 /// portable definition so other devices adopt it.

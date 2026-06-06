@@ -335,6 +335,7 @@ pub fn run() {
             custom_saves::clear_custom_save,
             custom_saves::derive_save_template,
             custom_saves::save_picker_start_dir,
+            custom_saves::prefix_ready,
             // decky plugin installer (Linux / SteamOS)
             decky_install::decky_plugin_status,
             decky_install::install_decky_plugin,
