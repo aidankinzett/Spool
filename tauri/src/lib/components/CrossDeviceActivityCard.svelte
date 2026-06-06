@@ -9,14 +9,14 @@
    *   │ TOTAL PLAYTIME            LAST PLAYED                     │
    *   │ 149h 12m                  [▣ Studio PC · 2d ago]         │
    *   │ 122 sessions                                             │
-   *   │ ▁▂▅▃▆▇▄▆██▇█▆▄  (weekly bars, last active week glows)     │
-   *   │ 14 WK AGO                                          NOW    │
+   *   │ ▁▂▅▃▆▇▄▆██▇█▆▄  (daily bars, last active day glows)       │
+   *   │ 14 D AGO                                           NOW    │
    *   └──────────────────────────────────────────────────────────┘
    *
    * Totals (playtime, last-played time) come from the authoritative GameEntry
    * aggregate; the session *count*, device breakdown, last-played *device*, and
-   * the weekly bars are derived from the per-session history (`play_sessions`,
-   * via api.listPlaySessions). The bars are a single-accent weekly *total* — not
+   * the daily bars are derived from the per-session history (`play_sessions`,
+   * via api.listPlaySessions). The bars are a single-accent daily *total* — not
    * a per-device stack — matching the design.
    */
   import { Monitor } from '@lucide/svelte';
@@ -35,9 +35,9 @@
     accent?: string;
   } = $props();
 
-  /** Weeks shown on the X axis (matches the design's 14-bar timeline). */
-  const WEEKS = 14;
-  const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
+  /** Days shown on the X axis (matches the design's 14-bar timeline). */
+  const DAYS = 14;
+  const DAY_MS = 24 * 60 * 60 * 1000;
 
   let sessions = $state<PlaySession[]>([]);
 
@@ -82,22 +82,22 @@
     return latest?.device_name || null;
   });
 
-  // Weekly play totals (minutes), oldest bucket first, newest = current week.
-  // Sessions older than WEEKS weeks fall off the left edge of the chart.
+  // Daily play totals (minutes), oldest bucket first, newest = current day.
+  // Sessions older than DAYS days fall off the left edge of the chart.
   const activity = $derived.by(() => {
-    const buckets = new Array<number>(WEEKS).fill(0);
+    const buckets = new Array<number>(DAYS).fill(0);
     const now = Date.now();
     for (const s of sessions) {
       const t = new Date(s.started_at).getTime();
       if (Number.isNaN(t)) continue;
-      const idx = WEEKS - 1 - Math.floor((now - t) / WEEK_MS);
-      if (idx >= 0 && idx < WEEKS) buckets[idx] += s.duration_secs / 60;
+      const idx = DAYS - 1 - Math.floor((now - t) / DAY_MS);
+      if (idx >= 0 && idx < DAYS) buckets[idx] += s.duration_secs / 60;
     }
     return buckets;
   });
 
   const maxBucket = $derived(Math.max(1, ...activity));
-  // Index of the most-recent week with any play — gets the full-accent glow bar.
+  // Index of the most-recent day with any play — gets the full-accent glow bar.
   const lastActive = $derived(
     activity.reduce((acc, v, i) => (v > 0 ? i : acc), -1),
   );
@@ -154,7 +154,7 @@
       </div>
     </div>
 
-    <!-- Weekly activity bars (single-accent totals; most-recent week glows). -->
+    <!-- Daily activity bars (single-accent totals; most-recent day glows). -->
     <div class="mt-4">
       <div
         class="flex items-end gap-[3px] border-b border-line-2 px-px"
@@ -183,7 +183,7 @@
       <div
         class="font-mono mt-1.5 flex justify-between text-[9px] tracking-[0.1em] text-ink-3"
       >
-        <span>{WEEKS} WK AGO</span>
+        <span>{DAYS} D AGO</span>
         <span>NOW</span>
       </div>
     </div>
