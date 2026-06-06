@@ -47,8 +47,8 @@ ownership match Spool's interactive paths.
 
 ```bash
 cd decky
-pnpm install
-pnpm build          # → dist/index.js
+bun install
+bun run build       # → dist/index.js
 
 # Run the backend unit tests (no Deck required):
 python -m pytest tests/
