@@ -39,7 +39,7 @@ jobs:
     env:
       BUN_INSTALL_CACHE_DIR: "${{ github.workspace }}/.bun-cache"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
@@ -67,7 +67,7 @@ jobs:
         run: bun run screenshots
 
       - name: Open PR with screenshot diff
-        uses: peter-evans/create-pull-request@v7
+        uses: peter-evans/create-pull-request@v8
         with:
           # RELEASE_TOKEN (a PAT) for the same reason release.yml uses it: the
           # default GITHUB_TOKEN 403s on this repo's write operations.
