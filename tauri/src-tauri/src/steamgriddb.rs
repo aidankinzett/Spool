@@ -104,23 +104,64 @@ pub async fn fetch_and_save_cover_and_hero(
     game_entry_id: &str,
 ) -> AppResult<()> {
     let client = app.state::<SteamGridDbClient>();
-    let Some((sgdb_id, safe_name, api_key)) = resolve_entry_sgdb_id(app, game_entry_id).await?
-    else {
-        return Ok(());
+    let library = app.state::<SharedLibrary>();
+
+    // Snapshot the entry's lookup fields. No SteamGridDB gate here: the
+    // official Steam CDN path needs neither an API key nor the toggle, so it
+    // runs even when SteamGridDB is off.
+    let (name, safe_name, steam_id) = {
+        let entry = library
+            .find(game_entry_id)
+            .await?
+            .ok_or_else(|| AppError::Other(format!("game not found: {game_entry_id}")))?;
+        (
+            entry.game_name.clone(),
+            entry.safe_name.clone(),
+            entry.steam_id,
+        )
     };
 
-    let cover = download_cover(&client.http, &api_key, sgdb_id, &safe_name)
-        .await
-        .unwrap_or_else(|e| {
-            tracing::warn!(game_entry_id, error = %e, "cover download failed");
-            None
-        });
-    let hero = download_hero(&client.http, &api_key, sgdb_id, &safe_name)
-        .await
-        .unwrap_or_else(|e| {
-            tracing::warn!(game_entry_id, error = %e, "hero download failed");
-            None
-        });
+    // Prefer Steam's official library art when ludusavi resolved an appid.
+    let mut cover = None;
+    let mut hero = None;
+    if let Some(sid) = steam_id {
+        cover = crate::steam_cdn::download_cover(&client.http, sid, &safe_name)
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!(game_entry_id, error = %e, "official cover fetch failed");
+                None
+            });
+        hero = crate::steam_cdn::download_hero(&client.http, sid, &safe_name)
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!(game_entry_id, error = %e, "official hero fetch failed");
+                None
+            });
+    }
+
+    // Fall back to SteamGridDB for whichever asset Steam didn't provide
+    // (no appid, or no official capsule/hero for it). Needs the API key.
+    if cover.is_none() || hero.is_none() {
+        if let Some((sgdb_id, api_key)) = resolve_sgdb_id(app, &name, steam_id).await? {
+            if cover.is_none() {
+                cover = download_cover(&client.http, &api_key, sgdb_id, &safe_name)
+                    .await
+                    .unwrap_or_else(|e| {
+                        tracing::warn!(game_entry_id, error = %e, "cover download failed");
+                        None
+                    });
+            }
+            if hero.is_none() {
+                hero = download_hero(&client.http, &api_key, sgdb_id, &safe_name)
+                    .await
+                    .unwrap_or_else(|e| {
+                        tracing::warn!(game_entry_id, error = %e, "hero download failed");
+                        None
+                    });
+            }
+        }
+    }
+
     if cover.is_none() && hero.is_none() {
         return Ok(());
     }
@@ -424,20 +465,7 @@ async fn resolve_entry_sgdb_id(
     app: &AppHandle,
     game_entry_id: &str,
 ) -> AppResult<Option<(u64, String, String)>> {
-    let config = app.state::<SharedConfig>();
     let library = app.state::<SharedLibrary>();
-    let client = app.state::<SteamGridDbClient>();
-
-    let (api_key, enabled) = {
-        let cfg = config.lock().map_err(|_| AppError::LockPoisoned)?;
-        (
-            cfg.data.steamgriddb_api_key.clone(),
-            cfg.data.steamgriddb_enabled,
-        )
-    };
-    if !enabled || api_key.is_empty() {
-        return Ok(None);
-    }
 
     let (name, safe_name, steam_id) = {
         let entry = library
@@ -451,8 +479,36 @@ async fn resolve_entry_sgdb_id(
         )
     };
 
-    match resolve_game_id(&client.http, &api_key, steam_id, &name).await? {
-        Some(sgdb_id) => Ok(Some((sgdb_id, safe_name, api_key))),
+    match resolve_sgdb_id(app, &name, steam_id).await? {
+        Some((sgdb_id, api_key)) => Ok(Some((sgdb_id, safe_name, api_key))),
+        None => Ok(None),
+    }
+}
+
+/// Resolves a SteamGridDB game id from a name + optional Steam id, gated on the
+/// SteamGridDB toggle and API key. Returns `(sgdb_id, api_key)`, or None when
+/// SteamGridDB is disabled, has no key, or nothing matched.
+async fn resolve_sgdb_id(
+    app: &AppHandle,
+    name: &str,
+    steam_id: Option<u64>,
+) -> AppResult<Option<(u64, String)>> {
+    let config = app.state::<SharedConfig>();
+    let client = app.state::<SteamGridDbClient>();
+
+    let (api_key, enabled) = {
+        let cfg = config.lock().map_err(|_| AppError::LockPoisoned)?;
+        (
+            cfg.data.steamgriddb_api_key.clone(),
+            cfg.data.steamgriddb_enabled,
+        )
+    };
+    if !enabled || api_key.is_empty() {
+        return Ok(None);
+    }
+
+    match resolve_game_id(&client.http, &api_key, steam_id, name).await? {
+        Some(sgdb_id) => Ok(Some((sgdb_id, api_key))),
         None => Ok(None),
     }
 }
