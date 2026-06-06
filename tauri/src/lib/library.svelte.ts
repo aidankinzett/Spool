@@ -283,9 +283,17 @@ export function createLibrary() {
     let unlistenLanDownload: (() => void) | undefined;
     let unlistenLanUploads: (() => void) | undefined;
     let unlistenSyncStatus: (() => void) | undefined;
+    // Guards against a leaked subscription when the component unmounts before a
+    // listen() promise resolves: the teardown sets this, and each handler below
+    // immediately unlistens a late-resolving handle instead of storing it on a
+    // now-orphaned local that nothing will ever call. (#291)
+    let disposed = false;
 
     listen<string>('library:changed', () => refresh())
-      .then((fn) => (unlistenLibraryChanged = fn))
+      .then((fn) => {
+        if (disposed) fn();
+        else unlistenLibraryChanged = fn;
+      })
       .catch((e) => console.error('[library] listener failed:', e));
 
     listen<RunPhaseEvent>('run:phase', (event) => {
@@ -358,6 +366,10 @@ export function createLibrary() {
       }
     })
       .then((fn) => {
+        if (disposed) {
+          fn();
+          return undefined;
+        }
         unlistenRunPhase = fn;
         return api.takePendingRun();
       })
@@ -379,7 +391,10 @@ export function createLibrary() {
         toasts.show({ kind: 'ok', label: 'LUDUSAVI · SYNC', title: 'Saves synced', sub: message });
       }
     })
-      .then((fn) => (unlistenCloudNotice = fn))
+      .then((fn) => {
+        if (disposed) fn();
+        else unlistenCloudNotice = fn;
+      })
       .catch((e) => console.error('[library] cloud-notice listener failed:', e));
 
     listen<null>('tray:first-hide', () => {
@@ -391,12 +406,18 @@ export function createLibrary() {
         duration: 0,
       });
     })
-      .then((fn) => (unlistenTrayIntro = fn))
+      .then((fn) => {
+        if (disposed) fn();
+        else unlistenTrayIntro = fn;
+      })
       .catch((e) => console.error('[tray] intro listener failed:', e));
 
     refreshLanPeers();
     listen<null>('lan:peers-changed', () => refreshLanPeers())
-      .then((fn) => (unlistenLanPeers = fn))
+      .then((fn) => {
+        if (disposed) fn();
+        else unlistenLanPeers = fn;
+      })
       .catch((e) => console.error('[lan] peers listener failed:', e));
 
     api
@@ -413,12 +434,18 @@ export function createLibrary() {
     listen<SyncStatus>('sync:status-changed', (event) => {
       syncStatus = event.payload;
     })
-      .then((fn) => (unlistenSyncStatus = fn))
+      .then((fn) => {
+        if (disposed) fn();
+        else unlistenSyncStatus = fn;
+      })
       .catch((e) => console.error('[sync] status listener failed:', e));
 
     refreshActiveUploads();
     listen<null>('lan:uploads-changed', () => refreshActiveUploads())
-      .then((fn) => (unlistenLanUploads = fn))
+      .then((fn) => {
+        if (disposed) fn();
+        else unlistenLanUploads = fn;
+      })
       .catch((e) => console.error('[lan] uploads listener failed:', e));
 
     listen<DownloadProgress>('lan:download', (event) => {
@@ -439,10 +466,14 @@ export function createLibrary() {
           sub: `${p.game_name} · partial files cleaned up` });
       }
     })
-      .then((fn) => (unlistenLanDownload = fn))
+      .then((fn) => {
+        if (disposed) fn();
+        else unlistenLanDownload = fn;
+      })
       .catch((e) => console.error('[lan] download listener failed:', e));
 
     return () => {
+      disposed = true;
       unlistenLibraryChanged?.();
       unlistenRunPhase?.();
       unlistenCloudNotice?.();

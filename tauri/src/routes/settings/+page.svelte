@@ -86,6 +86,22 @@
 
   onMount(() => {
     let unlisten: (() => void) | undefined;
+    let destroyed = false;
+
+    // Register the live-status listener up front, independent of the slow data
+    // fetch below. Registering it at the *end* of setup() meant a quick unmount
+    // during the await chain would run the cleanup before `unlisten` was
+    // assigned, leaking a global subscription that keeps firing into a dead
+    // component. The destroyed guard unlistens a handle that resolves after an
+    // already-unmounted teardown. (#294)
+    listen<SyncStatus>('sync:status-changed', (ev) => {
+      syncStatus = ev.payload;
+    })
+      .then((fn) => {
+        if (destroyed) fn();
+        else unlisten = fn;
+      })
+      .catch((e) => console.error('[settings] sync listener failed:', e));
 
     const setup = async () => {
       try {
@@ -117,15 +133,14 @@
       } catch (e) {
         error = String(e);
       }
-
-      unlisten = await listen<SyncStatus>('sync:status-changed', (ev) => {
-        syncStatus = ev.payload;
-      });
     };
 
     setup();
 
-    return () => { unlisten?.(); };
+    return () => {
+      destroyed = true;
+      unlisten?.();
+    };
   });
 
   async function persist(): Promise<boolean> {

@@ -291,6 +291,10 @@ function onGamepad(p: GamepadInput) {
   } else if (p.kind === 'button-up') {
     const dir = p.button ? DPAD_DIRECTION[p.button] : undefined;
     if (dir) stopRepeat(dir);
+  } else if (p.kind === 'disconnected') {
+    // A pad unplugged mid-hold can't send its button-up, so the repeat would run
+    // forever — stop it. (#290)
+    stopRepeat();
   } else if (p.kind === 'axis') {
     setInputMode('gamepad');
     // gilrs reports +Y up, +X right. Bridge only emits on a threshold crossing,
@@ -346,6 +350,19 @@ function onPointerActivity() {
   setInputMode('mouse');
 }
 
+/** Tear down any held-dpad auto-repeat when input can no longer be trusted. The
+ *  Rust bridge only forwards button-up while a Spool window holds focus, so a
+ *  release that lands after the window blurs (alt-tab, game launch, tray hide)
+ *  is dropped — without this the repeat keeps firing move() forever and resumes
+ *  auto-moving focus on its own once the window is refocused. (#290) */
+function onWindowBlur() {
+  stopRepeat();
+}
+
+function onVisibilityChange() {
+  if (document.hidden) stopRepeat();
+}
+
 /**
  * Start the engine. Idempotent — safe to call from `+layout.svelte` on every
  * mount. No-ops cleanly if the Tauri event bridge isn't available (Storybook,
@@ -373,6 +390,11 @@ export function startGamepadNav() {
   // ring hides and gamepad-only behaviours like select-on-focus stand down).
   window.addEventListener('pointermove', onPointerActivity, { passive: true });
   window.addEventListener('pointerdown', onPointerActivity, { passive: true, capture: true });
+  // A held dpad's button-up is dropped when the window blurs (the Rust bridge
+  // gates input on focus), so tear the auto-repeat down on blur / tab-hide so it
+  // can't run away. (#290)
+  window.addEventListener('blur', onWindowBlur);
+  document.addEventListener('visibilitychange', onVisibilityChange);
 }
 
 export function stopGamepadNav() {
@@ -384,6 +406,8 @@ export function stopGamepadNav() {
   window.removeEventListener('keydown', onKeydown, true);
   window.removeEventListener('pointermove', onPointerActivity);
   window.removeEventListener('pointerdown', onPointerActivity, true);
+  window.removeEventListener('blur', onWindowBlur);
+  document.removeEventListener('visibilitychange', onVisibilityChange);
 }
 
 /**
