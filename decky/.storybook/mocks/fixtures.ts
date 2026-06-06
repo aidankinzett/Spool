@@ -1,5 +1,5 @@
 // Shared fixtures + callable/fetch mocking for the stories.
-import type { DownloadProgress, LanPeer, LibraryGame, PeerGame } from "../../src/types";
+import type { DownloadProgress, LanPeer, LibraryGame, PeerGame, SaveRevision } from "../../src/types";
 import { setCallable } from "./registry";
 
 export const MOCK_BASE = "http://mock.spool";
@@ -91,7 +91,18 @@ export function registerDeckyCallables(opts: { serverRunning?: boolean } = {}): 
     { name: "UMU-Proton-9.0", path: "/p/umu", source: "UMU-Proton" },
   ]);
   setCallable("set_proton_version", async () => ({ ok: true }));
+  setCallable("list_save_revisions", async () => ({ ok: true, revisions: SAMPLE_REVISIONS }));
+  setCallable("restore_save_revision", async () => ({ ok: true, game_count: 1 }));
 }
+
+// A few retained save revisions (newest-first, tip flagged) for the restore
+// picker. Timestamps are relative to the real clock so the "ago" labels read
+// naturally whenever a story is opened.
+export const SAMPLE_REVISIONS: SaveRevision[] = [
+  { name: ".", when: new Date(Date.now() - 2 * 3_600_000).toISOString(), is_current: true },
+  { name: "20260605T093000", when: new Date(Date.now() - 26 * 3_600_000).toISOString(), is_current: false },
+  { name: "20260601T193000", when: new Date(Date.now() - 5 * 86_400_000).toISOString(), is_current: false },
+];
 
 // Install a window.fetch stub for stories whose components hit the loopback
 // server. `routes` maps a URL substring to a JSON body (or a function of the

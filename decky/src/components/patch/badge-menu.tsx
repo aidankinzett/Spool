@@ -16,6 +16,7 @@ import { forgetAppid } from "../../lib/appid-map";
 import { steamApps } from "../../lib/steam";
 import { InstallDepsModal } from "../install-deps-modal";
 import { ProtonVersionModal } from "../proton-version-modal";
+import { RevisionPickerModal } from "../revision-picker-modal";
 
 // Three-dots button rendered on the right of the game-page Spool bar. Opens a
 // Steam context menu (showContextMenu) anchored to itself with Spool actions
@@ -26,6 +27,8 @@ export function BadgeMenuButton({ game, appid }: { game: LibraryGame; appid: num
   // native Linux games don't use a prefix.
   const canInstallDeps = game.exe_path?.toLowerCase().endsWith(".exe") ?? false;
   const canDelete = !!game.game_folder_path;
+  // Rolling back needs at least one retained backup to restore to.
+  const canRestore = game.save_backup_count > 0;
 
   const runBackup = () => {
     void (async () => {
@@ -123,6 +126,22 @@ export function BadgeMenuButton({ game, appid }: { game: LibraryGame; appid: num
       <Menu label="Spool">
         <MenuItem onSelected={runBackup}>Back up now</MenuItem>
         <MenuItem onSelected={runPull}>Sync now (pull)</MenuItem>
+        {canRestore && (
+          <MenuItem
+            onSelected={() =>
+              showModal(
+                <RevisionPickerModal
+                  game={game}
+                  onBusyChange={(busy) =>
+                    busy ? backupStarted(appid) : backupFinished(appid)
+                  }
+                />,
+              )
+            }
+          >
+            Restore a save…
+          </MenuItem>
+        )}
         {canInstallDeps && (
           <MenuItem onSelected={() => showModal(<ProtonVersionModal game={game} />)}>
             Proton version

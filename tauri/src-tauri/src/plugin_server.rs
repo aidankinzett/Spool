@@ -113,6 +113,12 @@ pub async fn serve() -> AppResult<()> {
         // for the Quick Access "Sync now" action. Mirrors the desktop
         // `pull_cloud_saves` command. Pull-only — never uploads.
         .route("/games/:id/pull", post(post_pull_cloud_saves))
+        // Save rollback: list a game's retained backups (newest-first), and
+        // roll back to one — restoring it then pinning it as the new tip.
+        // Mirrors the desktop `list_save_revisions` / `restore_save_revision`
+        // commands so a Deck user can recover an earlier save from Game Mode.
+        .route("/games/:id/revisions", get(get_revisions))
+        .route("/games/:id/restore", post(post_restore))
         .route("/library", get(get_library))
         .route("/games/:id", delete(delete_game))
         .route("/fold", post(post_fold))
@@ -299,6 +305,85 @@ async fn post_pull_cloud_saves(AxPath(id): AxPath<String>, AxState(state): AxSta
         }
         Err(e) => {
             tracing::warn!(game_id = %id, error = %e, "plugin pull: failed");
+            Json(json!({ "ok": false, "reason": e.to_string() }))
+        }
+    }
+}
+
+/// Lists the save revisions ludusavi retains locally for a game, newest-first,
+/// with the tip flagged. Backs the Game-Mode "restore an earlier save" picker.
+/// Mirrors the desktop `list_save_revisions` command.
+async fn get_revisions(
+    AxPath(id): AxPath<String>,
+    AxState(state): AxState<PluginState>,
+) -> Json<Value> {
+    let Some(ludusavi_exe) = crate::paths::resolve_ludusavi_path() else {
+        return Json(json!({ "ok": false, "reason": "ludusavi sidecar not found" }));
+    };
+    if let Err(e) = crate::ludusavi_config::ensure_config() {
+        tracing::warn!(error = %e, "plugin revisions: ensure_config warning");
+    }
+    let config_dir = crate::paths::ludusavi_config_dir();
+    let Some(entry) = state.library.find(&id).await.ok().flatten() else {
+        return Json(json!({ "ok": false, "reason": "game not in library" }));
+    };
+    match state
+        .ludusavi
+        .list_revisions(&ludusavi_exe, &config_dir, &entry.game_name)
+        .await
+    {
+        Ok(revisions) => Json(json!({ "ok": true, "revisions": revisions })),
+        Err(e) => {
+            tracing::warn!(game_id = %id, error = %e, "plugin revisions: failed");
+            Json(json!({ "ok": false, "reason": e.to_string() }))
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct RestoreRequest {
+    /// ludusavi backup id to roll back to (a `SaveRevision.name`).
+    backup_name: String,
+}
+
+/// Rolls a game back to an earlier save revision and pins it as the new tip.
+/// Mirrors the desktop `restore_save_revision` command (via the shared
+/// `restore_save_revision_core`). Note: unlike the command, this isn't behind
+/// the single-launch run-lock — the plugin server is a separate process, so its
+/// lock wouldn't coordinate with the GUI or an attached `spool --run`. In Game
+/// Mode the user triggers this from the game's page while it isn't running, so
+/// racing a live session is unlikely.
+async fn post_restore(
+    AxPath(id): AxPath<String>,
+    AxState(state): AxState<PluginState>,
+    Json(req): Json<RestoreRequest>,
+) -> Json<Value> {
+    let Some(ludusavi_exe) = crate::paths::resolve_ludusavi_path() else {
+        return Json(json!({ "ok": false, "reason": "ludusavi sidecar not found" }));
+    };
+    if let Err(e) = crate::ludusavi_config::ensure_config() {
+        tracing::warn!(error = %e, "plugin restore: ensure_config warning");
+    }
+    let config = crate::config::Config::load().unwrap_or_default();
+    let config_dir = crate::paths::ludusavi_config_dir();
+
+    match crate::runner::restore_save_revision_core(
+        state.ludusavi.as_ref(),
+        &ludusavi_exe,
+        &config_dir,
+        &state.library,
+        &config.data,
+        &id,
+        &req.backup_name,
+    )
+    .await
+    {
+        Ok(r) => {
+            tracing::info!(game_id = %id, backup = %req.backup_name, "plugin restore: complete");
+            Json(json!({ "ok": true, "game_count": r.game_count }))
+        }
+        Err(e) => {
+            tracing::warn!(game_id = %id, error = %e, "plugin restore: failed");
             Json(json!({ "ok": false, "reason": e.to_string() }))
         }
     }
