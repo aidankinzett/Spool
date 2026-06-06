@@ -17,7 +17,7 @@ use crate::error::{AppError, AppResult};
 use crate::paths;
 use serde_yaml::Value;
 use std::fs::{File, TryLockError};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 // ── Public API ───────────────────────────────────────────────────────────────
@@ -138,7 +138,7 @@ pub fn ensure_config() -> AppResult<()> {
 /// accumulates going forward.
 pub fn set_retention(full: u32) -> AppResult<()> {
     let _lock = lock_config();
-    let mut v = read_value_or_empty();
+    let mut v = read_value_or_default()?;
     apply_retention(&mut v, full);
     write_value(&v)
 }
@@ -167,7 +167,7 @@ pub fn set_cloud(
     rclone_args: Option<&str>,
 ) -> AppResult<()> {
     let _lock = lock_config();
-    let mut v = read_value_or_empty();
+    let mut v = read_value_or_default()?;
     apply_cloud(&mut v, provider, remote, path, rclone_path, rclone_args);
     write_value(&v)
 }
@@ -275,7 +275,7 @@ pub fn ensure_rclone_timeouts(user_args: &str) -> String {
 /// is always regenerated from scratch so stale entries can never accumulate.
 pub fn set_redirects(redirects: &[Redirect]) -> AppResult<()> {
     let _lock = lock_config();
-    let mut v = read_value_or_empty();
+    let mut v = read_value_or_default()?;
     let list: Value = Value::Sequence(
         redirects
             .iter()
@@ -301,7 +301,7 @@ pub fn set_redirects(redirects: &[Redirect]) -> AppResult<()> {
 /// run workflow never clears it). An empty slice writes `customGames: []`.
 pub fn set_custom_games(games: &[CustomGameDef]) -> AppResult<()> {
     let _lock = lock_config();
-    let mut v = read_value_or_empty();
+    let mut v = read_value_or_default()?;
     // Skip the rewrite when the block is unchanged: avoids churning config.yaml
     // (+ its `.bak`) on every launch/boot, and narrows the window for losing a
     // concurrent writer's key in the shared-file read-modify-write.
@@ -410,8 +410,24 @@ fn read_value() -> AppResult<Value> {
         .map_err(|e| AppError::Other(format!("failed to parse ludusavi config.yaml: {e}")))
 }
 
-fn read_value_or_empty() -> Value {
-    read_value().unwrap_or_else(|_| Value::Mapping(Default::default()))
+fn read_value_or_default() -> AppResult<Value> {
+    read_value_or_default_at(&paths::ludusavi_config_file())
+}
+
+/// Reads + parses the config at `file`, returning an empty mapping ONLY when the
+/// file genuinely doesn't exist yet. A read/parse error on a file that DOES
+/// exist (a transient EACCES, or catching ludusavi mid-write) is propagated, not
+/// swallowed: otherwise a mutator would start from an empty map and
+/// [`write_value`] would overwrite the real config — cloud remote, backup/restore
+/// paths, retention, ludusavi's own manifest state — with a near-empty file.
+/// (#269)
+fn read_value_or_default_at(file: &Path) -> AppResult<Value> {
+    if !file.exists() {
+        return Ok(Value::Mapping(Default::default()));
+    }
+    let raw = std::fs::read_to_string(file)?;
+    serde_yaml::from_str(&raw)
+        .map_err(|e| AppError::Other(format!("failed to parse ludusavi config.yaml: {e}")))
 }
 
 fn write_value(v: &Value) -> AppResult<()> {
@@ -420,13 +436,44 @@ fn write_value(v: &Value) -> AppResult<()> {
         std::fs::create_dir_all(parent)?;
     }
     let tmp = file.with_extension("yaml.tmp");
+    let bak = file.with_extension("yaml.bak");
     let yaml = serde_yaml::to_string(v)
         .map_err(|e| AppError::Other(format!("failed to serialize ludusavi config: {e}")))?;
-    std::fs::write(&tmp, yaml)?;
-    if file.exists() {
-        let _ = std::fs::rename(&file, file.with_extension("yaml.bak"));
+
+    // Write + fsync the tmp file before the rename. A plain write()+rename only
+    // orders the *metadata*; without flushing the data first, a crash/power-loss
+    // between write() returning and the data reaching disk can leave config.yaml
+    // present but truncated or empty — and ludusavi reads this file directly,
+    // with no .bak fallback on read. (#277)
+    {
+        use std::io::Write as _;
+        let mut f = std::fs::File::create(&tmp)?;
+        f.write_all(yaml.as_bytes())?;
+        f.sync_all()?;
     }
-    std::fs::rename(&tmp, &file)?;
+
+    // Keep the previous good file as .bak, then swap the new one in. If the swap
+    // fails, roll .bak back so the dir is never left without a config.yaml at all
+    // (the live file was already moved aside). (#278)
+    let had_existing = file.exists();
+    if had_existing {
+        let _ = std::fs::rename(&file, &bak);
+    }
+    if let Err(e) = std::fs::rename(&tmp, &file) {
+        if had_existing {
+            let _ = std::fs::rename(&bak, &file);
+        }
+        return Err(e.into());
+    }
+
+    // fsync the directory so the rename itself survives a crash (no-op/!ok on
+    // platforms where a dir can't be opened as a File, e.g. Windows — harmless).
+    // (#277)
+    if let Some(parent) = file.parent() {
+        if let Ok(dir) = std::fs::File::open(parent) {
+            let _ = dir.sync_all();
+        }
+    }
     Ok(())
 }
 
@@ -786,5 +833,33 @@ mod tests {
         assert!(out.contains("--retries=5"));
         assert!(out.contains("--timeout 45s"));
         assert!(out.contains("--low-level-retries 1"));
+    }
+
+    #[test]
+    fn read_value_or_default_distinguishes_absent_from_unreadable() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // Absent file → empty mapping (a fresh install legitimately has none).
+        let missing = dir.path().join("config.yaml");
+        let v = read_value_or_default_at(&missing).expect("absent file is not an error");
+        assert!(matches!(v, Value::Mapping(_)));
+
+        // Present-but-unparseable → ERROR, not a silent empty map — otherwise a
+        // mutator would start from empty and overwrite the real config. (#269)
+        let garbage = dir.path().join("garbage.yaml");
+        std::fs::write(&garbage, "backup: [unterminated").unwrap();
+        assert!(read_value_or_default_at(&garbage).is_err());
+
+        // Present + valid → parsed through unchanged.
+        let good = dir.path().join("good.yaml");
+        std::fs::write(&good, "backup:\n  path: /tmp/x\n").unwrap();
+        let parsed = read_value_or_default_at(&good).expect("valid yaml parses");
+        assert_eq!(
+            parsed
+                .get(k("backup"))
+                .and_then(|b| b.get(k("path")))
+                .and_then(|p| p.as_str()),
+            Some("/tmp/x")
+        );
     }
 }
