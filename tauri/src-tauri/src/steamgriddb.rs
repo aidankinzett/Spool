@@ -351,6 +351,9 @@ pub async fn fetch_steam_grid_bundle(
     ];
 
     for (kind, suffix, official) in kinds {
+        // Drop any prior-run file for this slot (any extension) so a changed
+        // extension this run can't leave two files for Steam to pick between. (#284)
+        crate::steam::remove_stale_grid_art(grid_dir, app_id, suffix);
         // Official Steam CDN first.
         if let (Some(sid), Some(asset)) = (steam_id, official) {
             match crate::steam_cdn::fetch(&client.http, sid, asset).await {

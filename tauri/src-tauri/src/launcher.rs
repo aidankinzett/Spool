@@ -83,6 +83,17 @@ pub async fn generate_armoury_launcher(
         cfg.data.spool_exe.clone()
     };
 
+    // The payload is a newline-delimited record and the C# stub splits on CR/LF,
+    // so a line break embedded in the name or exe path would shift every later
+    // field and make the stub launch the wrong exe (or fail its length check).
+    // Reject rather than silently corrupt the launcher — a line break in a game
+    // name is a paste accident, and Windows paths can't contain one. (#276)
+    if game_name.contains(['\r', '\n']) || exe_path.contains(['\r', '\n']) {
+        return Err(AppError::Other(
+            "Game name and executable path can't contain line breaks — edit the game to remove them before creating an Armoury Crate launcher.".into(),
+        ));
+    }
+
     let launchers_dir = paths::launchers_dir();
     std::fs::create_dir_all(&launchers_dir)?;
     let dest: PathBuf = launchers_dir.join(format!("{safe_name}.exe"));

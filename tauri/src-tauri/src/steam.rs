@@ -230,6 +230,26 @@ const SPOOL_ART_WIDE: &[u8] = include_bytes!("../assets/steam/wide.png");
 const SPOOL_ART_HERO: &[u8] = include_bytes!("../assets/steam/hero.png");
 const SPOOL_ART_LOGO: &[u8] = include_bytes!("../assets/steam/logo.png");
 
+/// Steam resolves grid art by globbing `<app_id><suffix>.*` (any extension), so
+/// writing a new asset under a different extension than a previous run leaves
+/// both files behind and Steam renders an arbitrary one. Remove any existing
+/// file whose stem is *exactly* `<app_id><suffix>` (any extension) before each
+/// write, so exactly one file per slot remains. The exact-stem match is what
+/// keeps the empty "wide grid" suffix (`<id>.*`) from also matching `<id>p.*` /
+/// `<id>_hero.*`. Best-effort — a failed removal never blocks the write. (#284)
+pub(crate) fn remove_stale_grid_art(grid_dir: &Path, app_id: u32, suffix: &str) {
+    let stem = format!("{app_id}{suffix}");
+    let Ok(entries) = std::fs::read_dir(grid_dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.file_stem().and_then(|s| s.to_str()) == Some(stem.as_str()) {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+}
+
 /// Writes embedded image bytes into Steam's grid dir as
 /// `<grid_dir>/<app_id><suffix>.png`. Used to place Spool's own branded
 /// artwork (see [`SPOOL_ART_PORTRAIT`] et al.). Creates the grid dir if needed.
@@ -240,6 +260,7 @@ fn write_grid_art_bytes(
     bytes: &[u8],
 ) -> AppResult<PathBuf> {
     std::fs::create_dir_all(grid_dir)?;
+    remove_stale_grid_art(grid_dir, app_id, suffix);
     let dest = grid_dir.join(format!("{app_id}{suffix}.png"));
     std::fs::write(&dest, bytes)?;
     Ok(dest)
@@ -262,6 +283,7 @@ pub fn place_grid_art(
         return Ok(None);
     }
     std::fs::create_dir_all(grid_dir)?;
+    remove_stale_grid_art(grid_dir, app_id, suffix);
     let ext = source
         .extension()
         .and_then(|s| s.to_str())
@@ -566,5 +588,33 @@ mod tests {
         assert_eq!(id_a, id_b);
         // High bit set per Steam's appid convention.
         assert!(id_a & 0x80000000 != 0);
+    }
+
+    #[test]
+    fn remove_stale_grid_art_matches_exact_stem_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let g = dir.path();
+        for f in [
+            "12345.png",      // wide-grid slot (suffix "")
+            "12345.jpg",      // stale wide-grid, different extension
+            "12345p.png",     // portrait slot
+            "12345_hero.jpg", // hero slot
+            "99999p.png",     // a different app — must never be touched
+        ] {
+            std::fs::write(g.join(f), b"x").unwrap();
+        }
+
+        // Cleaning the wide-grid slot drops only `12345.*`, not `12345p.*` etc.
+        remove_stale_grid_art(g, 12345, "");
+        assert!(!g.join("12345.png").exists());
+        assert!(!g.join("12345.jpg").exists());
+        assert!(g.join("12345p.png").exists(), "portrait slot untouched");
+        assert!(g.join("12345_hero.jpg").exists(), "hero slot untouched");
+        assert!(g.join("99999p.png").exists(), "other app untouched");
+
+        // Cleaning the portrait slot drops only `12345p.*`.
+        remove_stale_grid_art(g, 12345, "p");
+        assert!(!g.join("12345p.png").exists());
+        assert!(g.join("99999p.png").exists(), "other app still untouched");
     }
 }
