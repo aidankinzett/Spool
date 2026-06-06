@@ -31,7 +31,7 @@ use crate::ludusavi_config;
 use crate::redirects;
 use crate::rclone::{self, SessionClass};
 use crate::{process, paths, registry};
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -2087,7 +2087,46 @@ async fn phase_launch(ctx: &WorkflowCtx<'_>, exe_pathbuf: &Path) -> AppResult<Se
         .await?;
     let _ = ctx.app.emit("library:changed", &ctx.game_id.to_string());
 
+    // Record this launch as a discrete play-session row (the per-session,
+    // per-device history that feeds the cross-device timeline). Independent of
+    // the playtime aggregate above and of backup outcome — a session happened
+    // regardless. Best-effort: failures here must not fail the run. The local
+    // table is the source of truth; the rclone push makes it visible to peers.
+    record_play_session(ctx, session_start, session_end, played_secs).await;
+
     Ok(SessionTiming { end: session_end, minutes: session_minutes })
+}
+
+/// Insert a [`PlaySession`] row for the just-finished launch and push the
+/// updated history to the rclone remote. Best-effort: every failure is logged
+/// and swallowed so it can't fail the run workflow. No-op for the cross-device
+/// push when cloud isn't configured (the local row is still written).
+async fn record_play_session(
+    ctx: &WorkflowCtx<'_>,
+    started_at: DateTime<Utc>,
+    ended_at: DateTime<Utc>,
+    duration_secs: i64,
+) {
+    let (device_id, device_name) = rclone::device_identity(ctx.app);
+    if device_id.is_empty() {
+        // No device identity (poisoned config) — skip rather than write a row
+        // with a blank device id that the cross-device fold can't attribute.
+        return;
+    }
+    let session = crate::library::PlaySession {
+        session_id: format!("{device_id}:{}", started_at.timestamp_millis()),
+        device_id,
+        device_name,
+        game_name: ctx.game_name.to_string(),
+        started_at,
+        ended_at,
+        duration_secs,
+    };
+    if let Err(e) = ctx.app.state::<SharedLibrary>().insert_session(&session).await {
+        tracing::warn!(error = %e, game = ctx.game_name, "failed to record play session");
+        return;
+    }
+    rclone::sync_play_history(ctx.app).await;
 }
 
 /// Phase 3: back up saves after the session (skipped when ludusavi didn't

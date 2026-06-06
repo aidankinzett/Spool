@@ -275,6 +275,7 @@ pub fn run() {
             notify_splash_ready,
             // library
             library::list_games,
+            library::list_play_sessions,
             library::add_game,
             library::update_game,
             library::remove_game,

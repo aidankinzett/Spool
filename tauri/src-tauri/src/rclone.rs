@@ -170,6 +170,15 @@ impl RcloneRemote {
     fn session_target(&self, game_name: &str) -> String {
         format!("{}/sessions/{}.json", self.spool_dir(), session_hash(game_name))
     }
+    /// Per-device play-session history blob. A sibling of `devices/` and
+    /// `sessions/` — kept out of `sessions/`, which is the live-marker
+    /// namespace keyed by game-name hash.
+    fn history_target(&self, device_id: &str) -> String {
+        format!("{}/history/{}.json", self.spool_dir(), device_id)
+    }
+    fn history_dir(&self) -> String {
+        format!("{}/history", self.spool_dir())
+    }
 }
 
 /// blake3 hex digest of a game name — the session-marker filename. Stable for a
@@ -239,7 +248,7 @@ fn resolve_remote_inner(base: String) -> Option<RcloneRemote> {
 
 /// Reads (device_id, device_name) from config. Empty strings when the config
 /// lock is poisoned — callers treat that as "skip the control-plane op".
-fn device_identity(app: &AppHandle) -> (String, String) {
+pub(crate) fn device_identity(app: &AppHandle) -> (String, String) {
     let cfg = app.state::<SharedConfig>();
     let result = match cfg.lock() {
         Ok(g) => (g.data.device_id.clone(), g.data.device_name.clone()),
@@ -916,6 +925,75 @@ pub async fn record_session(app: &AppHandle, game_name: &str, session_minutes: i
     .await;
 }
 
+// ── Per-device play-session history (the cross-device timeline) ─────────────
+
+/// One device's full play-session history, stored at
+/// `_spool/history/<device_id>.json`. Like [`DeviceBlob`], each device writes
+/// only its *own* file, so the store is conflict-free: the cross-device view is
+/// a union of every device's sessions keyed by `session_id`, never a merge.
+///
+/// The blob is a projection of the local `play_sessions` table (the source of
+/// truth) rather than an independently-appended log: [`sync_play_history`]
+/// rewrites it from all of this device's local rows. So a lost remote write
+/// self-heals on the next session instead of permanently dropping a record.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HistoryBlob {
+    pub device_name: String,
+    pub sessions: Vec<crate::library::PlaySession>,
+    pub schema: u32,
+}
+
+/// Push this device's play-session history to the remote: read every local
+/// session for our device id and overwrite our history blob with the full set.
+/// Best-effort and idempotent; no-op when cloud isn't configured. Call after
+/// recording a session locally.
+pub async fn sync_play_history(app: &AppHandle) {
+    let Some(remote) = resolve_remote(app) else {
+        return;
+    };
+    let (device_id, device_name) = device_identity(app);
+    if device_id.is_empty() {
+        return;
+    }
+    let library = app.state::<SharedLibrary>().inner().clone();
+    let sessions = match library.sessions_for_device(&device_id).await {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!(error = %e, "sync_play_history: failed to read local sessions");
+            return;
+        }
+    };
+    let blob = HistoryBlob { device_name, sessions, schema: 1 };
+    if let Ok(body) = serde_json::to_vec(&blob) {
+        rcat(&remote.exe, &remote.history_target(&device_id), &body).await;
+    }
+}
+
+/// Fold every peer's history blob into the local `play_sessions` table. Lists
+/// `_spool/history`, cats each `<device_id>.json`, and bulk `INSERT OR IGNORE`s
+/// its sessions (idempotent by `session_id`). Returns the number of new rows
+/// added. Our own blob is included — harmless (already present locally), and it
+/// restores our history if the local DB was wiped/reinstalled.
+async fn fold_history(remote: &RcloneRemote, library: &crate::library::Library) -> usize {
+    let Some(entries) = lsjson(&remote.exe, &remote.history_dir()).await else {
+        return 0;
+    };
+    let mut all: Vec<crate::library::PlaySession> = Vec::new();
+    for e in entries {
+        if e.is_dir || !e.name.ends_with(".json") {
+            continue;
+        }
+        let device_id = e.name.trim_end_matches(".json").to_string();
+        if let Some(body) = cat(&remote.exe, &remote.history_target(&device_id)).await {
+            if let Ok(blob) = serde_json::from_str::<HistoryBlob>(&body) {
+                all.extend(blob.sessions);
+            }
+        }
+    }
+    library.upsert_sessions(&all).await.unwrap_or(0)
+}
+
 /// The badge for a game given the device id of its latest backer.
 pub fn compute_badge(our_device_id: &str, latest_backer: Option<&str>) -> &'static str {
     match latest_backer {
@@ -1014,8 +1092,19 @@ pub async fn fold_devices_from_config() -> bool {
     };
     let our_device_id = config.device_id.clone();
 
+    let library = match crate::library::Library::open().await {
+        Ok(l) => l,
+        Err(_) => return false,
+    };
+
+    // Fold peer play-session history first, independent of the device-blob fold.
+    let new_sessions = fold_history(&remote, &library).await;
+    if new_sessions > 0 {
+        tracing::info!(new_sessions, "headless fold: imported peer play sessions");
+    }
+
     let Some(entries) = lsjson(&remote.exe, &remote.devices_dir()).await else {
-        return false;
+        return new_sessions > 0;
     };
     let mut blobs: Vec<(String, DeviceBlob)> = Vec::new();
     for e in entries {
@@ -1031,14 +1120,10 @@ pub async fn fold_devices_from_config() -> bool {
         }
     }
     if blobs.is_empty() {
-        return false;
+        return new_sessions > 0;
     }
 
     let folded = fold_blobs(&blobs);
-    let library = match crate::library::Library::open().await {
-        Ok(l) => l,
-        Err(_) => return false,
-    };
     let entries = library.list().await.unwrap_or_default();
     let mut applied = 0usize;
     for entry in &entries {
@@ -1051,7 +1136,7 @@ pub async fn fold_devices_from_config() -> bool {
         }
     }
     tracing::info!(applied, devices = blobs.len(), "headless fold: done");
-    applied > 0
+    applied > 0 || new_sessions > 0
 }
 
 /// Computes the JSON field updates the cross-device fold should apply to one
@@ -1106,6 +1191,15 @@ async fn run_startup_fold(app: &AppHandle) {
     };
     let (our_device_id, _) = device_identity(app);
 
+    // Fold peer play-session history into the local table first — independent of
+    // the device-blob fold below, so a peer with sessions but no device blob
+    // (or vice versa) is still picked up.
+    let library = app.state::<SharedLibrary>().inner().clone();
+    let new_sessions = fold_history(&remote, &library).await;
+    if new_sessions > 0 {
+        tracing::info!(new_sessions, "startup fold: imported peer play sessions");
+    }
+
     // List device files, then cat each.
     let Some(entries) = lsjson(&remote.exe, &remote.devices_dir()).await else {
         return;
@@ -1129,7 +1223,6 @@ async fn run_startup_fold(app: &AppHandle) {
 
     let folded = fold_blobs(&blobs);
 
-    let library = app.state::<SharedLibrary>().inner().clone();
     let entries = library.list().await.unwrap_or_default();
     let mut applied = 0usize;
     for entry in &entries {

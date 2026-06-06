@@ -13,6 +13,7 @@ import type {
   LanPeer,
   NewGame,
   PeerGame,
+  PlaySession,
   ProtonVersion,
   GuidedInstallResult,
   SyncStatus,
@@ -42,6 +43,10 @@ export interface DeckyPluginInfo {
 export const api = {
   // Library
   listGames: (): Promise<GameEntry[]> => invoke('list_games'),
+  /** All recorded play sessions across devices, oldest first. Optionally
+   *  scoped to one game by name. Feeds the cross-device activity timeline. */
+  listPlaySessions: (gameName?: string): Promise<PlaySession[]> =>
+    invoke('list_play_sessions', { gameName: gameName ?? null }),
   addGame: (newGame: NewGame): Promise<GameEntry> => invoke('add_game', { newGame }),
   updateGame: (entry: GameEntry): Promise<GameEntry> => invoke('update_game', { entry }),
   removeGame: (id: string): Promise<boolean> => invoke('remove_game', { id }),

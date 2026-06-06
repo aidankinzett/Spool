@@ -71,6 +71,21 @@ export type SaveRevision = {
   is_current: boolean;
 };
 
+// Mirror of the Rust `PlaySession` struct in src-tauri/src/library.rs — one
+// finished launch on one device. The cross-device activity timeline reads these.
+export type PlaySession = {
+  /** Globally unique: `<device_id>:<started_at_millis>`. */
+  session_id: string;
+  device_id: string;
+  device_name: string;
+  game_name: string;
+  /** RFC 3339 timestamps. */
+  started_at: string;
+  ended_at: string;
+  /** Wall-clock seconds played, mid-session suspend time subtracted. */
+  duration_secs: number;
+};
+
 // Mirror of the Rust `GameEntry` struct in src-tauri/src/library.rs.
 // Keep field names in lockstep — `serde` on the Rust side serializes with
 // these exact snake_case names.
