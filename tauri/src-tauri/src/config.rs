@@ -62,6 +62,14 @@ pub struct ConfigData {
     /// the first-run flow thrown at them.
     pub onboarding_completed: bool,
 
+    /// The bundled Decky plugin version the user was last nudged to update to
+    /// (Linux). The library window shows a one-time "plugin update available"
+    /// toast when the AppImage bundles a plugin newer than the installed copy;
+    /// this records the version that toast was shown for so it fires only once
+    /// per bundled version instead of on every launch. Empty until the first
+    /// such toast.
+    pub decky_update_notified_version: String,
+
     /// Number of full save revisions ludusavi retains per game (the
     /// `backup.retention.full` knob). More revisions = more rollback points,
     /// at the cost of more disk + cloud upload per game. Differentials stay at
@@ -93,6 +101,7 @@ impl Default for ConfigData {
             ui_mode: UiMode::default(),
             tray_intro_seen: false,
             onboarding_completed: false,
+            decky_update_notified_version: String::new(),
             save_retention_full: 3,
             cloud: CloudConfig::default(),
             lan: LanConfig::default(),

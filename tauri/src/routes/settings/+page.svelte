@@ -25,6 +25,7 @@
   import { emit, listen } from '@tauri-apps/api/event';
   import { api, type DeckyPluginInfo } from '$lib/api';
   import { toasts } from '$lib/toasts.svelte';
+  import { isNewerVersion } from '$lib/format';
   import type { ConfigData, DepStatus, LanPeer, ProtonVersion, SyncStatus } from '$lib/types';
   import AppChrome from '$lib/components/AppChrome.svelte';
   import MonoLabel from '$lib/components/MonoLabel.svelte';
@@ -694,7 +695,7 @@
               <!-- Game Mode companion (Decky) -->
               {#if isLinux}
                 {@const dp = deckyPlugin}
-                {@const needsUpdate = !!dp?.installed && dp.installedVersion !== dp.bundledVersion}
+                {@const needsUpdate = !!dp?.installed && isNewerVersion(dp.bundledVersion, dp.installedVersion ?? '')}
                 <SettingsCard
                   title="Game Mode companion"
                   helper="A Decky Loader plugin that backs up saves even when a game is force-quit, and lets you browse your library right from the Quick Access menu."
