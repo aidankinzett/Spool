@@ -79,13 +79,8 @@ pub async fn fetch_and_save_cover(
     app: &AppHandle,
     game_entry_id: &str,
 ) -> AppResult<Option<String>> {
-    let client = app.state::<SteamGridDbClient>();
-    let Some((sgdb_id, safe_name, api_key)) = resolve_entry_sgdb_id(app, game_entry_id).await?
-    else {
-        return Ok(None);
-    };
-
-    let Some(path_str) = download_cover(&client.http, &api_key, sgdb_id, &safe_name).await? else {
+    let FetchedArt { cover, .. } = fetch_art(app, game_entry_id, true, false).await?;
+    let Some(path_str) = cover else {
         return Ok(None);
     };
     let accent = extract_accent_blocking(&path_str).await;
@@ -103,65 +98,7 @@ pub async fn fetch_and_save_cover_and_hero(
     app: &AppHandle,
     game_entry_id: &str,
 ) -> AppResult<()> {
-    let client = app.state::<SteamGridDbClient>();
-    let library = app.state::<SharedLibrary>();
-
-    // Snapshot the entry's lookup fields. No SteamGridDB gate here: the
-    // official Steam CDN path needs neither an API key nor the toggle, so it
-    // runs even when SteamGridDB is off.
-    let (name, safe_name, steam_id) = {
-        let entry = library
-            .find(game_entry_id)
-            .await?
-            .ok_or_else(|| AppError::Other(format!("game not found: {game_entry_id}")))?;
-        (
-            entry.game_name.clone(),
-            entry.safe_name.clone(),
-            entry.steam_id,
-        )
-    };
-
-    // Prefer Steam's official library art when ludusavi resolved an appid.
-    let mut cover = None;
-    let mut hero = None;
-    if let Some(sid) = steam_id {
-        cover = crate::steam_cdn::download_cover(&client.http, sid, &safe_name)
-            .await
-            .unwrap_or_else(|e| {
-                tracing::warn!(game_entry_id, error = %e, "official cover fetch failed");
-                None
-            });
-        hero = crate::steam_cdn::download_hero(&client.http, sid, &safe_name)
-            .await
-            .unwrap_or_else(|e| {
-                tracing::warn!(game_entry_id, error = %e, "official hero fetch failed");
-                None
-            });
-    }
-
-    // Fall back to SteamGridDB for whichever asset Steam didn't provide
-    // (no appid, or no official capsule/hero for it). Needs the API key.
-    if cover.is_none() || hero.is_none() {
-        if let Some((sgdb_id, api_key)) = resolve_sgdb_id(app, &name, steam_id).await? {
-            if cover.is_none() {
-                cover = download_cover(&client.http, &api_key, sgdb_id, &safe_name)
-                    .await
-                    .unwrap_or_else(|e| {
-                        tracing::warn!(game_entry_id, error = %e, "cover download failed");
-                        None
-                    });
-            }
-            if hero.is_none() {
-                hero = download_hero(&client.http, &api_key, sgdb_id, &safe_name)
-                    .await
-                    .unwrap_or_else(|e| {
-                        tracing::warn!(game_entry_id, error = %e, "hero download failed");
-                        None
-                    });
-            }
-        }
-    }
-
+    let FetchedArt { cover, hero } = fetch_art(app, game_entry_id, true, true).await?;
     if cover.is_none() && hero.is_none() {
         return Ok(());
     }
@@ -179,6 +116,94 @@ pub async fn fetch_and_save_cover_and_hero(
     )
     .await?;
     Ok(())
+}
+
+/// Cover and/or hero paths resolved for one entry.
+struct FetchedArt {
+    cover: Option<String>,
+    hero: Option<String>,
+}
+
+/// Resolves the requested assets for `game_entry_id`, preferring Steam's
+/// official library art (when ludusavi resolved an appid) and falling back to
+/// SteamGridDB for whichever asset Steam didn't provide. The single SteamGridDB
+/// id lookup is shared across both assets, so requesting cover + hero costs one
+/// resolve, not two. Each download is best-effort: a failure logs and yields
+/// `None` for that asset rather than aborting the other.
+///
+/// The official path needs neither an API key nor the SteamGridDB toggle, so a
+/// Steam-resolved game still gets art when SteamGridDB is off. Downloaded files
+/// land in the covers/heroes dirs but the entry isn't touched — callers decide
+/// what to persist (most call `apply_art`; `add_to_steam` also copies the file
+/// into Steam's grid dir).
+async fn fetch_art(
+    app: &AppHandle,
+    game_entry_id: &str,
+    want_cover: bool,
+    want_hero: bool,
+) -> AppResult<FetchedArt> {
+    let client = app.state::<SteamGridDbClient>();
+    let library = app.state::<SharedLibrary>();
+
+    let (name, safe_name, steam_id) = {
+        let entry = library
+            .find(game_entry_id)
+            .await?
+            .ok_or_else(|| AppError::Other(format!("game not found: {game_entry_id}")))?;
+        (
+            entry.game_name.clone(),
+            entry.safe_name.clone(),
+            entry.steam_id,
+        )
+    };
+
+    // Official Steam CDN first, when we have an appid.
+    let mut cover = None;
+    let mut hero = None;
+    if let Some(sid) = steam_id {
+        if want_cover {
+            cover = crate::steam_cdn::download_cover(&client.http, sid, &safe_name)
+                .await
+                .unwrap_or_else(|e| {
+                    tracing::warn!(game_entry_id, error = %e, "official cover fetch failed");
+                    None
+                });
+        }
+        if want_hero {
+            hero = crate::steam_cdn::download_hero(&client.http, sid, &safe_name)
+                .await
+                .unwrap_or_else(|e| {
+                    tracing::warn!(game_entry_id, error = %e, "official hero fetch failed");
+                    None
+                });
+        }
+    }
+
+    // SteamGridDB fallback for whatever's still missing — one shared resolve.
+    let need_cover = want_cover && cover.is_none();
+    let need_hero = want_hero && hero.is_none();
+    if need_cover || need_hero {
+        if let Some((sgdb_id, api_key)) = resolve_sgdb_id(app, &name, steam_id).await? {
+            if need_cover {
+                cover = download_cover(&client.http, &api_key, sgdb_id, &safe_name)
+                    .await
+                    .unwrap_or_else(|e| {
+                        tracing::warn!(game_entry_id, error = %e, "cover download failed");
+                        None
+                    });
+            }
+            if need_hero {
+                hero = download_hero(&client.http, &api_key, sgdb_id, &safe_name)
+                    .await
+                    .unwrap_or_else(|e| {
+                        tracing::warn!(game_entry_id, error = %e, "hero download failed");
+                        None
+                    });
+            }
+        }
+    }
+
+    Ok(FetchedArt { cover, hero })
 }
 
 // ── Accent colour extraction ────────────────────────────────────────────────
@@ -274,12 +299,8 @@ pub async fn fetch_and_save_hero(
     app: &AppHandle,
     game_entry_id: &str,
 ) -> AppResult<Option<String>> {
-    let client = app.state::<SteamGridDbClient>();
-    let Some((sgdb_id, safe_name, api_key)) = resolve_entry_sgdb_id(app, game_entry_id).await?
-    else {
-        return Ok(None);
-    };
-    let Some(path_str) = download_hero(&client.http, &api_key, sgdb_id, &safe_name).await? else {
+    let FetchedArt { hero, .. } = fetch_art(app, game_entry_id, false, true).await?;
+    let Some(path_str) = hero else {
         return Ok(None);
     };
     apply_art(app, game_entry_id, None, Some(&path_str), None).await?;
@@ -456,34 +477,6 @@ async fn download_bytes(http: &reqwest::Client, url: &str) -> AppResult<Vec<u8>>
 }
 
 // ── Shared art-fetch helpers (cover + hero) ─────────────────────────────────
-
-/// Shared preamble for the cover/hero fetchers: bail if SteamGridDB is
-/// disabled, snapshot the entry's lookup fields, and resolve its SteamGridDB
-/// game id. Returns `(sgdb_id, safe_name, api_key)`, or None to skip (disabled,
-/// no API key, or nothing matched).
-async fn resolve_entry_sgdb_id(
-    app: &AppHandle,
-    game_entry_id: &str,
-) -> AppResult<Option<(u64, String, String)>> {
-    let library = app.state::<SharedLibrary>();
-
-    let (name, safe_name, steam_id) = {
-        let entry = library
-            .find(game_entry_id)
-            .await?
-            .ok_or_else(|| AppError::Other(format!("game not found: {game_entry_id}")))?;
-        (
-            entry.game_name.clone(),
-            entry.safe_name.clone(),
-            entry.steam_id,
-        )
-    };
-
-    match resolve_sgdb_id(app, &name, steam_id).await? {
-        Some((sgdb_id, api_key)) => Ok(Some((sgdb_id, safe_name, api_key))),
-        None => Ok(None),
-    }
-}
 
 /// Resolves a SteamGridDB game id from a name + optional Steam id, gated on the
 /// SteamGridDB toggle and API key. Returns `(sgdb_id, api_key)`, or None when
