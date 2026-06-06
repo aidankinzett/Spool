@@ -34,7 +34,7 @@ bun run tauri build
 cd tauri/src-tauri
 cargo check
 cargo clippy --all-targets -- -D warnings  # CI fails on any warning
-cargo test   # run on Linux/WSL — see note below
+cargo test --all   # all workspace crates, like CI; run on Linux/WSL — see note below
 
 # NOTE: `cargo test` does not run on Windows. The lib test exe gets no
 # application manifest, so it loads comctl32 v5 (no `TaskDialogIndirect`,
