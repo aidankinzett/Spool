@@ -30,6 +30,19 @@ export interface LibraryGame {
   proton_version_path: string | null;
 }
 
+// Mirror of the Rust `SaveRevision` (ludusavi.rs). One retained ludusavi backup
+// for a game.
+export interface SaveRevision {
+  // ludusavi's backup id — the token `restore --backup <name>` accepts. The
+  // newest revision (the tip) is reported as ".".
+  name: string;
+  // ISO timestamp of when the backup was taken.
+  when: string;
+  // True for the newest revision (the tip a normal restore would land). The
+  // picker disables rolling back to it.
+  is_current: boolean;
+}
+
 // Mirror of the Rust `ProtonVersion` (proton.rs). A discovered Proton build.
 export interface ProtonVersion {
   name: string;

@@ -1,5 +1,5 @@
 import { callable } from "@decky/api";
-import type { ProtonVersion, Settings } from "../types";
+import type { ProtonVersion, SaveRevision, Settings } from "../types";
 
 // `SteamClient` (incl. GameSessions.RegisterForAppLifetimeNotifications and the
 // LifetimeNotification payload) is provided as an ambient global by @decky/ui.
@@ -78,3 +78,26 @@ export const setProtonVersion = callable<
   [game_id: string, proton_version_path: string],
   { ok: boolean; reason?: string }
 >("set_proton_version");
+
+// Lists the save revisions ludusavi retains locally for a game, newest-first,
+// with the tip flagged (`is_current`). Backs the "restore an earlier save"
+// picker. Reflects the local backup store, so cloud-only revisions this device
+// hasn't pulled aren't listed. `ok` is false (with a `reason`) when the server
+// is down or the game has no tracked saves.
+// Backend: GET /games/<id>/revisions.
+export const listSaveRevisions = callable<
+  [game_id: string],
+  { ok: boolean; revisions?: SaveRevision[]; reason?: string }
+>("list_save_revisions");
+
+// Rolls a game back to an earlier save revision and pins it as the new tip: it
+// restores the chosen backup into the live save dir, then cloud-synced-backs-up
+// so the rolled-back state becomes the latest revision (can't be clobbered by
+// the next launch, and propagates to other devices). Destructive — replaces the
+// current saves. Takes a few seconds (restore + backup + upload), so the caller
+// shows a spinner. `ok` is false (with a `reason`) on failure.
+// Backend: POST /games/<id>/restore  { backup_name }.
+export const restoreSaveRevision = callable<
+  [game_id: string, backup_name: string],
+  { ok: boolean; game_count?: number; reason?: string }
+>("restore_save_revision");

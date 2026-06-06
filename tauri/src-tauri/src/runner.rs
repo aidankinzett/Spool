@@ -686,55 +686,66 @@ pub async fn list_save_revisions(
 /// the cloud-conflict baseline advances to the new tip. Pinning consumes one
 /// retention slot (the oldest revision rolls off).
 ///
-/// Guarded by the single-launch lock so a rollback can't race a running
-/// session (and vice versa).
-#[tauri::command]
-pub async fn restore_save_revision(
-    app: AppHandle,
-    game_id: String,
-    backup_name: String,
+/// Core of [`restore_save_revision`] without an `AppHandle` — restore the
+/// chosen revision, then pin it as the new tip, advancing the cloud baseline
+/// and clearing the unsynced-session marker when the pin's upload succeeds.
+/// Used by the headless plugin server (Decky), which has no `AppHandle`; the
+/// command wrapper layers the single-launch lock and the `library:changed`
+/// emit on top. Mirrors `pull_cloud_saves_core`'s split between command and
+/// plugin entry points.
+pub async fn restore_save_revision_core(
+    ludusavi_client: &LudusaviClient,
+    ludusavi_exe: &Path,
+    config_dir: &Path,
+    library: &SharedLibrary,
+    cfg: &crate::config::ConfigData,
+    game_id: &str,
+    backup_name: &str,
 ) -> AppResult<ManualRestoreResult> {
-    let run_state = app.state::<RunState>();
-    let _guard = run_state.try_acquire(&game_id)?;
-
-    let (game_name, ludusavi_exe, config_dir, wine_prefix) = manual_prep(&app, &game_id).await?;
-    let game_folder = app
-        .state::<SharedLibrary>()
-        .find(&game_id)
-        .await?
-        .and_then(|e| e.game_folder_path.map(PathBuf::from));
-    let ludusavi_client = app.state::<LudusaviClient>();
+    // Resolve the game's name, Proton prefix, and install folder from the
+    // library (the same fields `manual_prep` derives for the command path).
+    let (game_name, uses_proton, prefix_override, game_folder) = {
+        let entry = library
+            .find(game_id)
+            .await?
+            .ok_or_else(|| AppError::Other(format!("game not found: {game_id}")))?;
+        (
+            entry.game_name.clone(),
+            entry.uses_proton(),
+            entry.wine_prefix_path.clone(),
+            entry.game_folder_path.clone().map(PathBuf::from),
+        )
+    };
+    let wine_prefix = if uses_proton {
+        Some(
+            prefix_override
+                .filter(|p| !p.trim().is_empty())
+                .map(PathBuf::from)
+                .unwrap_or_else(|| crate::proton::game_prefix_path(game_id)),
+        )
+    } else {
+        None
+    };
 
     // ── Step 1: restore the chosen revision into the live save location ───
     let out = restore_with_redirects(
-        &ludusavi_client,
-        &ludusavi_exe,
-        &config_dir,
+        ludusavi_client,
+        ludusavi_exe,
+        config_dir,
         &game_name,
         wine_prefix.as_deref(),
         game_folder.as_deref(),
-        Some(&backup_name),
+        Some(backup_name),
     )
     .await
     .map_err(|e| AppError::Other(format!("ludusavi restore: {e}")))?;
 
-    let game_count = out
-        .overall
-        .as_ref()
-        .map(|o| o.total_games)
-        .unwrap_or(0);
+    let game_count = out.overall.as_ref().map(|o| o.total_games).unwrap_or(0);
 
     // ── Step 2: pin the rolled-back state as the new tip ──────────────────
-    let library = app.state::<SharedLibrary>();
-    let pin = backup_game_core(
-        &ludusavi_client,
-        &ludusavi_exe,
-        &config_dir,
-        &library,
-        &game_id,
-    )
-    .await
-    .map_err(|e| AppError::Other(format!("failed to pin rolled-back save: {e}")))?;
+    let pin = backup_game_core(ludusavi_client, ludusavi_exe, config_dir, library, game_id)
+        .await
+        .map_err(|e| AppError::Other(format!("failed to pin rolled-back save: {e}")))?;
 
     // Only treat the rollback as propagated to the cloud when the pin's upload
     // actually succeeded. If the cloud leg failed/conflicted, the rolled-back
@@ -746,20 +757,57 @@ pub async fn restore_save_revision(
         // launch's conflict check is exact rather than falling back to timestamps.
         let backup_dir = ludusavi_config::backup_dir();
         if let Some(tip) = redirects::read_local_backup_tip(&backup_dir, &game_name) {
-            let _ = set_cloud_baseline(&app, &game_id, &tip.name).await;
+            let _ = set_baseline_in(library, game_id, &tip.name).await;
         }
         // We're the latest backer: clear any marker + record the backer.
-        rclone::complete_session_backup(&app, &game_name).await;
+        rclone::complete_session_backup_from_config(cfg, &game_name).await;
     } else {
         tracing::warn!(game_name, "rollback pin: cloud upload failed — leaving baseline/marker for next launch to reconcile");
     }
 
-    // Repaint the library either way (backup count / last-backed-up changed).
+    Ok(ManualRestoreResult { game_count })
+}
+
+/// Guarded by the single-launch lock so a rollback can't race a running
+/// session (and vice versa).
+#[tauri::command]
+pub async fn restore_save_revision(
+    app: AppHandle,
+    game_id: String,
+    backup_name: String,
+) -> AppResult<ManualRestoreResult> {
+    let run_state = app.state::<RunState>();
+    let _guard = run_state.try_acquire(&game_id)?;
+
+    let ludusavi_exe = crate::paths::resolve_ludusavi_path().ok_or_else(|| {
+        AppError::Other("Ludusavi sidecar not found — reinstall Spool.".into())
+    })?;
+    let config_dir = crate::paths::ludusavi_config_dir();
+    let library = app.state::<SharedLibrary>();
+    let ludusavi_client = app.state::<LudusaviClient>();
+    let cfg = {
+        let cfg = app.state::<SharedConfig>();
+        let g = cfg.lock().map_err(|_| AppError::Other("config lock poisoned".into()))?;
+        g.data.clone()
+    };
+
+    let result = restore_save_revision_core(
+        &ludusavi_client,
+        &ludusavi_exe,
+        &config_dir,
+        &library,
+        &cfg,
+        &game_id,
+        &backup_name,
+    )
+    .await?;
+
+    // Repaint the library (backup count / last-backed-up changed).
     if let Err(e) = app.emit("library:changed", &game_id) {
         tracing::warn!(error = %e, "failed to emit library:changed after rollback");
     }
 
-    Ok(ManualRestoreResult { game_count })
+    Ok(result)
 }
 
 /// Resolve a cloud-sync conflict in-app, then land the reconciled saves.
