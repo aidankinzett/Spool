@@ -16,7 +16,7 @@
       { kind: 'ok', label: 'STEAM', title: 'Added to Steam', sub: 'Restart Steam to see it.', duration: 0 },
     ],
     mixed: [
-      { kind: 'ok', label: 'BACKUP · DONE', title: 'Saves backed up', sub: 'Hollow Knight · 34 MB', catalog: 'SPL-0001', duration: 0 },
+      { kind: 'ok', label: 'BACKUP · DONE', title: 'Saves backed up', sub: 'The Witcher 3: Wild Hunt · 34 MB', catalog: 'SPL-0001', duration: 0 },
       { kind: 'info', label: 'COVER', title: 'Cover refreshed', sub: 'Pulled the latest from SteamGridDB.', duration: 0 },
       { kind: 'warn', label: 'CLOUD · OFFLINE', title: "Couldn't reach your remote", sub: 'Backup saved locally; will sync when you reconnect.', duration: 0 },
       {

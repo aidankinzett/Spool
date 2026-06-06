@@ -1962,7 +1962,14 @@ async fn phase_launch(ctx: &WorkflowCtx<'_>, exe_pathbuf: &Path) -> AppResult<Se
     // suspend), it marks the session marker suspended so a peer sees an
     // unsynced session rather than the marker silently going stale.
     // No-op on other platforms.
-    let suspend_watcher = crate::suspend::start_suspend_watcher(ctx.app.clone(), ctx.game_name.to_string());
+    // Accumulates time spent suspended mid-session (Linux), subtracted below so
+    // sleep doesn't count as play time.
+    let suspended_secs: crate::suspend::SuspendedSecs = std::sync::Arc::new(std::sync::atomic::AtomicI64::new(0));
+    let suspend_watcher = crate::suspend::start_suspend_watcher(
+        ctx.app.clone(),
+        ctx.game_name.to_string(),
+        suspended_secs.clone(),
+    );
 
     let spawn_result = process::run_game(exe_pathbuf, spec).await;
     let session_end = Utc::now();
@@ -2012,7 +2019,11 @@ async fn phase_launch(ctx: &WorkflowCtx<'_>, exe_pathbuf: &Path) -> AppResult<Se
     }
 
     // ── Update last_played + playtime (best-effort) ───────────────────
-    let session_minutes = (session_end - session_start).num_minutes().max(0) as i32;
+    // Subtract any time the device spent suspended mid-session so sleeping with
+    // the game still running doesn't inflate the hours played.
+    let suspended = suspended_secs.load(std::sync::atomic::Ordering::Relaxed);
+    let played_secs = ((session_end - session_start).num_seconds() - suspended).max(0);
+    let session_minutes = (played_secs / 60) as i32;
     ctx.app
         .state::<SharedLibrary>()
         .bump_session(ctx.game_id, session_end, session_minutes)

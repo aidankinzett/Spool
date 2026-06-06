@@ -8,7 +8,7 @@
   // through ludusavi. The decorator's base makes the picker resolve to a fixed
   // path (`plugin:dialog|open`); each story varies what `search_by_exe` returns
   // to land on a different stage of the flow.
-  const EXE = 'C:/Games/HollowKnight/hollow_knight.exe';
+  const EXE = 'C:/Games/The Witcher 3/bin/x64/witcher3.exe';
 
   const { Story } = defineMeta({
     title: 'Screens/Add Game',

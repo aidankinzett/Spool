@@ -9,13 +9,15 @@ Steam Deck much faster than downloading it again.
 
 ## Enable sharing
 
-On the device that already has the game, open **Settings → Sharing & Sync** and
-turn on **LAN sharing**. You can also set:
+On the device that already has the game, open **Settings → Network** and turn on
+**LAN sharing**. You can also set:
 
 - A **device name** so peers recognise this machine.
 - The **install folder** where games received from peers are saved.
 - An optional **download speed cap** if you don't want transfers saturating your
   connection.
+
+![Spool's Network settings with LAN sharing enabled, showing the port, install folder, download speed limit, and device name.](../../../assets/screenshots/settings-sharing.png)
 
 Devices with sharing enabled find each other automatically on the same network —
 there's nothing to pair.
@@ -27,6 +29,8 @@ there's nothing to pair.
 2. Pick a game to bring over.
 3. Watch the transfer progress. When it finishes, the game is added to your
    library automatically and is ready to launch.
+
+![The transfers panel open in the Spool library, showing an incoming download and two outgoing uploads with per-file progress.](../../../assets/screenshots/transfers.png)
 
 ## What makes it safe to retry
 

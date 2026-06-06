@@ -8,7 +8,9 @@
   A game library that keeps your saves in sync between your Steam Deck and your PC.
 </p>
 
-<img width="1282" height="936" alt="image" src="https://github.com/user-attachments/assets/cf168909-4668-4769-8691-167f1b28d222" />
+<!-- spool:shot id=library-desktop -->
+<img src="docs/screenshots/library-desktop.png" alt="Library Desktop" width="1440" />
+<!-- spool:endshot -->
 
 ---
 
@@ -30,7 +32,9 @@ pushed after you quit, so you can stop on the Deck and pick up on the PC without
 overwriting yourself. If both sides changed, Spool shows a conflict picker instead
 of guessing.
 
-<img width="649" height="523" alt="image" src="https://github.com/user-attachments/assets/f0595c7b-94a1-4f39-883a-adb08cad27ea" />
+<!-- spool:shot id=cloud-conflict -->
+<img src="docs/screenshots/cloud-conflict.png" alt="Cloud Conflict" width="640" />
+<!-- spool:endshot -->
 
 
 ### LAN transfers between devices
@@ -42,7 +46,9 @@ This makes getting a game onto the Steam Deck much faster than downloading it ag
 Transfers verify every file, resume if interrupted, and add the game to your library
 automatically when done.
 
-<img width="342" height="221" alt="image" src="https://github.com/user-attachments/assets/435503f6-9623-433a-959f-8d18dbef1138" />
+<!-- spool:shot id=transfers -->
+<img src="docs/screenshots/transfers.png" alt="Transfers" width="648" />
+<!-- spool:endshot -->
 
 
 ### Decky plugin for Game Mode
@@ -58,11 +64,7 @@ other Spool devices on your LAN. And it backs up your saves if Steam force-close
 Spool when you quit a game, so a session is never lost. Install it in one click
 from Spool's settings.
 
-<img width="1032" height="581" alt="image" src="https://github.com/user-attachments/assets/629a5a5d-9099-4147-a298-2bf24bc9f48e" />
-
-
-<img width="1029" height="583" alt="Screenshot 2026-06-02 at 10 04 49 PM" src="https://github.com/user-attachments/assets/3c1e9660-8c5e-4e5b-9f8d-50a6082bc3cb" />
-
+<img width="1030" height="585" alt="image" src="https://github.com/user-attachments/assets/45d80f6a-0977-414b-84d6-2b1036bfea0b" />
 
 ## Download
 

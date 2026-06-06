@@ -5,7 +5,7 @@
   import CloudConflictModal from './CloudConflictModal.svelte';
 
   // Local-vs-cloud save conflict resolver. Opens on the "choose" step; picking a
-  // side calls `resolve` (here a no-op that resolves, sending it to "done").
+  // side calls `resolve` (here a no-op) and then auto-continues via `onContinue`.
   const LOCAL = { abs: 'Today · 22:40', rel: '6 hours ago', size: '34 MB' };
   const CLOUD = { abs: 'Today · 08:15', rel: '20 hours ago', size: '36 MB' };
 
@@ -15,9 +15,8 @@
     tags: ['!autodocs'],
     parameters: { layout: 'fullscreen' },
     args: {
-      gameName: 'Hollow Knight',
-      catalogId: 'SPL-0001',
-      accent: '#6fb7c9',
+      gameName: 'The Witcher 3: Wild Hunt',
+      accent: '#c9a36f',
       coverUrl: null,
       cloudNewer: true,
       localMeta: LOCAL,

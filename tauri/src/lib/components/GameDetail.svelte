@@ -818,7 +818,6 @@
 {#if removeOpen}
   <RemoveGameModal
     gameName={game.game_name}
-    catalogId={fmtCatalog(game.catalog_number)}
     accent={accentHex}
     coverUrl={assetUrl(game.cover_image_path)}
     folderPath={folderForGame(game)}
