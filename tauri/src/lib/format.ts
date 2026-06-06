@@ -55,9 +55,14 @@ export function fmtPlaytime(mins: number | null | undefined): string {
   return `${h}h`;
 }
 
-/** Size in MB → "1.4 GB" or "423.0 MB" or "—". */
+/** Size in MB → "1.4 GB" / "423.0 MB" / "16 KB" / "—". Sub-MB sizes drop to KB. */
 export function fmtSize(mb: number | null | undefined): string {
   if (!mb) return '—';
+  if (mb < 1) {
+    const kb = mb * 1024;
+    // Below 1 KB show one decimal so tiny saves aren't rounded to "0 KB".
+    return kb < 1 ? `${kb.toFixed(1)} KB` : `${Math.round(kb)} KB`;
+  }
   if (mb < 1024) return `${mb.toFixed(1)} MB`;
   return `${(mb / 1024).toFixed(1)} GB`;
 }
