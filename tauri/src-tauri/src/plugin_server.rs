@@ -839,19 +839,22 @@ async fn run_backup(state: &PluginState, game_name: &str, session_id: &str) -> J
     .await
     {
         Ok(r) => {
-            // Only mark backed-up when the session that triggered this
-            // backup is still the active one — guards against a new game
-            // starting while the async backup was in-flight.
-            crate::session::mark_backed_up_if(session_id);
-            // Only clear the unsynced-session marker when the saves actually
-            // reached the cloud. If the upload failed or hit a conflict, leave
-            // the marker so peers keep warning until a real sync happens — this
-            // is the forced-close fallback, so a flaky Deck Wi-Fi must not
-            // silently drop the "unsynced session" signal. Best-effort.
+            // Both branches guard on `session_id` so a new game starting while
+            // this async backup was in flight is never clobbered.
             if r.cloud_synced {
+                // Fully reconciled — drop the record so a later "Back up now" /
+                // game-stop can't act on this already-synced session (the record
+                // is never otherwise deleted, only overwritten on next launch).
+                // (#280)
+                crate::session::clear_if(session_id);
                 crate::rclone::complete_session_backup_from_config(&config.data, game_name).await;
                 tracing::info!(game = %game_name, "plugin backup: complete");
             } else {
+                // Local backup landed but the upload failed or hit a conflict —
+                // keep the record flagged so peers keep warning until a real sync
+                // happens. This is the forced-close fallback, so a flaky Deck
+                // Wi-Fi must not silently drop the "unsynced session" signal.
+                crate::session::mark_backed_up_if(session_id);
                 tracing::warn!(game = %game_name, "plugin backup: cloud upload failed — leaving session marker in place");
             }
             Json(json!({ "acted": true, "ok": true, "game": game_name, "cloud_synced": r.cloud_synced }))

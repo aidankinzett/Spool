@@ -63,6 +63,16 @@ pub(crate) fn run_backup_headless(game_name: &str) -> i32 {
         return 1;
     };
 
+    // Capture the active session id BEFORE the (slow, async) backup so we only
+    // touch THIS session's record afterward. A new game can launch during the
+    // backup and overwrite active-session.json with a fresh session_id; an
+    // unguarded update would corrupt the new session's state, and the Decky
+    // forced-close fallback keys its decision on `backed_up`. Filter by game name
+    // so we never act on a different game's record. (#273)
+    let session_id = session::read()
+        .filter(|s| s.game == game_name)
+        .map(|s| s.session_id);
+
     let result = rt.block_on(async {
         runner::backup_game_core(&client, &ludusavi_exe, &config_dir, &lib_state, &game_id).await
     });
@@ -71,15 +81,22 @@ pub(crate) fn run_backup_headless(game_name: &str) -> i32 {
     match result {
         Ok(r) => {
             tracing::info!(game_name, games = r.game_count, "--backup complete");
-            session::mark_backed_up();
-            // Only clear the unsynced-session marker when the cloud upload
-            // actually succeeded. If it failed, the marker must stay so peers
-            // keep warning until the saves genuinely reach the cloud.
             if r.cloud_synced {
+                // Fully reconciled — clear the record so a later "Back up now" /
+                // game-stop can't act on this already-synced session. (#280)
+                if let Some(id) = &session_id {
+                    session::clear_if(id);
+                }
                 rt.block_on(async {
                     rclone::complete_session_backup_from_config(&cfg_data, game_name).await;
                 });
             } else {
+                // Local backup landed but the cloud upload failed — keep the
+                // record (flagged backed_up) so peers/next-launch reconcile, and
+                // leave the unsynced-session marker in place.
+                if let Some(id) = &session_id {
+                    session::mark_backed_up_if(id);
+                }
                 tracing::warn!(game_name, "--backup: cloud upload failed — leaving session marker in place");
             }
             0

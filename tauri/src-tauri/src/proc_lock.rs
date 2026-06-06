@@ -30,15 +30,16 @@
 use crate::error::{AppError, AppResult};
 use crate::paths;
 use std::fs::{File, TryLockError};
+use std::path::PathBuf;
 use std::time::Duration;
 
-/// Held guard over the machine-wide backup/upload lock. Dropping it releases
+/// Held guard over a machine-wide advisory file lock. Dropping it releases
 /// the lock; so does the process exiting (the OS frees the advisory lock).
-pub struct BackupLock {
+pub struct FileLock {
     file: File,
 }
 
-impl Drop for BackupLock {
+impl Drop for FileLock {
     fn drop(&mut self) {
         // Best-effort: unlock failures are unrecoverable here and the OS frees
         // the lock on process exit regardless.
@@ -46,21 +47,19 @@ impl Drop for BackupLock {
     }
 }
 
-/// Acquire the machine-wide backup/upload lock, polling until a holder in
-/// another process finishes or `timeout` elapses. Returns an error on timeout
-/// (or if the lock file can't be opened) — callers fail the backup and let the
-/// user retry rather than run unlocked. The poll-and-sleep (instead of a
-/// blocking `lock()`) keeps a bounded timeout the OS can't give us directly,
-/// and degrades a same-process re-entry to a timeout instead of a hard hang.
+/// Poll-acquire the advisory lock on `path`, returning `busy_msg` as an error on
+/// timeout (or a distinct error if the file can't be opened). The poll-and-sleep
+/// (instead of a blocking `lock()`) keeps a bounded timeout the OS can't give us
+/// directly, and degrades a same-process re-entry to a timeout instead of a hard
+/// hang.
 ///
-/// `flock` is per *open file description*, so two `BackupLock`s held at once
-/// within the same process would block each other until this timeout. Don't
-/// nest calls: the backup paths that take this lock never call into one another.
-pub async fn acquire_backup(timeout: Duration) -> AppResult<BackupLock> {
-    let path = paths::backup_lock_file();
-    let file = File::create(&path).map_err(|e| {
-        AppError::Other(format!("backup lock: open {}: {e}", path.display()))
-    })?;
+/// `flock` is per *open file description*, so two guards over the *same* path
+/// held at once within one process would block each other until this timeout.
+/// Don't nest calls on the same lock. (Different lock files are independent, so
+/// holding the backup lock and the control-plane lock together is fine.)
+async fn acquire_at(path: PathBuf, timeout: Duration, busy_msg: &str) -> AppResult<FileLock> {
+    let file = File::create(&path)
+        .map_err(|e| AppError::Other(format!("lock: open {}: {e}", path.display())))?;
 
     let step = Duration::from_millis(200);
     let mut waited = Duration::ZERO;
@@ -68,20 +67,49 @@ pub async fn acquire_backup(timeout: Duration) -> AppResult<BackupLock> {
         // Non-blocking attempt; the blocking `lock()` can't be cancelled by the
         // tokio timeout, so we poll and sleep between tries instead.
         match file.try_lock() {
-            Ok(()) => return Ok(BackupLock { file }),
+            Ok(()) => return Ok(FileLock { file }),
             Err(TryLockError::WouldBlock) => {
                 if waited >= timeout {
-                    return Err(AppError::Other(
-                        "Another backup is already running on this device. Try again in a moment."
-                            .into(),
-                    ));
+                    return Err(AppError::Other(busy_msg.to_string()));
                 }
                 tokio::time::sleep(step).await;
                 waited += step;
             }
             Err(TryLockError::Error(e)) => {
-                return Err(AppError::Other(format!("backup lock: {e}")));
+                return Err(AppError::Other(format!("lock: {e}")));
             }
         }
     }
+}
+
+/// Acquire the machine-wide backup/upload lock, polling until a holder in
+/// another process finishes or `timeout` elapses. Returns an error on timeout
+/// (or if the lock file can't be opened) — callers fail the backup and let the
+/// user retry rather than run unlocked. Held across the whole ludusavi backup +
+/// rclone upload, so contention can last as long as a backup.
+pub async fn acquire_backup(timeout: Duration) -> AppResult<FileLock> {
+    acquire_at(
+        paths::backup_lock_file(),
+        timeout,
+        "Another backup is already running on this device. Try again in a moment.",
+    )
+    .await
+}
+
+/// Acquire the machine-wide control-plane lock, serialising the brief
+/// read-modify-write of this device's cross-device blob
+/// (`_spool/devices/<id>.json`) against other Spool processes on the machine.
+///
+/// Deliberately separate from [`acquire_backup`]: that lock is held across a
+/// whole backup + upload (and the soft-deferred-backup path can't get it),
+/// whereas this is held only for a millisecond-scale `cat` -> `rcat`, so
+/// contention is tiny. The two are different files, so a backup path can hold
+/// both at once without self-blocking.
+pub async fn acquire_control_plane(timeout: Duration) -> AppResult<FileLock> {
+    acquire_at(
+        paths::control_plane_lock_file(),
+        timeout,
+        "Another Spool process is updating cross-device state. Try again in a moment.",
+    )
+    .await
 }

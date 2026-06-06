@@ -62,6 +62,16 @@ pub fn ludusavi_config_lock_file() -> PathBuf {
     app_data_dir().join("ludusavi-config.lock")
 }
 
+/// Marker file for the machine-wide lock serialising the brief read-modify-write
+/// of this device's cross-device blob (`_spool/devices/<id>.json`) across
+/// processes. Several Spool processes share one `device_id`, and the blob's
+/// `playtime` map is a `+=` accumulator, so concurrent updates must serialise or
+/// one is silently lost. Same lifecycle as [`backup_lock_file`] — only its lock
+/// state matters, never its contents.
+pub fn control_plane_lock_file() -> PathBuf {
+    app_data_dir().join("control-plane.lock")
+}
+
 pub fn covers_dir() -> PathBuf {
     app_data_dir().join("covers")
 }
