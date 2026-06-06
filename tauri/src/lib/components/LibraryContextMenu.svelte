@@ -368,23 +368,8 @@
       role="menuitem"
       onclick={handler}
       {disabled}
-      class="group flex h-7 w-full items-center gap-2.5 px-3 text-left text-[12px] transition-colors disabled:cursor-not-allowed disabled:opacity-40"
-      class:hover:bg-bad-15={danger}
-      style:color={danger ? 'var(--color-ink-1)' : 'var(--color-ink-1)'}
-      onmouseenter={(e) => {
-        if (disabled) return;
-        if (danger) {
-          (e.currentTarget as HTMLElement).style.background = 'rgb(255 122 122 / 0.14)';
-          (e.currentTarget as HTMLElement).style.color = '#ffa6a6';
-        } else {
-          (e.currentTarget as HTMLElement).style.background = `color-mix(in srgb, ${accent} 10%, transparent)`;
-          (e.currentTarget as HTMLElement).style.color = 'var(--color-ink-0)';
-        }
-      }}
-      onmouseleave={(e) => {
-        (e.currentTarget as HTMLElement).style.background = 'transparent';
-        (e.currentTarget as HTMLElement).style.color = 'var(--color-ink-1)';
-      }}
+      data-danger={danger ? 'true' : undefined}
+      class="menu-item group flex h-7 w-full items-center gap-2.5 px-3 text-left text-[12px] text-ink-1 transition-colors disabled:cursor-not-allowed disabled:opacity-40"
     >
       <span class="flex" style:color={danger ? 'currentColor' : 'var(--color-ink-2)'}>
         {@render icon()}
@@ -439,3 +424,19 @@
     )}
   </div>
 </div>
+
+<style>
+  /* Hover/focus highlight, driven by CSS instead of per-item JS. The accent
+     tint reuses the menu's `--gp-focus` custom property (set on the root), so
+     it also lights up on gamepad/keyboard focus, not just mouse hover. (#286) */
+  .menu-item:not(:disabled):hover,
+  .menu-item:not(:disabled):focus-visible {
+    background: color-mix(in srgb, var(--gp-focus, var(--color-spool)) 10%, transparent);
+    color: var(--color-ink-0);
+  }
+  .menu-item[data-danger]:not(:disabled):hover,
+  .menu-item[data-danger]:not(:disabled):focus-visible {
+    background: rgb(255 122 122 / 0.14);
+    color: #ffa6a6;
+  }
+</style>

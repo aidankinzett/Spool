@@ -34,8 +34,12 @@
 
   function handleKey(e: KeyboardEvent) {
     if (!cur) return;
+    // Only Escape cancels globally. Enter is deliberately NOT a global confirm:
+    // the Cancel button is the autofocused/default target for safety, so a
+    // reflexive Enter here would fire the (possibly destructive) confirm even
+    // though the safe control is focused. Enter/Space already activate whichever
+    // button actually has focus, so confirming just means focusing it first. (#285)
     if (e.key === 'Escape') confirms.cancel();
-    else if (e.key === 'Enter') confirms.confirm();
   }
 </script>
 
