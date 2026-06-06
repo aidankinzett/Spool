@@ -37,7 +37,7 @@ jobs:
         shell: pwsh
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
@@ -149,7 +149,7 @@ jobs:
     env:
       BUN_INSTALL_CACHE_DIR: "${{ github.workspace }}/.bun-cache"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
@@ -208,7 +208,7 @@ jobs:
       BUN_INSTALL_CACHE_DIR: "${{ github.workspace }}/.bun-cache"
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
@@ -292,7 +292,7 @@ jobs:
       BUN_INSTALL_CACHE_DIR: "${{ github.workspace }}/.bun-cache"
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
@@ -386,7 +386,7 @@ jobs:
       BUN_INSTALL_CACHE_DIR: "${{ github.workspace }}/.bun-cache"
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
