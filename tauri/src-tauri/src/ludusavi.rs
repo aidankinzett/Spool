@@ -647,11 +647,22 @@ async fn run_api(ludusavi_exe: &Path, config_dir: &Path, args: &[&str]) -> AppRe
 
     let join = tokio::task::spawn_blocking(move || {
         use std::io::Read;
+        // Drain stdout and stderr concurrently. Reading one pipe to completion
+        // before touching the other deadlocks if the child fills the second
+        // pipe's fixed OS buffer (~64 KB) while we're still blocked on the
+        // first: the child blocks on its write, stops draining the pipe we're
+        // reading, and `read_to_end` never returns (masked only by the outer
+        // timeout into a hang + spurious "timed out"). rclone — shelled out to
+        // for `--cloud-sync` — is verbose on stderr exactly on the flaky-network
+        // failure path this fast launch flow cares about. See issue #268.
+        let stderr_handle = std::thread::spawn(move || {
+            let mut stderr_bytes = Vec::new();
+            let _ = stderr_pipe.read_to_end(&mut stderr_bytes);
+            stderr_bytes
+        });
         let mut stdout_bytes = Vec::new();
-        let mut stderr_bytes = Vec::new();
-        
         let _ = stdout_pipe.read_to_end(&mut stdout_bytes);
-        let _ = stderr_pipe.read_to_end(&mut stderr_bytes);
+        let stderr_bytes = stderr_handle.join().unwrap_or_default();
 
         let mut child_opt = child_clone.lock().unwrap();
         let status = if let Some(mut c) = child_opt.take() {

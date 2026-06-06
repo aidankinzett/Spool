@@ -760,7 +760,11 @@ fn hash_file_blocking(path: &Path) -> std::io::Result<String> {
 /// Joins `rel` onto `root`, refusing anything that could escape (parent
 /// dir, absolute path, Windows prefix). Treats both `/` and `\` as
 /// separators so callers don't have to pre-normalise.
-fn safe_join(root: &Path, rel: &str) -> Option<PathBuf> {
+///
+/// Shared with the receiver side ([`super::install`]) so inbound,
+/// network-supplied manifest paths are validated the same way on both
+/// ends of a transfer.
+pub(super) fn safe_join(root: &Path, rel: &str) -> Option<PathBuf> {
     let rel_path = PathBuf::from(rel.replace('\\', "/"));
     for comp in rel_path.components() {
         match comp {
