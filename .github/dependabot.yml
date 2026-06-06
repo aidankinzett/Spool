@@ -3,6 +3,11 @@
 # Please see the documentation for more information:
 # https://docs.github.com/github/administering-a-repository/configuration-options-for-dependency-updates
 # https://containers.dev/guide/dependabot
+#
+# Each ecosystem uses `groups` so Dependabot opens a single bundled PR per
+# ecosystem per week instead of one PR per dependency. Major-version bumps are
+# split into their own group so risky breaking changes stay reviewable on their
+# own, while the (usually safe) minor/patch updates land together.
 
 version: 2
 updates:
@@ -10,28 +15,68 @@ updates:
     directory: "/"
     schedule:
       interval: weekly
+    groups:
+      devcontainers:
+        patterns:
+          - "*"
 
   - package-ecosystem: "cargo"
     directory: "/tauri/src-tauri"
     schedule:
       interval: weekly
+    groups:
+      cargo-minor-patch:
+        update-types:
+          - "minor"
+          - "patch"
+      cargo-major:
+        update-types:
+          - "major"
 
   - package-ecosystem: "npm"
     directory: "/tauri"
     schedule:
       interval: weekly
+    groups:
+      tauri-frontend-minor-patch:
+        update-types:
+          - "minor"
+          - "patch"
+      tauri-frontend-major:
+        update-types:
+          - "major"
 
   - package-ecosystem: "npm"
     directory: "/decky"
     schedule:
       interval: weekly
+    groups:
+      decky-minor-patch:
+        update-types:
+          - "minor"
+          - "patch"
+      decky-major:
+        update-types:
+          - "major"
 
   - package-ecosystem: "npm"
     directory: "/docs-site"
     schedule:
       interval: weekly
+    groups:
+      docs-site-minor-patch:
+        update-types:
+          - "minor"
+          - "patch"
+      docs-site-major:
+        update-types:
+          - "major"
 
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: weekly
+    groups:
+      github-actions:
+        patterns:
+          - "*"
