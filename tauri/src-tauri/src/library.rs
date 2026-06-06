@@ -703,12 +703,19 @@ pub async fn add_game(
     app: AppHandle,
     new_game: NewGame,
 ) -> AppResult<GameEntry> {
+    // Seed the per-entry Run-As-Admin toggle from the Windows AppCompatFlags
+    // registry so an exe the OS already flags as "always run as administrator"
+    // imports with the toggle on (no-op / false on non-Windows). Launches honour
+    // the registry at runtime regardless, but reflecting it on the entry keeps
+    // the editor toggle truthful instead of showing "off" for an elevated exe.
+    let run_as_admin = crate::registry::run_as_admin_in_registry(&new_game.exe_path);
     let entry = GameEntry {
         id: uuid::Uuid::new_v4().to_string(),
         // 0 → insert() assigns the next catalog number atomically.
         catalog_number: 0,
         game_name: new_game.game_name.clone(),
         exe_path: new_game.exe_path,
+        run_as_admin,
         safe_name: make_safe_filename(&new_game.game_name),
         added_at: Some(Utc::now()),
         steam_id: new_game.steam_id,
