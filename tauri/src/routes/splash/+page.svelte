@@ -18,7 +18,12 @@
   let game = $state<GameEntry | null>(null);
   let progress = $state(0);
 
-  const isCloudConflict = $derived(phase === 'error' && !!message && /cloud sync conflict/i.test(message));
+  // Gate on a hydrated `game`: the modal's resolve/continue handlers assert
+  // `game!.id`, and game hydration (in applyPhase) is async and swallows errors,
+  // so without this a conflict phase arriving before the entry loads would render
+  // the modal and then throw on click. Once `game` resolves the modal appears.
+  // (#296)
+  const isCloudConflict = $derived(!!game && phase === 'error' && !!message && /cloud sync conflict/i.test(message));
 
   $effect(() => {
     const id = game?.id;

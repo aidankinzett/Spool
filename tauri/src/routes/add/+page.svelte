@@ -148,11 +148,15 @@
     picked = null;
     searchMode = false;
     searchQuery = '';
+    const seq = ++searchSeq;
     try {
-      candidates = await api.searchByExe(exePath);
+      const result = await api.searchByExe(exePath);
+      if (seq !== searchSeq) return; // a newer search/identify superseded this
+      candidates = result;
       picked = candidates[0] ?? null;
       applyDetectedFolder(picked);
     } catch (e) {
+      if (seq !== searchSeq) return;
       error = String(e);
       candidates = [];
     } finally {
@@ -162,6 +166,12 @@
 
   // ── Manual search (debounced) ──────────────────────────────────────────
   let searchTimer: ReturnType<typeof setTimeout> | null = null;
+  // Monotonic token shared by identify() and the debounced search: a slow
+  // in-flight request that resolves after a newer one bails instead of
+  // overwriting candidates / picked / the install folder with stale results.
+  // clearTimeout only cancels a pending timer, not an already-dispatched fetch.
+  // (#292)
+  let searchSeq = 0;
 
   function onSearchInput(value: string) {
     searchQuery = value;
@@ -174,11 +184,15 @@
       return;
     }
     searchTimer = setTimeout(async () => {
+      const seq = ++searchSeq;
       try {
-        candidates = await api.searchGames(value);
+        const result = await api.searchGames(value);
+        if (seq !== searchSeq) return; // a newer search/identify superseded this
+        candidates = result;
         picked = candidates[0] ?? null;
         applyDetectedFolder(picked);
       } catch (e) {
+        if (seq !== searchSeq) return;
         error = String(e);
         candidates = [];
       }

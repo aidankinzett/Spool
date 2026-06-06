@@ -105,10 +105,17 @@
   });
 
   // Sharing tab gating: a game can only be flagged for LAN sharing if it
-  // has a real install folder for the server to stream from.
+  // has a real install folder for the server to stream from. Uses the live
+  // form value (sharing is about what you're about to save).
   const hasFolder = $derived(
     !!form && (form.game_folder_path ?? '').length > 0,
   );
+
+  // Delete-from-disk acts on the PERSISTED install folder — the backend
+  // (delete_game_core) reads the saved DB row, not the in-form edit. Gate the
+  // button and show the path from `original` so the confirm dialog can't promise
+  // to delete one folder while the backend deletes another. (#293)
+  const persistedFolder = $derived(original?.game_folder_path ?? '');
 
   // Whether the configured executable is a Windows `.exe`. On Linux these
   // launch through Proton automatically (no toggle — issue #80); the Proton
@@ -355,7 +362,7 @@
         title: 'Delete from disk?',
         body:
           `This permanently removes the install folder` +
-          `${form.game_folder_path ? ` (${form.game_folder_path})` : ''} and the library entry for "${form.game_name}". This can't be undone.`,
+          `${persistedFolder ? ` (${persistedFolder})` : ''} and the library entry for "${form.game_name}". This can't be undone.`,
         confirmLabel: 'Delete from disk',
         danger: true,
         catalog: fmtCatalog(form.catalog_number),
@@ -708,7 +715,7 @@
           {#snippet icon()}<Trash2 size={14} />{/snippet}
           Remove from library
         </Btn>
-        <Btn variant="danger" onclick={deleteFromDisk} disabled={!hasFolder}>
+        <Btn variant="danger" onclick={deleteFromDisk} disabled={!persistedFolder}>
           {#snippet icon()}<FolderX size={14} />{/snippet}
           Delete from disk
         </Btn>
