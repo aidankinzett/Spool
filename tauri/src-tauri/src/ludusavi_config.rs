@@ -16,7 +16,9 @@
 use crate::error::{AppError, AppResult};
 use crate::paths;
 use serde_yaml::Value;
+use std::fs::{File, TryLockError};
 use std::path::PathBuf;
+use std::time::Duration;
 
 // ── Public API ───────────────────────────────────────────────────────────────
 
@@ -29,6 +31,21 @@ pub struct Redirect {
     pub kind: String,
     pub source: String,
     pub target: String,
+}
+
+/// One `customGames` entry written into `config.yaml` — a user-defined save
+/// location for a game ludusavi's manifest doesn't cover (or covers wrongly).
+/// `files` are ludusavi path templates (placeholder tokens or absolute paths);
+/// `registry` are Windows registry keys (usually empty). `extend` selects
+/// ludusavi's `integration`: when true (the game is also in the manifest) the
+/// custom files are *added* to the manifest entry's; when false the default
+/// `override` applies, which for a non-manifest game simply defines it.
+#[derive(Debug, Clone)]
+pub struct CustomGameDef {
+    pub name: String,
+    pub files: Vec<String>,
+    pub registry: Vec<String>,
+    pub extend: bool,
 }
 
 /// Ensure the Spool-owned ludusavi config dir + `config.yaml` exist and meet
@@ -55,6 +72,7 @@ pub struct Redirect {
 ///     good backup intact (see [`apply_retention`]).
 ///   * `cloud:` block present            — Phase 4 fills in the remote
 pub fn ensure_config() -> AppResult<()> {
+    let _lock = lock_config();
     let dir = paths::ludusavi_config_dir();
     std::fs::create_dir_all(&dir)?;
 
@@ -119,6 +137,7 @@ pub fn ensure_config() -> AppResult<()> {
 /// [`ensure_config`]). Lowering the count prunes on the next backup; raising it
 /// accumulates going forward.
 pub fn set_retention(full: u32) -> AppResult<()> {
+    let _lock = lock_config();
     let mut v = read_value_or_empty();
     apply_retention(&mut v, full);
     write_value(&v)
@@ -147,6 +166,7 @@ pub fn set_cloud(
     rclone_path: Option<&str>,
     rclone_args: Option<&str>,
 ) -> AppResult<()> {
+    let _lock = lock_config();
     let mut v = read_value_or_empty();
     apply_cloud(&mut v, provider, remote, path, rclone_path, rclone_args);
     write_value(&v)
@@ -254,6 +274,7 @@ pub fn ensure_rclone_timeouts(user_args: &str) -> String {
 /// completely, there are no user-authored redirects to preserve — the list
 /// is always regenerated from scratch so stale entries can never accumulate.
 pub fn set_redirects(redirects: &[Redirect]) -> AppResult<()> {
+    let _lock = lock_config();
     let mut v = read_value_or_empty();
     let list: Value = Value::Sequence(
         redirects
@@ -269,6 +290,55 @@ pub fn set_redirects(redirects: &[Redirect]) -> AppResult<()> {
     );
     set_path(&mut v, &["redirects"], list);
     write_value(&v)
+}
+
+/// Replace the entire `customGames:` list in the owned config.yaml. Called by
+/// [`crate::custom_saves`] whenever the set of custom-save games changes (an
+/// edit, a cross-device adopt, or a launch preflight). Because Spool owns the
+/// config dir completely, the list is always regenerated from the library —
+/// there are no user-authored custom games to preserve, so a removed game's
+/// entry can never linger. Unlike `redirects`, this block is *persistent* (the
+/// run workflow never clears it). An empty slice writes `customGames: []`.
+pub fn set_custom_games(games: &[CustomGameDef]) -> AppResult<()> {
+    let _lock = lock_config();
+    let mut v = read_value_or_empty();
+    // Skip the rewrite when the block is unchanged: avoids churning config.yaml
+    // (+ its `.bak`) on every launch/boot, and narrows the window for losing a
+    // concurrent writer's key in the shared-file read-modify-write.
+    if !set_path(&mut v, &["customGames"], custom_games_value(games)) {
+        return Ok(());
+    }
+    write_value(&v)
+}
+
+/// Pure value-construction half of [`set_custom_games`] — builds the YAML
+/// sequence so it can be unit-tested without touching the real config file.
+/// `registry` is omitted when empty so the common (files-only) entry stays
+/// minimal; `integration: extend` is written only for manifest-covered games.
+fn custom_games_value(games: &[CustomGameDef]) -> Value {
+    Value::Sequence(
+        games
+            .iter()
+            .map(|g| {
+                let mut m = serde_yaml::Mapping::new();
+                m.insert(k("name"), Value::String(g.name.clone()));
+                m.insert(
+                    k("files"),
+                    Value::Sequence(g.files.iter().cloned().map(Value::String).collect()),
+                );
+                if !g.registry.is_empty() {
+                    m.insert(
+                        k("registry"),
+                        Value::Sequence(g.registry.iter().cloned().map(Value::String).collect()),
+                    );
+                }
+                if g.extend {
+                    m.insert(k("integration"), Value::String("extend".into()));
+                }
+                Value::Mapping(m)
+            })
+            .collect(),
+    )
 }
 
 /// Returns true if `cloud.remote` in the owned config.yaml is set to a
@@ -291,6 +361,48 @@ pub fn backup_dir() -> PathBuf {
 }
 
 // ── Internal helpers ─────────────────────────────────────────────────────────
+
+/// Held guard over the machine-wide config-write lock. Dropping it (at the end
+/// of a mutator) releases the lock; the OS also frees it if the process exits.
+struct ConfigLock {
+    file: Option<File>,
+}
+
+impl Drop for ConfigLock {
+    fn drop(&mut self) {
+        if let Some(f) = &self.file {
+            let _ = f.unlock();
+        }
+    }
+}
+
+/// Serialise the read-modify-write of the shared `config.yaml` against other
+/// Spool processes (tray GUI, attached `--run`, headless Decky server), which
+/// each own different keys (`redirects`, `cloud`, `customGames`, …) but rewrite
+/// the whole file — so an unsynchronised interleave can drop one writer's block.
+///
+/// Best-effort and sync (the mutators are sync): tries the OS advisory lock with
+/// a brief bounded spin, and on contention/timeout proceeds *without* the lock
+/// rather than failing a startup/launch config write — the blocks self-heal on
+/// the next regeneration, so completing the write is safer than aborting it.
+/// Hold time is sub-millisecond, so in practice the first `try_lock` wins.
+fn lock_config() -> ConfigLock {
+    let path = paths::ludusavi_config_lock_file();
+    let Ok(file) = File::create(&path) else {
+        return ConfigLock { file: None };
+    };
+    // ~1s ceiling (50 × 20ms); only ever approached if another process is stuck
+    // holding it, in which case proceeding unlocked is the lesser evil.
+    for _ in 0..50 {
+        match file.try_lock() {
+            Ok(()) => return ConfigLock { file: Some(file) },
+            Err(TryLockError::WouldBlock) => std::thread::sleep(Duration::from_millis(20)),
+            Err(TryLockError::Error(_)) => return ConfigLock { file: None },
+        }
+    }
+    tracing::warn!("ludusavi config lock stayed contended — writing without it");
+    ConfigLock { file: None }
+}
 
 fn read_value() -> AppResult<Value> {
     let raw = std::fs::read_to_string(paths::ludusavi_config_file())?;
@@ -465,6 +577,56 @@ mod tests {
         let raw = serde_yaml::to_string(&list).unwrap();
         assert!(raw.contains("C:/Users/alice"));
         assert!(raw.contains("steamuser"));
+    }
+
+    // ── customGames (non-manifest games) ───────────────────────────────────
+
+    #[test]
+    fn custom_games_value_files_only_omits_registry() {
+        let defs = [CustomGameDef {
+            name: "My Game".into(),
+            files: vec!["<winLocalAppData>/MyGame".into()],
+            registry: vec![],
+            extend: false,
+        }];
+        let yaml = serde_yaml::to_string(&custom_games_value(&defs)).unwrap();
+        assert!(yaml.contains("name: My Game"), "got: {yaml}");
+        assert!(yaml.contains("<winLocalAppData>/MyGame"), "got: {yaml}");
+        // Empty registry is omitted to keep the entry minimal.
+        assert!(!yaml.contains("registry"), "got: {yaml}");
+        // Non-manifest game → default override (no integration key written).
+        assert!(!yaml.contains("integration"), "got: {yaml}");
+    }
+
+    #[test]
+    fn custom_games_value_includes_registry_when_present() {
+        let defs = [CustomGameDef {
+            name: "G".into(),
+            files: vec!["<base>/Saves".into()],
+            registry: vec!["HKEY_CURRENT_USER/Software/G".into()],
+            extend: false,
+        }];
+        let yaml = serde_yaml::to_string(&custom_games_value(&defs)).unwrap();
+        assert!(yaml.contains("registry"), "got: {yaml}");
+        assert!(yaml.contains("HKEY_CURRENT_USER/Software/G"), "got: {yaml}");
+    }
+
+    #[test]
+    fn custom_games_value_writes_extend_integration() {
+        // A manifest-covered game supplements (not replaces) the manifest's saves.
+        let defs = [CustomGameDef {
+            name: "Hades".into(),
+            files: vec!["<winDocuments>/Saved Games/Hades".into()],
+            registry: vec![],
+            extend: true,
+        }];
+        let yaml = serde_yaml::to_string(&custom_games_value(&defs)).unwrap();
+        assert!(yaml.contains("integration: extend"), "got: {yaml}");
+    }
+
+    #[test]
+    fn custom_games_value_empty_is_empty_sequence() {
+        assert_eq!(custom_games_value(&[]), Value::Sequence(vec![]));
     }
 
     // ── Phase 4: apply_cloud (provider → ludusavi cloud.remote schema) ──────

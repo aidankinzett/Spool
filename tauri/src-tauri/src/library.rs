@@ -29,6 +29,24 @@ use std::sync::Arc;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, State};
 
+/// A user-defined save location for a game ludusavi's manifest doesn't cover
+/// (or covers wrongly). Projected into a ludusavi `customGames` entry by
+/// [`crate::custom_saves`] so backup/restore treat it like any manifest game.
+///
+/// `files` hold ludusavi path templates — placeholder tokens like
+/// `<winLocalAppData>/MyGame` (portable: they resolve to `%LOCALAPPDATA%` on
+/// Windows and into the Proton prefix's `drive_c` under Wine), or `<base>/Saves`
+/// (relative to the game's install folder), or a literal absolute path. The same
+/// portable definition is replicated to every device via the rclone control
+/// plane so the user only picks the folder once. `registry` holds Windows
+/// registry keys (rarely used; inert under Proton).
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(default)]
+pub struct CustomSave {
+    pub files: Vec<String>,
+    pub registry: Vec<String>,
+}
+
 /// One game in the library. Matches the C# `GameEntry` JSON shape exactly
 /// for the legacy fields, plus a small set of manifest-derived metadata
 /// new to the Tauri rewrite (steam id, gog id, save paths, …).
@@ -110,6 +128,15 @@ pub struct GameEntry {
     /// Save path templates from the manifest, in display form (e.g.
     /// `%APPDATA%/Hades`). First entry is the canonical / primary location.
     pub save_paths: Vec<String>,
+
+    /// User-defined save location for a non-manifest game (or a manual override
+    /// of a wrong manifest entry). `None` = track via the manifest as usual /
+    /// not tracked. When set, [`crate::custom_saves`] writes a ludusavi
+    /// `customGames` entry so the run workflow backs up and restores it like any
+    /// other game. Written out-of-band by the Saves editor and the cross-device
+    /// adopt fold, so it's listed in [`RUNTIME_FIELDS`] and survives a
+    /// whole-entry editor save.
+    pub custom_save: Option<CustomSave>,
     /// Dominant cover-art colour as `#rrggbb`, extracted when the cover
     /// downloads. Drives hero / button / accent tinting in the detail
     /// view; falls back to the brand `spool` colour when None.
@@ -189,6 +216,7 @@ impl Default for GameEntry {
             lutris_slug: None,
             manifest_install_dir: None,
             save_paths: Vec::new(),
+            custom_save: None,
             accent_color: None,
             sync_badge: None,
             cloud_sync_baseline: None,
@@ -240,6 +268,11 @@ pub struct NewGame {
     /// with the same Proton version the prefix was created with.
     #[serde(default)]
     pub proton_version_path: Option<String>,
+    /// Optional custom save location set at add-time (e.g. adopted from a
+    /// cross-device definition for the same game name). `None` for the normal
+    /// "identify via manifest" / "without save tracking" paths.
+    #[serde(default)]
+    pub custom_save: Option<CustomSave>,
 }
 
 /// JSON paths (under `$.`) of the fields that are owned by the running
@@ -266,7 +299,16 @@ const RUNTIME_FIELDS: &[&str] = &[
     "install_size_mb",
     "cover_image_path",
     "hero_image_path",
+    // Written out-of-band by the Saves editor / cross-device adopt fold, not the
+    // whole-entry editor save, so the editor's `replace` must re-overlay it.
+    "custom_save",
 ];
+
+/// Returns `items` with duplicates removed, preserving first-seen order.
+fn dedup_preserve_order(items: &[String]) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    items.iter().filter(|s| seen.insert((*s).clone())).cloned().collect()
+}
 
 /// The game library, backed by a SQLite connection pool. Cheap to clone the
 /// pool (it's an `Arc` internally); the whole `Library` is wrapped in an
@@ -577,6 +619,51 @@ impl Library {
             .await
     }
 
+    /// Sets (or clears, with `None`) a game's custom save location. Written
+    /// atomically via `json_set` so it doesn't race a concurrent editor save or
+    /// playtime bump — and `custom_save` is in [`RUNTIME_FIELDS`], so a later
+    /// whole-entry `replace` re-overlays this value rather than clobbering it.
+    pub async fn set_custom_save(
+        &self,
+        id: &str,
+        custom: Option<&CustomSave>,
+    ) -> AppResult<bool> {
+        // Dedup files/registry (first-seen order) so a malformed or hand-edited
+        // cross-device definition with repeated paths can't reach the editor's
+        // keyed `{#each}` and crash it. This is the single chokepoint every
+        // write path (editor command + cross-device adopt) flows through.
+        let deduped = custom.map(|cs| CustomSave {
+            files: dedup_preserve_order(&cs.files),
+            registry: dedup_preserve_order(&cs.registry),
+        });
+        let value = serde_json::to_value(deduped.as_ref())?;
+        self.update_fields(id, &[("custom_save", value)]).await
+    }
+
+    /// Sets the custom save only when the entry doesn't already have one. Used by
+    /// the cross-device adopt path so it can't clobber a custom save the user set
+    /// during the (network) fetch — the check-and-write is one atomic conditional
+    /// UPDATE rather than a find()-then-set() race. Returns whether a row was set.
+    pub async fn set_custom_save_if_absent(
+        &self,
+        id: &str,
+        custom: &CustomSave,
+    ) -> AppResult<bool> {
+        let deduped = CustomSave {
+            files: dedup_preserve_order(&custom.files),
+            registry: dedup_preserve_order(&custom.registry),
+        };
+        let value = serde_json::to_string(&deduped)?;
+        let sql = "UPDATE games SET data = json_set(data, '$.custom_save', json(?2))
+                   WHERE id = ?1 AND json_extract(data, '$.custom_save') IS NULL";
+        let res = sqlx::query(sql)
+            .bind(id)
+            .bind(value)
+            .execute(&self.pool)
+            .await?;
+        Ok(res.rows_affected() > 0)
+    }
+
     /// Updates any of cover path / hero path / accent colour that are `Some`.
     pub async fn set_art(
         &self,
@@ -723,6 +810,7 @@ pub async fn add_game(
         lutris_slug: new_game.lutris_slug,
         manifest_install_dir: new_game.manifest_install_dir,
         save_paths: new_game.save_paths,
+        custom_save: new_game.custom_save,
         game_folder_path: new_game.game_folder_path,
         wine_prefix_path: new_game.wine_prefix_path,
         proton_version_path: new_game.proton_version_path,
@@ -760,6 +848,21 @@ pub async fn add_game(
             tracing::warn!(game_id = %id_for_meta, error = %e, "metadata fetch failed");
         }
     });
+
+    // Adopt a cross-device custom-save definition for this game name, if another
+    // device published one — so a non-manifest game's save location only has to
+    // be picked once. Best-effort; no-op when added with its own custom save or
+    // when none is published. Gated on cloud being configured so the common
+    // no-cloud add doesn't spawn a task with no remote to read.
+    if crate::ludusavi_config::cloud_remote_is_configured() {
+        let app_for_adopt = app.clone();
+        let id_for_adopt = entry.id.clone();
+        let name_for_adopt = entry.game_name.clone();
+        tauri::async_runtime::spawn(async move {
+            crate::custom_saves::adopt_for_new_game(&app_for_adopt, &id_for_adopt, &name_for_adopt)
+                .await;
+        });
+    }
 
     Ok(entry)
 }
@@ -1086,5 +1189,56 @@ mod tests {
         assert!(!lib.set_install_size_if_empty("a", 999.0).await.unwrap());
         let e = lib.find("a").await.unwrap().unwrap();
         assert_eq!(e.install_size_mb, 500.0);
+    }
+
+    #[tokio::test]
+    async fn custom_save_dedups_and_survives_editor_save() {
+        let lib = Library::open_in_memory().await.unwrap();
+        lib.insert(sample("a", "Hades")).await.unwrap();
+
+        // Duplicate paths are deduped on write so the UI's keyed list can't crash.
+        let cs = CustomSave {
+            files: vec![
+                "<winLocalAppData>/Hades".into(),
+                "<winLocalAppData>/Hades".into(),
+                "<home>/Saved Games/Hades".into(),
+            ],
+            registry: vec![],
+        };
+        assert!(lib.set_custom_save("a", Some(&cs)).await.unwrap());
+        let e = lib.find("a").await.unwrap().unwrap();
+        assert_eq!(
+            e.custom_save.unwrap().files,
+            vec![
+                "<winLocalAppData>/Hades".to_string(),
+                "<home>/Saved Games/Hades".to_string(),
+            ]
+        );
+
+        // custom_save is a runtime field — a whole-entry editor save re-overlays it.
+        assert!(lib.replace(&sample("a", "Hades Renamed")).await.unwrap());
+        let e = lib.find("a").await.unwrap().unwrap();
+        assert_eq!(e.game_name, "Hades Renamed");
+        assert!(e.custom_save.is_some(), "custom_save preserved across editor save");
+    }
+
+    #[tokio::test]
+    async fn set_custom_save_if_absent_is_conditional() {
+        let lib = Library::open_in_memory().await.unwrap();
+        lib.insert(sample("a", "Hades")).await.unwrap();
+        let a = CustomSave { files: vec!["<winLocalAppData>/A".into()], registry: vec![] };
+        let b = CustomSave { files: vec!["<winLocalAppData>/B".into()], registry: vec![] };
+
+        // First adopt wins; a later/racing adopt can't clobber it.
+        assert!(lib.set_custom_save_if_absent("a", &a).await.unwrap());
+        assert!(!lib.set_custom_save_if_absent("a", &b).await.unwrap());
+        let e = lib.find("a").await.unwrap().unwrap();
+        assert_eq!(e.custom_save.unwrap().files, vec!["<winLocalAppData>/A".to_string()]);
+
+        // Once cleared, it's "absent" again and can be set.
+        assert!(lib.set_custom_save("a", None).await.unwrap());
+        assert!(lib.set_custom_save_if_absent("a", &b).await.unwrap());
+        let e = lib.find("a").await.unwrap().unwrap();
+        assert_eq!(e.custom_save.unwrap().files, vec!["<winLocalAppData>/B".to_string()]);
     }
 }

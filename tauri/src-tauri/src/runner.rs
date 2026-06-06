@@ -234,16 +234,8 @@ pub async fn backup_game_core(
             entry.wine_prefix_path.clone(),
         )
     };
-    let wine_prefix: Option<PathBuf> = if uses_proton {
-        Some(
-            prefix_override
-                .filter(|p| !p.trim().is_empty())
-                .map(PathBuf::from)
-                .unwrap_or_else(|| crate::proton::game_prefix_path(game_id)),
-        )
-    } else {
-        None
-    };
+    let wine_prefix =
+        crate::proton::resolve_prefix_root(uses_proton, prefix_override.as_deref(), game_id);
 
     // Serialise the ludusavi backup + cloud sync against any other Spool
     // process on this machine (an attached `--run` workflow, the Decky
@@ -529,18 +521,11 @@ pub async fn pull_cloud_saves_core(
             .find(game_id)
             .await?
             .ok_or_else(|| AppError::Other(format!("game not found: {game_id}")))?;
-        let wine_prefix: Option<PathBuf> = if entry.uses_proton() {
-            Some(
-                entry
-                    .wine_prefix_path
-                    .clone()
-                    .filter(|p| !p.trim().is_empty())
-                    .map(PathBuf::from)
-                    .unwrap_or_else(|| crate::proton::game_prefix_path(game_id)),
-            )
-        } else {
-            None
-        };
+        let wine_prefix = crate::proton::resolve_prefix_root(
+            entry.uses_proton(),
+            entry.wine_prefix_path.as_deref(),
+            game_id,
+        );
         let game_folder = entry.game_folder_path.as_ref().map(PathBuf::from);
         (entry.game_name.clone(), wine_prefix, game_folder)
     };
@@ -725,16 +710,8 @@ pub async fn restore_save_revision_core(
             entry.game_folder_path.clone().map(PathBuf::from),
         )
     };
-    let wine_prefix = if uses_proton {
-        Some(
-            prefix_override
-                .filter(|p| !p.trim().is_empty())
-                .map(PathBuf::from)
-                .unwrap_or_else(|| crate::proton::game_prefix_path(game_id)),
-        )
-    } else {
-        None
-    };
+    let wine_prefix =
+        crate::proton::resolve_prefix_root(uses_proton, prefix_override.as_deref(), game_id);
 
     // ── Step 1: restore the chosen revision into the live save location ───
     let out = restore_with_redirects(
@@ -1402,16 +1379,8 @@ async fn manual_prep(
         AppError::Other("Ludusavi sidecar not found — reinstall Spool.".into())
     })?;
     let config_dir = crate::paths::ludusavi_config_dir();
-    let wine_prefix = if uses_proton {
-        Some(
-            prefix_override
-                .filter(|p| !p.trim().is_empty())
-                .map(PathBuf::from)
-                .unwrap_or_else(|| crate::proton::game_prefix_path(game_id)),
-        )
-    } else {
-        None
-    };
+    let wine_prefix =
+        crate::proton::resolve_prefix_root(uses_proton, prefix_override.as_deref(), game_id);
     Ok((game_name, ludusavi_exe, config_dir, wine_prefix))
 }
 
@@ -1813,6 +1782,13 @@ async fn preflight(ctx: &WorkflowCtx<'_>, exe_pathbuf: &Path, steal_lock: bool) 
             )));
         }
     }
+
+    // Refresh ludusavi's `customGames` block from the library before any restore
+    // so a non-manifest game with a custom save location is *recognised* (else
+    // ludusavi lists it under `unknownGames` and the workflow skips its backup).
+    // Covers a definition just adopted from another device, or set this session.
+    let library = ctx.app.state::<SharedLibrary>().inner().clone();
+    crate::custom_saves::sync_best_effort(&library).await;
 
     match rclone::claim_session(ctx.app, ctx.game_name, steal_lock).await {
         SessionClass::Free => {}

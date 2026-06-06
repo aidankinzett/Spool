@@ -391,6 +391,13 @@
                 Try the search above with a shorter name. If ludusavi still doesn't know this game,
                 you can add it without save tracking — Spool will launch it but won't back up saves.
               </p>
+              <p class="m-0 mt-2 max-w-[460px] text-[11.5px] leading-relaxed text-ink-3">
+                You can still track its saves later: add it, play once so the game
+                creates a save, then open its
+                <span class="text-ink-1">Edit&nbsp;→&nbsp;Saves</span> tab to point
+                Spool at the save folder. From then on it backs up and syncs like
+                any other game.
+              </p>
             </div>
             <a
               href="https://github.com/mtkennerly/ludusavi/issues"

@@ -350,6 +350,11 @@
               <p class="m-0 max-w-[420px] text-[12.5px] leading-relaxed text-ink-2">
                 You can still add it without save tracking — Spool will launch it but won't back up saves.
               </p>
+              <p class="m-0 max-w-[420px] text-[11.5px] leading-relaxed text-ink-3">
+                To track its saves later, play once so the game creates a save, then
+                open its <span class="text-ink-1">Edit&nbsp;→&nbsp;Saves</span> tab to
+                point Spool at the save folder.
+              </p>
             </div>
           {:else if candidates.length > 0}
             <div class="mb-2 mt-1 px-0.5">
