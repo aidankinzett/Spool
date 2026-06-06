@@ -1812,6 +1812,52 @@ async fn preflight(ctx: &WorkflowCtx<'_>, exe_pathbuf: &Path, steal_lock: bool) 
 /// releases our marker so peers aren't blocked by a session that never started.
 async fn phase_restore(ctx: &WorkflowCtx<'_>) -> AppResult<bool> {
     let restore_phase: AppResult<bool> = async {
+        // Coordinate with any backup in flight on this machine before touching
+        // saves. Restore runs `ludusavi restore --cloud-sync`, which reads the
+        // same backup tree + cloud remote a concurrent backup is writing —
+        // racing them risks a stale restore or a spurious cloud conflict. The
+        // usual culprit is the Decky forced-close `--backup` fallback firing as
+        // the user immediately launches the next game: pause the splash and wait
+        // for that backup to finish first. The lock is held across the restore
+        // so a new backup can't start mid-restore, then dropped before launch so
+        // the in-session Decky fallback isn't blocked. If the holder doesn't
+        // finish within the timeout (or the lock file can't be opened) we proceed
+        // without it rather than block the launch — restore reads the backup
+        // store, so a stale read is possible, but the live save is on disk and
+        // the post-session backup reconciles.
+        let _backup_lock: Option<crate::proc_lock::FileLock> =
+            match crate::proc_lock::try_acquire_backup() {
+                Ok(Some(guard)) => Some(guard),
+                Ok(None) => {
+                    emit_phase(
+                        ctx.app,
+                        ctx.game_id,
+                        "restoring",
+                        Some("Waiting for a backup to finish…"),
+                        ctx.cloud_configured,
+                        None,
+                        false,
+                    );
+                    os_toast_if_hidden(
+                        ctx.app,
+                        "Waiting for backup",
+                        &format!("{} — finishing a backup before launch", ctx.game_name),
+                    );
+                    match crate::proc_lock::acquire_backup(std::time::Duration::from_secs(180)).await
+                    {
+                        Ok(guard) => Some(guard),
+                        Err(e) => {
+                            tracing::warn!(game_name = ctx.game_name, error = %e, "restore: timed out waiting for backup lock, proceeding without it");
+                            None
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(game_name = ctx.game_name, error = %e, "restore: backup lock unavailable, proceeding without it");
+                    None
+                }
+            };
+
         let restore_msg = if ctx.cloud_configured {
             "Syncing + restoring saves…"
         } else {
