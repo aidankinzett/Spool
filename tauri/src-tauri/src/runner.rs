@@ -2325,10 +2325,23 @@ async fn phase_backup(ctx: &WorkflowCtx<'_>, no_saves: bool, timing: &SessionTim
 /// `done` phase carries a warning so the frontend shows a sticky toast instead
 /// of a clean "synced".
 fn finish(ctx: &WorkflowCtx<'_>, no_saves: bool, cloud_upload_failed: bool, session_minutes: i32) {
-    // Game Mode: flag the active-session record so the Decky plugin's
-    // forced-close fallback knows this session already backed up. No-op
-    // when there's no record (desktop / Windows launches).
-    crate::session::mark_backed_up();
+    // Game Mode: reconcile the active-session record for THIS game. On full
+    // success (saves reached the cloud, or no cloud configured) the record has
+    // done its job — clear it so a later "Back up now" / game-stop can't act on a
+    // stale, already-synced session (#280). When the cloud upload failed, keep
+    // the record but flag the local backup done so the Decky forced-close
+    // fallback is skipped while peers/next-launch reconcile. Both are guarded on
+    // the record's own session id (and game name) so a newer session that started
+    // since this one can't be clobbered (#273). No-op off Game Mode (no record).
+    if let Some(rec) = crate::session::read() {
+        if rec.game == ctx.game_name {
+            if cloud_upload_failed {
+                crate::session::mark_backed_up_if(&rec.session_id);
+            } else {
+                crate::session::clear_if(&rec.session_id);
+            }
+        }
+    }
 
     // Final completion ping — the most useful native toast since the
     // user may have closed the game and walked away from the PC.

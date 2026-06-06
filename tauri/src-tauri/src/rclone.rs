@@ -859,12 +859,27 @@ pub struct DeviceBlob {
 }
 
 /// Read-modify-write of THIS device's blob. Cats the current file (default if
-/// absent), applies `f`, rcats it back. Conflict-free since only this device
-/// writes this file.
+/// absent), applies `f`, rcats it back.
+///
+/// Each device writes only its own file, but `device_id` is per *installation*,
+/// not per *process* — the tray GUI, a headless `spool --backup`, and the Decky
+/// `--headless-server` all share it and so target the same file. `playtime` is a
+/// `+=` accumulator, so two interleaved cat->rcat cycles would lose an update and
+/// permanently undercount cross-device playtime (the `last_played`/`backups` maps
+/// are last-writer-wins, so a lost update there is benign — and unlike the
+/// history blob, which self-heals by re-projecting the local table, this
+/// accumulator has no recovery path). A dedicated short-lived control-plane lock
+/// serialises the brief write across processes; it is *not* the backup lock,
+/// which is held across whole backups and which the soft-deferred-backup path
+/// can't acquire. On the rare lock timeout we proceed best-effort rather than
+/// drop the record entirely. See issue #282.
 async fn update_device_blob<F>(remote: &RcloneRemote, device_id: &str, f: F)
 where
     F: FnOnce(&mut DeviceBlob),
 {
+    let _lock = crate::proc_lock::acquire_control_plane(Duration::from_secs(15))
+        .await
+        .ok();
     let target = remote.device_target(device_id);
     let mut blob: DeviceBlob = cat(&remote.exe, &target)
         .await

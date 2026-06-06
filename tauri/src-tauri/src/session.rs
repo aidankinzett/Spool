@@ -49,15 +49,6 @@ fn read_at(path: &Path) -> Option<ActiveSession> {
     serde_json::from_slice(&bytes).ok()
 }
 
-fn mark_backed_up_at(path: &Path) {
-    if let Some(mut rec) = read_at(path) {
-        rec.backed_up = true;
-        if let Ok(bytes) = serde_json::to_vec_pretty(&rec) {
-            let _ = std::fs::write(path, bytes);
-        }
-    }
-}
-
 /// Write the session record for a launch starting now.
 pub fn write_start(game: &str, steam_appid: u32) -> AppResult<String> {
     write_start_at(&crate::paths::active_session_file(), game, steam_appid, Utc::now())
@@ -69,14 +60,10 @@ pub fn read() -> Option<ActiveSession> {
     read_at(&crate::paths::active_session_file())
 }
 
-/// Mark the current session's backup as done. No-op when no record exists.
-pub fn mark_backed_up() {
-    mark_backed_up_at(&crate::paths::active_session_file());
-}
-
-/// Like `mark_backed_up` but only flips the flag when the on-disk
-/// `session_id` still matches `expected_id`. No-op when a newer session
-/// has started since the backup was triggered.
+/// Mark the current session's backup as done, but only when the on-disk
+/// `session_id` still matches `expected_id`. No-op when no record exists or a
+/// newer session has started since the backup was triggered (so a late-finishing
+/// backup can't flip a different session's flag).
 #[allow(dead_code)]
 pub fn mark_backed_up_if(expected_id: &str) {
     mark_backed_up_if_at(&crate::paths::active_session_file(), expected_id);
@@ -90,6 +77,25 @@ fn mark_backed_up_if_at(path: &Path, expected_id: &str) {
             if let Ok(bytes) = serde_json::to_vec_pretty(&rec) {
                 let _ = std::fs::write(path, bytes);
             }
+        }
+    }
+}
+
+/// Delete the active-session record, but only when the on-disk `session_id`
+/// still matches `expected_id`. Called once a session is fully reconciled
+/// (backed up locally AND the saves reached the cloud, or no cloud is
+/// configured) so a later read can't act on a stale, already-synced session —
+/// while the id guard makes sure a backup completing late can't wipe a *newer*
+/// session that has since started. No-op when no record exists or the id has
+/// moved on. (#280)
+pub fn clear_if(expected_id: &str) {
+    clear_if_at(&crate::paths::active_session_file(), expected_id);
+}
+
+fn clear_if_at(path: &Path, expected_id: &str) {
+    if let Some(rec) = read_at(path) {
+        if rec.session_id == expected_id {
+            let _ = std::fs::remove_file(path);
         }
     }
 }
@@ -114,7 +120,11 @@ mod tests {
         assert_eq!(rec.game, "Hades");
         assert!(!rec.backed_up);
 
-        mark_backed_up_at(&path);
+        // A non-matching id must not flip the flag…
+        mark_backed_up_if_at(&path, "not-this-session");
+        assert!(!read_at(&path).unwrap().backed_up);
+        // …the matching id does.
+        mark_backed_up_if_at(&path, &id);
         assert!(read_at(&path).unwrap().backed_up);
 
         std::fs::remove_dir_all(&dir).ok();
@@ -124,8 +134,28 @@ mod tests {
     fn mark_when_absent_is_noop() {
         let path = std::env::temp_dir().join("spool-session-absent-xyz.json");
         std::fs::remove_file(&path).ok();
-        mark_backed_up_at(&path); // must not panic
+        mark_backed_up_if_at(&path, "anything"); // must not panic
         assert!(read_at(&path).is_none());
+    }
+
+    #[test]
+    fn clear_if_matches_id_then_removes() {
+        let dir = std::env::temp_dir().join(format!("spool-session-clear-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("active-session.json");
+        let now = Utc::now();
+
+        let id = write_start_at(&path, "Hades", 0x8000_0001, now).unwrap();
+        // A stale (different) id must NOT remove a newer session's record.
+        clear_if_at(&path, "some-other-session-id");
+        assert!(read_at(&path).is_some(), "mismatched id must be a no-op");
+        // The matching id removes it.
+        clear_if_at(&path, &id);
+        assert!(read_at(&path).is_none(), "matching id removes the record");
+        // Idempotent when already gone.
+        clear_if_at(&path, &id); // must not panic
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
