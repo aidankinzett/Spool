@@ -31,6 +31,9 @@ export type Toast = {
   cta?: { label: string; onClick: () => void };
   /** Milliseconds before auto-dismiss. 0 (default for warn/bad) = sticky. */
   duration?: number;
+  /** Optional determinate progress bar, 0–1. Undefined = no bar. A value
+   *  outside that range is clamped when rendered. Set/updated via `update()`. */
+  progress?: number;
   /** Wall-clock ms set internally by `show()`. Used by the relative-time
    *  chip on the right of the toast header ("now" / "12s" / "4m"). */
   createdAt?: number;
@@ -68,6 +71,17 @@ class ToastStore {
       setTimeout(() => this.dismiss(id), duration);
     }
     return id;
+  }
+
+  /**
+   * Patches fields of an existing toast in place (e.g. to advance a
+   * progress bar or swap the title/sub). No-op if the id is gone —
+   * the user may have dismissed it. Mutates the array element so
+   * Svelte's deep reactivity picks up the change.
+   */
+  update(id: string, patch: Partial<Omit<Toast, 'id' | 'createdAt'>>) {
+    const t = this.items.find((t) => t.id === id);
+    if (t) Object.assign(t, patch);
   }
 
   dismiss(id: string) {
