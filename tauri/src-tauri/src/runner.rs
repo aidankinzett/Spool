@@ -245,6 +245,15 @@ pub async fn backup_game_core(
         None
     };
 
+    // Serialise the ludusavi backup + cloud sync against any other Spool
+    // process on this machine (an attached `--run` workflow, the Decky
+    // `--backup` fallback). Taken before any ludusavi/rclone work: if it stays
+    // contended past the timeout we fail rather than run unlocked — a
+    // concurrent write could corrupt the backup or clobber the remote, while
+    // the live save sits safe on disk, so the caller (a UI toast for the manual
+    // command, a non-zero exit for headless `--backup`) just retries.
+    let _backup_lock = crate::proc_lock::acquire_backup(std::time::Duration::from_secs(180)).await?;
+
     let out = ludusavi_client
         .backup(ludusavi_exe, config_dir, &game_name, wine_prefix.as_deref())
         .await
@@ -2097,6 +2106,37 @@ async fn phase_backup(ctx: &WorkflowCtx<'_>, no_saves: bool, timing: &SessionTim
             "Backing up saves",
             &format!("{} — session ended", ctx.game_name),
         );
+
+        // Take the machine-wide backup lock before touching ludusavi or the
+        // remote, and hold it across the local backup + cloud upload so the
+        // pair is atomic versus another Spool process (e.g. the Decky
+        // forced-close `--backup` fallback racing this same session). If it
+        // stays contended past the timeout, defer rather than run unlocked: a
+        // concurrent ludusavi/rclone write could corrupt the backup or clobber
+        // the remote. Nothing's been written yet, the live save is safe on
+        // disk, and the lock being held means another process is *already*
+        // backing this up — so we record playtime, flag the save unsynced
+        // (local-newer badge + leave the PendingBackup marker so peers keep
+        // warning), and let the next launch reconcile.
+        let _backup_lock =
+            match crate::proc_lock::acquire_backup(std::time::Duration::from_secs(180)).await {
+                Ok(guard) => guard,
+                Err(e) => {
+                    tracing::warn!(game_id = %ctx.game_id, error = %e, "post-session backup deferred — backup lock held by another process");
+                    rclone::record_session(ctx.app, ctx.game_name, session_minutes, &session_end.to_rfc3339()).await;
+                    if ctx
+                        .app
+                        .state::<SharedLibrary>()
+                        .set_sync_badge(ctx.game_id, "local-newer")
+                        .await
+                        .unwrap_or(false)
+                    {
+                        let _ = ctx.app.emit("library:changed", &ctx.game_id.to_string());
+                    }
+                    return Ok(true);
+                }
+            };
+
         // Phase 3 prelude — canonicalise save paths for Proton games. The
         // restore phase steered a foreign-origin (e.g. Windows) save into the
         // local Proton prefix; without matching backup redirects ludusavi would

@@ -45,6 +45,7 @@ mod metadata;
 mod metadata_backfill;
 mod paths;
 mod process;
+mod proc_lock;
 mod proton;
 mod rclone;
 mod redirects;
