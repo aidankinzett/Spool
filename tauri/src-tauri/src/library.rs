@@ -481,7 +481,7 @@ impl Library {
             expr = format!("json_set({expr}, '$.{f}', json_extract(data, '$.{f}'))");
         }
         let sql = format!("UPDATE games SET game_name = ?2, data = {expr} WHERE id = ?3");
-        let res = sqlx::query(&sql)
+        let res = sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(&base)
             .bind(&entry.game_name)
             .bind(&entry.id)
@@ -515,7 +515,7 @@ impl Library {
             expr = format!("json_set({expr}, '$.{path}', json(?{p}))");
         }
         let sql = format!("UPDATE games SET data = {expr} WHERE id = ?1");
-        let mut q = sqlx::query(&sql).bind(id);
+        let mut q = sqlx::query(sqlx::AssertSqlSafe(sql)).bind(id);
         for (_, v) in fields {
             q = q.bind(serde_json::to_string(v)?);
         }
