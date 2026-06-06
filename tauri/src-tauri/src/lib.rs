@@ -146,6 +146,7 @@ pub fn run() {
     // worker guard is bound to the function frame so background log
     // writes flush before the process exits.
     let _log_guard = init_tracing();
+    install_panic_hook();
     tracing::info!("spool starting up");
 
     // Headless subcommands — no GUI, no tray, no single-instance. Parse once
@@ -464,6 +465,33 @@ fn init_tracing() -> tracing_appender::non_blocking::WorkerGuard {
         .init();
 
     guard
+}
+
+/// Routes panics through `tracing` so they land in `debug.log` with a
+/// backtrace, then chains to the previous hook. Rust's default panic
+/// handler writes to stderr, which is invisible in a windowed/tray app with
+/// no console — and a panic in a spawned task whose `JoinHandle` is dropped
+/// is swallowed entirely. That combination once hid an axum router-build
+/// panic that silently killed LAN discovery. The backtrace is force-captured
+/// so it's present regardless of `RUST_BACKTRACE`, paid only on an actual
+/// panic.
+fn install_panic_hook() {
+    let default = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let location = info
+            .location()
+            .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+            .unwrap_or_else(|| "unknown".into());
+        let message = info
+            .payload()
+            .downcast_ref::<&str>()
+            .map(|s| (*s).to_string())
+            .or_else(|| info.payload().downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "<non-string panic payload>".into());
+        let backtrace = std::backtrace::Backtrace::force_capture();
+        tracing::error!(%location, %message, "panic\n{backtrace}");
+        default(info);
+    }));
 }
 
 /// Dispatches a forwarded secondary-launch's argv. Either focuses the

@@ -52,7 +52,9 @@ export type ConfigData = {
   /**
    * Number of full save revisions ludusavi keeps per game
    * (`backup.retention.full`). More = more rollback points, more disk +
-   * cloud upload. Clamped to 1–10 by the backend. Default 3.
+   * cloud upload. Clamped to 3–10 by the backend. Default 5. (Floor is 3, not
+   * 1: at full=1 ludusavi overwrites a single in-place backup, risking a
+   * truncated-only-copy on a mid-backup kill.)
    */
   save_retention_full: number;
 };

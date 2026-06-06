@@ -73,8 +73,12 @@ pub struct ConfigData {
     /// Number of full save revisions ludusavi retains per game (the
     /// `backup.retention.full` knob). More revisions = more rollback points,
     /// at the cost of more disk + cloud upload per game. Differentials stay at
-    /// 0 (see `ludusavi_config::ensure_config`). Default 3; clamped to 1–10
-    /// when applied.
+    /// 0 (see `ludusavi_config::ensure_config`). Default 5; clamped to 3–10
+    /// when applied. The floor is 3, not 1: with `full == 1` ludusavi reuses a
+    /// single in-place backup and overwrites the save files directly, so a
+    /// force-kill (Steam Game Mode) mid-backup can truncate the only copy. From
+    /// 2+ each run writes a fresh generation, leaving the prior good backup
+    /// intact as a safety net — saves are small, so the disk cost is trivial.
     pub save_retention_full: u32,
 
     /// Cloud-save / rclone settings (flattened to the flat `cloud_*` JSON keys).
@@ -102,7 +106,7 @@ impl Default for ConfigData {
             tray_intro_seen: false,
             onboarding_completed: false,
             decky_update_notified_version: String::new(),
-            save_retention_full: 3,
+            save_retention_full: 5,
             cloud: CloudConfig::default(),
             lan: LanConfig::default(),
             launch: LaunchConfig::default(),
@@ -248,6 +252,7 @@ impl Config {
         changed |= stamp_current_exe(&mut data);
         changed |= migrate_cloud_base_path(&mut data);
         changed |= migrate_onboarding_completed(raw_json.as_deref(), &mut data);
+        changed |= migrate_retention_floor(&mut data);
 
         let cfg = Self { data };
         if changed {
@@ -413,6 +418,25 @@ fn migrate_onboarding_completed(raw_json: Option<&str>, data: &mut ConfigData) -
 /// equal to this as re-derivable, so a later successful lookup can replace it.
 const DEFAULT_DEVICE_NAME: &str = "Spool device";
 
+/// Raise an existing config's `save_retention_full` to the current floor of 3.
+/// Pre-existing configs (and the old default) could be 1 or 2; `full == 1` made
+/// ludusavi overwrite the single in-place backup, so a force-kill mid-backup
+/// could truncate the only copy. Bumping to 3 guarantees a prior good
+/// generation survives. Also clamps a stray high value to the 10 ceiling.
+fn migrate_retention_floor(data: &mut ConfigData) -> bool {
+    let clamped = data.save_retention_full.clamp(3, 10);
+    if clamped != data.save_retention_full {
+        tracing::info!(
+            from = data.save_retention_full,
+            to = clamped,
+            "raised save retention to the safe floor"
+        );
+        data.save_retention_full = clamped;
+        return true;
+    }
+    false
+}
+
 fn hostname() -> String {
     // The OS hostname via gethostname(2) (GetComputerNameExW on Windows) is the
     // authoritative source on both platforms. The env vars are only a fallback:
@@ -518,7 +542,7 @@ mod tests {
         assert_eq!(data.cloud.rclone_args, "--fast-list --ignore-checksum");
         assert!(data.lan.share_enabled);
         assert_eq!(data.lan.download_max_mbps, 0.0);
-        assert_eq!(data.save_retention_full, 3);
+        assert_eq!(data.save_retention_full, 5);
     }
 
     /// The grouping is internal: the serialized JSON stays flat (the historical
@@ -568,6 +592,27 @@ mod tests {
         let mut data: ConfigData = serde_json::from_str(json).unwrap();
         assert!(!migrate_onboarding_completed(Some(json), &mut data));
         assert!(!data.onboarding_completed);
+    }
+
+    #[test]
+    fn retention_floor_migrates_unsafe_low_values() {
+        // Pre-existing configs at 1 or 2 (incl. the old in-place `full == 1`
+        // mode) get raised to the safe floor of 3 on load.
+        for low in [0u32, 1, 2] {
+            let mut data = ConfigData { save_retention_full: low, ..Default::default() };
+            assert!(migrate_retention_floor(&mut data), "{low} should migrate");
+            assert_eq!(data.save_retention_full, 3);
+        }
+        // A stray high value is pulled down to the ceiling.
+        let mut high = ConfigData { save_retention_full: 50, ..Default::default() };
+        assert!(migrate_retention_floor(&mut high));
+        assert_eq!(high.save_retention_full, 10);
+        // Values already in range (including the default 5) are left alone.
+        for ok in [3u32, 5, 10] {
+            let mut data = ConfigData { save_retention_full: ok, ..Default::default() };
+            assert!(!migrate_retention_floor(&mut data), "{ok} should not migrate");
+            assert_eq!(data.save_retention_full, ok);
+        }
     }
 
     #[test]

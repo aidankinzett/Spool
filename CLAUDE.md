@@ -34,7 +34,18 @@ bun run tauri build
 cd tauri/src-tauri
 cargo check
 cargo clippy --all-targets -- -D warnings  # CI fails on any warning
-cargo test
+cargo test --all   # all workspace crates, like CI; run on Linux/WSL — see note below
+
+# NOTE: `cargo test` does not run on Windows. The lib test exe gets no
+# application manifest, so it loads comctl32 v5 (no `TaskDialogIndirect`,
+# which rfd — via tauri-plugin-dialog — statically imports since the
+# windows-sys 0.61 bump) and dies at launch with STATUS_ENTRYPOINT_NOT_FOUND
+# (0xC0000139) before any test runs. There's no clean build-time fix:
+# embedding a Common-Controls v6 manifest would have to be unscoped, which
+# collides with Tauri's own manifest on spool.exe (CVT1100 duplicate
+# resource) and breaks the release link. The shipped app is fine (Tauri
+# embeds its manifest) and CI runs `cargo test --all` on Linux. Run the Rust
+# suite under WSL/Linux locally. Windows CI only does clippy + build.
 
 # Frontend-only checks
 cd tauri
@@ -81,7 +92,8 @@ Persistence:
 External integrations:
 * **`ludusavi.rs`** — subprocess invocation of the bundled ludusavi CLI. Owns the ~9 MB manifest cache (lazy-loaded into `Arc<HashMap>`), the search/find/enrich flow, and restore/backup invoked by the run workflow.
 * **`ludusavi_config.rs`** — Spool owns ludusavi's `config.yaml` (under Spool's app-data dir) so it controls the backup/restore paths, the cloud remote, retention, and per-restore redirects. Enforces invariants atomically (tmp → rename + `.bak`): `manifest.enable`, matching `backup.path`/`restore.path` (required for cloud sync), `backup.format.chosen: simple`, retention `full: 3`/`differential: 0`, and a `cloud:` block. Wires up rclone for the cloud providers exposed in Settings (Dropbox, Google Drive, OneDrive, Box, FTP, SMB, WebDAV, or a custom remote) and injects rclone connection/retry timeouts so an unreachable remote fails in seconds rather than blocking a Game-Mode boot.
-* **`steamgriddb.rs`** — HTTP client for SteamGridDB. Prefers Steam ID lookup (near-100% accurate) and falls back to name autocomplete. Downloads portrait covers to `%LOCALAPPDATA%\Spool\covers\` and extracts a vibrant accent colour from the image.
+* **`steam_cdn.rs`** — official Steam library artwork via the public Steam CDN (`cdn.cloudflare.steamstatic.com/steam/apps/<appid>/…`). Given a `steam_id`, builds canonical URLs for the portrait capsule (`library_600x900_2x.jpg`), hero, wide grid (`header.jpg`), and logo, and downloads them by appid alone — no API key. The art-fetch path tries these *first* and only falls back to SteamGridDB for assets the CDN doesn't return (the icon has no predictable CDN URL, so it's SteamGridDB-only).
+* **`steamgriddb.rs`** — HTTP client for SteamGridDB, the fallback art source behind `steam_cdn.rs`. The shared fetch flow (`fetch_and_save_cover`/`fetch_and_save_hero`, also exposed as the `fetch_cover`/`fetch_hero` commands the editor's "Refetch artwork" button calls) prefers the official Steam CDN when a `steam_id` is known, then resolves a SteamGridDB id (Steam ID lookup first, near-100% accurate; name autocomplete fallback) for whatever's still missing. Downloads portrait covers to `%LOCALAPPDATA%\Spool\covers\` and extracts a vibrant accent colour from the image.
 * **`metadata.rs`** — Steam Store metadata enrichment (description, developer, publisher, genres, release date) via the public `appdetails` endpoint, keyed by the `steam_id` ludusavi resolves at add-time. No API key needed. The fields map onto the corresponding `GameEntry` fields rendered by `GameDetail.svelte`, and only blanks are filled — a manual edit is never clobbered. The endpoint is rate-limited (~200 req / 5 min), so the add-game path fires a single best-effort request and the bulk work is throttled in `metadata_backfill.rs`.
 * **`steam.rs`** — non-Steam shortcut creation. Writes to `<steam>/userdata/<uid>/config/shortcuts.vdf` via `steam_shortcuts_util` with `--run` launch options, plus grid art placement under `grid/<appid>{suffix}.{ext}`. Uses `steamlocate` for Steam install discovery.
 * **`rclone.rs`** — rclone-backed cross-device control plane (replaces the old HTTP sync server). Stores small JSON blobs in the *same* rclone remote used for cloud saves: per-game **session markers** (`_spool/sessions/<blake3(name)>.json`) that drive the advisory "another device has an unsynced session" launch warning, and per-device blobs (`_spool/devices/<id>.json`) folded at startup for cross-device playtime / last-played / the save-backup badge. Reads markers with `rclone cat` (read-after-write consistent), writes with `rclone rcat`, and reports reachability **passively** — a single `rclone lsd` probe at startup, then the cloud status is maintained from the success/failure of the control-plane ops the app already runs (a leaf op succeeding, or returning a definite "not found", counts as Online; a connection error/timeout as Offline), reported through `init_health_sink` and emitted as `sync:status-changed`. This avoids a 24/7 poll drawing on the shared, quota-limited remote while Spool sits idle in the tray; Settings can still force a probe via `refresh_sync_status`. No accounts/auth: the remote itself is the trust boundary.
@@ -147,7 +159,7 @@ All paths below are written as `%LOCALAPPDATA%\Spool\` (Windows). The root is re
 | `config.json` | `%LOCALAPPDATA%\Spool\` | App-wide settings (binary paths, Proton, cloud-save/rclone incl. `cloud_base_path`, SteamGridDB, UI mode, LAN share, device name) |
 | `library.db` | `%LOCALAPPDATA%\Spool\` | Game library — SQLite DB (`sqlx`), one `GameEntry` per row (`data` JSON column). WAL mode for concurrent multi-process writes |
 | `library.json` | `%LOCALAPPDATA%\Spool\` | Legacy game library (pre-SQLite). Imported once into `library.db` on first run, then renamed to `library.json.migrated` |
-| `covers/` | `%LOCALAPPDATA%\Spool\` | Downloaded SteamGridDB cover images |
+| `covers/` | `%LOCALAPPDATA%\Spool\` | Downloaded cover images (Steam CDN first, SteamGridDB fallback) |
 | `launchers/` | `%LOCALAPPDATA%\Spool\` | Generated per-game `.exe` launcher stubs (Armoury Crate, Windows) |
 | `lan-games/` | `%LOCALAPPDATA%\Spool\` | Default install root for games downloaded from LAN peers (overridable via `lan_install_dir` config) |
 | ludusavi config + backup | `%LOCALAPPDATA%\Spool\` | Spool-owned ludusavi `config.yaml` and the `ludusavi-backup` dir (managed by `ludusavi_config.rs`; backup/restore paths must match for cloud sync) |

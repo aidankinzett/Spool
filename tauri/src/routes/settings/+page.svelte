@@ -226,8 +226,10 @@
 
   function onRetentionCommit() {
     if (!config) return;
-    if (!Number.isFinite(config.save_retention_full)) config.save_retention_full = 3;
-    config.save_retention_full = Math.min(10, Math.max(1, Math.round(config.save_retention_full)));
+    if (!Number.isFinite(config.save_retention_full)) config.save_retention_full = 5;
+    // Floor of 3, not 1: at full=1 ludusavi overwrites a single in-place
+    // backup, so a mid-backup kill can truncate the only copy.
+    config.save_retention_full = Math.min(10, Math.max(3, Math.round(config.save_retention_full)));
     persist();
   }
 
@@ -462,7 +464,7 @@
               <!-- Cover artwork -->
               <SettingsCard
                 title="Cover artwork"
-                helper="Cover, hero, and logo art is fetched from SteamGridDB when you add a game."
+                helper="Cover, hero, and logo art is fetched when you add a game — from Steam's official artwork first, with SteamGridDB as a fallback."
               >
                 {#snippet icon()}<Grid2x2 size={14} />{/snippet}
                 {#snippet right()}
@@ -518,12 +520,12 @@
 
                 <SettingsRow
                   label="Revisions to keep"
-                  helper="How many save backups to retain per game. More gives more rollback points at the cost of disk and cloud upload. 1–10."
+                  helper="How many save backups to retain per game. More gives more rollback points at the cost of disk and cloud upload. 3–10."
                 >
                   {#snippet control()}
                     <div style="max-width: 280px">
                       <Slider
-                        min={1}
+                        min={3}
                         max={10}
                         step={1}
                         bind:value={config!.save_retention_full}

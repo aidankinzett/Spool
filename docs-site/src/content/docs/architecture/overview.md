@@ -9,7 +9,8 @@ sidebar:
 save-management wrapper built with [Tauri 2](https://v2.tauri.app/) (Rust
 backend) and [SvelteKit 5](https://kit.svelte.dev/) (frontend).
 
-It maintains a persistent game library with cover art (via SteamGridDB), launches
+It maintains a persistent game library with cover art (Steam's official CDN, with
+SteamGridDB as a fallback), launches
 games directly — restoring saves before launch and backing them up on exit —
 and handles cloud-save sync and conflict detection via
 [ludusavi](https://github.com/mtkennerly/ludusavi) + bundled
@@ -62,7 +63,7 @@ State lives under `paths::app_data_dir()` — `%LOCALAPPDATA%\Spool\` on Windows
 | --- | --- |
 | `config.json` | App-wide settings (binary paths, Proton, cloud-save/rclone, SteamGridDB, UI mode, LAN, sync server) |
 | `library.json` | The game library — a list of `GameEntry` objects |
-| `covers/` | Downloaded SteamGridDB cover images |
+| `covers/` | Downloaded cover images (Steam CDN first, SteamGridDB fallback) |
 | `launchers/` | Generated per-game `.exe` launcher stubs (Windows) |
 | `lan-games/` | Default install root for games downloaded from LAN peers |
 | `prefixes/` | Per-game Proton/Wine prefixes (Linux) |

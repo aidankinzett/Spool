@@ -111,22 +111,13 @@ pub(super) async fn start_http_server(app: AppHandle, preferred_port: u16) -> Ap
         .map_err(|e| AppError::Other(format!("local_addr: {e}")))?
         .port();
 
-    let router = Router::new()
-        .route("/healthz", get(|| async { "ok" }))
-        .route("/games", get(get_games_handler))
-        .route("/games/:id/manifest", get(get_manifest_handler))
-        .route("/games/:id/files/*path", get(get_file_handler))
-        .route("/games/:id/cover", get(get_cover_handler))
-        .route("/games/:id/hero", get(get_hero_handler))
-        .route("/games/:id/cancel-check", get(get_cancel_check_handler));
-
     // Pull the shutdown bits off managed state before `app` moves into
     // ServerState. The Notify lives on managed state so the tray quit
     // menu (and any future "disable LAN sharing" flow) can signal
     // graceful drain.
     let notify = app.state::<LanServerShutdown>().notify.clone();
     let shutdown_app = app.clone();
-    let router = router.with_state(ServerState {
+    let router = build_router(ServerState {
         app,
         hash_cache: Arc::new(std::sync::RwLock::new(HashMap::new())),
     });
@@ -147,6 +138,29 @@ pub(super) async fn start_http_server(app: AppHandle, preferred_port: u16) -> Ap
     shutdown_app.state::<LanServerShutdown>().install(handle);
 
     Ok(port)
+}
+
+/// The route table, before state is attached. axum validates each path
+/// pattern inside `route()` and panics on a malformed one (e.g. the 0.7
+/// `:id`/`*path` syntax left behind after the 0.8 upgrade), which is what
+/// silently killed LAN discovery. Returning `Router<ServerState>` — state
+/// not yet bound — lets a test exercise this without constructing a
+/// `ServerState` (and thus without a real `AppHandle`), so CI catches a
+/// route-syntax regression at build time instead of at runtime.
+fn routes() -> Router<ServerState> {
+    Router::new()
+        .route("/healthz", get(|| async { "ok" }))
+        .route("/games", get(get_games_handler))
+        .route("/games/{id}/manifest", get(get_manifest_handler))
+        .route("/games/{id}/files/{*path}", get(get_file_handler))
+        .route("/games/{id}/cover", get(get_cover_handler))
+        .route("/games/{id}/hero", get(get_hero_handler))
+        .route("/games/{id}/cancel-check", get(get_cancel_check_handler))
+}
+
+/// Builds the LAN file-server router with its routes bound to `state`.
+fn build_router(state: ServerState) -> Router {
+    routes().with_state(state)
 }
 
 /// `GET /games` — returns the local library in `PeerGame` form. Honours
@@ -804,6 +818,16 @@ pub fn cancel_upload(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Building the route table validates every path pattern. axum panics
+    /// here on the pre-0.8 `:id`/`*path` capture syntax, so this is the guard
+    /// against a dependency bump silently breaking the LAN server's routing
+    /// the way the axum 0.7→0.8 upgrade did (no compile error, no runtime
+    /// log — the spawned discovery task just died).
+    #[test]
+    fn routes_build_with_valid_path_syntax() {
+        let _: Router<ServerState> = routes();
+    }
 
     #[test]
     fn parse_range_accepts_open_ended() {
