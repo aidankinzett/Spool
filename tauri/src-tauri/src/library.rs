@@ -29,6 +29,24 @@ use std::sync::Arc;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, State};
 
+/// A user-defined save location for a game ludusavi's manifest doesn't cover
+/// (or covers wrongly). Projected into a ludusavi `customGames` entry by
+/// [`crate::custom_saves`] so backup/restore treat it like any manifest game.
+///
+/// `files` hold ludusavi path templates — placeholder tokens like
+/// `<winLocalAppData>/MyGame` (portable: they resolve to `%LOCALAPPDATA%` on
+/// Windows and into the Proton prefix's `drive_c` under Wine), or `<base>/Saves`
+/// (relative to the game's install folder), or a literal absolute path. The same
+/// portable definition is replicated to every device via the rclone control
+/// plane so the user only picks the folder once. `registry` holds Windows
+/// registry keys (rarely used; inert under Proton).
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(default)]
+pub struct CustomSave {
+    pub files: Vec<String>,
+    pub registry: Vec<String>,
+}
+
 /// One game in the library. Matches the C# `GameEntry` JSON shape exactly
 /// for the legacy fields, plus a small set of manifest-derived metadata
 /// new to the Tauri rewrite (steam id, gog id, save paths, …).
@@ -110,6 +128,15 @@ pub struct GameEntry {
     /// Save path templates from the manifest, in display form (e.g.
     /// `%APPDATA%/Hades`). First entry is the canonical / primary location.
     pub save_paths: Vec<String>,
+
+    /// User-defined save location for a non-manifest game (or a manual override
+    /// of a wrong manifest entry). `None` = track via the manifest as usual /
+    /// not tracked. When set, [`crate::custom_saves`] writes a ludusavi
+    /// `customGames` entry so the run workflow backs up and restores it like any
+    /// other game. Written out-of-band by the Saves editor and the cross-device
+    /// adopt fold, so it's listed in [`RUNTIME_FIELDS`] and survives a
+    /// whole-entry editor save.
+    pub custom_save: Option<CustomSave>,
     /// Dominant cover-art colour as `#rrggbb`, extracted when the cover
     /// downloads. Drives hero / button / accent tinting in the detail
     /// view; falls back to the brand `spool` colour when None.
@@ -189,6 +216,7 @@ impl Default for GameEntry {
             lutris_slug: None,
             manifest_install_dir: None,
             save_paths: Vec::new(),
+            custom_save: None,
             accent_color: None,
             sync_badge: None,
             cloud_sync_baseline: None,
@@ -240,6 +268,11 @@ pub struct NewGame {
     /// with the same Proton version the prefix was created with.
     #[serde(default)]
     pub proton_version_path: Option<String>,
+    /// Optional custom save location set at add-time (e.g. adopted from a
+    /// cross-device definition for the same game name). `None` for the normal
+    /// "identify via manifest" / "without save tracking" paths.
+    #[serde(default)]
+    pub custom_save: Option<CustomSave>,
 }
 
 /// JSON paths (under `$.`) of the fields that are owned by the running
@@ -266,6 +299,9 @@ const RUNTIME_FIELDS: &[&str] = &[
     "install_size_mb",
     "cover_image_path",
     "hero_image_path",
+    // Written out-of-band by the Saves editor / cross-device adopt fold, not the
+    // whole-entry editor save, so the editor's `replace` must re-overlay it.
+    "custom_save",
 ];
 
 /// The game library, backed by a SQLite connection pool. Cheap to clone the
@@ -577,6 +613,19 @@ impl Library {
             .await
     }
 
+    /// Sets (or clears, with `None`) a game's custom save location. Written
+    /// atomically via `json_set` so it doesn't race a concurrent editor save or
+    /// playtime bump — and `custom_save` is in [`RUNTIME_FIELDS`], so a later
+    /// whole-entry `replace` re-overlays this value rather than clobbering it.
+    pub async fn set_custom_save(
+        &self,
+        id: &str,
+        custom: Option<&CustomSave>,
+    ) -> AppResult<bool> {
+        let value = serde_json::to_value(custom)?;
+        self.update_fields(id, &[("custom_save", value)]).await
+    }
+
     /// Updates any of cover path / hero path / accent colour that are `Some`.
     pub async fn set_art(
         &self,
@@ -723,6 +772,7 @@ pub async fn add_game(
         lutris_slug: new_game.lutris_slug,
         manifest_install_dir: new_game.manifest_install_dir,
         save_paths: new_game.save_paths,
+        custom_save: new_game.custom_save,
         game_folder_path: new_game.game_folder_path,
         wine_prefix_path: new_game.wine_prefix_path,
         proton_version_path: new_game.proton_version_path,
@@ -759,6 +809,17 @@ pub async fn add_game(
         if let Err(e) = crate::metadata::fetch_and_save_metadata(&app_for_meta, &id_for_meta).await {
             tracing::warn!(game_id = %id_for_meta, error = %e, "metadata fetch failed");
         }
+    });
+
+    // Adopt a cross-device custom-save definition for this game name, if another
+    // device published one — so a non-manifest game's save location only has to
+    // be picked once. Best-effort; no-op when added with its own custom save,
+    // when none is published, or when cloud isn't configured.
+    let app_for_adopt = app.clone();
+    let id_for_adopt = entry.id.clone();
+    let name_for_adopt = entry.game_name.clone();
+    tauri::async_runtime::spawn(async move {
+        crate::custom_saves::adopt_for_new_game(&app_for_adopt, &id_for_adopt, &name_for_adopt).await;
     });
 
     Ok(entry)

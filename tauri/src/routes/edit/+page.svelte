@@ -19,7 +19,7 @@
    */
   import { onMount } from 'svelte';
   import { SvelteSet } from 'svelte/reactivity';
-  import { Download, Folder, FolderX, RefreshCw, Trash2 } from '@lucide/svelte';
+  import { Check, Download, Folder, FolderX, RefreshCw, Trash2 } from '@lucide/svelte';
   import { open as openDialog } from '@tauri-apps/plugin-dialog';
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import { api, assetUrl } from '$lib/api';
@@ -36,7 +36,7 @@
   import Select, { type SelectOption } from '$lib/components/Select.svelte';
   import { gamepadScope } from '$lib/gamepad';
 
-  type Tab = 'identity' | 'install' | 'launch' | 'sharing';
+  type Tab = 'identity' | 'install' | 'launch' | 'saves' | 'sharing';
 
   let original = $state<GameEntry | null>(null);
   let form = $state<GameEntry | null>(null);
@@ -48,6 +48,11 @@
   let isLinux = $state(false);
   let protonVersions = $state<ProtonVersion[]>([]);
   let depsInstalling = $state(false);
+
+  // Saves tab: the in-progress custom save-location template (from the folder
+  // picker or typed directly) and a busy flag for the set/clear actions.
+  let saveTemplate = $state('');
+  let savesBusy = $state(false);
 
   // Proton picker: Auto + each detected build.
   const protonOptions = $derived<SelectOption[]>([
@@ -217,6 +222,81 @@
     }
   }
 
+  // ── Saves tab ──────────────────────────────────────────────────────────
+  // Pick a save folder, then ask the backend to turn it into a portable
+  // template (e.g. <winLocalAppData>/MyGame) so it works on every device/OS.
+  async function pickSaveFolder() {
+    if (!form) return;
+    const picked = await openDialog({
+      title: 'Pick the save folder',
+      directory: true,
+      multiple: false,
+    });
+    if (typeof picked !== 'string') return;
+    try {
+      saveTemplate = await api.deriveSaveTemplate(form.id, picked);
+    } catch (e) {
+      console.error('[edit] deriveSaveTemplate failed:', e);
+      saveTemplate = picked; // fall back to the literal path
+    }
+  }
+
+  // Register the custom save location: tracked by ludusavi and replicated to
+  // the user's other devices. Updates form.custom_save in place (it's managed
+  // out-of-band from the form's Save button).
+  async function applyCustomSave() {
+    if (!form) return;
+    const token = saveTemplate.trim();
+    if (!token || savesBusy) return;
+    savesBusy = true;
+    try {
+      await api.setCustomSave(form.id, [token], []);
+      form.custom_save = { files: [token], registry: [] };
+      saveTemplate = '';
+      toasts.show({
+        kind: 'ok',
+        label: 'SAVES',
+        title: 'Save location set',
+        sub: `${token} — synced to your devices`,
+        catalog: fmtCatalog(form.catalog_number),
+      });
+    } catch (e) {
+      toasts.show({
+        kind: 'bad',
+        label: 'SAVES · FAILED',
+        title: "Couldn't set save location",
+        sub: String(e),
+      });
+    } finally {
+      savesBusy = false;
+    }
+  }
+
+  async function clearCustomSave() {
+    if (!form || savesBusy) return;
+    savesBusy = true;
+    try {
+      await api.clearCustomSave(form.id);
+      form.custom_save = null;
+      toasts.show({
+        kind: 'info',
+        label: 'SAVES',
+        title: 'Stopped tracking custom save',
+        sub: 'Saves are no longer backed up for this game.',
+        catalog: fmtCatalog(form.catalog_number),
+      });
+    } catch (e) {
+      toasts.show({
+        kind: 'bad',
+        label: 'SAVES · FAILED',
+        title: "Couldn't stop tracking",
+        sub: String(e),
+      });
+    } finally {
+      savesBusy = false;
+    }
+  }
+
   async function browsePrefix() {
     if (!form) return;
     const picked = await openDialog({
@@ -340,6 +420,7 @@
     { id: 'identity', label: 'Identity' },
     { id: 'install', label: 'Install' },
     { id: 'launch', label: 'Launch' },
+    { id: 'saves', label: 'Saves' },
     { id: 'sharing', label: 'Sharing' },
   ];
 
@@ -623,6 +704,78 @@
                 <Btn variant="ghost" onclick={installDeps} disabled={depsInstalling || !effectiveDeps}>
                   {#snippet icon()}<Download size={14} />{/snippet}
                   {depsInstalling ? 'Installing…' : 'Install'}
+                </Btn>
+              </div>
+            </div>
+          {/snippet}
+        {:else if tab === 'saves'}
+          {@render field('Save tracking', '', savesStatus)}
+          {#if form.custom_save && form.custom_save.files.length > 0}
+            {@render field(
+              'Custom save folder',
+              'Spool backs this up after each session and syncs it to your other devices.',
+              savesCurrent,
+            )}
+          {:else}
+            {@render field(
+              'Set a save folder',
+              "Use this when ludusavi doesn't recognise the game, or saves it in the wrong place. Pick the folder, or type a ludusavi path template. Applies to all your devices.",
+              savesPicker,
+            )}
+          {/if}
+
+          {#snippet savesStatus()}
+            <span class="text-[11.5px] text-ink-2">
+              {#if form!.custom_save && form!.custom_save.files.length > 0}
+                Custom folder — tracked and synced across your devices.
+              {:else if form!.save_paths.length > 0}
+                Tracked automatically via the ludusavi manifest.
+              {:else}
+                Not tracked — ludusavi doesn't recognise this game. Set a folder
+                below to back up and sync its saves.
+              {/if}
+            </span>
+          {/snippet}
+          {#snippet savesCurrent()}
+            <div class="flex flex-col items-start gap-2">
+              <div class="font-mono w-full break-all rounded-[4px] border border-line-1 bg-bg-1 px-2.5 py-2 text-[11px] text-ink-1">
+                {#each form!.custom_save!.files as f (f)}
+                  <div>{f}</div>
+                {/each}
+              </div>
+              <Btn variant="ghost" onclick={clearCustomSave} disabled={savesBusy}>
+                {#snippet icon()}<FolderX size={14} />{/snippet}
+                Stop tracking
+              </Btn>
+            </div>
+          {/snippet}
+          {#snippet savesPicker()}
+            <div class="flex flex-col gap-2">
+              <div class="flex gap-1.5">
+                <TextField
+                  bind:value={saveTemplate}
+                  mono
+                  full
+                  placeholder="<winLocalAppData>/MyGame"
+                />
+                <Btn variant="ghost" onclick={pickSaveFolder}>
+                  {#snippet icon()}<Folder size={14} />{/snippet}
+                  Browse
+                </Btn>
+              </div>
+              <div class="flex items-center justify-between">
+                {#if saveTemplate.trim()}
+                  <span class="font-mono truncate text-[10px] text-ink-3">→ {saveTemplate.trim()}</span>
+                {:else}
+                  <span></span>
+                {/if}
+                <Btn
+                  variant="ghost"
+                  onclick={applyCustomSave}
+                  disabled={savesBusy || !saveTemplate.trim()}
+                >
+                  {#snippet icon()}<Check size={14} />{/snippet}
+                  {savesBusy ? 'Saving…' : 'Use this location'}
                 </Btn>
               </div>
             </div>

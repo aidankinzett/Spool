@@ -31,6 +31,19 @@ pub struct Redirect {
     pub target: String,
 }
 
+/// One `customGames` entry written into `config.yaml` — a user-defined save
+/// location for a game ludusavi's manifest doesn't cover (or covers wrongly).
+/// `files` are ludusavi path templates (placeholder tokens or absolute paths);
+/// `registry` are Windows registry keys (usually empty). We omit `integration`,
+/// so ludusavi's default (`override`) applies — a custom entry whose name
+/// matches a manifest game replaces it.
+#[derive(Debug, Clone)]
+pub struct CustomGameDef {
+    pub name: String,
+    pub files: Vec<String>,
+    pub registry: Vec<String>,
+}
+
 /// Ensure the Spool-owned ludusavi config dir + `config.yaml` exist and meet
 /// the invariants Spool needs. Idempotent — safe to call at every startup.
 ///
@@ -264,6 +277,46 @@ pub fn set_redirects(redirects: &[Redirect]) -> AppResult<()> {
     write_value(&v)
 }
 
+/// Replace the entire `customGames:` list in the owned config.yaml. Called by
+/// [`crate::custom_saves`] whenever the set of custom-save games changes (an
+/// edit, a cross-device adopt, or a launch preflight). Because Spool owns the
+/// config dir completely, the list is always regenerated from the library —
+/// there are no user-authored custom games to preserve, so a removed game's
+/// entry can never linger. Unlike `redirects`, this block is *persistent* (the
+/// run workflow never clears it). An empty slice writes `customGames: []`.
+pub fn set_custom_games(games: &[CustomGameDef]) -> AppResult<()> {
+    let mut v = read_value_or_empty();
+    set_path(&mut v, &["customGames"], custom_games_value(games));
+    write_value(&v)
+}
+
+/// Pure value-construction half of [`set_custom_games`] — builds the YAML
+/// sequence so it can be unit-tested without touching the real config file.
+/// `registry` is omitted when empty so the common (files-only) entry stays
+/// minimal.
+fn custom_games_value(games: &[CustomGameDef]) -> Value {
+    Value::Sequence(
+        games
+            .iter()
+            .map(|g| {
+                let mut m = serde_yaml::Mapping::new();
+                m.insert(k("name"), Value::String(g.name.clone()));
+                m.insert(
+                    k("files"),
+                    Value::Sequence(g.files.iter().cloned().map(Value::String).collect()),
+                );
+                if !g.registry.is_empty() {
+                    m.insert(
+                        k("registry"),
+                        Value::Sequence(g.registry.iter().cloned().map(Value::String).collect()),
+                    );
+                }
+                Value::Mapping(m)
+            })
+            .collect(),
+    )
+}
+
 /// Returns true if `cloud.remote` in the owned config.yaml is set to a
 /// non-null value. Used by the runner to decide whether to label a session
 /// as cloud-synced or local-only.
@@ -456,6 +509,39 @@ mod tests {
         let raw = serde_yaml::to_string(&list).unwrap();
         assert!(raw.contains("C:/Users/alice"));
         assert!(raw.contains("steamuser"));
+    }
+
+    // ── customGames (non-manifest games) ───────────────────────────────────
+
+    #[test]
+    fn custom_games_value_files_only_omits_registry() {
+        let defs = [CustomGameDef {
+            name: "My Game".into(),
+            files: vec!["<winLocalAppData>/MyGame".into()],
+            registry: vec![],
+        }];
+        let yaml = serde_yaml::to_string(&custom_games_value(&defs)).unwrap();
+        assert!(yaml.contains("name: My Game"), "got: {yaml}");
+        assert!(yaml.contains("<winLocalAppData>/MyGame"), "got: {yaml}");
+        // Empty registry is omitted to keep the entry minimal.
+        assert!(!yaml.contains("registry"), "got: {yaml}");
+    }
+
+    #[test]
+    fn custom_games_value_includes_registry_when_present() {
+        let defs = [CustomGameDef {
+            name: "G".into(),
+            files: vec!["<base>/Saves".into()],
+            registry: vec!["HKEY_CURRENT_USER/Software/G".into()],
+        }];
+        let yaml = serde_yaml::to_string(&custom_games_value(&defs)).unwrap();
+        assert!(yaml.contains("registry"), "got: {yaml}");
+        assert!(yaml.contains("HKEY_CURRENT_USER/Software/G"), "got: {yaml}");
+    }
+
+    #[test]
+    fn custom_games_value_empty_is_empty_sequence() {
+        assert_eq!(custom_games_value(&[]), Value::Sequence(vec![]));
     }
 
     // ── Phase 4: apply_cloud (provider → ludusavi cloud.remote schema) ──────

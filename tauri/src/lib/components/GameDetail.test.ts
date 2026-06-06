@@ -58,6 +58,7 @@ function makeGame(over: Partial<GameEntry> = {}): GameEntry {
     lutris_slug: null,
     manifest_install_dir: null,
     save_paths: [],
+    custom_save: null,
     accent_color: null,
     sync_badge: null,
     cloud_sync_baseline: null,

@@ -170,6 +170,12 @@ impl RcloneRemote {
     fn session_target(&self, game_name: &str) -> String {
         format!("{}/sessions/{}.json", self.spool_dir(), session_hash(game_name))
     }
+    fn custom_save_target(&self, game_name: &str) -> String {
+        format!("{}/custom-saves/{}.json", self.spool_dir(), session_hash(game_name))
+    }
+    fn custom_saves_dir(&self) -> String {
+        format!("{}/custom-saves", self.spool_dir())
+    }
 }
 
 /// blake3 hex digest of a game name — the session-marker filename. Stable for a
@@ -914,6 +920,122 @@ pub async fn record_session(app: &AppHandle, game_name: &str, session_minutes: i
         b.last_played.insert(game_name.to_string(), session_end.to_string());
     })
     .await;
+}
+
+// ── Custom-save definitions (cross-device "specify once") ────────────────────
+
+/// A replicated custom-save definition: `_spool/custom-saves/<blake3(name)>.json`.
+/// Name-keyed (like session markers) so a game added on any device finds the
+/// definition published from another. The `files`/`registry` are *portable*
+/// ludusavi templates (placeholder tokens), identical on every device — see
+/// [`crate::save_template`].
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct CustomSaveBlob {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    files: Vec<String>,
+    #[serde(default)]
+    registry: Vec<String>,
+    #[serde(default)]
+    updated_at: String,
+    #[serde(default)]
+    schema: u32,
+}
+
+/// Publish (or update) this game's custom-save definition to the control plane
+/// so other devices adopt it. Best-effort; no-op when cloud isn't configured.
+pub async fn publish_custom_save(
+    app: &AppHandle,
+    game_name: &str,
+    files: &[String],
+    registry: &[String],
+) {
+    let Some(remote) = resolve_remote(app) else {
+        return;
+    };
+    let blob = CustomSaveBlob {
+        name: game_name.to_string(),
+        files: files.to_vec(),
+        registry: registry.to_vec(),
+        updated_at: Utc::now().to_rfc3339(),
+        schema: 1,
+    };
+    if let Ok(body) = serde_json::to_vec(&blob) {
+        rcat(&remote.exe, &remote.custom_save_target(game_name), &body).await;
+    }
+}
+
+/// Remove a game's published custom-save definition (when the user clears it).
+/// Best-effort; a missing blob is fine.
+pub async fn delete_custom_save(app: &AppHandle, game_name: &str) {
+    let Some(remote) = resolve_remote(app) else {
+        return;
+    };
+    deletefile(&remote.exe, &remote.custom_save_target(game_name)).await;
+}
+
+/// Fetch a single published custom-save definition by game name (one `cat`).
+/// Used to adopt a definition the moment a matching game is added on a new
+/// device. `None` when cloud isn't configured or no definition exists.
+pub async fn fetch_custom_save(app: &AppHandle, game_name: &str) -> Option<crate::library::CustomSave> {
+    let remote = resolve_remote(app)?;
+    let body = cat(&remote.exe, &remote.custom_save_target(game_name)).await?;
+    let blob: CustomSaveBlob = serde_json::from_str(&body).ok()?;
+    if blob.files.is_empty() && blob.registry.is_empty() {
+        return None;
+    }
+    Some(crate::library::CustomSave { files: blob.files, registry: blob.registry })
+}
+
+/// Adopt published custom-save definitions into local library entries that don't
+/// have one yet (matched by game name). Only fills `None` — a device that has
+/// already set its own custom save keeps it. Returns how many entries were
+/// updated; the caller re-syncs ludusavi's `customGames` block and emits
+/// `library:changed`. Best-effort; 0 when cloud isn't configured.
+pub async fn fold_custom_saves(app: &AppHandle) -> usize {
+    let Some(remote) = resolve_remote(app) else {
+        return 0;
+    };
+    let Some(entries) = lsjson(&remote.exe, &remote.custom_saves_dir()).await else {
+        return 0;
+    };
+    let mut defs: std::collections::HashMap<String, crate::library::CustomSave> =
+        std::collections::HashMap::new();
+    for e in entries {
+        if e.is_dir || !e.name.ends_with(".json") {
+            continue;
+        }
+        let target = format!("{}/{}", remote.custom_saves_dir(), e.name);
+        if let Some(body) = cat(&remote.exe, &target).await {
+            if let Ok(blob) = serde_json::from_str::<CustomSaveBlob>(&body) {
+                let has_paths = !blob.files.is_empty() || !blob.registry.is_empty();
+                if !blob.name.is_empty() && has_paths {
+                    defs.insert(
+                        blob.name.clone(),
+                        crate::library::CustomSave { files: blob.files, registry: blob.registry },
+                    );
+                }
+            }
+        }
+    }
+    if defs.is_empty() {
+        return 0;
+    }
+    let library = app.state::<SharedLibrary>().inner().clone();
+    let entries = library.list().await.unwrap_or_default();
+    let mut applied = 0usize;
+    for entry in &entries {
+        if entry.custom_save.is_some() {
+            continue;
+        }
+        if let Some(def) = defs.get(&entry.game_name) {
+            if library.set_custom_save(&entry.id, Some(def)).await.unwrap_or(false) {
+                applied += 1;
+            }
+        }
+    }
+    applied
 }
 
 /// The badge for a game given the device id of its latest backer.
