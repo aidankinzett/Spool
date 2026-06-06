@@ -7,6 +7,7 @@
   import SuspendedLockModal from '$lib/components/SuspendedLockModal.svelte';
   import OnboardingModal from '$lib/components/OnboardingModal.svelte';
   import { api, assetUrl } from '$lib/api';
+  import { openView } from '$lib/nav';
   import { toasts } from '$lib/toasts.svelte';
   import { absDateTime, relDate, fmtSize } from '$lib/format';
   import type { RawConflictDetails } from '$lib/types';
@@ -27,6 +28,48 @@
       if (!cfg.onboarding_completed) showOnboarding = true;
     } catch (e) {
       console.error('[library] onboarding check failed:', e);
+    }
+  });
+
+  // True when version `a` is strictly newer than `b` (dotted numeric compare,
+  // e.g. "1.4.0" vs "1.10.0"). Non-numeric/missing segments count as 0.
+  function isNewerVersion(a: string, b: string): boolean {
+    const pa = a.split('.').map((n) => parseInt(n, 10) || 0);
+    const pb = b.split('.').map((n) => parseInt(n, 10) || 0);
+    for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+      const x = pa[i] ?? 0;
+      const y = pb[i] ?? 0;
+      if (x !== y) return x > y;
+    }
+    return false;
+  }
+
+  // On Linux, the Decky companion plugin is bundled inside the AppImage. When a
+  // Spool update ships a newer plugin than the copy installed under
+  // ~/homebrew, nudge the user to update it — the Settings → Game Mode
+  // companion card shows the same state, but this surfaces it without a visit.
+  onMount(async () => {
+    try {
+      if ((await api.appPlatform()) !== 'linux') return;
+      const decky = await api.deckyPluginStatus();
+      if (!decky.supported || !decky.installed || !decky.installedVersion) return;
+      if (!isNewerVersion(decky.bundledVersion, decky.installedVersion)) return;
+      const id = toasts.show({
+        kind: 'info',
+        label: 'DECKY',
+        title: 'Backup plugin update available',
+        sub: `Installed v${decky.installedVersion} · bundled v${decky.bundledVersion}. Update it from Settings.`,
+        duration: 12000,
+        cta: {
+          label: 'Settings',
+          onClick: () => {
+            toasts.dismiss(id);
+            void openView('settings');
+          },
+        },
+      });
+    } catch (e) {
+      console.error('[library] decky update check failed:', e);
     }
   });
 
