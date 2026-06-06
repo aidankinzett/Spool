@@ -49,11 +49,10 @@ const STEAM_CDN = "https://steamcdn-a.akamaihd.net/steam/apps";
 export const cover = (appid: number): string => `${STEAM_CDN}/${appid}/library_600x900_2x.jpg`;
 export const hero = (appid: number): string => `${STEAM_CDN}/${appid}/library_hero.jpg`;
 
-// Steam app ids for the sample peer games, so the LAN cover grid shows real
-// portrait art in stories. Every PEER_GAMES id is mapped — the grid always
-// builds a cover URL (it has no null/placeholder path of its own), so an
-// unmapped id would render a broken-image icon. The accent-placeholder fallback
-// is exercised directly in `cover-grid.stories.tsx` via `coverUrl: null`.
+// Steam app ids for the sample peer games, so the LAN game list shows real
+// portrait cover art in stories. Every PEER_GAMES id is mapped — each row builds
+// a cover URL unconditionally, so an unmapped id would render a broken-image
+// icon.
 export const PEER_COVER_APPIDS: Record<string, number> = {
   pg1: 1145360, // Hades
   pg2: 504230, // Celeste
@@ -65,6 +64,7 @@ export function makeDownload(overrides: Partial<DownloadProgress> = {}): Downloa
   return {
     install_token: "tok-1",
     source_device_name: "Desktop-PC",
+    source_game_id: "pg1", // Hades, in PEER_GAMES
     game_name: "Hades",
     bytes_done: 6_300_000_000,
     bytes_total: 14_000_000_000,

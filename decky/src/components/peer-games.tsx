@@ -1,14 +1,17 @@
 import { toaster } from "@decky/api";
-import { Navigation, ButtonItem, Focusable } from "@decky/ui";
+import { DialogButton, Focusable } from "@decky/ui";
 import { useEffect, useRef, useState } from "react";
 import type { DownloadProgress, LanPeer, PeerGame } from "../types";
 import { fmtBytes } from "../lib/format";
-import { CoverGrid } from "./cover-grid";
 import { useServerBase } from "../hooks/use-server-base";
 import { useParams } from "../lib/steam";
 
-// A single peer's shared game grid. Registered as its own route so the B
-// button naturally navigates back to the peers list (/spool/lan).
+// A single peer's shared games, as a list. Each row is the game's cover, name
+// and install size with a Download button; activating it installs the game in
+// place (no separate detail page). The backend serves a single install at a
+// time, so while one game downloads its row shows live progress + Cancel and
+// every other Download button is greyed. Registered as its own route so the B
+// button navigates back to the peers list (/spool/lan).
 export function PeerGamesPage() {
   const { peerAddr, peerPort } =
     useParams<{ peerAddr: string; peerPort: string }>();
@@ -100,6 +103,39 @@ export function PeerGamesPage() {
     }, 500);
   }
 
+  async function startDownload(game: PeerGame) {
+    if (!base || busy) return;
+    // Optimistically show the row as starting so the UI reacts before the first
+    // poll lands; polling then takes over from the backend's real progress.
+    setDownload({
+      install_token: "",
+      source_device_name: peer?.device_name ?? peerAddr,
+      source_game_id: game.id,
+      game_name: game.game_name,
+      bytes_done: 0,
+      bytes_total: 0,
+      current_file: "",
+      status: "starting",
+      bytes_per_second: 0,
+    });
+    try {
+      const res = await fetch(`${base}/lan/install`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          peer_addr: peerAddr,
+          peer_port: Number(peerPort),
+          game_id: game.id,
+        }),
+      });
+      if (!res.ok) throw new Error();
+    } catch {
+      setDownload(null);
+      return;
+    }
+    startPolling();
+  }
+
   async function cancelDownload() {
     if (!base || !download) return;
     await fetch(`${base}/lan/download`, {
@@ -109,112 +145,164 @@ export function PeerGamesPage() {
     }).catch(() => undefined);
   }
 
-  const isActive =
+  // A download occupies the single install slot while it's starting/transferring.
+  const busy =
     download !== null &&
     (download.status === "starting" || download.status === "transferring");
-  const pct =
-    download && download.bytes_total > 0
-      ? Math.round((download.bytes_done / download.bytes_total) * 100)
-      : 0;
   const deviceName = peer?.device_name || peerAddr;
-
   const err = baseError ?? error;
 
   return (
     <div style={{ padding: "2rem", display: "flex", flexDirection: "column", gap: "1rem" }}>
       <h2 style={{ margin: 0 }}>{deviceName}</h2>
 
-      {/* Download progress row */}
-      {download !== null && (
-        <div
-          style={{
-            background: "#1a2330",
-            borderRadius: "8px",
-            padding: "0.75rem 1rem",
-            display: "flex",
-            flexDirection: "column",
-            gap: "0.5rem",
-          }}
-        >
-          <div
-            style={{
-              display: "flex",
-              justifyContent: "space-between",
-              alignItems: "center",
-            }}
-          >
-            <span style={{ fontWeight: 600 }}>
-              {download.game_name || "Fetching manifest…"}
-            </span>
-            {isActive && (
-              <Focusable>
-                <ButtonItem layout="below" onClick={() => void cancelDownload()}>
-                  Cancel
-                </ButtonItem>
-              </Focusable>
-            )}
-            {download.status === "done" && (
-              <span style={{ color: "#4caf50" }}>Installed</span>
-            )}
-            {download.status === "canceled" && (
-              <span style={{ opacity: 0.7 }}>Cancelled</span>
-            )}
-            {download.status === "error" && (
-              <span style={{ color: "#f44336" }}>Failed</span>
-            )}
-          </div>
-
-          {download.status === "error" && download.message && (
-            <div style={{ fontSize: "0.8rem", opacity: 0.8 }}>{download.message}</div>
-          )}
-
-          {(download.status === "starting" || download.status === "transferring") && (
-            <>
-              <div
-                style={{
-                  height: "4px",
-                  borderRadius: "2px",
-                  background: "#2a3a52",
-                  overflow: "hidden",
-                }}
-              >
-                <div
-                  style={{
-                    height: "100%",
-                    width: `${pct}%`,
-                    background: "#4a90d9",
-                    transition: "width 0.3s",
-                  }}
-                />
-              </div>
-              <div style={{ fontSize: "0.8rem", opacity: 0.7 }}>
-                {download.bytes_total > 0
-                  ? `${fmtBytes(download.bytes_done)} / ${fmtBytes(download.bytes_total)}  (${fmtBytes(Math.round(download.bytes_per_second))}/s)`
-                  : download.current_file || "Starting…"}
-              </div>
-            </>
-          )}
-        </div>
-      )}
-
       {err && <div style={{ opacity: 0.8 }}>{err}</div>}
       {!err && !games && <div style={{ opacity: 0.7 }}>Loading…</div>}
       {games && games.length === 0 && (
         <div style={{ opacity: 0.7 }}>This device isn't sharing any games.</div>
       )}
+
       {games && games.length > 0 && (
-        <CoverGrid
-          onActivate={(id) =>
-            Navigation.Navigate(
-              `/spool/lan-game/${peerAddr}/${peerPort}/${id}`,
-            )
-          }
-          tiles={games.map((g) => ({
-            key: g.id,
-            name: g.game_name,
-            coverUrl: `${peerBase}/games/${g.id}/cover`,
-          }))}
+        <Focusable style={{ display: "flex", flexDirection: "column", gap: "0.6rem" }}>
+          {games.map((g) => (
+            <GameRow
+              key={g.id}
+              game={g}
+              coverUrl={`${peerBase}/games/${g.id}/cover`}
+              // The active download owns the slot; this row is it when the ids match.
+              active={busy && download?.source_game_id === g.id ? download : null}
+              // Any in-flight download greys every other row's Download button.
+              disabled={busy}
+              onDownload={() => void startDownload(g)}
+              onCancel={() => void cancelDownload()}
+            />
+          ))}
+        </Focusable>
+      )}
+    </div>
+  );
+}
+
+// One game row: cover + name + size on the left, a Download button on the
+// right — or, when this row is the active install, a live progress readout with
+// a Cancel button and a progress bar across the bottom.
+function GameRow({
+  game,
+  coverUrl,
+  active,
+  disabled,
+  onDownload,
+  onCancel,
+}: {
+  game: PeerGame;
+  coverUrl: string;
+  active: DownloadProgress | null;
+  disabled: boolean;
+  onDownload: () => void;
+  onCancel: () => void;
+}) {
+  const sizeLabel =
+    game.install_size_mb > 0
+      ? fmtBytes(Math.round(game.install_size_mb * 1024 * 1024))
+      : null;
+  const pct =
+    active && active.bytes_total > 0
+      ? Math.round((active.bytes_done / active.bytes_total) * 100)
+      : 0;
+
+  return (
+    <div
+      style={{
+        position: "relative",
+        display: "flex",
+        alignItems: "center",
+        gap: "0.9rem",
+        padding: "0.6rem 0.75rem",
+        borderRadius: "8px",
+        background: "#1a2330",
+        overflow: "hidden",
+      }}
+    >
+      {/* Portrait cover thumbnail */}
+      <div
+        style={{
+          width: "44px",
+          height: "59px",
+          borderRadius: "4px",
+          overflow: "hidden",
+          flexShrink: 0,
+          background: "#0e1620",
+        }}
+      >
+        <img
+          src={coverUrl}
+          alt={game.game_name}
+          style={{ width: "100%", height: "100%", objectFit: "cover" }}
         />
+      </div>
+
+      {/* Name + size (or live progress text while installing) */}
+      <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: "0.2rem" }}>
+        <span
+          style={{
+            fontWeight: 600,
+            whiteSpace: "nowrap",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+          }}
+        >
+          {game.game_name}
+        </span>
+        <span style={{ fontSize: "0.8rem", opacity: 0.7 }}>
+          {active
+            ? active.bytes_total > 0
+              ? `${fmtBytes(active.bytes_done)} / ${fmtBytes(active.bytes_total)} · ${fmtBytes(Math.round(active.bytes_per_second))}/s`
+              : active.current_file || "Starting…"
+            : sizeLabel ?? ""}
+        </span>
+      </div>
+
+      {/* Right-side action */}
+      {active ? (
+        <div style={{ display: "flex", alignItems: "center", gap: "0.75rem", flexShrink: 0 }}>
+          <span style={{ fontVariantNumeric: "tabular-nums", fontWeight: 600, minWidth: "3ch", textAlign: "right" }}>
+            {pct}%
+          </span>
+          <DialogButton style={{ minWidth: "110px" }} onClick={onCancel}>
+            Cancel
+          </DialogButton>
+        </div>
+      ) : (
+        <DialogButton
+          style={{ minWidth: "150px", flexShrink: 0 }}
+          disabled={disabled || !game.shareable}
+          onClick={onDownload}
+        >
+          {game.shareable ? "Download" : "Not available"}
+        </DialogButton>
+      )}
+
+      {/* Progress bar across the bottom edge while installing */}
+      {active && (
+        <div
+          style={{
+            position: "absolute",
+            left: 0,
+            right: 0,
+            bottom: 0,
+            height: "3px",
+            background: "#2a3a52",
+          }}
+        >
+          <div
+            style={{
+              height: "100%",
+              width: `${pct}%`,
+              background: "#4a90d9",
+              transition: "width 0.3s",
+            }}
+          />
+        </div>
       )}
     </div>
   );

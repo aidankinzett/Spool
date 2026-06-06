@@ -14,13 +14,12 @@ import {
 } from "@decky/ui";
 import { createElement, type ReactElement } from "react";
 import { FaFloppyDisk } from "react-icons/fa6";
-import { SPOOL_LAN_ROUTE, SPOOL_LAN_PEER_ROUTE, SPOOL_LAN_GAME_ROUTE } from "./constants";
+import { SPOOL_LAN_ROUTE, SPOOL_LAN_PEER_ROUTE } from "./constants";
 import { onAppStop } from "./api/callables";
 import { backupStarted, backupFinished } from "./lib/backup-status";
 import { Content } from "./components/content";
 import { LanPage } from "./components/lan-view";
 import { PeerGamesPage } from "./components/peer-games";
-import { PeerGameDetailPage } from "./components/peer-game-detail-panel";
 import { PatchWrapper } from "./components/patch/patch-wrapper";
 import { SafeArea } from "./components/safe-area";
 
@@ -28,9 +27,8 @@ export default definePlugin(() => {
   // Register the full-screen LAN browse routes. The QAM "Browse LAN games"
   // button navigates to them; we remove them on dismount to avoid duplicate
   // patches across hot-reloads.
-  // The header/footer chrome overlays page content, so the top-to-bottom
-  // content pages are wrapped in SafeArea to clear it. The detail panel paints
-  // full-bleed and manages its own footer inset, so it routes unwrapped.
+  // The header/footer chrome overlays page content, so these top-to-bottom
+  // pages are wrapped in SafeArea to clear it.
   routerHook.addRoute(SPOOL_LAN_ROUTE, () => (
     <SafeArea>
       <LanPage />
@@ -41,7 +39,6 @@ export default definePlugin(() => {
       <PeerGamesPage />
     </SafeArea>
   ), { exact: true });
-  routerHook.addRoute(SPOOL_LAN_GAME_ROUTE, PeerGameDetailPage);
 
   // Patch the Steam game-detail page to inject Spool's cross-device playtime
   // badge. Uses afterPatch + findInReactTree to splice into the InnerContainer
@@ -125,7 +122,6 @@ export default definePlugin(() => {
       removeEventListener("spool_backup_toast", onBackupToast);
       routerHook.removeRoute(SPOOL_LAN_ROUTE);
       routerHook.removeRoute(SPOOL_LAN_PEER_ROUTE);
-      routerHook.removeRoute(SPOOL_LAN_GAME_ROUTE);
       routerHook.removePatch("/library/app/:appid", playtimePatch);
     },
   };
