@@ -237,7 +237,7 @@
         kind: 'info',
         label: 'COVER',
         title: 'Cover refreshed',
-        sub: 'Pulled the latest from SteamGridDB.',
+        sub: 'Pulled the latest artwork.',
         catalog: fmtCatalog(form.catalog_number),
       });
       // Pull the entry again so we see the new path + accent immediately.
@@ -448,7 +448,7 @@
           )}
           {@render field(
             'Cover art',
-            'Refetch from SteamGridDB to update both the image and the accent colour.',
+            'Refetch artwork to update both the image and the accent colour.',
             identityCover,
           )}
 
@@ -459,7 +459,7 @@
             <div class="flex flex-wrap gap-1.5">
               <Btn variant="ghost" onclick={refetchCover}>
                 {#snippet icon()}<RefreshCw size={14} />{/snippet}
-                Refetch from SteamGridDB
+                Refetch artwork
               </Btn>
             </div>
           {/snippet}

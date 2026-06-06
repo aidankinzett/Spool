@@ -464,7 +464,7 @@
               <!-- Cover artwork -->
               <SettingsCard
                 title="Cover artwork"
-                helper="Cover, hero, and logo art is fetched from SteamGridDB when you add a game."
+                helper="Cover, hero, and logo art is fetched when you add a game — from Steam's official artwork first, with SteamGridDB as a fallback."
               >
                 {#snippet icon()}<Grid2x2 size={14} />{/snippet}
                 {#snippet right()}

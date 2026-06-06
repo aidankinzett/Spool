@@ -324,7 +324,7 @@
 
         {:else if stepId === 'covers'}
           <div>
-            {@render stepHead('Cover artwork', 'Spool fetches cover, hero, and logo art from SteamGridDB when you add a game.')}
+            {@render stepHead('Cover artwork', "Spool fetches cover, hero, and logo art when you add a game — from Steam's official artwork first, with SteamGridDB as a fallback.")}
             <div class="overflow-hidden rounded-md border border-line-2 bg-bg-2">
               <div class="flex items-center gap-[14px]" style:padding="14px 16px">
                 <div class="flex-1">
