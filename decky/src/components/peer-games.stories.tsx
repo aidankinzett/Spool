@@ -49,8 +49,8 @@ export const Default: Story = {
   render: () => page(),
 };
 
-// An install is in flight — the progress row with a live percentage shows above
-// the grid.
+// An install is in flight (Hades / pg1) — its row shows live progress + Cancel
+// and a progress bar, while every other game's Download button is greyed out.
 export const Downloading: Story = {
   render: () => page(makeDownload()),
 };

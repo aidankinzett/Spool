@@ -100,6 +100,9 @@ export interface PeerGame {
 export interface DownloadProgress {
   install_token: string;
   source_device_name: string;
+  // The peer-library id of the game being installed — lets the game list mark
+  // which row is the active download.
+  source_game_id: string;
   game_name: string;
   bytes_done: number;
   bytes_total: number;

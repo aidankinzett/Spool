@@ -37,7 +37,7 @@ runtime:
 ## Patterns for writing a story
 
 ### 1. Pure presentational component
-Just pass props. (e.g. `SpoolMark`, `Reel`, `CoverGrid`, `SpoolBar`.)
+Just pass props. (e.g. `SpoolMark`, `Reel`, `SpoolBar`.)
 
 ```tsx
 export const Default: StoryObj<typeof SpoolMark> = {
@@ -112,17 +112,14 @@ A **layout / prop / state harness**, not a visual oracle.
   app-detail DOM (`findTopCapsule`, ResizeObserver/MutationObserver on Steam's
   capsule) and returns `null` without it. Its *children* (`SpoolBar`, `Reel`,
   `BadgeMenuButton`) have stories; the wrapper itself only works in Game Mode.
-- **LAN cover art** — the components build their own cover URLs
-  (`<base>/games/<id>/cover`), loaded via `<img src>` and a blurred
-  `background-image`, neither of which reaches `installFetchMock`'s `fetch`
-  stub. Stories that call `installCoverArtMock()` (the LAN peer-games and
-  detail stories) patch the image `src` setter *and* the inline-style
-  `background-image` to rewrite those URLs to real Steam CDN portraits keyed by
-  game id (`PEER_COVER_APPIDS`). Every sample peer game is mapped, since the
-  cover grid always builds a URL and an unmapped id would show a broken-image
-  icon; the genuine no-cover fallback tile is exercised in `CoverGrid`'s own
-  story via `coverUrl: null`. Stories that don't install the mock render the
-  unrewritten peer URLs.
+- **LAN cover art** — the peer-games list builds its own cover URLs
+  (`<base>/games/<id>/cover`), loaded via `<img src>`, which never reaches
+  `installFetchMock`'s `fetch` stub. Stories that call `installCoverArtMock()`
+  patch the image `src` setter (and the inline-style `background-image`, for any
+  CSS-loaded cover) to rewrite those URLs to real Steam CDN portraits keyed by
+  game id (`PEER_COVER_APPIDS`). Every sample peer game is mapped, since each row
+  builds a URL unconditionally and an unmapped id would show a broken-image icon.
+  Stories that don't install the mock render the unrewritten peer URLs.
 - **Steam chrome bars** — `steam-chrome.tsx` exports `withSteamChrome`, a
   decorator that overlays Game Mode's top header (40px, the right-aligned status
   cluster) and bottom footer (42px, translucent + blur, MENU/BACK hints) fixed
