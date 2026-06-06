@@ -17,7 +17,7 @@ use axum::{
 };
 use futures_util::StreamExt as _;
 use serde::Deserialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::SeekFrom;
 use std::net::SocketAddr;
 use std::path::{Component, Path, PathBuf};
@@ -80,6 +80,12 @@ impl LanServerShutdown {
 /// "read-heavy shared state → Arc<RwLock<T>>" rule, concurrent
 /// manifest requests get to read in parallel.
 type HashCache = Arc<std::sync::RwLock<HashMap<PathBuf, (std::time::SystemTime, String)>>>;
+
+/// Hard cap on cached file-hash entries (across all shared games). A bounded
+/// backstop so a host that has shared many large games over a long-lived tray
+/// session can't grow the cache without limit; per-game stale entries are pruned
+/// after each walk regardless (see `walk_game_files_with_hashes`).
+const HASH_CACHE_MAX_ENTRIES: usize = 50_000;
 
 #[derive(Clone)]
 struct ServerState {
@@ -661,6 +667,9 @@ fn parse_range_start(value: &str) -> Option<u64> {
 /// synchronous and disk-bound by design.
 fn walk_game_files_with_hashes(root: &Path, cache: HashCache) -> std::io::Result<Vec<PeerFile>> {
     let mut out = Vec::new();
+    // Absolute paths seen this walk, used afterwards to evict cache entries for
+    // files deleted from this game's folder so the cache can't grow unbounded.
+    let mut seen: HashSet<PathBuf> = HashSet::new();
     for entry in walkdir::WalkDir::new(root).follow_links(true) {
         let entry = entry?;
         if !entry.file_type().is_file() {
@@ -736,6 +745,18 @@ fn walk_game_files_with_hashes(root: &Path, cache: HashCache) -> std::io::Result
             hash,
             mtime_unix_ms,
         });
+        seen.insert(abs);
+    }
+
+    // Keep the cache bounded: drop entries for files under `root` we no longer
+    // see (deleted / renamed), and — past a hard cap — entries for other games
+    // entirely. Without this the cache only ever grows, one entry per file ever
+    // hashed over the tray process's lifetime. (#275)
+    if let Ok(mut g) = cache.write() {
+        g.retain(|path, _| !path.starts_with(root) || seen.contains(path));
+        if g.len() > HASH_CACHE_MAX_ENTRIES {
+            g.retain(|path, _| path.starts_with(root));
+        }
     }
     Ok(out)
 }

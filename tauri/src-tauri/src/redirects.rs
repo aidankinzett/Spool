@@ -516,7 +516,10 @@ fn classify_windows_path(
     // The root is the leading `<Drive>:/path/to/game` segment we can match
     // against the game_folder_path the user set in Spool.
     if is_windows_drive_path(&p) {
-        let win_root = install_dir_root(&p);
+        let game_basename = game_folder
+            .and_then(|f| f.file_name())
+            .and_then(|n| n.to_str());
+        let win_root = install_dir_root(&p, game_basename);
         let local_root = game_folder.map(|f| f.to_string_lossy().into_owned());
         return Some(PathClass::InstallDir { win_root, local_root });
     }
@@ -527,19 +530,32 @@ fn classify_windows_path(
 /// Derive the install-dir root for an install-dir save *file* path. The input
 /// is always a file (mapping.yaml keys are files), so the trailing filename is
 /// dropped first — otherwise a shallow path like `D:/Game/save.bin` would map
-/// the file itself as the root, restoring the save to the wrong location. We
-/// then keep the drive + up to two leading directories as a conservative guess
-/// at the game's install folder.
-/// e.g. `G:/Games/ULTRAKILL/Saves/Slot1/foo.bin` → `G:/Games/ULTRAKILL`
-///      `D:/Game/save.bin`                        → `D:/Game`
-fn install_dir_root(path: &str) -> String {
+/// the file itself as the root, restoring the save to the wrong location.
+///
+/// When the game's local folder name is known we anchor on it: keep everything
+/// up to and including the first path segment equal to that name (case-
+/// insensitive, since Windows paths are). This finds the true install root even
+/// when it is deeper than two dirs — a save under a Steam library at
+/// `G:/SteamLibrary/steamapps/common/ULTRAKILL/Saves/x` with folder name
+/// `ULTRAKILL` yields `G:/SteamLibrary/steamapps/common/ULTRAKILL`. Without a
+/// name to anchor on (or when it does not appear in the path) we fall back to a
+/// conservative drive + up-to-two-dirs guess, so `D:/Game/save.bin` maps `D:/Game`.
+fn install_dir_root(path: &str, game_basename: Option<&str>) -> String {
     // Drop the trailing filename so we never treat the save file as the root.
     let dir = match path.rsplit_once('/') {
         Some((parent, _file)) => parent,
         None => return path.to_string(),
     };
     let parts: Vec<&str> = dir.split('/').collect();
-    // Take drive + up to 2 directories (never more than are present).
+
+    // Anchor on the game folder name when it appears in the path. (#283)
+    if let Some(name) = game_basename.filter(|n| !n.is_empty()) {
+        if let Some(idx) = parts.iter().position(|seg| seg.eq_ignore_ascii_case(name)) {
+            return parts[..=idx].join("/");
+        }
+    }
+
+    // Fallback: drive + up to 2 directories (never more than are present).
     let take = parts.len().min(3);
     parts[..take].join("/")
 }
@@ -677,6 +693,23 @@ mod tests {
         let redirects = derive_redirects(&origin, Some(&pfx()), Some(&game_folder), None, false);
         assert_eq!(redirects.len(), 1);
         assert_eq!(redirects[0].source, "G:/Games/ULTRAKILL");
+        assert_eq!(redirects[0].target, "/home/deck/Games/ULTRAKILL");
+    }
+
+    #[test]
+    fn install_dir_anchors_on_game_folder_name_for_deep_paths() {
+        // A Steam-library path is deeper than two dirs; the install root must be
+        // anchored on the game folder name, not truncated to `…/steamapps`. (#283)
+        let origin = win_origin(&[
+            "G:/SteamLibrary/steamapps/common/ULTRAKILL/Saves/Slot1/save.bepis",
+        ]);
+        let game_folder = PathBuf::from("/home/deck/Games/ULTRAKILL");
+        let redirects = derive_redirects(&origin, Some(&pfx()), Some(&game_folder), None, false);
+        assert_eq!(redirects.len(), 1);
+        assert_eq!(
+            redirects[0].source,
+            "G:/SteamLibrary/steamapps/common/ULTRAKILL"
+        );
         assert_eq!(redirects[0].target, "/home/deck/Games/ULTRAKILL");
     }
 

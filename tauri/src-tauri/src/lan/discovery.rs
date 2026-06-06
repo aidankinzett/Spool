@@ -145,22 +145,21 @@ async fn run_discovery(app: AppHandle) -> AppResult<()> {
     let socket = make_discovery_socket()?;
     let socket = Arc::new(socket);
 
-    // Start the HTTP server first so we can advertise its real port in
-    // every announce. If it fails to bind we still run discovery — peers
-    // see file_server_port=0 and know we're browse-only from their POV.
+    // Always start the HTTP server — even when sharing is currently disabled —
+    // so that enabling sharing in Settings takes effect without a restart. The
+    // request handlers gate on share_enabled per-request, and the announce only
+    // advertises the port while sharing is enabled (see announce_loop), so an
+    // idle bound listener is harmless and peers still see us as browse-only when
+    // sharing is off. (#274)
     let server_port = Arc::new(AtomicU16::new(0));
-    if lan_enabled {
-        match start_http_server(app.clone(), preferred_port).await {
-            Ok(port) => {
-                server_port.store(port, Ordering::Relaxed);
-                tracing::info!(port, "LAN HTTP server listening");
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, "LAN HTTP server failed to start; discovery-only");
-            }
+    match start_http_server(app.clone(), preferred_port).await {
+        Ok(port) => {
+            server_port.store(port, Ordering::Relaxed);
+            tracing::info!(port, sharing = lan_enabled, "LAN HTTP server listening");
         }
-    } else {
-        tracing::info!("LAN sharing disabled in config; running discovery-only");
+        Err(e) => {
+            tracing::warn!(error = %e, "LAN HTTP server failed to start; discovery-only");
+        }
     }
 
     tracing::info!(
@@ -271,13 +270,27 @@ async fn announce_loop(
             .count()
             .await
             .unwrap_or(0) as u32;
+        // Advertise the file-server port only while sharing is currently enabled,
+        // read fresh each tick so a Settings toggle takes effect within one
+        // announce interval (the server itself is always bound). Peers treat
+        // file_server_port == 0 as browse-only. (#274)
+        let sharing = app
+            .state::<SharedConfig>()
+            .lock()
+            .map(|c| c.data.lan.share_enabled)
+            .unwrap_or(false);
+        let file_server_port = if sharing {
+            server_port.load(Ordering::Relaxed)
+        } else {
+            0
+        };
         let packet = AnnouncePacket {
             magic: "spool".into(),
             version: PROTOCOL_VERSION,
             device_id: device_id.clone(),
             device_name: device_name.clone(),
             game_count,
-            file_server_port: server_port.load(Ordering::Relaxed),
+            file_server_port,
         };
         if let Ok(payload) = serde_json::to_vec(&packet) {
             if let Err(e) = socket.send_to(&payload, target).await {
