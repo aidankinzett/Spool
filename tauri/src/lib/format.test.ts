@@ -65,6 +65,12 @@ describe("fmtSize", () => {
     expect(fmtSize(423)).toBe("423.0 MB");
     expect(fmtSize(2048)).toBe("2.0 GB");
   });
+
+  it("drops sub-MB sizes to KB", () => {
+    expect(fmtSize(0.015625)).toBe("16 KB"); // 16 KB backup
+    expect(fmtSize(0.5)).toBe("512 KB");
+    expect(fmtSize(0.0001)).toBe("0.1 KB"); // ~102 bytes
+  });
 });
 
 describe("fmtRate", () => {
