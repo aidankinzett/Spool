@@ -391,12 +391,24 @@ fn migrate_onboarding_completed(raw_json: Option<&str>, data: &mut ConfigData) -
 }
 
 fn hostname() -> String {
-    // %COMPUTERNAME% on Windows, $HOSTNAME / $HOST elsewhere — fall back
-    // to "Spool device" if nothing's set.
+    // The OS hostname via gethostname(2) (GetComputerNameExW on Windows) is the
+    // authoritative source on both platforms. The env vars are only a fallback:
+    // $HOSTNAME / $HOST are shell variables that interactive shells set but don't
+    // export, so a GUI / Game-Mode launch sees neither — which is why Linux used
+    // to land on the "Spool device" fallback every time. %COMPUTERNAME% is a real
+    // process env var on Windows, kept as a secondary path. Final fallback is a
+    // literal so device identity is never empty.
+    let from_os = gethostname::gethostname().to_string_lossy().trim().to_string();
+    if !from_os.is_empty() {
+        return from_os;
+    }
     env::var("COMPUTERNAME")
         .or_else(|_| env::var("HOSTNAME"))
         .or_else(|_| env::var("HOST"))
-        .unwrap_or_else(|_| "Spool device".to_string())
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "Spool device".to_string())
 }
 
 // ── Tauri commands ──────────────────────────────────────────────────────────

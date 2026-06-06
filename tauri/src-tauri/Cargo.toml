@@ -39,6 +39,10 @@ tauri-plugin-process = "2"
 tauri-plugin-window-state = "2"
 tokio = { version = "1", features = ["process", "io-util", "rt", "macros", "sync", "time", "net"] }
 uuid = { version = "1.23.1", features = ["v4"] }
+# OS hostname via the gethostname(2) syscall (GetComputerNameExW on Windows).
+# The shell's $HOSTNAME isn't exported to GUI processes, so reading the env
+# alone leaves Linux launches stuck on the "Spool device" fallback.
+gethostname = "1.1.0"
 reqwest = { version = "0.12", features = ["json", "stream"] }
 steamlocate = "2"
 steam_shortcuts_util = "1"
