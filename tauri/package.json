@@ -5,6 +5,10 @@
   "type": "module",
   "// workspaces": "Empty array — declares this package.json as a workspace root so bun stops walking up the directory tree when resolving install location. Without this, bun was creating a phantom workspace at .claude/worktrees/ because it saw sibling package.json files (tauri/, server/) and inferred a multi-project workspace.",
   "workspaces": [],
+  "// overrides": "Force a single Vite version across the tree. After the vite 6→8 bump, bun left vitest resolving its own nested vite@6.4.3 while the project's vite-plugin-svelte ran against the top-level vite@8 — two Vite instances, so the svelte plugin's esbuild loader never reached vitest's browser-mode optimizer and storybook tests failed with 'No loader is configured for .svelte files'. Deduping onto one vite fixes it.",
+  "overrides": {
+    "vite": "^8.0.16"
+  },
   "scripts": {
     "dev": "vite dev",
     "build": "vite build",
