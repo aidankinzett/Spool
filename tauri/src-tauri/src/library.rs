@@ -304,6 +304,12 @@ const RUNTIME_FIELDS: &[&str] = &[
     "custom_save",
 ];
 
+/// Returns `items` with duplicates removed, preserving first-seen order.
+fn dedup_preserve_order(items: &[String]) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    items.iter().filter(|s| seen.insert((*s).clone())).cloned().collect()
+}
+
 /// The game library, backed by a SQLite connection pool. Cheap to clone the
 /// pool (it's an `Arc` internally); the whole `Library` is wrapped in an
 /// [`Arc`] as [`SharedLibrary`] so spawned tasks can hold a handle.
@@ -622,7 +628,15 @@ impl Library {
         id: &str,
         custom: Option<&CustomSave>,
     ) -> AppResult<bool> {
-        let value = serde_json::to_value(custom)?;
+        // Dedup files/registry (first-seen order) so a malformed or hand-edited
+        // cross-device definition with repeated paths can't reach the editor's
+        // keyed `{#each}` and crash it. This is the single chokepoint every
+        // write path (editor command + cross-device adopt) flows through.
+        let deduped = custom.map(|cs| CustomSave {
+            files: dedup_preserve_order(&cs.files),
+            registry: dedup_preserve_order(&cs.registry),
+        });
+        let value = serde_json::to_value(deduped.as_ref())?;
         self.update_fields(id, &[("custom_save", value)]).await
     }
 

@@ -47,14 +47,17 @@ fn norm(p: &str) -> String {
 /// `path`, returning the remainder (no leading slash). Used so a Windows-cased
 /// `AppData/Local` matches regardless of how the filesystem reported it.
 fn strip_prefix_ci<'a>(path: &'a str, prefix: &str) -> Option<&'a str> {
-    let pl = path.len();
     let xl = prefix.len();
-    if pl < xl || !path[..xl].eq_ignore_ascii_case(prefix) {
+    // `is_char_boundary` is false when `xl > path.len()` OR `xl` lands inside a
+    // multibyte UTF-8 char, so it guards `path[..xl]` (and the later `path[xl..]`)
+    // from panicking on a non-ASCII folder name — e.g. a Cyrillic/CJK save folder
+    // picked under the prefix, where byte offset `xl` falls mid-character.
+    if !path.is_char_boundary(xl) || !path[..xl].eq_ignore_ascii_case(prefix) {
         return None;
     }
     match path[xl..].strip_prefix('/') {
         Some(rest) => Some(rest),
-        None if pl == xl => Some(""),
+        None if path.len() == xl => Some(""),
         None => None,
     }
 }
@@ -320,6 +323,30 @@ mod tests {
         // literal — <home> would be misread as the prefix under --wine-prefix.
         let picked = "/home/deck/.config/MyGame";
         assert_eq!(classify(picked, Some(PFX), None, Some("/home/deck")), picked);
+    }
+
+    // ── Non-ASCII folder names must not panic (strip_prefix_ci boundary) ─────
+
+    #[test]
+    fn non_ascii_folder_under_drive_c_does_not_panic() {
+        // A Cyrillic folder directly under drive_c: byte offset 5 ("users".len())
+        // lands mid-character. Must return (literal here), not panic.
+        let picked = format!("{PFX}/drive_c/Игрок/save");
+        assert_eq!(classify(&picked, Some(PFX), None, None), picked);
+    }
+
+    #[test]
+    fn non_ascii_profile_subfolder_maps_to_home() {
+        // A Cyrillic folder under the user profile → <home>/… (and no panic).
+        let picked = format!("{PFX}/drive_c/users/steamuser/Игры/Slot1");
+        assert_eq!(classify(&picked, Some(PFX), None, None), "<home>/Игры/Slot1");
+    }
+
+    #[test]
+    fn strip_prefix_ci_non_boundary_returns_none() {
+        // Direct guard check: prefix length landing mid-multibyte-char → None.
+        assert_eq!(strip_prefix_ci("Игрок", "users"), None);
+        assert_eq!(strip_prefix_ci("café/x", "café"), Some("x"));
     }
 
     // ── Windows drive paths → placeholders ──────────────────────────────────

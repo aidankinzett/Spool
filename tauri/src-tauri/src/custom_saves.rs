@@ -36,17 +36,33 @@ pub async fn sync_ludusavi_custom_games(library: &SharedLibrary) -> AppResult<()
     let defs: Vec<CustomGameDef> = games
         .iter()
         .filter_map(|g| g.custom_save.as_ref().map(|cs| (g, cs)))
-        .map(|(g, cs)| {
-            let files = cs
+        .filter_map(|(g, cs)| {
+            let files: Vec<String> = cs
                 .files
                 .iter()
                 .filter_map(|t| save_template::expand_base(t, g.game_folder_path.as_deref()))
                 .collect();
-            CustomGameDef {
+            // A definition with no resolvable files AND no registry (e.g. a
+            // `<base>`-relative save whose install folder isn't set on this
+            // device) would make ludusavi *recognise* the game yet back up
+            // nothing — and the runner would then falsely report it synced. Skip
+            // it so it stays in `unknownGames` and the post-session backup is
+            // honestly skipped rather than silently capturing zero files.
+            if files.is_empty() && cs.registry.is_empty() {
+                tracing::warn!(
+                    game = %g.game_name,
+                    "custom save has no resolvable files (install folder unset?) — not registering"
+                );
+                return None;
+            }
+            Some(CustomGameDef {
                 name: g.game_name.clone(),
                 files,
                 registry: cs.registry.clone(),
-            }
+                // Supplement (don't replace) the manifest's locations when the
+                // game is already manifest-covered (has manifest save paths).
+                extend: !g.save_paths.is_empty(),
+            })
         })
         .collect();
     ludusavi_config::set_custom_games(&defs)
