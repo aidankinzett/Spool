@@ -16,10 +16,7 @@
 //!                                        used by Apollo/Sunshine streaming-host
 //!                                        shortcuts so the stream sees the same
 //!                                        flow as SteamOS Game Mode
-//!   spool --backup "Game Name"         → headless one-shot backup, then exit
-//!   spool --release-lock "Game Name"   → headless: flag this device's session
-//!                                        as unsynced (pending-backup), then exit
-//!   spool --headless-server            → start the plugin Unix socket server, run forever
+//!   spool --headless-server            → start the plugin loopback server, run forever
 //!
 //! Anything else is treated as `Normal`. We can extend with more
 //! subcommands (--quit, --backup-all, etc.) as use cases arrive.
@@ -36,26 +33,12 @@ pub enum CliMode {
         exe_path: String,
         attached: bool,
     },
-    /// Headless one-shot: back up a single game's saves (cloud-synced), then
-    /// exit. Used by the Decky plugin's forced-close fallback. On success it
-    /// also clears this game's unsynced-session marker in the remote (the saves
-    /// are now in the cloud). No GUI, no tray.
-    ///
-    /// Deliberately does NOT, on its own, flag the session as unsynced — that's
-    /// a separate concern (`ReleaseLock`) the Decky fallback invokes first.
-    Backup { game_name: String },
-    /// Headless one-shot: flag this device's session for a game as unsynced
-    /// (pending-backup) in the cloud remote, then exit. Used by the Decky
-    /// plugin's forced-close fallback *before* `--backup` — Steam SIGKILLs
-    /// Spool before its run workflow can do this, so peers would otherwise not
-    /// know this device has saves that haven't reached the cloud yet. The
-    /// follow-up `--backup` clears the marker once the upload lands. No GUI.
-    ReleaseLock { game_name: String },
-    /// Start the plugin Unix socket server and run until killed. No tray, no
+    /// Start the plugin loopback server and run until killed. No tray, no
     /// window, no single-instance registration. Used by the Decky plugin
     /// (`spool --headless-server`) to get a persistent IPC endpoint it can
-    /// query for session state, library data, and backup operations — replacing
-    /// the old per-operation `--backup` / `--release-lock` subprocess spawns.
+    /// query for session state, library data, and backup operations. This is the
+    /// only way the plugin talks to Spool — game-stop backups, the unsynced
+    /// "release lock" marker, and "Back up now" are all server endpoints.
     HeadlessServer,
 }
 
@@ -67,16 +50,6 @@ pub fn parse_args<S: AsRef<str>>(args: &[S]) -> CliMode {
             game_name: rest[1].to_string(),
             exe_path: rest[2].to_string(),
             attached: rest[3..].contains(&"--attached"),
-        };
-    }
-    if rest.len() >= 2 && rest[0] == "--backup" {
-        return CliMode::Backup {
-            game_name: rest[1].to_string(),
-        };
-    }
-    if rest.len() >= 2 && rest[0] == "--release-lock" {
-        return CliMode::ReleaseLock {
-            game_name: rest[1].to_string(),
         };
     }
     if rest.len() == 1 && rest[0] == "--headless-server" {
@@ -137,41 +110,6 @@ mod tests {
     fn unknown_flags_fall_through() {
         let argv = ["spool.exe", "--help"];
         assert_eq!(parse_args(&argv), CliMode::Normal);
-    }
-
-    #[test]
-    fn backup_with_name_parses() {
-        let argv = ["spool.exe", "--backup", "Hades"];
-        assert_eq!(
-            parse_args(&argv),
-            CliMode::Backup {
-                game_name: "Hades".to_string(),
-            }
-        );
-    }
-
-    #[test]
-    fn backup_missing_name_falls_back_to_normal() {
-        assert_eq!(parse_args::<&str>(&["spool.exe", "--backup"]), CliMode::Normal);
-    }
-
-    #[test]
-    fn release_lock_with_name_parses() {
-        let argv = ["spool.exe", "--release-lock", "Hades"];
-        assert_eq!(
-            parse_args(&argv),
-            CliMode::ReleaseLock {
-                game_name: "Hades".to_string(),
-            }
-        );
-    }
-
-    #[test]
-    fn release_lock_missing_name_falls_back_to_normal() {
-        assert_eq!(
-            parse_args::<&str>(&["spool.exe", "--release-lock"]),
-            CliMode::Normal
-        );
     }
 
     #[test]

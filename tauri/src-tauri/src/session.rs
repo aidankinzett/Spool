@@ -1,10 +1,10 @@
 //! Active-session record for SteamOS Game-Mode launches.
 //!
 //! Attached `--run` mode writes this at launch and flips `backed_up = true`
-//! once a backup completes (Spool's own post-session backup, or a headless
-//! `spool --backup`). A future Decky plugin reads it on the game-stop event:
-//! if `backed_up` is still false, Steam force-killed Spool before it backed
-//! up, so the plugin spawns `spool --backup` as a fallback.
+//! once a backup completes (Spool's own post-session backup, or the plugin
+//! server's game-stop backup). The Decky plugin reads it on the game-stop event:
+//! if `backed_up` is still false, Steam force-killed Spool before it backed up,
+//! so the plugin asks the headless server to back up as a fallback.
 
 use crate::error::AppResult;
 use chrono::{DateTime, Utc};
@@ -18,6 +18,13 @@ pub struct ActiveSession {
     pub session_id: String,
     pub started_at: DateTime<Utc>,
     pub backed_up: bool,
+    /// Total seconds the system has spent suspended so far this session.
+    /// Checkpointed by the suspend watcher on each resume so it survives a
+    /// Game-Mode force-kill; the forced-close backup subtracts it from the
+    /// wall-clock duration so sleep time isn't counted as play time. Defaults
+    /// to 0 for records written before this field existed.
+    #[serde(default)]
+    pub suspended_secs: i64,
 }
 
 /// Steam's CRC-based appid for a non-Steam shortcut. MUST match
@@ -36,6 +43,7 @@ fn write_start_at(path: &Path, game: &str, steam_appid: u32, started_at: DateTim
         session_id: session_id.clone(),
         started_at,
         backed_up: false,
+        suspended_secs: 0,
     };
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -74,6 +82,28 @@ fn mark_backed_up_if_at(path: &Path, expected_id: &str) {
     if let Some(mut rec) = read_at(path) {
         if rec.session_id == expected_id {
             rec.backed_up = true;
+            if let Ok(bytes) = serde_json::to_vec_pretty(&rec) {
+                let _ = std::fs::write(path, bytes);
+            }
+        }
+    }
+}
+
+/// Checkpoint the running suspended-seconds total into the active-session
+/// record so it survives a Game-Mode force-kill. Guarded by game name (the
+/// suspend watcher knows the game, not the session id) so a newer session for a
+/// different game can't be clobbered — only one game runs at a time, and the
+/// watcher is aborted/killed at session end, so no stale writer survives. The
+/// forced-close backup reads this and subtracts it from wall-clock playtime.
+/// No-op when no record exists or it names a different game.
+pub fn record_suspended_secs(game_name: &str, total_secs: i64) {
+    record_suspended_secs_at(&crate::paths::active_session_file(), game_name, total_secs);
+}
+
+fn record_suspended_secs_at(path: &Path, game_name: &str, total_secs: i64) {
+    if let Some(mut rec) = read_at(path) {
+        if rec.game == game_name {
+            rec.suspended_secs = total_secs;
             if let Ok(bytes) = serde_json::to_vec_pretty(&rec) {
                 let _ = std::fs::write(path, bytes);
             }
@@ -126,6 +156,29 @@ mod tests {
         // …the matching id does.
         mark_backed_up_if_at(&path, &id);
         assert!(read_at(&path).unwrap().backed_up);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn record_suspended_secs_updates_matching_game_only() {
+        let dir = std::env::temp_dir().join(format!("spool-session-susp-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("active-session.json");
+        let now = Utc::now();
+        write_start_at(&path, "Hades", 0x8000_0001, now).unwrap();
+
+        // Default is zero until the watcher checkpoints a total.
+        assert_eq!(read_at(&path).unwrap().suspended_secs, 0);
+
+        // A different game must not touch this record…
+        record_suspended_secs_at(&path, "Celeste", 999);
+        assert_eq!(read_at(&path).unwrap().suspended_secs, 0);
+        // …the matching game writes the absolute total (overwrite, not add).
+        record_suspended_secs_at(&path, "Hades", 249);
+        assert_eq!(read_at(&path).unwrap().suspended_secs, 249);
+        record_suspended_secs_at(&path, "Hades", 600);
+        assert_eq!(read_at(&path).unwrap().suspended_secs, 600);
 
         std::fs::remove_dir_all(&dir).ok();
     }

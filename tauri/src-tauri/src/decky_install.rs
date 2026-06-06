@@ -3,8 +3,8 @@
 //! The plugin (a tiny TS frontend + Python backend, source in `decky/`) closes
 //! the SteamOS forced-close backup gap: when a user picks *Exit Game* from the
 //! Quick Access menu, Steam SIGKILLs Spool before its post-session backup runs;
-//! the plugin's backend lives outside the game's process tree and re-runs
-//! `spool --backup` as a safety net. See
+//! the plugin's backend lives outside the game's process tree and drives a
+//! backup through `spool --headless-server` as a safety net. See
 //! `docs/superpowers/specs/2026-05-30-decky-forced-close-backup-design.md`.
 //!
 //! This module lets Spool install/update that plugin for the user instead of

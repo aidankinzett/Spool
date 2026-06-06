@@ -239,11 +239,11 @@ pub async fn backup_game_core(
 
     // Serialise the ludusavi backup + cloud sync against any other Spool
     // process on this machine (an attached `--run` workflow, the Decky
-    // `--backup` fallback). Taken before any ludusavi/rclone work: if it stays
-    // contended past the timeout we fail rather than run unlocked — a
-    // concurrent write could corrupt the backup or clobber the remote, while
-    // the live save sits safe on disk, so the caller (a UI toast for the manual
-    // command, a non-zero exit for headless `--backup`) just retries.
+    // headless server's game-stop backup). Taken before any ludusavi/rclone
+    // work: if it stays contended past the timeout we fail rather than run
+    // unlocked — a concurrent write could corrupt the backup or clobber the
+    // remote, while the live save sits safe on disk, so the caller (a UI toast
+    // for the manual command, an error response for the plugin server) just retries.
     let _backup_lock = crate::proc_lock::acquire_backup(std::time::Duration::from_secs(180)).await?;
 
     let out = ludusavi_client
@@ -1816,8 +1816,9 @@ async fn phase_restore(ctx: &WorkflowCtx<'_>) -> AppResult<bool> {
         // saves. Restore runs `ludusavi restore --cloud-sync`, which reads the
         // same backup tree + cloud remote a concurrent backup is writing —
         // racing them risks a stale restore or a spurious cloud conflict. The
-        // usual culprit is the Decky forced-close `--backup` fallback firing as
-        // the user immediately launches the next game: pause the splash and wait
+        // usual culprit is the Decky forced-close backup (via the headless
+        // server) firing as the user immediately launches the next game: pause
+        // the splash and wait
         // for that backup to finish first. The lock is held across the restore
         // so a new backup can't start mid-restore, then dropped before launch so
         // the in-session Decky fallback isn't blocked. If the holder doesn't
@@ -2151,6 +2152,68 @@ async fn record_play_session(
     rclone::sync_play_history(ctx.app).await;
 }
 
+/// Record a play-session row + playtime for a session Spool's own workflow never
+/// got to finish: the SteamOS Game-Mode forced-close path, where Steam SIGKILLs
+/// Spool before [`phase_play`] reaches [`record_play_session`]. Called from the
+/// plugin server's game-stop backup ([`crate::plugin_server`]) with the start
+/// time from the active-session record ([`crate::session`]).
+///
+/// Idempotent: the row is keyed `device_id:started_at_millis` and inserted
+/// `OR IGNORE`, and playtime is bumped **only** when a new row actually lands —
+/// so a retried game-stop backup can't double-count. Best-effort: every failure
+/// is logged and swallowed so it can't fail the backup it rides on.
+///
+/// Duration is `(ended_at - started_at) - suspended_secs`, mirroring the
+/// in-process path: `suspended_secs` is the suspend total the watcher
+/// checkpointed into the session record on each resume (see [`crate::session`]),
+/// so a session spanning a Deck sleep isn't counted as play time even though the
+/// in-memory tally died with the force-killed workflow.
+pub async fn record_session_headless(
+    library: &crate::library::Library,
+    cfg: &crate::config::ConfigData,
+    game_id: &str,
+    game_name: &str,
+    started_at: DateTime<Utc>,
+    ended_at: DateTime<Utc>,
+    suspended_secs: i64,
+) {
+    let device_id = cfg.device_id.trim().to_string();
+    let device_name = cfg.device_name.trim().to_string();
+    if device_id.is_empty() {
+        // No device identity — skip rather than write a row the cross-device
+        // fold can't attribute. Matches `record_play_session`.
+        return;
+    }
+    let duration_secs = ((ended_at - started_at).num_seconds() - suspended_secs.max(0)).max(0);
+    let session = crate::library::PlaySession {
+        session_id: format!("{device_id}:{}", started_at.timestamp_millis()),
+        device_id,
+        device_name,
+        game_name: game_name.to_string(),
+        started_at,
+        ended_at,
+        duration_secs,
+    };
+    match library.insert_session(&session).await {
+        // New row — record playtime + push to the cross-device blobs once.
+        Ok(true) => {}
+        // Already recorded (a retry/double-fire). Don't bump playtime again.
+        Ok(false) => return,
+        Err(e) => {
+            tracing::warn!(error = %e, game = game_name, "forced-close: failed to record play session");
+            return;
+        }
+    }
+    let minutes = (duration_secs / 60) as i32;
+    if let Err(e) = library.bump_session(game_id, ended_at, minutes).await {
+        tracing::warn!(error = %e, game = game_name, "forced-close: failed to bump playtime");
+    }
+    // Make the session + playtime visible to peers. Best-effort; no-op offline.
+    rclone::record_session_from_config(cfg, game_name, minutes, &ended_at.to_rfc3339()).await;
+    rclone::sync_play_history_from_config(cfg, library).await;
+    tracing::info!(game = game_name, duration_secs, "forced-close: recorded play session");
+}
+
 /// Phase 3: back up saves after the session (skipped when ludusavi didn't
 /// recognise the game). Returns whether the local backup succeeded but the
 /// cloud upload (`--cloud-sync`) failed — the workflow still finishes (the save
@@ -2171,7 +2234,8 @@ async fn phase_backup(ctx: &WorkflowCtx<'_>, no_saves: bool, timing: &SessionTim
         // Take the machine-wide backup lock before touching ludusavi or the
         // remote, and hold it across the local backup + cloud upload so the
         // pair is atomic versus another Spool process (e.g. the Decky
-        // forced-close `--backup` fallback racing this same session). If it
+        // forced-close backup via the headless server racing this same
+        // session). If it
         // stays contended past the timeout, defer rather than run unlocked: a
         // concurrent ludusavi/rclone write could corrupt the backup or clobber
         // the remote. Nothing's been written yet, the live save is safe on
@@ -2426,6 +2490,93 @@ mod tests {
             name: name.to_string(),
             when: chrono::DateTime::from_timestamp(secs, 0).unwrap(),
         }
+    }
+
+    #[tokio::test]
+    async fn record_session_headless_records_once_and_doesnt_double_count() {
+        // The Game-Mode forced-close backup (the plugin server's game-stop
+        // endpoint) may fire more than once for one session — e.g. a Decky
+        // retry. It must record the session exactly once and bump playtime
+        // exactly once. Cloud is unconfigured, so the
+        // rclone pushes inside the helper no-op (no network in this test).
+        let lib = crate::library::Library::open_in_memory().await.unwrap();
+        let mut game = crate::library::GameEntry {
+            id: "a".to_string(),
+            game_name: "Hades".to_string(),
+            ..Default::default()
+        };
+        game.playtime_minutes = 0;
+        lib.insert(game).await.unwrap();
+
+        let cfg = crate::config::ConfigData {
+            device_id: "deck".to_string(),
+            device_name: "Deck".to_string(),
+            ..Default::default()
+        };
+        let start = chrono::DateTime::parse_from_rfc3339("2026-06-06T10:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let end = start + chrono::Duration::minutes(45);
+
+        record_session_headless(&lib, &cfg, "a", "Hades", start, end, 0).await;
+        assert_eq!(lib.list_sessions(Some("Hades")).await.unwrap().len(), 1);
+        assert_eq!(lib.find("a").await.unwrap().unwrap().playtime_minutes, 45);
+
+        // Same session start ⇒ same session_id ⇒ INSERT OR IGNORE no-op, and
+        // playtime is NOT bumped a second time.
+        record_session_headless(&lib, &cfg, "a", "Hades", start, end, 0).await;
+        assert_eq!(lib.list_sessions(Some("Hades")).await.unwrap().len(), 1);
+        assert_eq!(lib.find("a").await.unwrap().unwrap().playtime_minutes, 45);
+    }
+
+    #[tokio::test]
+    async fn record_session_headless_subtracts_suspend_time() {
+        // A 45-min wall-clock session that spent 15 min suspended counts as 30
+        // min of play — sleep time isn't play time. Mirrors the in-process path.
+        let lib = crate::library::Library::open_in_memory().await.unwrap();
+        let game = crate::library::GameEntry {
+            id: "a".to_string(),
+            game_name: "Hades".to_string(),
+            ..Default::default()
+        };
+        lib.insert(game).await.unwrap();
+
+        let cfg = crate::config::ConfigData {
+            device_id: "deck".to_string(),
+            device_name: "Deck".to_string(),
+            ..Default::default()
+        };
+        let start = chrono::DateTime::parse_from_rfc3339("2026-06-06T10:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let end = start + chrono::Duration::minutes(45);
+
+        record_session_headless(&lib, &cfg, "a", "Hades", start, end, 15 * 60).await;
+        let sessions = lib.list_sessions(Some("Hades")).await.unwrap();
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].duration_secs, 30 * 60);
+        assert_eq!(lib.find("a").await.unwrap().unwrap().playtime_minutes, 30);
+    }
+
+    #[tokio::test]
+    async fn record_session_headless_skips_blank_device_id() {
+        // No device identity ⇒ no row (the cross-device fold couldn't attribute
+        // it). Matches `record_play_session`.
+        let lib = crate::library::Library::open_in_memory().await.unwrap();
+        let game = crate::library::GameEntry {
+            id: "a".to_string(),
+            game_name: "Hades".to_string(),
+            ..Default::default()
+        };
+        lib.insert(game).await.unwrap();
+
+        let cfg = crate::config::ConfigData::default(); // device_id empty
+        let start = chrono::DateTime::parse_from_rfc3339("2026-06-06T10:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        record_session_headless(&lib, &cfg, "a", "Hades", start, start + chrono::Duration::minutes(45), 0).await;
+        assert_eq!(lib.list_sessions(Some("Hades")).await.unwrap().len(), 0);
+        assert_eq!(lib.find("a").await.unwrap().unwrap().playtime_minutes, 0);
     }
 
     #[test]

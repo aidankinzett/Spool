@@ -2,8 +2,9 @@
 //!
 //! `spool --headless-server` starts this server so the Decky plugin can
 //! query library/session state, serve cover art, and trigger backup
-//! operations over local HTTP rather than spawning `spool --backup` /
-//! `spool --release-lock` subprocesses for each operation.
+//! operations over local HTTP. It's the only channel the plugin uses; it
+//! replaced the per-operation `spool --backup` / `--release-lock` subprocess
+//! spawns an earlier plugin version relied on.
 //!
 //! It binds a loopback TCP port (preferring 47650, falling back to an
 //! ephemeral port) and writes the resolved port to
@@ -259,7 +260,7 @@ async fn post_game_stopped(
     // the cloud. The backup below clears the marker once the upload lands.
     crate::rclone::mark_session_pending_backup_from_config(&config.data, &rec.game).await;
 
-    run_backup(&state, &rec.game, &rec.session_id).await
+    run_backup(&state, &rec.game, &rec.session_id, Some((rec.started_at, rec.suspended_secs))).await
 }
 
 /// Manual backup from the QAM "Back up now" button. No appid check; no lock
@@ -268,7 +269,9 @@ async fn post_backup_now(AxState(state): AxState<PluginState>) -> Json<Value> {
     let Some(rec) = crate::session::read() else {
         return Json(json!({ "acted": false, "ok": false, "reason": "no active session" }));
     };
-    run_backup(&state, &rec.game, &rec.session_id).await
+    // "Back up now" can fire mid-session — pass None so we don't record a
+    // premature/short play session; the real game-stop path records it.
+    run_backup(&state, &rec.game, &rec.session_id, None).await
 }
 
 /// Pull cloud saves for a game down to this device and restore them to disk,
@@ -809,7 +812,21 @@ async fn delete_lan_download(
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
-async fn run_backup(state: &PluginState, game_name: &str, session_id: &str) -> Json<Value> {
+/// Run the forced-close backup for `game_name`/`session_id`. When `session` is
+/// `Some((started_at, suspended_secs))`, this is the real game-stop path, so the
+/// play session that the SIGKILLed workflow never recorded is written here too
+/// (playtime + history row, with sleep time subtracted). The manual "Back up
+/// now" passes `None` — the game may still be running, so recording a session
+/// then would be premature.
+async fn run_backup(
+    state: &PluginState,
+    game_name: &str,
+    session_id: &str,
+    session: Option<(chrono::DateTime<chrono::Utc>, i64)>,
+) -> Json<Value> {
+    // Stamp the session end now (≈ game-stop), before the backup runs, so the
+    // recorded duration doesn't include the backup itself.
+    let session_ended = chrono::Utc::now();
     let Some(ludusavi_exe) = crate::paths::resolve_ludusavi_path() else {
         tracing::error!("plugin backup: ludusavi sidecar not found");
         return Json(
@@ -839,6 +856,21 @@ async fn run_backup(state: &PluginState, game_name: &str, session_id: &str) -> J
     .await
     {
         Ok(r) => {
+            // On the real game-stop path, record the play session + playtime the
+            // force-killed workflow never got to. Idempotent (keyed on session
+            // start), independent of cloud sync — the game was played regardless.
+            if let Some((started, suspended_secs)) = session {
+                crate::runner::record_session_headless(
+                    &state.library,
+                    &config.data,
+                    &game_id,
+                    game_name,
+                    started,
+                    session_ended,
+                    suspended_secs,
+                )
+                .await;
+            }
             // Both branches guard on `session_id` so a new game starting while
             // this async backup was in flight is never clobbered.
             if r.cloud_synced {

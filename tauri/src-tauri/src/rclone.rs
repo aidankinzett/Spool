@@ -227,8 +227,8 @@ pub fn resolve_remote(app: &AppHandle) -> Option<RcloneRemote> {
     resolve_remote_inner(base)
 }
 
-/// Resolve the remote from a plain [`ConfigData`] — for headless paths that
-/// have no Tauri-managed state (`spool --backup` / `--release-lock`).
+/// Resolve the remote from a plain [`ConfigData`] — for the headless plugin
+/// server, which has no Tauri-managed state.
 pub fn resolve_remote_from_config(cfg: &ConfigData) -> Option<RcloneRemote> {
     resolve_remote_inner(base_path(cfg))
 }
@@ -267,7 +267,7 @@ pub(crate) fn device_identity(app: &AppHandle) -> (String, String) {
 
 /// Process-wide handle for passive reachability reporting. The leaf rclone
 /// helpers (`cat`/`rcat`/`deletefile`/`lsjson`) are shared by the GUI and the
-/// headless `spool --backup` / `--release-lock` subprocesses and don't carry an
+/// headless `spool --headless-server` plugin server, which doesn't carry an
 /// `AppHandle`; rather than thread `Option<&AppHandle>` through every layer, the
 /// GUI registers its handle here once at startup. Headless subprocesses never
 /// set it, so reporting is a no-op there — they have no status pill to update.
@@ -728,8 +728,8 @@ pub async fn mark_session_pending_backup(app: &AppHandle, game_name: &str) {
     write_marker(&remote, &marker).await;
 }
 
-/// AppHandle-free `PendingBackup` flip for `spool --release-lock` (the Decky
-/// forced-close fallback). No-op when cloud isn't configured.
+/// AppHandle-free `PendingBackup` flip for the plugin server's game-stop path
+/// (the Decky forced-close fallback). No-op when cloud isn't configured.
 pub async fn mark_session_pending_backup_from_config(cfg: &ConfigData, game_name: &str) {
     let Some(remote) = resolve_remote_from_config(cfg) else {
         return;
@@ -774,8 +774,8 @@ pub async fn delete_session_marker(app: &AppHandle, game_name: &str) {
     delete_marker_if_ours(&remote, game_name, &device_id).await;
 }
 
-/// AppHandle-free marker deletion for `spool --backup` after a successful cloud
-/// upload. No-op when cloud isn't configured.
+/// AppHandle-free marker deletion for the plugin server's game-stop backup after
+/// a successful cloud upload. No-op when cloud isn't configured.
 pub async fn complete_session_backup_from_config(cfg: &ConfigData, game_name: &str) {
     let Some(remote) = resolve_remote_from_config(cfg) else {
         return;
@@ -862,8 +862,8 @@ pub struct DeviceBlob {
 /// absent), applies `f`, rcats it back.
 ///
 /// Each device writes only its own file, but `device_id` is per *installation*,
-/// not per *process* — the tray GUI, a headless `spool --backup`, and the Decky
-/// `--headless-server` all share it and so target the same file. `playtime` is a
+/// not per *process* — the tray GUI and the Decky `spool --headless-server`
+/// all share it and so target the same file. `playtime` is a
 /// `+=` accumulator, so two interleaved cat->rcat cycles would lose an update and
 /// permanently undercount cross-device playtime (the `last_played`/`backups` maps
 /// are last-writer-wins, so a lost update there is benign — and unlike the
@@ -946,6 +946,34 @@ pub async fn record_session(app: &AppHandle, game_name: &str, session_minutes: i
     .await;
 }
 
+/// AppHandle-free [`record_session`] for the Game-Mode forced-close backup (the
+/// plugin server's game-stop path): add playtime + last_played to this device's
+/// blob from config. No-op when cloud isn't configured.
+pub async fn record_session_from_config(
+    cfg: &ConfigData,
+    game_name: &str,
+    session_minutes: i32,
+    session_end: &str,
+) {
+    let Some(remote) = resolve_remote_from_config(cfg) else {
+        return;
+    };
+    let device_id = cfg.device_id.trim();
+    if device_id.is_empty() {
+        return;
+    }
+    let device_name = cfg.device_name.trim().to_string();
+    let delta = session_minutes.max(0) as i64;
+    update_device_blob(&remote, device_id, |b| {
+        b.device_name = device_name.clone();
+        if delta > 0 {
+            *b.playtime.entry(game_name.to_string()).or_default() += delta;
+        }
+        b.last_played.insert(game_name.to_string(), session_end.to_string());
+    })
+    .await;
+}
+
 // ── Per-device play-session history (the cross-device timeline) ─────────────
 
 /// One device's full play-session history, stored at
@@ -988,6 +1016,31 @@ pub async fn sync_play_history(app: &AppHandle) {
     let blob = HistoryBlob { device_name, sessions, schema: 1 };
     if let Ok(body) = serde_json::to_vec(&blob) {
         rcat(&remote.exe, &remote.history_target(&device_id), &body).await;
+    }
+}
+
+/// AppHandle-free [`sync_play_history`] for the Game-Mode forced-close fallback:
+/// push this device's local play-session rows to its history blob from config.
+/// Best-effort and idempotent; no-op when cloud isn't configured.
+pub async fn sync_play_history_from_config(cfg: &ConfigData, library: &crate::library::Library) {
+    let Some(remote) = resolve_remote_from_config(cfg) else {
+        return;
+    };
+    let device_id = cfg.device_id.trim();
+    if device_id.is_empty() {
+        return;
+    }
+    let device_name = cfg.device_name.trim().to_string();
+    let sessions = match library.sessions_for_device(device_id).await {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!(error = %e, "sync_play_history_from_config: failed to read local sessions");
+            return;
+        }
+    };
+    let blob = HistoryBlob { device_name, sessions, schema: 1 };
+    if let Ok(body) = serde_json::to_vec(&blob) {
+        rcat(&remote.exe, &remote.history_target(device_id), &body).await;
     }
 }
 
