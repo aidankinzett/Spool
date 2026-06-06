@@ -39,8 +39,11 @@ that owns all state and side effects. This page is a map of the modules.
   the manifest cache and the search/find/enrich + restore/backup flow.
 - **`ludusavi_config.rs`** — Spool owns ludusavi's `config.yaml` so it controls
   backup/restore paths, the cloud remote, retention, and per-restore redirects.
-- **`steamgriddb.rs`** — HTTP client for SteamGridDB. Downloads portrait covers
-  and extracts a vibrant accent colour.
+- **`steam_cdn.rs`** — official Steam library artwork via the public Steam CDN,
+  fetched by appid alone (no API key). The art-fetch path tries this first.
+- **`steamgriddb.rs`** — HTTP client for SteamGridDB, the fallback art source
+  behind `steam_cdn.rs`. Downloads portrait covers and extracts a vibrant accent
+  colour.
 - **`steam.rs`** — non-Steam shortcut creation (`shortcuts.vdf`) + grid art.
 - **`sync.rs`** — sync-server HTTP client (the Hono server in `server/`):
   account registration, per-game play-state locks, save events, playtime sync.
