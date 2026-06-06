@@ -9,7 +9,7 @@ Everything the plugin does is backed by `spool --headless-server`, a loopback HT
 
 ## Why a server instead of subprocesses
 
-The plugin could shell out to `spool --backup` for each operation, but a persistent server:
+An earlier version shelled out to one-shot `spool --backup` / `--release-lock` subcommands per operation (since removed). A persistent server instead:
 
 - avoids the cold-start cost of spawning a fresh Spool process per operation,
 - gives the plugin access to live in-process state (the LAN peer list, in-flight downloads), and

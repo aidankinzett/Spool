@@ -260,7 +260,15 @@ async fn post_game_stopped(
     // the cloud. The backup below clears the marker once the upload lands.
     crate::rclone::mark_session_pending_backup_from_config(&config.data, &rec.game).await;
 
-    run_backup(&state, &rec.game, &rec.session_id, Some((rec.started_at, rec.suspended_secs))).await
+    // Reuse the config already loaded above rather than reloading inside run_backup.
+    run_backup(
+        &state,
+        &rec.game,
+        &rec.session_id,
+        Some((rec.started_at, rec.suspended_secs)),
+        config,
+    )
+    .await
 }
 
 /// Manual backup from the QAM "Back up now" button. No appid check; no lock
@@ -271,7 +279,8 @@ async fn post_backup_now(AxState(state): AxState<PluginState>) -> Json<Value> {
     };
     // "Back up now" can fire mid-session — pass None so we don't record a
     // premature/short play session; the real game-stop path records it.
-    run_backup(&state, &rec.game, &rec.session_id, None).await
+    let config = crate::config::Config::load().unwrap_or_default();
+    run_backup(&state, &rec.game, &rec.session_id, None, config).await
 }
 
 /// Pull cloud saves for a game down to this device and restore them to disk,
@@ -812,10 +821,11 @@ async fn delete_lan_download(
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
-/// Run the forced-close backup for `game_name`/`session_id`. When `session` is
-/// `Some((started_at, suspended_secs))`, this is the real game-stop path, so the
-/// play session that the SIGKILLed workflow never recorded is written here too
-/// (playtime + history row, with sleep time subtracted). The manual "Back up
+/// Run the forced-close backup for `game_name`/`session_id`, using the
+/// already-loaded `config` (callers reload it once, not twice). When `session`
+/// is `Some((started_at, suspended_secs))`, this is the real game-stop path, so
+/// the play session that the SIGKILLed workflow never recorded is written here
+/// too (playtime + history row, with sleep time subtracted). The manual "Back up
 /// now" passes `None` — the game may still be running, so recording a session
 /// then would be premature.
 async fn run_backup(
@@ -823,22 +833,11 @@ async fn run_backup(
     game_name: &str,
     session_id: &str,
     session: Option<(chrono::DateTime<chrono::Utc>, i64)>,
+    config: crate::config::Config,
 ) -> Json<Value> {
     // Stamp the session end now (≈ game-stop), before the backup runs, so the
     // recorded duration doesn't include the backup itself.
     let session_ended = chrono::Utc::now();
-    let Some(ludusavi_exe) = crate::paths::resolve_ludusavi_path() else {
-        tracing::error!("plugin backup: ludusavi sidecar not found");
-        return Json(
-            json!({ "acted": true, "ok": false, "reason": "ludusavi sidecar not found" }),
-        );
-    };
-
-    if let Err(e) = crate::ludusavi_config::ensure_config() {
-        tracing::warn!(error = %e, "plugin backup: ensure_config warning");
-    }
-
-    let config = crate::config::Config::load().unwrap_or_default();
     let config_dir = crate::paths::ludusavi_config_dir();
 
     let Some(game_id) = state.library.find_id_by_name(game_name).await.ok().flatten() else {
@@ -846,6 +845,46 @@ async fn run_backup(
         return Json(json!({ "acted": true, "ok": false, "reason": "game not in library" }));
     };
 
+    // Record the play session + local playtime FIRST, independent of the backup
+    // outcome — a session happened whether or not the backup succeeds, mirroring
+    // the in-process path which records in phase_play *before* phase_backup. It
+    // shares the in-process session_id recipe (session::write_start's started_at),
+    // so if the workflow already recorded this session it dedupes and returns
+    // None; that None is also what keeps the additive device-blob playtime pushed
+    // exactly once across the two paths.
+    let recorded_minutes = match session {
+        Some((started, suspended_secs)) => {
+            crate::runner::record_session_headless(
+                &state.library,
+                &config.data,
+                &game_id,
+                game_name,
+                started,
+                session_ended,
+                suspended_secs,
+            )
+            .await
+        }
+        None => None,
+    };
+
+    let Some(ludusavi_exe) = crate::paths::resolve_ludusavi_path() else {
+        tracing::error!("plugin backup: ludusavi sidecar not found");
+        // The session is already recorded above; we just can't back up saves.
+        return Json(
+            json!({ "acted": true, "ok": false, "reason": "ludusavi sidecar not found" }),
+        );
+    };
+    if let Err(e) = crate::ludusavi_config::ensure_config() {
+        tracing::warn!(error = %e, "plugin backup: ensure_config warning");
+    }
+
+    // NB: backup_game_core takes the machine-wide backup lock. An in-process
+    // workflow may still be mid-backup and flip `backed_up` while we wait on it,
+    // so this can do a redundant backup — harmless: the shared session_id means
+    // no duplicate row, and `recorded_minutes` is None when the workflow already
+    // recorded, so playtime isn't double-counted; the worst case is re-uploading
+    // identical saves (force-overwrite).
     match crate::runner::backup_game_core(
         state.ludusavi.as_ref(),
         &ludusavi_exe,
@@ -856,21 +895,6 @@ async fn run_backup(
     .await
     {
         Ok(r) => {
-            // On the real game-stop path, record the play session + playtime the
-            // force-killed workflow never got to. Idempotent (keyed on session
-            // start), independent of cloud sync — the game was played regardless.
-            if let Some((started, suspended_secs)) = session {
-                crate::runner::record_session_headless(
-                    &state.library,
-                    &config.data,
-                    &game_id,
-                    game_name,
-                    started,
-                    session_ended,
-                    suspended_secs,
-                )
-                .await;
-            }
             // Both branches guard on `session_id` so a new game starting while
             // this async backup was in flight is never clobbered.
             if r.cloud_synced {
@@ -879,7 +903,21 @@ async fn run_backup(
                 // is never otherwise deleted, only overwritten on next launch).
                 // (#280)
                 crate::session::clear_if(session_id);
-                crate::rclone::complete_session_backup_from_config(&config.data, game_name).await;
+                // One device-blob round-trip: fold this session's playtime (only
+                // when we recorded a new row) into the marker-delete + backup
+                // stamp, instead of a separate playtime round-trip to the same file.
+                match recorded_minutes {
+                    Some(m) => {
+                        crate::rclone::record_session_and_complete_backup_from_config(
+                            &config.data, game_name, m, &session_ended.to_rfc3339(),
+                        )
+                        .await
+                    }
+                    None => {
+                        crate::rclone::complete_session_backup_from_config(&config.data, game_name)
+                            .await
+                    }
+                }
                 tracing::info!(game = %game_name, "plugin backup: complete");
             } else {
                 // Local backup landed but the upload failed or hit a conflict —
@@ -887,11 +925,27 @@ async fn run_backup(
                 // happens. This is the forced-close fallback, so a flaky Deck
                 // Wi-Fi must not silently drop the "unsynced session" signal.
                 crate::session::mark_backed_up_if(session_id);
+                // Still publish this session's playtime to the device blob (the
+                // in-process soft-defer path does the same), when we recorded it.
+                if let Some(m) = recorded_minutes {
+                    crate::rclone::record_session_from_config(
+                        &config.data, game_name, m, &session_ended.to_rfc3339(),
+                    )
+                    .await;
+                }
                 tracing::warn!(game = %game_name, "plugin backup: cloud upload failed — leaving session marker in place");
             }
             Json(json!({ "acted": true, "ok": true, "game": game_name, "cloud_synced": r.cloud_synced }))
         }
         Err(e) => {
+            // The session is recorded locally; surface its cross-device playtime
+            // too (when we recorded it) even though the backup itself failed.
+            if let Some(m) = recorded_minutes {
+                crate::rclone::record_session_from_config(
+                    &config.data, game_name, m, &session_ended.to_rfc3339(),
+                )
+                .await;
+            }
             tracing::error!(error = %e, game = %game_name, "plugin backup: failed");
             Json(
                 json!({ "acted": true, "ok": false, "game": game_name, "reason": e.to_string() }),

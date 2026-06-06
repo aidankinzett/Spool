@@ -5,7 +5,7 @@
   "api_version": 1,
   "publish": {
     "tags": ["save-management", "utility"],
-    "description": "Forced-close save-backup safety net for Spool-managed games. On a game stop it backs up saves via `spool --backup` if Spool was killed before it could (e.g. Quick Access -> Exit Game).",
+    "description": "Forced-close save-backup safety net for Spool-managed games. On a game stop it asks Spool's headless server to back up saves if Spool was killed before it could (e.g. Quick Access -> Exit Game).",
     "image": "https://opengraph.githubassets.com/1/aidankinzett/Spool"
   }
 }

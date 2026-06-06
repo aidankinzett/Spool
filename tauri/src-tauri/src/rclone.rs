@@ -946,9 +946,38 @@ pub async fn record_session(app: &AppHandle, game_name: &str, session_minutes: i
     .await;
 }
 
+/// Shared device-blob write for the `_from_config` session recorders: stamp
+/// `device_name`, add playtime (when > 0) + `last_played`, and — when
+/// `stamp_backup` — the backup timestamp. `device_id` must already be trimmed
+/// and non-empty. One body so the record-only and record-and-complete variants
+/// can't drift.
+async fn write_session_blob_from_config(
+    remote: &RcloneRemote,
+    device_id: &str,
+    device_name: &str,
+    game_name: &str,
+    session_minutes: i32,
+    session_end: &str,
+    stamp_backup: bool,
+) {
+    let delta = session_minutes.max(0) as i64;
+    update_device_blob(remote, device_id, |b| {
+        b.device_name = device_name.to_string();
+        if delta > 0 {
+            *b.playtime.entry(game_name.to_string()).or_default() += delta;
+        }
+        b.last_played.insert(game_name.to_string(), session_end.to_string());
+        if stamp_backup {
+            b.backups.insert(game_name.to_string(), Utc::now().to_rfc3339());
+        }
+    })
+    .await;
+}
+
 /// AppHandle-free [`record_session`] for the Game-Mode forced-close backup (the
 /// plugin server's game-stop path): add playtime + last_played to this device's
-/// blob from config. No-op when cloud isn't configured.
+/// blob from config. No-op when cloud isn't configured. Used when the local
+/// backup landed but the cloud upload did not, so the marker stays put.
 pub async fn record_session_from_config(
     cfg: &ConfigData,
     game_name: &str,
@@ -962,15 +991,35 @@ pub async fn record_session_from_config(
     if device_id.is_empty() {
         return;
     }
-    let device_name = cfg.device_name.trim().to_string();
-    let delta = session_minutes.max(0) as i64;
-    update_device_blob(&remote, device_id, |b| {
-        b.device_name = device_name.clone();
-        if delta > 0 {
-            *b.playtime.entry(game_name.to_string()).or_default() += delta;
-        }
-        b.last_played.insert(game_name.to_string(), session_end.to_string());
-    })
+    write_session_blob_from_config(
+        &remote, device_id, cfg.device_name.trim(), game_name, session_minutes, session_end, false,
+    )
+    .await;
+}
+
+/// AppHandle-free [`record_session_and_complete_backup`] for the Game-Mode
+/// forced-close success path: in ONE device-blob round-trip, delete the session
+/// marker (saves are in the cloud) and write playtime + last_played + the backup
+/// timestamp. Replaces a separate `record_session_from_config` +
+/// `complete_session_backup_from_config` pair (two round-trips to the same file).
+/// No-op when cloud isn't configured.
+pub async fn record_session_and_complete_backup_from_config(
+    cfg: &ConfigData,
+    game_name: &str,
+    session_minutes: i32,
+    session_end: &str,
+) {
+    let Some(remote) = resolve_remote_from_config(cfg) else {
+        return;
+    };
+    let device_id = cfg.device_id.trim();
+    if device_id.is_empty() {
+        return;
+    }
+    delete_marker_if_ours(&remote, game_name, device_id).await;
+    write_session_blob_from_config(
+        &remote, device_id, cfg.device_name.trim(), game_name, session_minutes, session_end, true,
+    )
     .await;
 }
 

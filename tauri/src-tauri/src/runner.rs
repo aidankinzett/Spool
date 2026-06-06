@@ -2120,6 +2120,28 @@ async fn phase_launch(ctx: &WorkflowCtx<'_>, exe_pathbuf: &Path) -> AppResult<Se
     Ok(SessionTiming { end: session_end, minutes: session_minutes })
 }
 
+/// The instant a play session's `session_id` is keyed on. Both the in-process
+/// workflow and the forced-close fallback resolve it the same way: the
+/// active-session record's `started_at` when a *live* one exists for this game
+/// (a Game-Mode / streaming attached launch writes it fresh at launch with
+/// `backed_up = false`), else `fallback` — the workflow's own session start,
+/// used on desktop where there is no record.
+///
+/// One shared source is what makes the idempotency cross-cut both paths: if a
+/// Game-Mode session is recorded by the in-process [`record_play_session`] and
+/// then *also* by a forced-close backup that fired before the workflow flipped
+/// `backed_up`, both derive the same `session_id`, so `insert_session`'s
+/// `INSERT OR IGNORE` dedupes it instead of writing a second row and
+/// double-counting playtime. The `!backed_up` filter rejects a stale record
+/// left behind by an earlier cloud-upload failure (so a later desktop launch of
+/// the same game can't adopt its start time).
+fn session_id_seed(game_name: &str, fallback: DateTime<Utc>) -> DateTime<Utc> {
+    crate::session::read()
+        .filter(|r| r.game == game_name && !r.backed_up)
+        .map(|r| r.started_at)
+        .unwrap_or(fallback)
+}
+
 /// Insert a [`PlaySession`] row for the just-finished launch and push the
 /// updated history to the rclone remote. Best-effort: every failure is logged
 /// and swallowed so it can't fail the run workflow. No-op for the cross-device
@@ -2136,8 +2158,9 @@ async fn record_play_session(
         // with a blank device id that the cross-device fold can't attribute.
         return;
     }
+    let seed = session_id_seed(ctx.game_name, started_at);
     let session = crate::library::PlaySession {
-        session_id: format!("{device_id}:{}", started_at.timestamp_millis()),
+        session_id: format!("{device_id}:{}", seed.timestamp_millis()),
         device_id,
         device_name,
         game_name: ctx.game_name.to_string(),
@@ -2152,16 +2175,23 @@ async fn record_play_session(
     rclone::sync_play_history(ctx.app).await;
 }
 
-/// Record a play-session row + playtime for a session Spool's own workflow never
-/// got to finish: the SteamOS Game-Mode forced-close path, where Steam SIGKILLs
-/// Spool before [`phase_play`] reaches [`record_play_session`]. Called from the
-/// plugin server's game-stop backup ([`crate::plugin_server`]) with the start
-/// time from the active-session record ([`crate::session`]).
+/// Record the LOCAL side of a session Spool's own workflow never got to finish:
+/// the SteamOS Game-Mode forced-close path, where Steam SIGKILLs Spool before
+/// [`phase_play`] reaches [`record_play_session`]. Called from the plugin
+/// server's game-stop backup ([`crate::plugin_server`]) with the start time from
+/// the active-session record ([`crate::session`]) — which is exactly the
+/// [`session_id_seed`] the in-process path uses, so the two dedupe.
 ///
-/// Idempotent: the row is keyed `device_id:started_at_millis` and inserted
-/// `OR IGNORE`, and playtime is bumped **only** when a new row actually lands —
-/// so a retried game-stop backup can't double-count. Best-effort: every failure
-/// is logged and swallowed so it can't fail the backup it rides on.
+/// Writes the `play_sessions` row, bumps local playtime, and pushes the history
+/// blob. It does NOT touch the cross-device *device* blob (playtime/last_played)
+/// — the caller folds that into the single post-backup device-blob write so a
+/// forced-close session is one remote round-trip, not two.
+///
+/// Returns `Some(minutes)` when a **new** row landed (so the caller knows to add
+/// that playtime to the device blob), or `None` when the session was already
+/// recorded — the in-process workflow beat us to it ([`session_id_seed`]), a
+/// retry, or there's no device identity. The `None` return is what keeps the
+/// additive device-blob playtime pushed exactly once across both paths.
 ///
 /// Duration is `(ended_at - started_at) - suspended_secs`, mirroring the
 /// in-process path: `suspended_secs` is the suspend total the watcher
@@ -2176,13 +2206,16 @@ pub async fn record_session_headless(
     started_at: DateTime<Utc>,
     ended_at: DateTime<Utc>,
     suspended_secs: i64,
-) {
+) -> Option<i32> {
+    // Trimmed to match the `_from_config` rclone helpers; device_id is a UUID
+    // (config::ensure_device_identity) so this equals the untrimmed value
+    // device_identity() hands the in-process path, keeping the session_ids equal.
     let device_id = cfg.device_id.trim().to_string();
     let device_name = cfg.device_name.trim().to_string();
     if device_id.is_empty() {
         // No device identity — skip rather than write a row the cross-device
         // fold can't attribute. Matches `record_play_session`.
-        return;
+        return None;
     }
     let duration_secs = ((ended_at - started_at).num_seconds() - suspended_secs.max(0)).max(0);
     let session = crate::library::PlaySession {
@@ -2195,23 +2228,23 @@ pub async fn record_session_headless(
         duration_secs,
     };
     match library.insert_session(&session).await {
-        // New row — record playtime + push to the cross-device blobs once.
+        // New row — record playtime locally; caller adds the device-blob delta.
         Ok(true) => {}
-        // Already recorded (a retry/double-fire). Don't bump playtime again.
-        Ok(false) => return,
+        // Already recorded (the in-process path, a retry, a double-fire). Don't
+        // bump playtime again, and signal the caller not to push the device blob.
+        Ok(false) => return None,
         Err(e) => {
             tracing::warn!(error = %e, game = game_name, "forced-close: failed to record play session");
-            return;
+            return None;
         }
     }
     let minutes = (duration_secs / 60) as i32;
     if let Err(e) = library.bump_session(game_id, ended_at, minutes).await {
         tracing::warn!(error = %e, game = game_name, "forced-close: failed to bump playtime");
     }
-    // Make the session + playtime visible to peers. Best-effort; no-op offline.
-    rclone::record_session_from_config(cfg, game_name, minutes, &ended_at.to_rfc3339()).await;
     rclone::sync_play_history_from_config(cfg, library).await;
     tracing::info!(game = game_name, duration_secs, "forced-close: recorded play session");
+    Some(minutes)
 }
 
 /// Phase 3: back up saves after the session (skipped when ludusavi didn't
@@ -2556,6 +2589,54 @@ mod tests {
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].duration_secs, 30 * 60);
         assert_eq!(lib.find("a").await.unwrap().unwrap().playtime_minutes, 30);
+    }
+
+    #[tokio::test]
+    async fn record_session_headless_dedupes_against_in_process_row() {
+        // The in-process path records first; its session_id is keyed on the SAME
+        // active-session start (via session_id_seed). A forced-close backup that
+        // fires before the workflow finished must NOT write a second row or
+        // double playtime — it dedupes and returns None.
+        let lib = crate::library::Library::open_in_memory().await.unwrap();
+        let game = crate::library::GameEntry {
+            id: "a".to_string(),
+            game_name: "Hades".to_string(),
+            ..Default::default()
+        };
+        lib.insert(game).await.unwrap();
+        let cfg = crate::config::ConfigData {
+            device_id: "deck".to_string(),
+            device_name: "Deck".to_string(),
+            ..Default::default()
+        };
+        let start = chrono::DateTime::parse_from_rfc3339("2026-06-06T10:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let end = start + chrono::Duration::minutes(45);
+
+        // Simulate the in-process row already present, keyed on the shared seed
+        // (device_id:started_at_millis), plus its playtime bump.
+        let pre = crate::library::PlaySession {
+            session_id: format!("deck:{}", start.timestamp_millis()),
+            device_id: "deck".to_string(),
+            device_name: "Deck".to_string(),
+            game_name: "Hades".to_string(),
+            started_at: start,
+            ended_at: end,
+            duration_secs: 45 * 60,
+        };
+        assert!(lib.insert_session(&pre).await.unwrap());
+        lib.bump_session("a", end, 45).await.unwrap();
+
+        // Forced-close fallback fires for the same session.
+        let res = record_session_headless(&lib, &cfg, "a", "Hades", start, end, 0).await;
+        assert_eq!(res, None, "deduped — no new row, caller skips device-blob push");
+        assert_eq!(lib.list_sessions(Some("Hades")).await.unwrap().len(), 1);
+        assert_eq!(
+            lib.find("a").await.unwrap().unwrap().playtime_minutes,
+            45,
+            "playtime must not be double-bumped"
+        );
     }
 
     #[tokio::test]

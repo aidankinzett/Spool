@@ -14,31 +14,29 @@ other devices keep seeing the game as "playing on <device>" until the server's
 stale window (~5 min) elapses.
 
 This plugin's backend runs in the Decky service context, **outside** the game's
-process tree, so the work it spawns survives the force-close. On a game stop it
-reads Spool's session record and, if Spool didn't already finish, runs
-`spool --release-lock "<game>"` then `spool --backup "<game>"`.
+process tree, so it survives the force-close. It talks to a long-lived
+`spool --headless-server` over loopback HTTP; on a game stop it asks the server
+to flag the session unsynced and back up, if Spool didn't already finish.
 
 On a **normal in-game quit** Spool backs up + releases itself and marks the
 session `backed_up: true`, so this plugin no-ops — no double backup, no
 redundant release. It also no-ops for non-Spool games.
 
-Requires the Game-Mode attached-launch support in Spool (Sub-project A): the
-`active-session.json` record and the headless `spool --backup` /
-`spool --release-lock` one-shots.
+Requires the Game-Mode attached-launch support in Spool: the
+`active-session.json` record and the headless server (`spool --headless-server`).
 
 ## How it works
 
 1. Frontend registers `SteamClient.GameSessions.RegisterForAppLifetimeNotifications`
    and forwards every game-**stop** to the backend.
-2. Backend reads `~/.local/share/Spool/active-session.json`. If its
-   `steam_appid` matches the stopped app and `backed_up` is `false`, it spawns
-   (detached, in order) `spool --release-lock "<game>"` then
-   `spool --backup "<game>"`.
-3. `spool --release-lock` drops this device's sync-server play lock; it runs
-   first and independently so a slow or failing backup can't delay it. It's
-   scoped by device id server-side, so it only ever releases this device's own
-   lock, and is a no-op when no sync server is configured.
-4. `spool --backup` runs ludusavi and flips `backed_up: true`.
+2. Backend ensures `spool --headless-server` is running (starting it if needed)
+   and POSTs the stopped app id to its game-stop endpoint over loopback HTTP.
+3. The server reads `~/.local/share/Spool/active-session.json`. If its
+   `steam_appid` matches the stopped app and `backed_up` is `false`, it flags
+   this device's session unsynced (the "release lock" marker — scoped by device
+   id, a no-op when no sync server is configured), then runs ludusavi to back up
+   the saves, records the play session Spool's killed workflow never got to, and
+   flips `backed_up: true`.
 
 The backend runs **as the `deck` user** (no `_root` flag), so `$HOME` and file
 ownership match Spool's interactive paths.
@@ -77,12 +75,12 @@ spool-backup/
 
 ## Troubleshooting
 
-- Plugin log: `~/homebrew/logs/spool-backup/` (Decky) plus the spawned
-  backup/release output at `spool-backup.log` in the plugin log dir.
-- Confirm `spool-launcher.sh --backup "<game>"` (AppImage) or `spool --backup
-  "<game>"` (native) works from a terminal first.
-- **Game still shows as "playing" on another device** after exiting: the lock
-  release didn't reach the sync server. Confirm `spool --release-lock "<game>"`
-  works from a terminal and that the sync server is reachable in Spool's
-  Settings. The server reaps stale locks after ~5 min regardless, so this
-  self-heals either way.
+- Plugin log: `~/homebrew/logs/spool-backup/` (Decky). The headless server logs
+  to Spool's own `debug.log`.
+- Confirm `spool --headless-server` starts and writes its port to
+  `~/.local/share/Spool/plugin-http-port` (use `spool-launcher.sh` on the
+  AppImage). The plugin reads that file to reach the server.
+- **Game still shows as "playing" on another device** after exiting: the
+  unsynced-session flag didn't reach the sync server. Check the server is
+  reachable and the cloud remote is configured in Spool's Settings. The server
+  reaps stale locks after ~5 min regardless, so this self-heals either way.

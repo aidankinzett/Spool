@@ -18,8 +18,8 @@ that owns all state and side effects. This page is a map of the modules.
   round-trip across the IPC boundary as strings.
 - **`paths.rs`** — centralised filesystem path resolution. Every module that
   touches an app file goes through here.
-- **`cli.rs`** — argv parsing for headless subcommands (`--run`, `--backup`,
-  `--release-lock`) vs a normal launch.
+- **`cli.rs`** — argv parsing for the `--run` launch workflow and
+  `--headless-server` (the plugin server) vs a normal launch.
 
 ## Persistence
 
