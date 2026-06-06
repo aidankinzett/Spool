@@ -1,13 +1,13 @@
 # Storybook for the Spool Decky plugin
 
 This renders the plugin's React components **outside Steam**, so you can iterate
-on UI without the deploy-to-Deck-and-restart loop (`pnpm deploy` over SSH +
+on UI without the deploy-to-Deck-and-restart loop (`bun run deploy` over SSH +
 `plugin_loader` restart).
 
 ```bash
 cd decky
-pnpm storybook        # dev server on http://localhost:6006
-pnpm build-storybook  # static build (also what CI/sanity-checks run)
+bun run storybook        # dev server on http://localhost:6006
+bun run build-storybook  # static build (also what CI/sanity-checks run)
 ```
 
 ## Why mocks are needed

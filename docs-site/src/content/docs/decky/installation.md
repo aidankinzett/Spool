@@ -9,7 +9,7 @@ sidebar:
 
 Spool can install the plugin for you — **Settings → Decky Backup Plugin** in the desktop app. This is implemented in `tauri/src-tauri/src/decky_install.rs`, Linux-only.
 
-The plugin payload is **embedded** into the Spool binary at compile time via `include_str!` — `decky/dist/index.js`, `main.py`, `plugin.json`, and `package.json`. (The whole `embedded` module is `#[cfg(target_os = "linux")]`, and the `dist/index.js` it references requires the plugin to have been built with `pnpm build` before Spool is compiled — CI's Linux build does this.) Embedding means the install works offline and is version-locked to the running Spool build.
+The plugin payload is **embedded** into the Spool binary at compile time via `include_str!` — `decky/dist/index.js`, `main.py`, `plugin.json`, and `package.json`. (The whole `embedded` module is `#[cfg(target_os = "linux")]`, and the `dist/index.js` it references requires the plugin to have been built with `bun run build` before Spool is compiled — CI's Linux build does this.) Embedding means the install works offline and is version-locked to the running Spool build.
 
 `install()` stages the payload into a private dir (`<app-data>/decky-staging/spool-backup`), then runs a single privileged step via `pkexec` because Decky's plugin dir and `plugin_loader` service are root-owned:
 
@@ -52,8 +52,8 @@ The Quick Access panel (`src/components/content.tsx`) has a **Settings** section
 
 ```bash
 cd decky
-pnpm install
-pnpm build          # rollup -c → dist/index.js
+bun install
+bun run build       # rollup -c → dist/index.js
 ```
 
 `package.json` also has convenience deploy scripts (`deploy`, `deploy:local`) that `rsync` the built plugin to a Deck and restart `plugin_loader`. A distributed plugin is laid out as Decky Loader expects:
@@ -68,4 +68,4 @@ spool-backup/
 
 ## CI
 
-`.github/workflows/decky.yml` builds and packages the plugin on pushes and PRs that touch `decky/**` or the Rust files the plugin depends on (`plugin_server.rs`, `cli.rs`, `lib.rs`, `paths.rs`, `Cargo.toml`). It runs under Node 22 with pnpm 11.5.0, installs with `--frozen-lockfile`, runs `pnpm build`, verifies `dist/index.js` exists, then zips the `spool-backup/` layout above and uploads it as the `spool-backup-plugin` artifact.
+`.github/workflows/decky.yml` builds and packages the plugin on pushes and PRs that touch `decky/**` or the Rust files the plugin depends on (`plugin_server.rs`, `cli.rs`, `lib.rs`, `paths.rs`, `Cargo.toml`). It runs under bun, installs with `--frozen-lockfile`, runs `bun run build`, verifies `dist/index.js` exists, then zips the `spool-backup/` layout above and uploads it as the `spool-backup-plugin` artifact.

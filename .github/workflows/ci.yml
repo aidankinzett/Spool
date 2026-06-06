@@ -340,25 +340,12 @@ jobs:
 
       # The Spool binary embeds the Decky plugin bundle (Linux only) via
       # include_str!; build it so the genuine bundle is what gets compiled in.
-      # Node 22: pnpm 11 (pinned via decky/package.json packageManager) needs
-      # Node >= 22.13, else corepack crashes on the node:sqlite builtin.
-      - name: Setup Node for Decky plugin
-        uses: actions/setup-node@v6
-        with:
-          node-version: 22
-      - name: pnpm store cache
-        uses: actions/cache@v5
-        with:
-          path: ${{ github.workspace }}/.pnpm-store
-          key: pnpm-${{ runner.os }}-${{ hashFiles('decky/pnpm-lock.yaml') }}
-          restore-keys: |
-            pnpm-${{ runner.os }}-
+      # bun is the same toolchain the Tauri frontend already uses above.
       - name: Build Decky plugin
         working-directory: decky
         run: |
-          corepack enable
-          corepack pnpm install --frozen-lockfile --store-dir ${{ github.workspace }}/.pnpm-store
-          corepack pnpm build
+          bun install --frozen-lockfile
+          bun run build
 
       - name: Cache sidecars
         id: cache-sidecars

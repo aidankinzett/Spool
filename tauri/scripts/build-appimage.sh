@@ -19,14 +19,8 @@ TAURI_CONF="$TAURI_DIR/src-tauri/tauri.conf.json"
 # ── Decky plugin ─────────────────────────────────────────────────────────────
 echo "==> Building Decky plugin..."
 cd "$REPO_ROOT/decky"
-if command -v pnpm &>/dev/null; then
-  pnpm install --frozen-lockfile
-  pnpm build
-else
-  corepack enable
-  corepack pnpm install --frozen-lockfile
-  corepack pnpm build
-fi
+bun install --frozen-lockfile
+bun run build
 
 # ── Frontend deps + sidecars ──────────────────────────────────────────────────
 echo "==> Installing frontend dependencies..."
