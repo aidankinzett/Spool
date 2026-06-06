@@ -208,12 +208,24 @@
   }
 
   // ── Navigation ────────────────────────────────────────────────────────────
+  // Both "Continue/Finish" and "Skip for now" call next(), and on the cloud step
+  // it awaits finalizeCloud() before advancing. Without a guard, a fast double-
+  // activation (mouse double-click, or an A-button double-press in Game Mode)
+  // re-enters next() before the first resolves and advances the stepper twice,
+  // skipping a step. (#288)
+  let navigating = $state(false);
   async function next() {
-    if (stepId === 'cloud') await finalizeCloud();
-    if (isLast) {
-      await complete();
-    } else {
-      idx += 1;
+    if (navigating) return;
+    navigating = true;
+    try {
+      if (stepId === 'cloud') await finalizeCloud();
+      if (isLast) {
+        await complete();
+      } else {
+        idx += 1;
+      }
+    } finally {
+      navigating = false;
     }
   }
 
@@ -494,8 +506,8 @@
           <span class="font-mono whitespace-nowrap text-[9.5px] uppercase tracking-[0.1em] text-ink-3">Spool · First run</span>
         {/if}
         <div class="flex-1"></div>
-        {#if skippable}<Btn variant="ghost" onclick={next}>Skip for now</Btn>{/if}
-        <Btn variant="primary" accent={ACCENT} onclick={next}>{primaryLabel}</Btn>
+        {#if skippable}<Btn variant="ghost" onclick={next} disabled={navigating}>Skip for now</Btn>{/if}
+        <Btn variant="primary" accent={ACCENT} onclick={next} disabled={navigating}>{primaryLabel}</Btn>
       </div>
     {/if}
   </div>

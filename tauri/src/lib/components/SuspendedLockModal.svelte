@@ -51,7 +51,14 @@
   function confirm() {
     if (confirming) return;
     confirming = true;
-    onConfirm();
+    // onConfirm is fire-and-forget (typed void) but is usually async and can
+    // reject — e.g. the launch it kicks off throws. The host normally unmounts
+    // us on success, so this only matters on failure: reset the guard so the
+    // modal re-enables instead of stranding with a dead "Starting…" button and
+    // Escape / Back / close all gated off by `confirming`. (#289)
+    Promise.resolve(onConfirm()).catch(() => {
+      confirming = false;
+    });
   }
 
   function handleKey(e: KeyboardEvent) {
