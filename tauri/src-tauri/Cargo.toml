@@ -28,8 +28,8 @@ chrono = { version = "0.4", features = ["serde"] }
 # library concurrently without the whole-document JSON clobbering each other.
 # Runtime-checked queries (query/query_as) — no compile-time DATABASE_URL or
 # `.sqlx` offline cache needed, so CI builds unchanged.
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite", "chrono"] }
-dirs = "5"
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "sqlite", "chrono"] }
+dirs = "6"
 thiserror = "2"
 tauri-plugin-dialog = "2.7.1"
 tauri-plugin-single-instance = "2"
@@ -39,19 +39,19 @@ tauri-plugin-process = "2"
 tauri-plugin-window-state = "2"
 tokio = { version = "1", features = ["process", "io-util", "rt", "macros", "sync", "time", "net"] }
 uuid = { version = "1.23.1", features = ["v4"] }
-reqwest = { version = "0.12", features = ["json", "stream"] }
+reqwest = { version = "0.13", features = ["json", "stream"] }
 steamlocate = "2"
 steam_shortcuts_util = "1"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-appender = "0.2"
-socket2 = "0.5"
-axum = { version = "0.7", default-features = false, features = ["json", "tokio", "http1", "query"] }
+socket2 = "0.6"
+axum = { version = "0.8", default-features = false, features = ["json", "tokio", "http1", "query"] }
 hyper = { version = "1", features = ["http1", "server"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 tower-service = "0.3"
-tower-http = { version = "0.5", features = ["fs", "cors"] }
+tower-http = { version = "0.6", features = ["fs", "cors"] }
 walkdir = "2"
 tokio-util = { version = "0.7", features = ["io"] }
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
@@ -76,8 +76,8 @@ zbus = { version = "5", default-features = false, features = ["tokio"] }
 # Windows-only: registry probe for the per-exe Run-As-Admin
 # compatibility flag, and ShellExecuteExW-based elevated launch.
 [target.'cfg(windows)'.dependencies]
-winreg = "0.55"
-windows-sys = { version = "0.59", features = [
+winreg = "0.56"
+windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_System_Threading",
     "Win32_UI_Shell",
