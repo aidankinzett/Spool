@@ -53,6 +53,7 @@ mod runner;
 mod session;
 mod size_backfill;
 mod steam;
+mod steam_cdn;
 mod steamgriddb;
 mod suspend;
 mod system_open;

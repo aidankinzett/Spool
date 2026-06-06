@@ -79,13 +79,8 @@ pub async fn fetch_and_save_cover(
     app: &AppHandle,
     game_entry_id: &str,
 ) -> AppResult<Option<String>> {
-    let client = app.state::<SteamGridDbClient>();
-    let Some((sgdb_id, safe_name, api_key)) = resolve_entry_sgdb_id(app, game_entry_id).await?
-    else {
-        return Ok(None);
-    };
-
-    let Some(path_str) = download_cover(&client.http, &api_key, sgdb_id, &safe_name).await? else {
+    let FetchedArt { cover, .. } = fetch_art(app, game_entry_id, true, false).await?;
+    let Some(path_str) = cover else {
         return Ok(None);
     };
     let accent = extract_accent_blocking(&path_str).await;
@@ -103,24 +98,7 @@ pub async fn fetch_and_save_cover_and_hero(
     app: &AppHandle,
     game_entry_id: &str,
 ) -> AppResult<()> {
-    let client = app.state::<SteamGridDbClient>();
-    let Some((sgdb_id, safe_name, api_key)) = resolve_entry_sgdb_id(app, game_entry_id).await?
-    else {
-        return Ok(());
-    };
-
-    let cover = download_cover(&client.http, &api_key, sgdb_id, &safe_name)
-        .await
-        .unwrap_or_else(|e| {
-            tracing::warn!(game_entry_id, error = %e, "cover download failed");
-            None
-        });
-    let hero = download_hero(&client.http, &api_key, sgdb_id, &safe_name)
-        .await
-        .unwrap_or_else(|e| {
-            tracing::warn!(game_entry_id, error = %e, "hero download failed");
-            None
-        });
+    let FetchedArt { cover, hero } = fetch_art(app, game_entry_id, true, true).await?;
     if cover.is_none() && hero.is_none() {
         return Ok(());
     }
@@ -138,6 +116,94 @@ pub async fn fetch_and_save_cover_and_hero(
     )
     .await?;
     Ok(())
+}
+
+/// Cover and/or hero paths resolved for one entry.
+struct FetchedArt {
+    cover: Option<String>,
+    hero: Option<String>,
+}
+
+/// Resolves the requested assets for `game_entry_id`, preferring Steam's
+/// official library art (when ludusavi resolved an appid) and falling back to
+/// SteamGridDB for whichever asset Steam didn't provide. The single SteamGridDB
+/// id lookup is shared across both assets, so requesting cover + hero costs one
+/// resolve, not two. Each download is best-effort: a failure logs and yields
+/// `None` for that asset rather than aborting the other.
+///
+/// The official path needs neither an API key nor the SteamGridDB toggle, so a
+/// Steam-resolved game still gets art when SteamGridDB is off. Downloaded files
+/// land in the covers/heroes dirs but the entry isn't touched — callers decide
+/// what to persist (most call `apply_art`; `add_to_steam` also copies the file
+/// into Steam's grid dir).
+async fn fetch_art(
+    app: &AppHandle,
+    game_entry_id: &str,
+    want_cover: bool,
+    want_hero: bool,
+) -> AppResult<FetchedArt> {
+    let client = app.state::<SteamGridDbClient>();
+    let library = app.state::<SharedLibrary>();
+
+    let (name, safe_name, steam_id) = {
+        let entry = library
+            .find(game_entry_id)
+            .await?
+            .ok_or_else(|| AppError::Other(format!("game not found: {game_entry_id}")))?;
+        (
+            entry.game_name.clone(),
+            entry.safe_name.clone(),
+            entry.steam_id,
+        )
+    };
+
+    // Official Steam CDN first, when we have an appid.
+    let mut cover = None;
+    let mut hero = None;
+    if let Some(sid) = steam_id {
+        if want_cover {
+            cover = crate::steam_cdn::download_cover(&client.http, sid, &safe_name)
+                .await
+                .unwrap_or_else(|e| {
+                    tracing::warn!(game_entry_id, error = %e, "official cover fetch failed");
+                    None
+                });
+        }
+        if want_hero {
+            hero = crate::steam_cdn::download_hero(&client.http, sid, &safe_name)
+                .await
+                .unwrap_or_else(|e| {
+                    tracing::warn!(game_entry_id, error = %e, "official hero fetch failed");
+                    None
+                });
+        }
+    }
+
+    // SteamGridDB fallback for whatever's still missing — one shared resolve.
+    let need_cover = want_cover && cover.is_none();
+    let need_hero = want_hero && hero.is_none();
+    if need_cover || need_hero {
+        if let Some((sgdb_id, api_key)) = resolve_sgdb_id(app, &name, steam_id).await? {
+            if need_cover {
+                cover = download_cover(&client.http, &api_key, sgdb_id, &safe_name)
+                    .await
+                    .unwrap_or_else(|e| {
+                        tracing::warn!(game_entry_id, error = %e, "cover download failed");
+                        None
+                    });
+            }
+            if need_hero {
+                hero = download_hero(&client.http, &api_key, sgdb_id, &safe_name)
+                    .await
+                    .unwrap_or_else(|e| {
+                        tracing::warn!(game_entry_id, error = %e, "hero download failed");
+                        None
+                    });
+            }
+        }
+    }
+
+    Ok(FetchedArt { cover, hero })
 }
 
 // ── Accent colour extraction ────────────────────────────────────────────────
@@ -233,12 +299,8 @@ pub async fn fetch_and_save_hero(
     app: &AppHandle,
     game_entry_id: &str,
 ) -> AppResult<Option<String>> {
-    let client = app.state::<SteamGridDbClient>();
-    let Some((sgdb_id, safe_name, api_key)) = resolve_entry_sgdb_id(app, game_entry_id).await?
-    else {
-        return Ok(None);
-    };
-    let Some(path_str) = download_hero(&client.http, &api_key, sgdb_id, &safe_name).await? else {
+    let FetchedArt { hero, .. } = fetch_art(app, game_entry_id, false, true).await?;
+    let Some(path_str) = hero else {
         return Ok(None);
     };
     apply_art(app, game_entry_id, None, Some(&path_str), None).await?;
@@ -247,60 +309,83 @@ pub async fn fetch_and_save_hero(
 
 // ── Multi-art bundle for Add-to-Steam ───────────────────────────────────────
 
-/// Fetches hero / wide-grid / logo / icon from SteamGridDB and writes them
-/// straight into Steam's grid dir with the filenames Steam expects:
+/// Fetches hero / wide-grid / logo / icon and writes them straight into Steam's
+/// grid dir with the filenames Steam expects:
 ///
 ///   `<app_id>_hero.<ext>`   — hero banner
 ///   `<app_id>.<ext>`        — wide grid (920×430)
 ///   `<app_id>_logo.<ext>`   — logo (transparent PNG)
 ///   `<app_id>_icon.<ext>`   — icon
 ///
-/// Portrait cover is handled separately by `fetch_and_save_cover` (called
-/// at add-time and reused by `place_grid_art` in `steam.rs`).
+/// Official Steam CDN art is preferred per asset when `steam_id` is known —
+/// fitting, since the destination is a Steam shortcut — falling back to
+/// SteamGridDB for whatever Steam lacks (always the icon, which has no
+/// predictable CDN URL, plus any missing hero/grid/logo). The SteamGridDB id is
+/// resolved by the caller and passed in `sgdb` so Add-to-Steam shares one
+/// lookup with its portrait fetch; `None` means SteamGridDB is unavailable.
+///
+/// Portrait cover is handled separately by `fetch_and_save_cover` (called at
+/// add-time and reused by `place_grid_art` in `steam.rs`).
 ///
 /// Best-effort throughout — silently skips any kind that doesn't resolve.
-/// Returns the list of kinds that landed, suitable for surfacing in a
-/// success toast.
+/// Returns the list of kinds that landed, suitable for surfacing in a toast.
 pub async fn fetch_steam_grid_bundle(
     app: &AppHandle,
     steam_id: Option<u64>,
-    game_name: &str,
+    sgdb: Option<(u64, String)>,
     grid_dir: &std::path::Path,
     app_id: u32,
 ) -> AppResult<Vec<String>> {
-    let config = app.state::<SharedConfig>();
     let client = app.state::<SteamGridDbClient>();
-
-    let (api_key, enabled) = {
-        let cfg = config.lock().map_err(|_| AppError::LockPoisoned)?;
-        (cfg.data.steamgriddb_api_key.clone(), cfg.data.steamgriddb_enabled)
-    };
-    if !enabled || api_key.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let Some(sgdb_id) = resolve_game_id(&client.http, &api_key, steam_id, game_name).await? else {
-        return Ok(Vec::new());
-    };
 
     std::fs::create_dir_all(grid_dir)?;
     let mut placed = Vec::new();
 
-    let kinds: [(&str, &str); 4] = [
-        ("hero", "_hero"),
-        ("grid", ""),
-        ("logo", "_logo"),
-        ("icon", "_icon"),
+    // (SteamGridDB endpoint, Steam grid-filename suffix, official CDN asset).
+    // The icon has no predictable CDN URL, so it's SteamGridDB-only.
+    let kinds: [(&str, &str, Option<crate::steam_cdn::Asset>); 4] = [
+        ("hero", "_hero", Some(crate::steam_cdn::Asset::Hero)),
+        ("grid", "", Some(crate::steam_cdn::Asset::WideGrid)),
+        ("logo", "_logo", Some(crate::steam_cdn::Asset::Logo)),
+        ("icon", "_icon", None),
     ];
-    for (kind, suffix) in kinds {
-        let asset = match fetch_first_art(&client.http, &api_key, sgdb_id, kind).await {
+
+    for (kind, suffix, official) in kinds {
+        // Official Steam CDN first.
+        if let (Some(sid), Some(asset)) = (steam_id, official) {
+            match crate::steam_cdn::fetch(&client.http, sid, asset).await {
+                Ok(Some(bytes)) => {
+                    let dest = grid_dir.join(format!("{app_id}{suffix}.{}", asset.ext()));
+                    match std::fs::write(&dest, &bytes) {
+                        Ok(()) => {
+                            tracing::debug!(kind, dest = %dest.display(), "bundle: official {kind} placed");
+                            placed.push(kind.to_string());
+                            continue;
+                        }
+                        Err(e) => {
+                            tracing::warn!(kind, dest = %dest.display(), %e, "bundle: {kind} write failed");
+                        }
+                    }
+                }
+                Ok(None) => {} // no official asset — fall through to SteamGridDB
+                Err(e) => {
+                    tracing::warn!(kind, %e, "bundle: official {kind} fetch failed");
+                }
+            }
+        }
+
+        // SteamGridDB fallback.
+        let Some((sgdb_id, api_key)) = sgdb.as_ref() else {
+            continue;
+        };
+        let asset = match fetch_first_art(&client.http, api_key, *sgdb_id, kind).await {
             Ok(Some(a)) => a,
             Ok(None) => {
-                tracing::debug!(kind, "fetch_steam_grid_bundle: no {kind} art on SteamGridDB");
+                tracing::debug!(kind, "bundle: no {kind} art on SteamGridDB");
                 continue;
             }
             Err(e) => {
-                tracing::warn!(kind, %e, "fetch_steam_grid_bundle: {kind} API request failed");
+                tracing::warn!(kind, %e, "bundle: {kind} API request failed");
                 continue;
             }
         };
@@ -309,17 +394,17 @@ pub async fn fetch_steam_grid_bundle(
         let bytes = match download_bytes(&client.http, &asset.url).await {
             Ok(b) => b,
             Err(e) => {
-                tracing::warn!(kind, %e, "fetch_steam_grid_bundle: {kind} download failed");
+                tracing::warn!(kind, %e, "bundle: {kind} download failed");
                 continue;
             }
         };
         match std::fs::write(&dest, &bytes) {
             Ok(()) => {
-                tracing::debug!(kind, dest = %dest.display(), "fetch_steam_grid_bundle: {kind} placed");
+                tracing::debug!(kind, dest = %dest.display(), "bundle: {kind} placed");
                 placed.push(kind.to_string());
             }
             Err(e) => {
-                tracing::warn!(kind, dest = %dest.display(), %e, "fetch_steam_grid_bundle: {kind} write failed");
+                tracing::warn!(kind, dest = %dest.display(), %e, "bundle: {kind} write failed");
             }
         }
     }
@@ -416,16 +501,17 @@ async fn download_bytes(http: &reqwest::Client, url: &str) -> AppResult<Vec<u8>>
 
 // ── Shared art-fetch helpers (cover + hero) ─────────────────────────────────
 
-/// Shared preamble for the cover/hero fetchers: bail if SteamGridDB is
-/// disabled, snapshot the entry's lookup fields, and resolve its SteamGridDB
-/// game id. Returns `(sgdb_id, safe_name, api_key)`, or None to skip (disabled,
-/// no API key, or nothing matched).
-async fn resolve_entry_sgdb_id(
+/// Resolves a SteamGridDB game id from a name + optional Steam id, gated on the
+/// SteamGridDB toggle and API key. Returns `(sgdb_id, api_key)`, or None when
+/// SteamGridDB is disabled, has no key, or nothing matched. Public so callers
+/// that need both the cover and the Steam grid bundle (Add-to-Steam) can
+/// resolve once and share the result.
+pub(crate) async fn resolve_sgdb_id(
     app: &AppHandle,
-    game_entry_id: &str,
-) -> AppResult<Option<(u64, String, String)>> {
+    name: &str,
+    steam_id: Option<u64>,
+) -> AppResult<Option<(u64, String)>> {
     let config = app.state::<SharedConfig>();
-    let library = app.state::<SharedLibrary>();
     let client = app.state::<SteamGridDbClient>();
 
     let (api_key, enabled) = {
@@ -439,20 +525,8 @@ async fn resolve_entry_sgdb_id(
         return Ok(None);
     }
 
-    let (name, safe_name, steam_id) = {
-        let entry = library
-            .find(game_entry_id)
-            .await?
-            .ok_or_else(|| AppError::Other(format!("game not found: {game_entry_id}")))?;
-        (
-            entry.game_name.clone(),
-            entry.safe_name.clone(),
-            entry.steam_id,
-        )
-    };
-
-    match resolve_game_id(&client.http, &api_key, steam_id, &name).await? {
-        Some(sgdb_id) => Ok(Some((sgdb_id, safe_name, api_key))),
+    match resolve_game_id(&client.http, &api_key, steam_id, name).await? {
+        Some(sgdb_id) => Ok(Some((sgdb_id, api_key))),
         None => Ok(None),
     }
 }

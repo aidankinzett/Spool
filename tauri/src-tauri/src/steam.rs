@@ -463,11 +463,19 @@ pub async fn add_to_steam(
         tracing::debug!(app_id, "add_to_steam: portrait placed");
     }
 
-    // 6. Fetch hero + wide grid + logo + icon from SteamGridDB. Best-effort.
+    // 6. Fetch hero + wide grid + logo + icon (official Steam CDN first, then
+    //    SteamGridDB). Resolve the SteamGridDB id once here and hand it to the
+    //    bundle so it isn't looked up again. Best-effort.
+    let sgdb = crate::steamgriddb::resolve_sgdb_id(&app, &app_name, steam_id)
+        .await
+        .unwrap_or_else(|e| {
+            tracing::warn!(%e, "add_to_steam: SteamGridDB id resolve failed");
+            None
+        });
     let extra_arts = match crate::steamgriddb::fetch_steam_grid_bundle(
         &app,
         steam_id,
-        &app_name,
+        sgdb,
         &user.grid_dir,
         app_id,
     )
