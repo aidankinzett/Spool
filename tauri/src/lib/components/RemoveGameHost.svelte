@@ -36,7 +36,7 @@
       toasts.show({
         kind: 'ok',
         label: 'DELETE · DONE',
-        title: 'Deleted from disk',
+        title: 'Deleted from disk and library',
         sub: g.game_name,
         catalog: fmtCatalog(g.catalog_number),
       });

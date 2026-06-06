@@ -671,6 +671,21 @@ impl Library {
         for f in RUNTIME_FIELDS {
             expr = format!("json_set({expr}, '$.{f}', COALESCE(data -> '$.{f}', ?1 -> '$.{f}'))");
         }
+        // `exe_path` / `game_folder_path` are editor-owned (browse buttons), so
+        // they're NOT runtime fields — the editor's value normally wins. The one
+        // exception: when the LIVE row is uninstalled (`installed = false`, paths
+        // already cleared), a stale editor copy opened while the game was still
+        // installed must not resurrect those paths on save. Keep the live
+        // (cleared) values in that case; otherwise apply the editor's value.
+        // (`json_extract(data,'$.installed') = 0` is false/NULL for an installed
+        // or legacy row, so the editor keeps full control there.)
+        for f in ["exe_path", "game_folder_path"] {
+            expr = format!(
+                "json_set({expr}, '$.{f}', \
+                 CASE WHEN json_extract(data, '$.installed') = 0 \
+                 THEN data -> '$.{f}' ELSE ?1 -> '$.{f}' END)"
+            );
+        }
         let sql = format!("UPDATE games SET game_name = ?2, data = {expr} WHERE id = ?3");
         let res = sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(&base)
@@ -1053,7 +1068,21 @@ pub async fn add_game(
     // falls through to the name/steam-id match, then to a fresh insert.
     let reuse = match &new_game.reinstall_target_id {
         Some(id) => match state.find(id).await? {
-            Some(e) if !e.installed => Some(e),
+            // Reuse the explicitly chosen target only when it's uninstalled AND
+            // not clearly a *different* game. A positive steam-id conflict (both
+            // known and differing) means the user picked another game's exe, so
+            // we fall through rather than repurpose the entry. Name isn't
+            // required to match — an "add without save tracking" or renamed
+            // reinstall legitimately differs from the stored name.
+            Some(e)
+                if !e.installed
+                    && !matches!(
+                        (e.steam_id, new_game.steam_id),
+                        (Some(a), Some(b)) if a != b
+                    ) =>
+            {
+                Some(e)
+            }
             _ => {
                 state
                     .find_reusable_entry(new_game.steam_id, &new_game.game_name)
@@ -1297,18 +1326,14 @@ pub async fn uninstall_game(
 
 /// Deletes a game's install folder (and, on Linux, its per-game Proton/Wine
 /// prefix) from disk. Shared by [`delete_game_core`] (which then forgets the
-/// entry) and [`uninstall_game_core`] (which keeps it). When `require_folder`
-/// is true, a missing/empty `game_folder_path` is an error (the "delete from
-/// disk" intent has nothing to act on); when false it's tolerated so an
-/// uninstall can still mark the entry. The Proton prefix is only managed on
-/// Linux, so it's resolved + deleted there alone — a populated
+/// entry) and [`uninstall_game_core`] (which keeps it). A missing/empty
+/// `game_folder_path` is an error — both callers act on files on disk, so with
+/// nothing to delete there's nothing to do (and marking an entry "removed from
+/// disk" when no files were touched would be a lie). The Proton prefix is only
+/// managed on Linux, so it's resolved + deleted there alone — a populated
 /// `wine_prefix_path` override on Windows/macOS must never be recurse-deleted.
 /// Best-effort prefix cleanup never aborts the operation.
-async fn wipe_install_files(
-    library: &SharedLibrary,
-    id: &str,
-    require_folder: bool,
-) -> AppResult<()> {
+async fn wipe_install_files(library: &SharedLibrary, id: &str) -> AppResult<()> {
     // Capture the folder + prefix paths before any blocking IO.
     let (folder, prefix_root) = {
         let entry = library
@@ -1331,23 +1356,16 @@ async fn wipe_install_files(
         (entry.game_folder_path.clone(), prefix_root)
     };
 
-    match folder.filter(|f| !f.trim().is_empty()) {
-        // Recursive delete can be slow for a large game — run it off the async
-        // runtime's worker threads.
-        Some(folder) => {
-            tokio::task::spawn_blocking(move || delete_install_dir(&folder))
-                .await
-                .map_err(|e| AppError::Other(format!("delete task join failed: {e}")))??;
-        }
-        None if require_folder => {
-            return Err(AppError::Other(
-                "This game has no known install folder to delete.".to_string(),
-            ));
-        }
-        // No folder on record but the caller only wants the entry marked —
-        // nothing to delete, fall through to the (best-effort) prefix cleanup.
-        None => {}
-    }
+    let Some(folder) = folder.filter(|f| !f.trim().is_empty()) else {
+        return Err(AppError::Other(
+            "This game has no known install folder to delete.".to_string(),
+        ));
+    };
+    // Recursive delete can be slow for a large game — run it off the async
+    // runtime's worker threads.
+    tokio::task::spawn_blocking(move || delete_install_dir(&folder))
+        .await
+        .map_err(|e| AppError::Other(format!("delete task join failed: {e}")))??;
 
     // Best-effort Proton prefix cleanup (Linux only) — never aborts. A missing
     // prefix (e.g. a never-launched game) is a no-op.
@@ -1370,7 +1388,7 @@ async fn wipe_install_files(
 /// command and the Decky plugin server's `DELETE /games/:id`. Does not emit
 /// `library:changed` — the caller does that where a Tauri `AppHandle` exists.
 pub async fn delete_game_core(library: &SharedLibrary, id: &str) -> AppResult<()> {
-    wipe_install_files(library, id, true).await?;
+    wipe_install_files(library, id).await?;
     // Folder gone (or already absent) — now forget the entry.
     library.remove(id).await?;
     Ok(())
@@ -1382,10 +1400,12 @@ pub async fn delete_game_core(library: &SharedLibrary, id: &str) -> AppResult<()
 /// clears the now-stale install paths/size instead of deleting the row. The
 /// catalog number, playtime, cover art, accent colour, and save backups all
 /// survive, so re-adding the game (Add flow or LAN install) reuses this same
-/// entry via [`Library::find_reusable_entry`]. Tolerates a missing folder
-/// (just marks the entry). Does not emit `library:changed` — the caller does.
+/// entry via [`Library::find_reusable_entry`]. Errors (leaving the entry
+/// installed) when there's no install folder to delete — there's nothing to
+/// remove from disk, so [`remove_game`] (forget) is the right action instead.
+/// Does not emit `library:changed` — the caller does.
 pub async fn uninstall_game_core(library: &SharedLibrary, id: &str) -> AppResult<()> {
-    wipe_install_files(library, id, false).await?;
+    wipe_install_files(library, id).await?;
     library
         .update_fields(
             id,
@@ -1757,18 +1777,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn uninstall_tolerates_missing_folder() {
-        // Unlike delete-from-disk, uninstall must not error when there's no
-        // folder on record — it just marks the entry.
+    async fn uninstall_errors_without_folder_and_keeps_entry_installed() {
+        // No install folder → nothing to remove from disk, so uninstall errors
+        // and the entry stays installed (marking it "removed from disk" when
+        // nothing was deleted would be a lie — "remove from library" is right).
         let lib: SharedLibrary = Arc::new(Library::open_in_memory().await.unwrap());
         let mut g = sample("a", "Hades");
         g.game_folder_path = None;
         g.exe_path = "/gone/h.exe".into();
         lib.insert(g).await.unwrap();
 
-        uninstall_game_core(&lib, "a").await.unwrap();
+        assert!(uninstall_game_core(&lib, "a").await.is_err());
         let e = lib.find("a").await.unwrap().unwrap();
-        assert!(!e.installed);
+        assert!(e.installed, "entry stays installed when nothing was deleted");
     }
 
     #[tokio::test]
@@ -1807,11 +1828,10 @@ mod tests {
     async fn replace_preserves_installed_flag() {
         // A stale open editor saving must not resurrect an uninstalled game:
         // `installed` is a runtime field re-overlaid by replace().
-        let lib: SharedLibrary = Arc::new(Library::open_in_memory().await.unwrap());
-        let mut g = sample("a", "Hades");
-        g.game_folder_path = None; // no folder so uninstall just marks it
-        lib.insert(g).await.unwrap();
-        uninstall_game_core(&lib, "a").await.unwrap();
+        let lib = Library::open_in_memory().await.unwrap();
+        lib.insert(sample("a", "Hades")).await.unwrap();
+        // Mark uninstalled out-of-band (as uninstall_game_core does).
+        lib.update_fields("a", &[("installed", json!(false))]).await.unwrap();
 
         // Editor loaded the entry while installed and saves with installed=true.
         let mut edited = sample("a", "Hades");
@@ -1820,6 +1840,60 @@ mod tests {
 
         let e = lib.find("a").await.unwrap().unwrap();
         assert!(!e.installed, "live uninstalled state survives an editor save");
+    }
+
+    #[tokio::test]
+    async fn replace_keeps_cleared_install_paths_when_uninstalled() {
+        // A stale editor opened while the game was installed must not resurrect
+        // exe_path / game_folder_path on save once the live row is uninstalled.
+        let lib = Library::open_in_memory().await.unwrap();
+        let mut g = sample("a", "Hades");
+        g.exe_path = "/games/Hades/h.exe".into();
+        g.game_folder_path = Some("/games/Hades".into());
+        lib.insert(g).await.unwrap();
+        // Live row uninstalled out-of-band: installed=false, paths cleared.
+        lib.update_fields(
+            "a",
+            &[
+                ("installed", json!(false)),
+                ("game_folder_path", Value::Null),
+                ("exe_path", json!("")),
+            ],
+        )
+        .await
+        .unwrap();
+
+        // Editor saves its stale (installed-era) snapshot.
+        let mut stale = sample("a", "Hades");
+        stale.installed = true;
+        stale.exe_path = "/games/Hades/h.exe".into();
+        stale.game_folder_path = Some("/games/Hades".into());
+        assert!(lib.replace(&stale).await.unwrap());
+
+        let e = lib.find("a").await.unwrap().unwrap();
+        assert!(!e.installed, "stays uninstalled");
+        assert_eq!(e.exe_path, "", "cleared exe_path not resurrected");
+        assert_eq!(e.game_folder_path, None, "cleared game_folder_path not resurrected");
+    }
+
+    #[tokio::test]
+    async fn replace_applies_path_edits_for_installed_game() {
+        // For an installed game the editor's browse-button path edits must still
+        // win — the uninstalled-path guard only applies when the live row is off.
+        let lib = Library::open_in_memory().await.unwrap();
+        let mut g = sample("a", "Hades");
+        g.exe_path = "/old/h.exe".into();
+        g.game_folder_path = Some("/old".into());
+        lib.insert(g).await.unwrap();
+
+        let mut edited = sample("a", "Hades");
+        edited.exe_path = "/new/h.exe".into();
+        edited.game_folder_path = Some("/new".into());
+        assert!(lib.replace(&edited).await.unwrap());
+
+        let e = lib.find("a").await.unwrap().unwrap();
+        assert_eq!(e.exe_path, "/new/h.exe", "editor path edit applies when installed");
+        assert_eq!(e.game_folder_path.as_deref(), Some("/new"));
     }
 
     #[tokio::test]
