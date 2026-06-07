@@ -17,15 +17,16 @@
   } from '@lucide/svelte';
   import { openView } from '$lib/nav';
   import { api, assetUrl, peerAssetUrl } from '$lib/api';
-  import { fmtCatalog, fmtRate, relDate } from '$lib/format';
+  import { fmtCatalog, relDate } from '$lib/format';
   import type { DisplayGame, GameEntry } from '$lib/types';
-  import type { Library } from '$lib/library.svelte';
+  import { isSyntheticPeerId, type Library } from '$lib/library.svelte';
   import AppChrome from '$lib/components/AppChrome.svelte';
   import MonoLabel from '$lib/components/MonoLabel.svelte';
   import GameDetail from '$lib/components/GameDetail.svelte';
   import LibraryContextMenu from '$lib/components/LibraryContextMenu.svelte';
   import TransferPill from '$lib/components/TransferPill.svelte';
   import TransfersPanel from '$lib/components/TransfersPanel.svelte';
+  import LanDownloadProgress from '$lib/components/LanDownloadProgress.svelte';
   import { gamepadScope } from '$lib/gamepad';
 
   let { lib }: { lib: Library } = $props();
@@ -56,7 +57,7 @@
   function openContextMenu(e: MouseEvent, g: DisplayGame) {
     e.preventDefault();
     // Synthetic peer-only rows aren't real library entries — no local actions.
-    if (g.id.startsWith('peer:')) return;
+    if (isSyntheticPeerId(g.id)) return;
     ctxMenu = { game: g, x: e.clientX, y: e.clientY };
   }
 
@@ -304,28 +305,7 @@
                   </div>
                   {#if inflight && dl}
                     <div class="mt-1.5">
-                      <div class="h-1 w-full overflow-hidden rounded-full bg-bg-2">
-                        <div
-                          class="h-full transition-[width] duration-150 ease-out"
-                          style:width={dl.bytes_total > 0
-                            ? Math.min(100, (dl.bytes_done / dl.bytes_total) * 100) + '%'
-                            : '0%'}
-                          style:background="var(--color-spool)"
-                        ></div>
-                      </div>
-                      <div
-                        class="font-mono mt-1 flex justify-between gap-2 text-[9.5px] text-ink-3 tracking-[0.04em]"
-                      >
-                        <span class="truncate" title={dl.current_file}>
-                          {dl.current_file || '…'}
-                        </span>
-                        <span class="shrink-0 whitespace-nowrap">
-                          {fmtRate(dl.bytes_per_second)}
-                          {#if dl.bytes_total > 0}
-                            · {Math.round((dl.bytes_done / dl.bytes_total) * 100)}%
-                          {/if}
-                        </span>
-                      </div>
+                      <LanDownloadProgress download={dl} />
                     </div>
                   {/if}
                 </div>
@@ -462,11 +442,7 @@
                 class="font-mono text-[9.5px]"
                 style:color={active ? 'var(--color-ink-2)' : 'var(--color-ink-3)'}
               >
-                {f.id === 'all'
-                  ? lib.displayGames.length
-                  : f.id === 'recent'
-                    ? lib.displayGames.filter((g) => g.last_played_at || g.added_at).length
-                    : lib.displayGames.filter((g) => g.playtime_minutes > 0).length}
+                {lib.tabCounts[f.id]}
               </span>
             </button>
           {/each}
@@ -502,7 +478,7 @@
           {#each lib.filteredGames as g, i (g.id)}
             {@const selected = lib.selectedId === g.id}
             {@const peer = g.peer_source ?? null}
-            {@const peerOnly = peer != null && g.catalog_number === 0}
+            {@const peerOnly = isSyntheticPeerId(g.id)}
             {@const cover =
               assetUrl(g.cover_image_path) ??
               (peer && !coverErrors.has(g.id) ? peerAssetUrl(peer, 'cover') : null)}

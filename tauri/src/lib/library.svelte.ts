@@ -58,6 +58,27 @@ export function filterGames(
  *  reads, so both `GameEntry` and `PeerGame` satisfy it. */
 type Matchable = { steam_id: number | null; game_name: string };
 
+/** Prefix on a synthetic "available on LAN" row's id. Minted by
+ *  `syntheticPeerEntry`, tested by `isSyntheticPeerId` — the single source of
+ *  truth for "this DisplayGame has no real library entry behind it". */
+const PEER_ID_PREFIX = 'peer:';
+
+/** True for a synthetic peer-only row (no backing DB entry on this device), so
+ *  callers can skip backend ops keyed on a real id. Note an *uninstalled local*
+ *  row that a peer can supply keeps its real id and returns false here. */
+export function isSyntheticPeerId(id: string): boolean {
+  return id.startsWith(PEER_ID_PREFIX);
+}
+
+/** The subset of a `LanPeer` the merge needs — no `last_seen_ago_secs`/
+ *  `game_count`, so it stays stable across discovery heartbeats. */
+type PeerMeta = Pick<LanPeer, 'device_id' | 'device_name' | 'addr' | 'file_server_port'>;
+
+/** A fetched peer catalogue plus the metadata needed to build a `PeerSource`
+ *  from it — captured at fetch time so the merge never depends on the churny
+ *  `lanPeers` array (whose `last_seen_ago_secs` ticks every announce). */
+export type PeerCatalog = { peer: PeerMeta; games: PeerGame[] };
+
 /**
  * Find the local entry a peer game corresponds to: steam_id first, then exact
  * game name with a steam_id conflict guard (two known, differing steam_ids
@@ -84,7 +105,7 @@ export function dedupKey(pg: Matchable): string {
   return pg.steam_id != null ? `sid:${pg.steam_id}` : `name:${pg.game_name.toLowerCase()}`;
 }
 
-function toPeerSource(peer: LanPeer, pg: PeerGame): PeerSource {
+function toPeerSource(peer: PeerMeta, pg: PeerGame): PeerSource {
   return {
     device_id: peer.device_id,
     device_name: peer.device_name,
@@ -101,9 +122,9 @@ function toPeerSource(peer: LanPeer, pg: PeerGame): PeerSource {
  * peer happens to supply it. Backend-only fields are zeroed/blanked — the
  * uninstalled + no-exe code paths already render those gracefully.
  */
-function syntheticPeerEntry(peer: LanPeer, pg: PeerGame): DisplayGame {
+function syntheticPeerEntry(peer: PeerMeta, pg: PeerGame): DisplayGame {
   return {
-    id: `peer:${dedupKey(pg)}`,
+    id: `${PEER_ID_PREFIX}${dedupKey(pg)}`,
     catalog_number: 0,
     game_name: pg.game_name,
     exe_path: '',
@@ -157,11 +178,14 @@ function syntheticPeerEntry(peer: LanPeer, pg: PeerGame): DisplayGame {
  *   - uninstalled locally → annotate that existing row as downloadable
  *   - no local entry → a synthetic "available on LAN" row (deduped across peers)
  * Pure (takes plain data) so it's unit-testable; the store wraps it in a derived.
+ *
+ * Depends only on the catalogues (each carrying its peer's stable metadata), not
+ * on the live `lanPeers` array — so a discovery heartbeat that only bumps a
+ * peer's `last_seen_ago_secs` doesn't force a re-merge / sidebar re-render.
  */
 export function mergeDisplayGames(
   games: GameEntry[],
-  lanPeers: LanPeer[],
-  peerCatalogs: Record<string, PeerGame[]>,
+  peerCatalogs: Record<string, PeerCatalog>,
 ): DisplayGame[] {
   const installed = games.filter((g) => g.installed);
   const uninstalled = games.filter((g) => !g.installed);
@@ -170,9 +194,7 @@ export function mergeDisplayGames(
   // is a pure helper, nothing reactive).
   const claimed: Record<string, boolean> = {};
 
-  for (const peer of lanPeers) {
-    const catalog = peerCatalogs[peer.device_id];
-    if (!catalog) continue;
+  for (const { peer, games: catalog } of Object.values(peerCatalogs)) {
     for (const pg of catalog) {
       // (1) already installed here → no duplicate.
       if (matchLocal(installed, pg)) continue;
@@ -228,10 +250,11 @@ export function createLibrary() {
   let activeDownload = $state<DownloadProgress | null>(null);
   let startingGameId = $state<string | null>(null);
   // Per-device peer catalogues aggregated for the merged sidebar (keyed by
-  // device_id). Populated lazily in the background; never blocks first paint.
-  // Mutated in place (property add/delete) — its deep $state proxy makes those
-  // reactive, so it never needs reassignment.
-  const peerCatalogs = $state<Record<string, PeerGame[]>>({});
+  // device_id; each value carries the peer's stable metadata + its games).
+  // Populated lazily in the background; never blocks first paint. Mutated in
+  // place (property add/delete) — its deep $state proxy makes those reactive,
+  // so it never needs reassignment.
+  const peerCatalogs = $state<Record<string, PeerCatalog>>({});
   // device_id → "addr:port" last fetched, so the heartbeat-driven
   // `lan:peers-changed` doesn't refetch peers whose endpoint hasn't moved.
   // Plain object (not a Map) — it only gates network calls, never rendering.
@@ -253,14 +276,22 @@ export function createLibrary() {
   });
 
   // Derived
-  // Local library merged with peer catalogues (auto-tracks games/lanPeers/
-  // peerCatalogs). Everything downstream — filtering, selection — reads this so
-  // peer rows are first-class sidebar entries.
-  const displayGames = $derived(mergeDisplayGames(games, lanPeers, peerCatalogs));
+  // Local library merged with peer catalogues (auto-tracks games + peerCatalogs;
+  // deliberately NOT lanPeers, whose freshness counter ticks every heartbeat).
+  // Everything downstream — filtering, selection — reads this so peer rows are
+  // first-class sidebar entries.
+  const displayGames = $derived(mergeDisplayGames(games, peerCatalogs));
   const filteredGames = $derived(filterGames(displayGames, filter, searchQuery));
   const selectedGame = $derived(
     selectedId ? displayGames.find((g) => g.id === selectedId) ?? null : null,
   );
+  // Sidebar filter-tab counts, computed once per displayGames change rather than
+  // re-filtering three times on every render.
+  const tabCounts = $derived({
+    all: displayGames.length,
+    recent: displayGames.filter((g) => g.last_played_at || g.added_at).length,
+    played: displayGames.filter((g) => g.playtime_minutes > 0).length,
+  });
   const syncOk = $derived(syncStatus.reachability === 'online');
   const syncOff = $derived(syncStatus.reachability === 'offline');
   const syncTitle = $derived(
@@ -343,7 +374,18 @@ export function createLibrary() {
         const key = `${p.addr}:${p.file_server_port}`;
         if (peerFetchKey[p.device_id] === key) return; // already cached
         try {
-          peerCatalogs[p.device_id] = await api.fetchPeerGames(p.addr, p.file_server_port);
+          const games = await api.fetchPeerGames(p.addr, p.file_server_port);
+          // Capture the peer's stable metadata alongside its games so the merge
+          // never has to read the churny `lanPeers` array.
+          peerCatalogs[p.device_id] = {
+            peer: {
+              device_id: p.device_id,
+              device_name: p.device_name,
+              addr: p.addr,
+              file_server_port: p.file_server_port,
+            },
+            games,
+          };
           peerFetchKey[p.device_id] = key;
         } catch (e) {
           delete peerCatalogs[p.device_id];
@@ -831,6 +873,7 @@ export function createLibrary() {
     set suspendedConflict(v: { gameId: string; deviceName: string } | null) { suspendedConflict = v; },
     // Derived (read-only)
     get displayGames() { return displayGames; },
+    get tabCounts() { return tabCounts; },
     get filteredGames() { return filteredGames; },
     get selectedGame() { return selectedGame; },
     get syncOk() { return syncOk; },

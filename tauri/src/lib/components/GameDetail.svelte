@@ -33,6 +33,7 @@
   } from '@lucide/svelte';
   import { onMount } from 'svelte';
   import { openView } from '$lib/nav';
+  import { isSyntheticPeerId } from '$lib/library.svelte';
   import { api, assetUrl, peerAssetUrl } from '$lib/api';
   import { toasts } from '$lib/toasts.svelte';
   import { confirmDialog } from '$lib/confirm.svelte';
@@ -42,11 +43,11 @@
     absDateTime,
     fmtCatalog,
     fmtPlaytime,
-    fmtRate,
     fmtSize,
     relDate,
   } from '$lib/format';
   import MonoLabel from './MonoLabel.svelte';
+  import LanDownloadProgress from './LanDownloadProgress.svelte';
   import CatalogId from './CatalogId.svelte';
   import Btn from './Btn.svelte';
   import DetailCard from './DetailCard.svelte';
@@ -101,7 +102,7 @@
     const id = game.id;
     // Synthetic peer-only rows (id `peer:…`) aren't real library entries —
     // there's nothing for the backend to refresh.
-    if (id.startsWith('peer:')) return;
+    if (isSyntheticPeerId(id)) return;
     void api.refreshSaveMetadata(id).catch(() => {});
   });
 
@@ -144,7 +145,7 @@
   const peerSource = $derived(game.peer_source ?? null);
   // A synthetic "available on LAN" row — not a real library entry on this
   // device, so per-entry actions (Edit, Remove, Steam…) don't apply yet.
-  const isSyntheticPeer = $derived(game.id.startsWith('peer:'));
+  const isSyntheticPeer = $derived(isSyntheticPeerId(game.id));
   // The in-flight install, only when it's *this* peer game (id + device match).
   const peerDownload = $derived(
     peerSource &&
@@ -164,6 +165,11 @@
   const anyInstallBusy = $derived(
     startingGameId != null ||
       (download != null && (download.status === 'starting' || download.status === 'transferring')),
+  );
+  // The Download button is unusable when the peer can't stream it, another
+  // install holds the single slot, or no handler is wired (e.g. touch layout).
+  const downloadDisabled = $derived(
+    !peerSource || !peerSource.shareable || anyInstallBusy || !onDownload,
   );
 
   function startDownload() {
@@ -521,26 +527,12 @@
                     Cancel
                   </button>
                 </div>
-                <div class="h-1.5 w-full overflow-hidden rounded-full bg-bg-2">
-                  <div
-                    class="h-full transition-[width] duration-150 ease-out"
-                    style:width={peerDownload.bytes_total > 0
-                      ? Math.min(100, (peerDownload.bytes_done / peerDownload.bytes_total) * 100) + '%'
-                      : '0%'}
-                    style:background={accentHex}
-                  ></div>
-                </div>
-                <div class="font-mono flex justify-between gap-2 text-[10px] tracking-[0.04em] text-ink-3">
-                  <span class="truncate" title={peerDownload.current_file}>
-                    {peerDownload.current_file || '…'}
-                  </span>
-                  <span class="shrink-0 whitespace-nowrap">
-                    {fmtRate(peerDownload.bytes_per_second)}
-                    {#if peerDownload.bytes_total > 0}
-                      · {Math.round((peerDownload.bytes_done / peerDownload.bytes_total) * 100)}%
-                    {/if}
-                  </span>
-                </div>
+                <LanDownloadProgress
+                  download={peerDownload}
+                  accent={accentHex}
+                  barClass="h-1.5"
+                  metaClass="text-[10px]"
+                />
               </div>
             {:else}
               <button
@@ -548,14 +540,14 @@
                 data-testid="download-button"
                 data-gp-autofocus={autofocusPlay ? '' : undefined}
                 onclick={startDownload}
-                disabled={!peerSource.shareable || anyInstallBusy || !onDownload}
+                disabled={downloadDisabled}
                 class="font-sans inline-flex items-center gap-2.5 rounded-md border-none font-semibold transition-opacity"
                 style:height="var(--control-h)"
                 style:padding-inline="calc(var(--space-unit) * 4)"
                 style:font-size="var(--text-base)"
-                class:cursor-pointer={peerSource.shareable && !anyInstallBusy && !!onDownload}
-                class:cursor-not-allowed={!peerSource.shareable || anyInstallBusy || !onDownload}
-                class:opacity-70={!peerSource.shareable || anyInstallBusy || !onDownload}
+                class:cursor-pointer={!downloadDisabled}
+                class:cursor-not-allowed={downloadDisabled}
+                class:opacity-70={downloadDisabled}
                 style:background={accentHex}
                 style:color="#0b0c0e"
                 style:box-shadow="0 6px 20px color-mix(in srgb, {accentHex} 26%, transparent)"
