@@ -39,7 +39,7 @@
     ></div>
   </div>
   <div class="font-mono flex justify-between gap-2 {metaClass} tracking-[0.04em] text-ink-3">
-    <span class="truncate" title={download.current_file}>
+    <span class="min-w-0 flex-1 truncate" title={download.current_file}>
       {download.current_file || '…'}
     </span>
     <span class="shrink-0 whitespace-nowrap">
