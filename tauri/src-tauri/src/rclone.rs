@@ -50,6 +50,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
+use std::future::Future;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 /// Timeout for a control-plane op (cat / rcat / deletefile / lsjson). The
@@ -161,36 +162,80 @@ impl RcloneRemote {
     fn spool_dir(&self) -> String {
         format!("{}:{}/_spool", self.remote, self.base.trim_end_matches('/'))
     }
-    fn device_target(&self, device_id: &str) -> String {
-        format!("{}/devices/{}.json", self.spool_dir(), device_id)
+
+    /// Return a typed handle for one blob namespace under `_spool/<subdir>/`.
+    /// `schema` is the highest version this build can safely interpret; blobs
+    /// with a higher stored schema are rejected by `BlobStore::fetch`.
+    fn store<'a>(&'a self, subdir: &'a str, schema: u32) -> BlobStore<'a> {
+        BlobStore { remote: self, subdir, schema }
     }
-    fn devices_dir(&self) -> String {
-        format!("{}/devices", self.spool_dir())
+}
+
+// ── Blob-store: path + transport layer for named JSON blob namespaces ─────────
+
+/// Typed handle for one namespace under `_spool/<subdir>/`.  Obtained via
+/// `RcloneRemote::store(subdir, schema)`.
+///
+/// Every blob kind (devices, sessions, history, custom-saves,
+/// manifest-overrides) gets its own `BlobStore`; the subdir and current-schema
+/// constant are the only things that differ between them. Path helpers
+/// (`target`/`dir`) and the three transport primitives (`publish`/`delete`/
+/// `fetch`) are therefore shared and live in exactly one place.
+struct BlobStore<'a> {
+    remote: &'a RcloneRemote,
+    subdir: &'a str,
+    /// Maximum schema version this build can interpret. `fetch` rejects blobs
+    /// whose stored `schema` field exceeds this — forward-compatibility gate.
+    schema: u32,
+}
+
+impl BlobStore<'_> {
+    /// Full remote path for this namespace: `<spool_dir>/<subdir>`.
+    fn dir(&self) -> String {
+        format!("{}/{}", self.remote.spool_dir(), self.subdir)
     }
-    fn session_target(&self, game_name: &str) -> String {
-        format!("{}/sessions/{}.json", self.spool_dir(), session_hash(game_name))
+
+    /// Full remote path for one blob: `<spool_dir>/<subdir>/<key>.json`.
+    fn target(&self, key: &str) -> String {
+        format!("{}/{}.json", self.dir(), key)
     }
-    /// Per-device play-session history blob. A sibling of `devices/` and
-    /// `sessions/` — kept out of `sessions/`, which is the live-marker
-    /// namespace keyed by game-name hash.
-    fn history_target(&self, device_id: &str) -> String {
-        format!("{}/history/{}.json", self.spool_dir(), device_id)
+
+    /// Serialize `blob` and upload it as `<key>.json`. Returns `true` on
+    /// success, `false` on serialization failure or rclone error.
+    async fn publish<T: Serialize>(&self, key: &str, blob: &T) -> bool {
+        let Ok(body) = serde_json::to_vec(blob) else {
+            return false;
+        };
+        rcat(&self.remote.exe, &self.target(key), &body).await
     }
-    fn history_dir(&self) -> String {
-        format!("{}/history", self.spool_dir())
+
+    /// Delete `<key>.json`. Best-effort; a missing blob is not an error.
+    async fn delete(&self, key: &str) {
+        deletefile(&self.remote.exe, &self.target(key)).await;
     }
-    fn custom_save_target(&self, game_name: &str) -> String {
-        format!("{}/custom-saves/{}.json", self.spool_dir(), session_hash(game_name))
+
+    /// Fetch, deserialize, and schema-gate one blob. Returns `None` when the
+    /// blob is absent, unparseable, or its stored schema exceeds `self.schema`.
+    async fn fetch<T: serde::de::DeserializeOwned + HasSchema>(&self, key: &str) -> Option<T> {
+        let body = cat(&self.remote.exe, &self.target(key)).await?;
+        let blob: T = serde_json::from_str(&body).ok()?;
+        (blob.stored_schema() <= self.schema).then_some(blob)
     }
-    fn custom_saves_dir(&self) -> String {
-        format!("{}/custom-saves", self.spool_dir())
+
+    /// List this namespace and return every parseable `*.json` blob as
+    /// `(key, T)` pairs. The key is the filename stem (device-id or
+    /// name-hash, depending on the namespace). Missing or unreadable entries
+    /// are silently skipped; an unreachable directory returns an empty vec.
+    async fn read_all<T: serde::de::DeserializeOwned>(&self) -> Vec<(String, T)> {
+        read_json_blobs(self.remote, &self.dir()).await
     }
-    fn manifest_override_target(&self, game_name: &str) -> String {
-        format!("{}/manifest-overrides/{}.json", self.spool_dir(), session_hash(game_name))
-    }
-    fn manifest_overrides_dir(&self) -> String {
-        format!("{}/manifest-overrides", self.spool_dir())
-    }
+}
+
+/// Schema-version accessor for `BlobStore::fetch`. Implement on any blob
+/// struct whose `schema` field guards forward-compatibility so that a newer
+/// blob written by a future Spool version isn't interpreted with stale logic.
+trait HasSchema {
+    fn stored_schema(&self) -> u32;
 }
 
 /// blake3 hex digest of a game name — the session-marker filename. Stable for a
@@ -582,7 +627,8 @@ fn classify(
 /// Read a peer's session marker. `None` when absent, unreadable, or the stored
 /// game name doesn't match (hash collision guard).
 async fn read_session_marker(remote: &RcloneRemote, game_name: &str) -> Option<SessionMarker> {
-    let body = cat(&remote.exe, &remote.session_target(game_name)).await?;
+    let target = remote.store("sessions", 0).target(&session_hash(game_name));
+    let body = cat(&remote.exe, &target).await?;
     let marker: SessionMarker = serde_json::from_str(&body).ok()?;
     (marker.game_name == game_name).then_some(marker)
 }
@@ -607,10 +653,10 @@ fn build_marker(
 }
 
 async fn write_marker(remote: &RcloneRemote, marker: &SessionMarker) -> bool {
-    let Ok(body) = serde_json::to_vec(marker) else {
-        return false;
-    };
-    rcat(&remote.exe, &remote.session_target(&marker.game_name), &body).await
+    remote
+        .store("sessions", 0)
+        .publish(&session_hash(&marker.game_name), marker)
+        .await
 }
 
 /// Deletes the session marker for `game_name`, but only when it belongs to
@@ -629,7 +675,7 @@ async fn delete_marker_if_ours(remote: &RcloneRemote, game_name: &str, device_id
             return;
         }
     }
-    deletefile(&remote.exe, &remote.session_target(game_name)).await;
+    remote.store("sessions", 0).delete(&session_hash(game_name)).await;
 }
 
 /// Phase 1.5: classify any existing marker and, when clear to proceed, claim
@@ -887,16 +933,14 @@ where
     let _lock = crate::proc_lock::acquire_control_plane(Duration::from_secs(15))
         .await
         .ok();
-    let target = remote.device_target(device_id);
-    let mut blob: DeviceBlob = cat(&remote.exe, &target)
+    let store = remote.store("devices", 1);
+    let mut blob: DeviceBlob = cat(&remote.exe, &store.target(device_id))
         .await
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_default();
     f(&mut blob);
     blob.schema = 1;
-    if let Ok(body) = serde_json::to_vec(&blob) {
-        rcat(&remote.exe, &target, &body).await;
-    }
+    store.publish(device_id, &blob).await;
 }
 
 /// Record a finished session in this device's blob (playtime delta + last
@@ -991,9 +1035,7 @@ pub async fn sync_play_history(app: &AppHandle) {
         }
     };
     let blob = HistoryBlob { device_name, sessions, schema: 1 };
-    if let Ok(body) = serde_json::to_vec(&blob) {
-        rcat(&remote.exe, &remote.history_target(&device_id), &body).await;
-    }
+    remote.store("history", 1).publish(&device_id, &blob).await;
 }
 
 /// AppHandle-free [`sync_play_history`] for the Game-Mode forced-close fallback:
@@ -1017,9 +1059,7 @@ pub async fn sync_play_history_from_config(cfg: &ConfigData, library: &crate::li
         }
     };
     let blob = HistoryBlob { device_name, sessions, schema: 1 };
-    if let Ok(body) = serde_json::to_vec(&blob) {
-        rcat(&remote.exe, &remote.history_target(device_id), &body).await;
-    }
+    remote.store("history", 1).publish(device_id, &blob).await;
 }
 
 /// Fold every peer's history blob into the local `play_sessions` table. Lists
@@ -1028,13 +1068,63 @@ pub async fn sync_play_history_from_config(cfg: &ConfigData, library: &crate::li
 /// added. Our own blob is included — harmless (already present locally), and it
 /// restores our history if the local DB was wiped/reinstalled.
 async fn fold_history(remote: &RcloneRemote, library: &crate::library::Library) -> usize {
-    let blobs: Vec<(String, HistoryBlob)> =
-        read_json_blobs(remote, &remote.history_dir()).await;
+    let blobs: Vec<(String, HistoryBlob)> = remote.store("history", 1).read_all().await;
     let mut all: Vec<crate::library::PlaySession> = Vec::new();
     for (_, blob) in blobs {
         all.extend(blob.sessions);
     }
     library.upsert_sessions(&all).await.unwrap_or(0)
+}
+
+// ── Generic fold: adopt name-keyed definitions from the control plane ─────────
+
+/// Fetch all blobs in a namespace, map each to an optional `(game_name, def)`
+/// pair via `to_def` (which handles schema/validity checks), then apply each
+/// definition to every matching library entry that doesn't already have one.
+/// Returns the number of entries updated. Best-effort; 0 when the namespace is
+/// empty or unreachable.
+///
+/// `entry_has` returns `true` when the entry already carries this definition
+/// (skip it). `set_if_absent` performs the conditional DB write — it must be
+/// atomic so it can't clobber a definition set between the library list and
+/// this write (the underlying `json_set … WHERE … IS NULL` ensures that).
+async fn fold_name_keyed<B, D, F, Fut>(
+    app: &AppHandle,
+    store: &BlobStore<'_>,
+    to_def: impl Fn(B) -> Option<(String, D)>,
+    entry_has: impl Fn(&crate::library::GameEntry) -> bool,
+    set_if_absent: F,
+) -> usize
+where
+    B: serde::de::DeserializeOwned,
+    D: Clone,
+    F: Fn(SharedLibrary, String, D) -> Fut,
+    Fut: Future<Output = bool>,
+{
+    let blobs: Vec<(String, B)> = store.read_all().await;
+    let mut defs = std::collections::HashMap::<String, D>::new();
+    for (_, blob) in blobs {
+        if let Some((name, def)) = to_def(blob) {
+            defs.insert(name, def);
+        }
+    }
+    if defs.is_empty() {
+        return 0;
+    }
+    let library = app.state::<SharedLibrary>().inner().clone();
+    let entries = library.list().await.unwrap_or_default();
+    let mut applied = 0usize;
+    for entry in &entries {
+        if entry_has(entry) {
+            continue;
+        }
+        if let Some(def) = defs.get(&entry.game_name).cloned() {
+            if set_if_absent(library.clone(), entry.id.clone(), def).await {
+                applied += 1;
+            }
+        }
+    }
+    applied
 }
 
 // ── Custom-save definitions (cross-device "specify once") ────────────────────
@@ -1050,17 +1140,17 @@ const CUSTOM_SAVE_SCHEMA: u32 = 1;
 /// ludusavi templates (placeholder tokens), identical on every device — see
 /// [`crate::save_template`].
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
 struct CustomSaveBlob {
-    #[serde(default)]
     name: String,
-    #[serde(default)]
     files: Vec<String>,
-    #[serde(default)]
     registry: Vec<String>,
-    #[serde(default)]
     updated_at: String,
-    #[serde(default)]
     schema: u32,
+}
+
+impl HasSchema for CustomSaveBlob {
+    fn stored_schema(&self) -> u32 { self.schema }
 }
 
 /// Publish (or update) this game's custom-save definition to the control plane
@@ -1071,9 +1161,7 @@ pub async fn publish_custom_save(
     files: &[String],
     registry: &[String],
 ) {
-    let Some(remote) = resolve_remote(app) else {
-        return;
-    };
+    let Some(remote) = resolve_remote(app) else { return; };
     let blob = CustomSaveBlob {
         name: game_name.to_string(),
         files: files.to_vec(),
@@ -1081,18 +1169,14 @@ pub async fn publish_custom_save(
         updated_at: Utc::now().to_rfc3339(),
         schema: CUSTOM_SAVE_SCHEMA,
     };
-    if let Ok(body) = serde_json::to_vec(&blob) {
-        rcat(&remote.exe, &remote.custom_save_target(game_name), &body).await;
-    }
+    remote.store("custom-saves", CUSTOM_SAVE_SCHEMA).publish(&session_hash(game_name), &blob).await;
 }
 
 /// Remove a game's published custom-save definition (when the user clears it).
 /// Best-effort; a missing blob is fine.
 pub async fn delete_custom_save(app: &AppHandle, game_name: &str) {
-    let Some(remote) = resolve_remote(app) else {
-        return;
-    };
-    deletefile(&remote.exe, &remote.custom_save_target(game_name)).await;
+    let Some(remote) = resolve_remote(app) else { return; };
+    remote.store("custom-saves", CUSTOM_SAVE_SCHEMA).delete(&session_hash(game_name)).await;
 }
 
 /// Fetch a single published custom-save definition by game name (one `cat`).
@@ -1100,9 +1184,11 @@ pub async fn delete_custom_save(app: &AppHandle, game_name: &str) {
 /// device. `None` when cloud isn't configured or no definition exists.
 pub async fn fetch_custom_save(app: &AppHandle, game_name: &str) -> Option<crate::library::CustomSave> {
     let remote = resolve_remote(app)?;
-    let body = cat(&remote.exe, &remote.custom_save_target(game_name)).await?;
-    let blob: CustomSaveBlob = serde_json::from_str(&body).ok()?;
-    if blob.schema > CUSTOM_SAVE_SCHEMA || (blob.files.is_empty() && blob.registry.is_empty()) {
+    let blob: CustomSaveBlob = remote
+        .store("custom-saves", CUSTOM_SAVE_SCHEMA)
+        .fetch(&session_hash(game_name))
+        .await?;
+    if blob.files.is_empty() && blob.registry.is_empty() {
         return None;
     }
     Some(crate::library::CustomSave { files: blob.files, registry: blob.registry })
@@ -1142,44 +1228,21 @@ async fn read_json_blobs<T: serde::de::DeserializeOwned>(
 /// updated; the caller re-syncs ludusavi's `customGames` block and emits
 /// `library:changed`. Best-effort; 0 when cloud isn't configured.
 pub async fn fold_custom_saves(app: &AppHandle) -> usize {
-    let Some(remote) = resolve_remote(app) else {
-        return 0;
-    };
-    let blobs: Vec<(String, CustomSaveBlob)> =
-        read_json_blobs(&remote, &remote.custom_saves_dir()).await;
-    let mut defs: std::collections::HashMap<String, crate::library::CustomSave> =
-        std::collections::HashMap::new();
-    for (_, blob) in blobs {
-        // Skip a blob from a newer schema we can't safely interpret, and any
-        // empty/nameless one.
-        let has_paths = !blob.files.is_empty() || !blob.registry.is_empty();
-        if blob.schema > CUSTOM_SAVE_SCHEMA || blob.name.is_empty() || !has_paths {
-            continue;
-        }
-        defs.insert(
-            blob.name.clone(),
-            crate::library::CustomSave { files: blob.files, registry: blob.registry },
-        );
-    }
-    if defs.is_empty() {
-        return 0;
-    }
-    let library = app.state::<SharedLibrary>().inner().clone();
-    let entries = library.list().await.unwrap_or_default();
-    let mut applied = 0usize;
-    for entry in &entries {
-        if entry.custom_save.is_some() {
-            continue;
-        }
-        if let Some(def) = defs.get(&entry.game_name) {
-            // Conditional write so it can't clobber a custom save set since we
-            // listed the library.
-            if library.set_custom_save_if_absent(&entry.id, def).await.unwrap_or(false) {
-                applied += 1;
+    let Some(remote) = resolve_remote(app) else { return 0; };
+    fold_name_keyed(
+        app,
+        &remote.store("custom-saves", CUSTOM_SAVE_SCHEMA),
+        |blob: CustomSaveBlob| {
+            let has_paths = !blob.files.is_empty() || !blob.registry.is_empty();
+            if blob.schema > CUSTOM_SAVE_SCHEMA || blob.name.is_empty() || !has_paths {
+                return None;
             }
-        }
-    }
-    applied
+            Some((blob.name, crate::library::CustomSave { files: blob.files, registry: blob.registry }))
+        },
+        |entry| entry.custom_save.is_some(),
+        |lib, id, def| async move { lib.set_custom_save_if_absent(&id, &def).await.unwrap_or(false) },
+    )
+    .await
 }
 
 // ── Manifest overrides (control-plane replication) ──────────────────────────
@@ -1192,17 +1255,17 @@ const MANIFEST_OVERRIDE_SCHEMA: u32 = 1;
 /// ludusavi override from its manifest minus these. Tags carry across OSes;
 /// templates only match on a device whose manifest has them.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
 struct ManifestOverrideBlob {
-    #[serde(default)]
     name: String,
-    #[serde(default)]
     excluded_tags: Vec<String>,
-    #[serde(default)]
     excluded_paths: Vec<String>,
-    #[serde(default)]
     updated_at: String,
-    #[serde(default)]
     schema: u32,
+}
+
+impl HasSchema for ManifestOverrideBlob {
+    fn stored_schema(&self) -> u32 { self.schema }
 }
 
 /// Publish (or update) this game's manifest override so other devices adopt the
@@ -1212,9 +1275,7 @@ pub async fn publish_manifest_override(
     game_name: &str,
     ov: &crate::library::ManifestOverride,
 ) {
-    let Some(remote) = resolve_remote(app) else {
-        return;
-    };
+    let Some(remote) = resolve_remote(app) else { return; };
     let blob = ManifestOverrideBlob {
         name: game_name.to_string(),
         excluded_tags: ov.excluded_tags.clone(),
@@ -1222,18 +1283,20 @@ pub async fn publish_manifest_override(
         updated_at: Utc::now().to_rfc3339(),
         schema: MANIFEST_OVERRIDE_SCHEMA,
     };
-    if let Ok(body) = serde_json::to_vec(&blob) {
-        rcat(&remote.exe, &remote.manifest_override_target(game_name), &body).await;
-    }
+    remote
+        .store("manifest-overrides", MANIFEST_OVERRIDE_SCHEMA)
+        .publish(&session_hash(game_name), &blob)
+        .await;
 }
 
 /// Remove a game's published manifest override (when the user clears it).
 /// Best-effort; a missing blob is fine.
 pub async fn delete_manifest_override(app: &AppHandle, game_name: &str) {
-    let Some(remote) = resolve_remote(app) else {
-        return;
-    };
-    deletefile(&remote.exe, &remote.manifest_override_target(game_name)).await;
+    let Some(remote) = resolve_remote(app) else { return; };
+    remote
+        .store("manifest-overrides", MANIFEST_OVERRIDE_SCHEMA)
+        .delete(&session_hash(game_name))
+        .await;
 }
 
 /// Fetch a single published manifest override by game name (one `cat`). `None`
@@ -1243,11 +1306,10 @@ pub async fn fetch_manifest_override(
     game_name: &str,
 ) -> Option<crate::library::ManifestOverride> {
     let remote = resolve_remote(app)?;
-    let body = cat(&remote.exe, &remote.manifest_override_target(game_name)).await?;
-    let blob: ManifestOverrideBlob = serde_json::from_str(&body).ok()?;
-    if blob.schema > MANIFEST_OVERRIDE_SCHEMA {
-        return None;
-    }
+    let blob: ManifestOverrideBlob = remote
+        .store("manifest-overrides", MANIFEST_OVERRIDE_SCHEMA)
+        .fetch(&session_hash(game_name))
+        .await?;
     let ov = crate::library::ManifestOverride {
         excluded_tags: blob.excluded_tags,
         excluded_paths: blob.excluded_paths,
@@ -1260,46 +1322,26 @@ pub async fn fetch_manifest_override(
 /// the caller re-syncs the `customGames` block and emits `library:changed`.
 /// Best-effort; 0 when cloud isn't configured.
 pub async fn fold_manifest_overrides(app: &AppHandle) -> usize {
-    let Some(remote) = resolve_remote(app) else {
-        return 0;
-    };
-    let blobs: Vec<(String, ManifestOverrideBlob)> =
-        read_json_blobs(&remote, &remote.manifest_overrides_dir()).await;
-    let mut defs: std::collections::HashMap<String, crate::library::ManifestOverride> =
-        std::collections::HashMap::new();
-    for (_, blob) in blobs {
-        if blob.schema > MANIFEST_OVERRIDE_SCHEMA || blob.name.is_empty() {
-            continue;
-        }
-        let ov = crate::library::ManifestOverride {
-            excluded_tags: blob.excluded_tags,
-            excluded_paths: blob.excluded_paths,
-        };
-        if ov.is_active() {
-            defs.insert(blob.name.clone(), ov);
-        }
-    }
-    if defs.is_empty() {
-        return 0;
-    }
-    let library = app.state::<SharedLibrary>().inner().clone();
-    let entries = library.list().await.unwrap_or_default();
-    let mut applied = 0usize;
-    for entry in &entries {
-        if entry.manifest_override.is_some() {
-            continue;
-        }
-        if let Some(def) = defs.get(&entry.game_name) {
-            if library
-                .set_manifest_override_if_absent(&entry.id, def)
-                .await
-                .unwrap_or(false)
-            {
-                applied += 1;
+    let Some(remote) = resolve_remote(app) else { return 0; };
+    fold_name_keyed(
+        app,
+        &remote.store("manifest-overrides", MANIFEST_OVERRIDE_SCHEMA),
+        |blob: ManifestOverrideBlob| {
+            if blob.schema > MANIFEST_OVERRIDE_SCHEMA || blob.name.is_empty() {
+                return None;
             }
-        }
-    }
-    applied
+            let ov = crate::library::ManifestOverride {
+                excluded_tags: blob.excluded_tags,
+                excluded_paths: blob.excluded_paths,
+            };
+            ov.is_active().then_some((blob.name, ov))
+        },
+        |entry| entry.manifest_override.is_some(),
+        |lib, id, def| async move {
+            lib.set_manifest_override_if_absent(&id, &def).await.unwrap_or(false)
+        },
+    )
+    .await
 }
 
 /// The badge for a game given the device id of its latest backer.
@@ -1339,7 +1381,7 @@ struct Folded {
 }
 
 /// Fold a set of device blobs into per-game cross-device totals.
-fn fold_blobs(blobs: &[(String, DeviceBlob)]) -> BTreeMap<String, Folded> {
+fn fold_device_totals(blobs: &[(String, DeviceBlob)]) -> BTreeMap<String, Folded> {
     let mut out: BTreeMap<String, Folded> = BTreeMap::new();
     for (device_id, blob) in blobs {
         for (game, mins) in &blob.playtime {
@@ -1411,12 +1453,12 @@ pub async fn fold_devices_from_config() -> bool {
         tracing::info!(new_sessions, "headless fold: imported peer play sessions");
     }
 
-    let blobs: Vec<(String, DeviceBlob)> = read_json_blobs(&remote, &remote.devices_dir()).await;
+    let blobs: Vec<(String, DeviceBlob)> = remote.store("devices", 1).read_all().await;
     if blobs.is_empty() {
         return new_sessions > 0;
     }
 
-    let folded = fold_blobs(&blobs);
+    let folded = fold_device_totals(&blobs);
     let entries = library.list().await.unwrap_or_default();
     let mut applied = 0usize;
     for entry in &entries {
@@ -1494,12 +1536,12 @@ async fn run_startup_fold(app: &AppHandle) {
     }
 
     // List device files, then cat each.
-    let blobs: Vec<(String, DeviceBlob)> = read_json_blobs(&remote, &remote.devices_dir()).await;
+    let blobs: Vec<(String, DeviceBlob)> = remote.store("devices", 1).read_all().await;
     if blobs.is_empty() {
         return;
     }
 
-    let folded = fold_blobs(&blobs);
+    let folded = fold_device_totals(&blobs);
 
     let entries = library.list().await.unwrap_or_default();
     let mut applied = 0usize;
@@ -1883,6 +1925,43 @@ mod tests {
         }
     }
 
+    fn make_remote() -> RcloneRemote {
+        RcloneRemote {
+            exe: std::path::PathBuf::from("rclone"),
+            remote: "Dropbox".into(),
+            base: "Spool".into(),
+        }
+    }
+
+    #[test]
+    fn blob_store_paths_are_correct() {
+        let remote = make_remote();
+        let store = remote.store("custom-saves", 1);
+        assert_eq!(store.dir(), "Dropbox:Spool/_spool/custom-saves");
+        assert_eq!(store.target("abc123"), "Dropbox:Spool/_spool/custom-saves/abc123.json");
+    }
+
+    #[test]
+    fn blob_store_base_trailing_slash_stripped() {
+        let remote = RcloneRemote {
+            exe: std::path::PathBuf::from("rclone"),
+            remote: "GDrive".into(),
+            base: "My/Saves/".into(),
+        };
+        let store = remote.store("sessions", 0);
+        assert!(store.dir().starts_with("GDrive:My/Saves/_spool/sessions"));
+        assert!(!store.dir().contains("//"));
+    }
+
+    #[test]
+    fn blob_store_different_subdirs_are_independent() {
+        let remote = make_remote();
+        let dev = remote.store("devices", 1);
+        let hist = remote.store("history", 1);
+        assert_ne!(dev.dir(), hist.dir());
+        assert_ne!(dev.target("id1"), hist.target("id1"));
+    }
+
     #[test]
     fn remote_name_from_yaml_reads_webdav_id() {
         let yaml = r#"
@@ -1987,7 +2066,7 @@ cloud:
         b.last_played.insert("Hades".into(), "2026-05-02T00:00:00Z".into());
         b.backups.insert("Hades".into(), "2026-05-03T00:00:00Z".into());
 
-        let folded = fold_blobs(&[("a".into(), a), ("b".into(), b)]);
+        let folded = fold_device_totals(&[("a".into(), a), ("b".into(), b)]);
         let h = folded.get("Hades").unwrap();
         assert_eq!(h.playtime, 15, "playtime sums across devices");
         assert_eq!(h.last_played_raw.as_deref(), Some("2026-05-02T00:00:00Z"));
@@ -2001,7 +2080,7 @@ cloud:
         let mut a = DeviceBlob::default();
         a.playtime.insert("Hades".into(), 42);
         for _ in 0..3 {
-            let folded = fold_blobs(&[("a".into(), a.clone())]);
+            let folded = fold_device_totals(&[("a".into(), a.clone())]);
             assert_eq!(folded.get("Hades").unwrap().playtime, 42);
         }
     }
