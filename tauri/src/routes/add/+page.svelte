@@ -30,6 +30,16 @@
   let identifying = $state(false);
   let candidates = $state<SearchCandidate[]>([]);
   let picked = $state<SearchCandidate | null>(null);
+  // True only when the user *clicked* a candidate, false when one was merely
+  // auto-highlighted (candidates[0]) by identify/search. "Add without save
+  // tracking" trusts an explicit pick's name but never an auto-highlight, so a
+  // wrong fuzzy match can't smuggle its name (and cover art) onto an untracked
+  // add — that's what `untrackedName` is for.
+  let pickedExplicitly = $state(false);
+  // Editable name used by the untracked add path. Defaults to the cleaned exe
+  // filename; the no-match card lets the user correct it so the right artwork
+  // is fetched (art falls back to SteamGridDB name lookup when no steam_id).
+  let untrackedName = $state('');
   let searchQuery = $state('');
   let searchMode = $state(false); // true once the user types in the search box
   let error = $state<string | null>(null);
@@ -68,7 +78,14 @@
   /** Highlight a candidate and re-derive the install folder from it. */
   function pick(cand: SearchCandidate) {
     picked = cand;
+    pickedExplicitly = true;
     applyDetectedFolder(cand);
+  }
+
+  /** Strip the directory and extension off a path to get a display name. */
+  function cleanFileName(path: string): string {
+    const base = path.split(/[\\/]/).at(-1) ?? path;
+    return base.replace(/\.[^.]+$/, '') || 'Untitled Game';
   }
 
   /**
@@ -142,6 +159,9 @@
     // with a detected install root comes back.
     folderTouched = false;
     gameFolder = parentDir(result);
+    // Seed the untracked name from the filename so the no-match path has a
+    // sensible default the user can edit.
+    untrackedName = cleanFileName(result);
     await identify();
   }
 
@@ -171,6 +191,7 @@
       if (seq !== searchSeq) return; // a newer search/identify superseded this
       candidates = result;
       picked = candidates[0] ?? null;
+      pickedExplicitly = false; // auto-highlight, not a user choice
       applyDetectedFolder(picked);
     } catch (e) {
       if (seq !== searchSeq) return;
@@ -207,6 +228,7 @@
         if (seq !== searchSeq) return; // a newer search/identify superseded this
         candidates = result;
         picked = candidates[0] ?? null;
+        pickedExplicitly = false; // auto-highlight, not a user choice
         applyDetectedFolder(picked);
       } catch (e) {
         if (seq !== searchSeq) return;
@@ -240,9 +262,16 @@
   async function addWithoutTracking() {
     if (!exePath) return;
     try {
-      const fallbackName = fileMeta?.name.replace(/\.[^.]+$/, '') ?? 'Untitled Game';
+      // Use the candidate name only when the user *explicitly* picked one — an
+      // auto-highlighted (possibly wrong) match must not name the entry, since
+      // that name also drives the artwork lookup. Otherwise use the editable
+      // untracked name, falling back to the cleaned filename.
+      const name =
+        pickedExplicitly && picked
+          ? picked.name
+          : untrackedName.trim() || cleanFileName(exePath);
       await api.addGame({
-        game_name: picked?.name ?? fallbackName,
+        game_name: name,
         exe_path: exePath,
         save_paths: [],
         game_folder_path: gameFolder,
@@ -451,6 +480,30 @@
                 any other game.
               </p>
             </div>
+
+            <!-- Editable name for the untracked add. Defaults to the cleaned
+                 filename; "Add without save tracking" uses this verbatim. The
+                 name also drives artwork (Steam store search → Steam CDN, else
+                 SteamGridDB by name), so a correct name still gets a cover. -->
+            <div class="w-full max-w-[420px] text-left">
+              <label
+                for="untracked-name"
+                class="font-mono mb-1 block text-[10px] uppercase tracking-[0.1em] text-ink-3"
+              >
+                Game name
+              </label>
+              <input
+                id="untracked-name"
+                bind:value={untrackedName}
+                placeholder="Type the game's name"
+                class="font-sans h-9 w-full rounded-sm border border-line-2 bg-bg-2 px-2.5 text-[13px] text-ink-0 outline-none transition-colors placeholder:text-ink-3 focus:border-line-3"
+              />
+              <p class="m-0 mt-1.5 text-[11px] leading-relaxed text-ink-3">
+                Used as the title and to look up cover art. Spell it the way Steam does
+                so the right artwork is fetched.
+              </p>
+            </div>
+
             <a
               href="https://github.com/mtkennerly/ludusavi/issues"
               target="_blank"

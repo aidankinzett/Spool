@@ -1273,27 +1273,53 @@ pub async fn add_game(
         tracing::warn!(error = %e, "failed to emit library:changed after add_game");
     }
 
-    // Kick off cover-art + hero banner fetches. Non-blocking — the user sees
-    // the new card immediately and both images land a moment later via a single
-    // library:changed emit. One sgdb game-id lookup feeds both downloads.
-    let app_for_art = app.clone();
-    let id_for_art = entry.id.clone();
+    // Enrich the new entry in the background — the card shows immediately while
+    // artwork and Steam-Store metadata land a moment later via library:changed
+    // emits. For an untracked add (no steam id from ludusavi) we first try to
+    // resolve a steam id from the game name via Steam's store search and persist
+    // it, so the art + metadata fetches below key off it (Steam-CDN art +
+    // Steam-Store metadata) instead of a name-only SteamGridDB lookup. The
+    // resolved id only drives art/metadata; it does not enable save tracking.
+    // Best-effort throughout — any miss leaves steam_id unset and falls back.
+    let app_for_enrich = app.clone();
+    let id_for_enrich = entry.id.clone();
+    let name_for_enrich = entry.game_name.clone();
+    let had_steam_id = entry.steam_id.is_some();
     tauri::async_runtime::spawn(async move {
-        if let Err(e) =
-            crate::steamgriddb::fetch_and_save_cover_and_hero(&app_for_art, &id_for_art).await
-        {
-            tracing::warn!(game_id = %id_for_art, error = %e, "cover/hero fetch failed");
+        if !had_steam_id {
+            let client = app_for_enrich.state::<crate::metadata::MetadataClient>();
+            match crate::metadata::resolve_steam_appid(client.http(), &name_for_enrich).await {
+                Ok(Some(appid)) => {
+                    let library = app_for_enrich.state::<SharedLibrary>();
+                    if let Err(e) = library
+                        .update_fields(&id_for_enrich, &[("steam_id", json!(appid))])
+                        .await
+                    {
+                        tracing::warn!(game_id = %id_for_enrich, error = %e, "failed to persist resolved steam id");
+                    } else if let Err(e) = app_for_enrich.emit("library:changed", &id_for_enrich) {
+                        tracing::warn!(error = %e, "failed to emit library:changed after steam id resolve");
+                    }
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    tracing::warn!(name = %name_for_enrich, error = %e, "steam appid resolve failed");
+                }
+            }
         }
-    });
 
-    // Fetch Steam Store metadata (description, developer, publisher,
-    // genres, release date) in parallel. Best-effort and only fills
-    // empty fields — a no-op when the game has no steam_id.
-    let app_for_meta = app.clone();
-    let id_for_meta = entry.id.clone();
-    tauri::async_runtime::spawn(async move {
-        if let Err(e) = crate::metadata::fetch_and_save_metadata(&app_for_meta, &id_for_meta).await {
-            tracing::warn!(game_id = %id_for_meta, error = %e, "metadata fetch failed");
+        // Cover + hero banner. One sgdb game-id (or Steam CDN) lookup feeds both.
+        if let Err(e) =
+            crate::steamgriddb::fetch_and_save_cover_and_hero(&app_for_enrich, &id_for_enrich).await
+        {
+            tracing::warn!(game_id = %id_for_enrich, error = %e, "cover/hero fetch failed");
+        }
+
+        // Steam Store metadata (description, developer, publisher, genres,
+        // release date). Fills only empty fields; a no-op without a steam id.
+        if let Err(e) =
+            crate::metadata::fetch_and_save_metadata(&app_for_enrich, &id_for_enrich).await
+        {
+            tracing::warn!(game_id = %id_for_enrich, error = %e, "metadata fetch failed");
         }
     });
 

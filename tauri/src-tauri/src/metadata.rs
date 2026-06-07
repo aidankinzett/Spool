@@ -29,6 +29,11 @@ use tauri::{AppHandle, Emitter, Manager};
 
 const APPDETAILS: &str = "https://store.steampowered.com/api/appdetails";
 
+/// Steam's public store search endpoint. Takes a free-text term and returns
+/// matching store entries (apps, bundles, …) with their ids — no API key.
+/// Used to resolve a Steam app id from a game name for an untracked add.
+const STORE_SEARCH: &str = "https://store.steampowered.com/api/storesearch/";
+
 /// Stateless Steam Store client. The HTTP client is held inline so the
 /// TLS setup cost is paid once per process (mirrors `SteamGridDbClient`).
 pub struct MetadataClient {
@@ -66,6 +71,20 @@ impl Default for MetadataClient {
 struct AppDetailsEntry {
     success: bool,
     data: Option<AppData>,
+}
+
+/// Top-level shape of the store-search response: `{ "total": N, "items": [...] }`.
+#[derive(Debug, Deserialize)]
+struct StoreSearchResponse {
+    #[serde(default)]
+    items: Vec<StoreSearchItem>,
+}
+
+#[derive(Debug, Deserialize)]
+struct StoreSearchItem {
+    id: u64,
+    #[serde(rename = "type", default)]
+    item_type: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -175,6 +194,44 @@ pub async fn fetch_metadata(app: AppHandle, game_id: String) -> AppResult<bool> 
 }
 
 // ── Internals ───────────────────────────────────────────────────────────────
+
+/// Resolves a game name to a Steam app id via Steam's public store search
+/// endpoint (no API key). Returns the top matching app's id, or `None` when
+/// nothing matches or the name is blank.
+///
+/// Used to enrich an *untracked* add — one whose name ludusavi didn't resolve
+/// to a Steam id — so it still gets Steam-CDN artwork and Steam-Store metadata.
+/// Best-effort: a miss leaves `steam_id` unset and art falls back to a
+/// SteamGridDB name lookup. The resolved id only drives art/metadata; it does
+/// **not** enable save tracking (that's keyed off the manifest / save paths).
+pub async fn resolve_steam_appid(http: &reqwest::Client, name: &str) -> AppResult<Option<u64>> {
+    let term = name.trim();
+    if term.is_empty() {
+        return Ok(None);
+    }
+    let resp = http
+        .get(STORE_SEARCH)
+        .query(&[("term", term), ("cc", "us"), ("l", "english")])
+        .send()
+        .await
+        .map_err(|e| AppError::Other(format!("steam store search failed: {e}")))?;
+    if !resp.status().is_success() {
+        tracing::warn!(name = term, status = %resp.status(), "steam store search non-2xx");
+        return Ok(None);
+    }
+    let body: StoreSearchResponse = resp
+        .json()
+        .await
+        .map_err(|e| AppError::Other(format!("steam store search json: {e}")))?;
+    // The list can include bundles/subscriptions/DLC; prefer the first real
+    // app, falling back to the first item when none are explicitly typed.
+    let item = body
+        .items
+        .iter()
+        .find(|i| i.item_type == "app")
+        .or_else(|| body.items.first());
+    Ok(item.map(|i| i.id))
+}
 
 /// Hits the Steam Store `appdetails` endpoint for `steam_id` and parses
 /// the response into normalised metadata. Returns `None` when Steam
