@@ -199,9 +199,6 @@ pub fn compute_shortcut_app_id(game_name: &str, spool_exe: &str) -> u32 {
 /// Serialises + writes atomically (write `.tmp`, rename). Keeps a `.bak`
 /// of the previous file so a corrupted Steam can be restored manually.
 pub fn write_shortcuts(path: &Path, shortcuts: &[ShortcutOwned]) -> AppResult<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
     // Re-stamp the order field consecutively from 0 — Steam can choke
     // on gaps after a delete.
     let mut owned: Vec<ShortcutOwned> = shortcuts.to_vec();
@@ -211,12 +208,7 @@ pub fn write_shortcuts(path: &Path, shortcuts: &[ShortcutOwned]) -> AppResult<()
     let borrowed: Vec<_> = owned.iter().map(|s| s.borrow()).collect();
     let bytes = shortcuts_to_bytes(&borrowed);
 
-    if path.is_file() {
-        let _ = std::fs::copy(path, path.with_extension("vdf.bak"));
-    }
-    let tmp = path.with_extension("vdf.tmp");
-    std::fs::write(&tmp, &bytes)?;
-    std::fs::rename(&tmp, path)?;
+    crate::paths::write_atomic(path, &bytes, true)?;
     Ok(())
 }
 

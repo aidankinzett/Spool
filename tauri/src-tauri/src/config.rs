@@ -265,16 +265,8 @@ impl Config {
     /// Atomic save: write-temp + rename, with a `.bak` of the previous file.
     pub fn save(&self) -> AppResult<()> {
         let path = paths::config_file();
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let tmp = path.with_extension("json.tmp");
         let json = serde_json::to_string_pretty(&self.data)?;
-        std::fs::write(&tmp, json)?;
-        if path.exists() {
-            let _ = std::fs::rename(&path, path.with_extension("json.bak"));
-        }
-        std::fs::rename(&tmp, &path)?;
+        paths::write_atomic(&path, json.as_bytes(), true)?;
         Ok(())
     }
 }
