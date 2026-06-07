@@ -223,14 +223,15 @@ pub async fn resolve_steam_appid(http: &reqwest::Client, name: &str) -> AppResul
         .json()
         .await
         .map_err(|e| AppError::Other(format!("steam store search json: {e}")))?;
-    // The list can include bundles/subscriptions/DLC; prefer the first real
-    // app, falling back to the first item when none are explicitly typed.
-    let item = body
+    // The list can include bundles/subscriptions/DLC, whose ids are not Steam
+    // app ids — persisting one as steam_id would yield no appdetails metadata
+    // and 404 the Steam-CDN art. Only an `app` result carries a usable app id.
+    let appid = body
         .items
         .iter()
         .find(|i| i.item_type == "app")
-        .or_else(|| body.items.first());
-    Ok(item.map(|i| i.id))
+        .map(|i| i.id);
+    Ok(appid)
 }
 
 /// Hits the Steam Store `appdetails` endpoint for `steam_id` and parses
