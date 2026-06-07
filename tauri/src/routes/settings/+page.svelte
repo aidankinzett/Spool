@@ -210,6 +210,24 @@
     }
   }
 
+  let syncingCollection = $state(false);
+  async function syncSpoolCollection() {
+    syncingCollection = true;
+    try {
+      await api.syncSpoolSteamCollection();
+      toasts.show({
+        kind: 'ok',
+        label: 'STEAM',
+        title: 'Rebuilt Spool collection',
+        sub: 'Restart Steam to see the “Spool” collection. TabMaster can turn it into a tab via its Collection filter.',
+      });
+    } catch (e) {
+      toasts.show({ kind: 'bad', label: 'STEAM · FAILED', title: "Couldn't rebuild collection", sub: String(e) });
+    } finally {
+      syncingCollection = false;
+    }
+  }
+
   async function installDeckyPlugin() {
     deckyInstalling = true;
     try {
@@ -726,6 +744,17 @@
                       <Btn variant="primary" onclick={addSpoolToSteam} disabled={addingToSteam}>
                         {#snippet icon()}<Gamepad2 size={14} />{/snippet}
                         {addingToSteam ? 'Adding…' : 'Add to Steam'}
+                      </Btn>
+                    {/snippet}
+                  </SettingsRow>
+                  <SettingsRow
+                    label="Spool collection"
+                    helper="Builds a “Spool” library collection from your Steam-added games. Steam shows it natively; TabMaster can turn it into a tab. Restart Steam afterwards."
+                  >
+                    {#snippet extras()}
+                      <Btn onclick={syncSpoolCollection} disabled={syncingCollection}>
+                        {#snippet icon()}<Gamepad2 size={14} />{/snippet}
+                        {syncingCollection ? 'Rebuilding…' : 'Rebuild collection'}
                       </Btn>
                     {/snippet}
                   </SettingsRow>
