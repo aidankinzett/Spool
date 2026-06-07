@@ -168,6 +168,7 @@
       <GameDetail
         game={selectedGame}
         runPhase={lib.runningId === selectedGame.id ? lib.runningPhase : null}
+        backingUp={lib.isBackingUp(selectedGame.id)}
         autofocusPlay
         cloudConfigured={lib.syncStatus.reachability !== 'unconfigured'}
         onPullConflict={(id) => (lib.conflictGameId = id)}

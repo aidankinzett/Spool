@@ -63,6 +63,7 @@ export function makeGame(over: Partial<GameEntry> = {}): GameEntry {
     manifest_install_dir: null,
     save_paths: ['C:/Users/you/Documents/The Witcher 3'],
     custom_save: null,
+    manifest_override: null,
     accent_color: '#c9a36f',
     sync_badge: 'synced',
     cloud_sync_baseline: null,

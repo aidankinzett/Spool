@@ -286,6 +286,7 @@ pub fn run() {
             guided_install::run_guided_installer,
             // ludusavi
             ludusavi::search_games,
+            ludusavi::manifest_save_locations,
             ludusavi::search_by_exe,
             ludusavi::open_ludusavi_gui,
             ludusavi::set_cloud_webdav,
@@ -327,6 +328,8 @@ pub fn run() {
             // custom save locations (non-manifest games)
             custom_saves::set_custom_save,
             custom_saves::clear_custom_save,
+            custom_saves::set_manifest_override,
+            custom_saves::clear_manifest_override,
             custom_saves::derive_save_template,
             custom_saves::save_picker_start_dir,
             custom_saves::prefix_ready,

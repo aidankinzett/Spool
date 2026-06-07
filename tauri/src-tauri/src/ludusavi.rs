@@ -206,6 +206,11 @@ fn revisions_from(out: BackupsOutput) -> Vec<SaveRevision> {
 #[serde(default)]
 pub struct ManifestEntry {
     pub files: HashMap<String, ManifestFileEntry>,
+    /// Registry-based saves (Windows / Proton `*.reg`). Same `tags`/`when` shape
+    /// as `files`. Parsed so a manifest *override* can carry them through —
+    /// `integration: override` ignores the manifest entry entirely, so dropping
+    /// these would silently stop backing up a game's registry saves.
+    pub registry: HashMap<String, ManifestFileEntry>,
     #[serde(rename = "installDir")]
     pub install_dir: HashMap<String, serde_json::Value>,
     pub steam: Option<StoreRef>,
@@ -217,6 +222,45 @@ pub struct ManifestEntry {
 #[serde(default)]
 pub struct ManifestFileEntry {
     pub tags: Vec<String>,
+    /// OS/store constraints gating this path. Empty ⇒ applies everywhere. A path
+    /// is in scope when any entry's `os` is absent or matches the target OS — see
+    /// [`manifest_path_applies`]. ludusavi's `customGames` block can't express
+    /// this, so Spool evaluates it per-device when re-deriving a manifest override.
+    pub when: Vec<ManifestWhen>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(default)]
+pub struct ManifestWhen {
+    pub os: Option<String>,
+    pub store: Option<String>,
+}
+
+/// Whether a manifest file entry applies on `target_os` (`"windows"`, `"linux"`,
+/// `"mac"`). True when the entry has no `when:` constraints, or any constraint
+/// either names no OS (store-only gating, which Spool doesn't filter by) or names
+/// exactly `target_os`. Proton games pass `"windows"` — they run the Windows
+/// build inside a prefix and save at the Windows locations.
+pub fn manifest_path_applies(entry: &ManifestFileEntry, target_os: &str) -> bool {
+    if entry.when.is_empty() {
+        return true;
+    }
+    entry
+        .when
+        .iter()
+        .any(|w| w.os.as_deref().is_none_or(|os| os == target_os))
+}
+
+/// The ludusavi OS token a game's saves live under: `"windows"` for Proton games
+/// (Windows build in a Wine prefix) and on Windows; otherwise the host OS.
+pub fn target_os_for(uses_proton: bool) -> &'static str {
+    if uses_proton || cfg!(target_os = "windows") {
+        "windows"
+    } else if cfg!(target_os = "macos") {
+        "mac"
+    } else {
+        "linux"
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -264,6 +308,31 @@ pub struct SearchCandidate {
     /// the exe path); None for manual name searches. The Add flow defaults the
     /// install folder to this when present.
     pub install_root: Option<String>,
+}
+
+/// One manifest-declared save location for an already-added game, surfaced to the
+/// Saves editor so the user can choose which locations sync. `applies` reflects
+/// the per-device `when:` evaluation for the game's launch mode.
+#[derive(Debug, Clone, Serialize)]
+pub struct ManifestPath {
+    /// Raw ludusavi template, e.g. `<winLocalAppData>/Game` — the stable key the
+    /// override's `excluded_paths` matches against.
+    pub template: String,
+    /// Human-readable form (`%LOCALAPPDATA%/Game`).
+    pub pretty: String,
+    /// Manifest tags for this path (`save`, `config`, …), used to group it in the
+    /// UI and to match the override's `excluded_tags`.
+    pub tags: Vec<String>,
+    /// Whether this path applies on this device (after the `when:` evaluation).
+    pub applies: bool,
+}
+
+/// A game's full manifest save surface — file paths and registry keys. Used to
+/// re-derive a manifest override while preserving registry-based saves.
+#[derive(Debug, Clone, Default)]
+pub struct ManifestSaveData {
+    pub files: Vec<ManifestPath>,
+    pub registry: Vec<ManifestPath>,
 }
 
 // ── Client ──────────────────────────────────────────────────────────────────
@@ -516,6 +585,56 @@ impl LudusaviClient {
         let mut guard = self.manifest.write().await;
         *guard = Some(Arc::clone(&arc));
         Ok(arc)
+    }
+
+    /// The manifest's declared save locations for `game_name` — file paths and
+    /// registry keys — each tagged and flagged with whether it `applies` on this
+    /// device (per the `when:` evaluation for `target_os`). Empty when the game
+    /// isn't in the manifest. Backs both the Saves editor's override picker and
+    /// the per-device override re-derivation in [`crate::custom_saves`].
+    pub async fn manifest_save_data(
+        &self,
+        ludusavi_exe: &Path,
+        config_dir: &Path,
+        game_name: &str,
+        target_os: &str,
+    ) -> AppResult<ManifestSaveData> {
+        let manifest = self.manifest_or_load(ludusavi_exe, config_dir).await?;
+        let Some(entry) = manifest.get(game_name) else {
+            return Ok(ManifestSaveData::default());
+        };
+        let to_paths = |map: &HashMap<String, ManifestFileEntry>| {
+            let mut v: Vec<ManifestPath> = map
+                .iter()
+                .map(|(template, fe)| ManifestPath {
+                    template: template.clone(),
+                    pretty: prettify_save_template(template),
+                    tags: fe.tags.clone(),
+                    applies: manifest_path_applies(fe, target_os),
+                })
+                .collect();
+            v.sort_by(|a, b| a.template.cmp(&b.template)); // stable order for UI/tests
+            v
+        };
+        Ok(ManifestSaveData {
+            files: to_paths(&entry.files),
+            registry: to_paths(&entry.registry),
+        })
+    }
+
+    /// Files-only view of [`manifest_save_data`] — what the Saves editor's
+    /// per-path / per-tag picker shows (registry keys aren't user-pickable here).
+    pub async fn manifest_paths(
+        &self,
+        ludusavi_exe: &Path,
+        config_dir: &Path,
+        game_name: &str,
+        target_os: &str,
+    ) -> AppResult<Vec<ManifestPath>> {
+        Ok(self
+            .manifest_save_data(ludusavi_exe, config_dir, game_name, target_os)
+            .await?
+            .files)
     }
 }
 
@@ -1083,6 +1202,28 @@ pub async fn search_games(
     ludusavi.search(&ludusavi_exe, &config_dir, query.trim()).await
 }
 
+/// Every manifest-declared save location for an already-added game, tagged and
+/// flagged for this device's launch mode — backs the Saves editor's per-path /
+/// per-tag override picker. Empty when the game isn't in the manifest.
+#[tauri::command]
+pub async fn manifest_save_locations(
+    config: State<'_, SharedConfig>,
+    ludusavi: State<'_, LudusaviClient>,
+    library: State<'_, crate::library::SharedLibrary>,
+    game_id: String,
+) -> AppResult<Vec<ManifestPath>> {
+    let entry = library
+        .find(&game_id)
+        .await?
+        .ok_or_else(|| AppError::Other(format!("game not found: {game_id}")))?;
+    let ludusavi_exe = ludusavi_path_or_err(&config)?;
+    let config_dir = crate::paths::ludusavi_config_dir();
+    let target_os = target_os_for(entry.uses_proton());
+    ludusavi
+        .manifest_paths(&ludusavi_exe, &config_dir, &entry.game_name, target_os)
+        .await
+}
+
 /// Opens ludusavi in GUI mode against Spool's owned config dir so the user
 /// can configure the cloud remote, rclone, or inspect the backup state —
 /// all within the Spool-managed config rather than their personal one.
@@ -1270,6 +1411,63 @@ fn ludusavi_path_or_err(_config: &State<'_, SharedConfig>) -> AppResult<PathBuf>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn file_entry(tags: &[&str], when_os: &[Option<&str>]) -> ManifestFileEntry {
+        ManifestFileEntry {
+            tags: tags.iter().map(|s| s.to_string()).collect(),
+            when: when_os
+                .iter()
+                .map(|os| ManifestWhen { os: os.map(|s| s.to_string()), store: None })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn manifest_path_applies_no_when_is_universal() {
+        // No `when:` constraints → applies on every OS.
+        let e = file_entry(&["save"], &[]);
+        assert!(manifest_path_applies(&e, "windows"));
+        assert!(manifest_path_applies(&e, "linux"));
+        assert!(manifest_path_applies(&e, "mac"));
+    }
+
+    #[test]
+    fn manifest_path_applies_matches_target_os() {
+        let win_only = file_entry(&["save"], &[Some("windows")]);
+        assert!(manifest_path_applies(&win_only, "windows"));
+        assert!(!manifest_path_applies(&win_only, "linux"));
+
+        let linux_only = file_entry(&["save"], &[Some("linux")]);
+        assert!(manifest_path_applies(&linux_only, "linux"));
+        assert!(!manifest_path_applies(&linux_only, "windows"));
+    }
+
+    #[test]
+    fn manifest_path_applies_any_matching_when_wins() {
+        // Multiple constraints: in scope if ANY matches.
+        let e = file_entry(&["save"], &[Some("linux"), Some("windows")]);
+        assert!(manifest_path_applies(&e, "windows"));
+        assert!(manifest_path_applies(&e, "linux"));
+        assert!(!manifest_path_applies(&e, "mac"));
+    }
+
+    #[test]
+    fn manifest_path_applies_store_only_when_is_os_agnostic() {
+        // A constraint that gates by store but not OS doesn't restrict the OS —
+        // Spool doesn't filter by store, so it applies on every OS.
+        let e = ManifestFileEntry {
+            tags: vec!["config".into()],
+            when: vec![ManifestWhen { os: None, store: Some("steam".into()) }],
+        };
+        assert!(manifest_path_applies(&e, "windows"));
+        assert!(manifest_path_applies(&e, "linux"));
+    }
+
+    #[test]
+    fn target_os_proton_counts_as_windows() {
+        // Proton games store saves at the Windows location inside the prefix.
+        assert_eq!(target_os_for(true), "windows");
+    }
 
     #[test]
     fn infer_name_basic() {
@@ -1490,7 +1688,7 @@ mod tests {
                 let mut m = HashMap::new();
                 m.insert(
                     "<winAppData>/Hades/save".to_string(),
-                    ManifestFileEntry { tags: vec!["save".to_string()] },
+                    ManifestFileEntry { tags: vec!["save".to_string()], when: vec![] },
                 );
                 m
             },

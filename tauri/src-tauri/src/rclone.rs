@@ -185,6 +185,12 @@ impl RcloneRemote {
     fn custom_saves_dir(&self) -> String {
         format!("{}/custom-saves", self.spool_dir())
     }
+    fn manifest_override_target(&self, game_name: &str) -> String {
+        format!("{}/manifest-overrides/{}.json", self.spool_dir(), session_hash(game_name))
+    }
+    fn manifest_overrides_dir(&self) -> String {
+        format!("{}/manifest-overrides", self.spool_dir())
+    }
 }
 
 /// blake3 hex digest of a game name — the session-marker filename. Stable for a
@@ -1169,6 +1175,126 @@ pub async fn fold_custom_saves(app: &AppHandle) -> usize {
             // Conditional write so it can't clobber a custom save set since we
             // listed the library.
             if library.set_custom_save_if_absent(&entry.id, def).await.unwrap_or(false) {
+                applied += 1;
+            }
+        }
+    }
+    applied
+}
+
+// ── Manifest overrides (control-plane replication) ──────────────────────────
+
+const MANIFEST_OVERRIDE_SCHEMA: u32 = 1;
+
+/// A replicated manifest override: `_spool/manifest-overrides/<blake3(name)>.json`.
+/// Name-keyed like custom saves. Stores the user's *exclusion intent* (tags +
+/// literal templates), never resolved paths — each device re-derives its own
+/// ludusavi override from its manifest minus these. Tags carry across OSes;
+/// templates only match on a device whose manifest has them.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct ManifestOverrideBlob {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    excluded_tags: Vec<String>,
+    #[serde(default)]
+    excluded_paths: Vec<String>,
+    #[serde(default)]
+    updated_at: String,
+    #[serde(default)]
+    schema: u32,
+}
+
+/// Publish (or update) this game's manifest override so other devices adopt the
+/// same exclusions. Best-effort; no-op when cloud isn't configured.
+pub async fn publish_manifest_override(
+    app: &AppHandle,
+    game_name: &str,
+    ov: &crate::library::ManifestOverride,
+) {
+    let Some(remote) = resolve_remote(app) else {
+        return;
+    };
+    let blob = ManifestOverrideBlob {
+        name: game_name.to_string(),
+        excluded_tags: ov.excluded_tags.clone(),
+        excluded_paths: ov.excluded_paths.clone(),
+        updated_at: Utc::now().to_rfc3339(),
+        schema: MANIFEST_OVERRIDE_SCHEMA,
+    };
+    if let Ok(body) = serde_json::to_vec(&blob) {
+        rcat(&remote.exe, &remote.manifest_override_target(game_name), &body).await;
+    }
+}
+
+/// Remove a game's published manifest override (when the user clears it).
+/// Best-effort; a missing blob is fine.
+pub async fn delete_manifest_override(app: &AppHandle, game_name: &str) {
+    let Some(remote) = resolve_remote(app) else {
+        return;
+    };
+    deletefile(&remote.exe, &remote.manifest_override_target(game_name)).await;
+}
+
+/// Fetch a single published manifest override by game name (one `cat`). `None`
+/// when cloud isn't configured, no override exists, or it excludes nothing.
+pub async fn fetch_manifest_override(
+    app: &AppHandle,
+    game_name: &str,
+) -> Option<crate::library::ManifestOverride> {
+    let remote = resolve_remote(app)?;
+    let body = cat(&remote.exe, &remote.manifest_override_target(game_name)).await?;
+    let blob: ManifestOverrideBlob = serde_json::from_str(&body).ok()?;
+    if blob.schema > MANIFEST_OVERRIDE_SCHEMA {
+        return None;
+    }
+    let ov = crate::library::ManifestOverride {
+        excluded_tags: blob.excluded_tags,
+        excluded_paths: blob.excluded_paths,
+    };
+    ov.is_active().then_some(ov)
+}
+
+/// Adopt published manifest overrides into local entries that don't have one yet
+/// (matched by game name). Only fills `None`. Returns how many entries changed;
+/// the caller re-syncs the `customGames` block and emits `library:changed`.
+/// Best-effort; 0 when cloud isn't configured.
+pub async fn fold_manifest_overrides(app: &AppHandle) -> usize {
+    let Some(remote) = resolve_remote(app) else {
+        return 0;
+    };
+    let blobs: Vec<(String, ManifestOverrideBlob)> =
+        read_json_blobs(&remote, &remote.manifest_overrides_dir()).await;
+    let mut defs: std::collections::HashMap<String, crate::library::ManifestOverride> =
+        std::collections::HashMap::new();
+    for (_, blob) in blobs {
+        if blob.schema > MANIFEST_OVERRIDE_SCHEMA || blob.name.is_empty() {
+            continue;
+        }
+        let ov = crate::library::ManifestOverride {
+            excluded_tags: blob.excluded_tags,
+            excluded_paths: blob.excluded_paths,
+        };
+        if ov.is_active() {
+            defs.insert(blob.name.clone(), ov);
+        }
+    }
+    if defs.is_empty() {
+        return 0;
+    }
+    let library = app.state::<SharedLibrary>().inner().clone();
+    let entries = library.list().await.unwrap_or_default();
+    let mut applied = 0usize;
+    for entry in &entries {
+        if entry.manifest_override.is_some() {
+            continue;
+        }
+        if let Some(def) = defs.get(&entry.game_name) {
+            if library
+                .set_manifest_override_if_absent(&entry.id, def)
+                .await
+                .unwrap_or(false)
+            {
                 applied += 1;
             }
         }

@@ -36,6 +36,7 @@ function g(over: Partial<GameEntry> & { id: string; game_name: string }): GameEn
     manifest_install_dir: null,
     save_paths: [],
     custom_save: null,
+    manifest_override: null,
     accent_color: null,
     sync_badge: null,
     cloud_sync_baseline: null,

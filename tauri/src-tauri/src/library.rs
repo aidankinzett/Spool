@@ -47,6 +47,37 @@ pub struct CustomSave {
     pub registry: Vec<String>,
 }
 
+/// A user's narrowing of which manifest-derived save locations actually sync for
+/// a manifest-covered game — the lever for "back up my saves, not my settings".
+///
+/// Stored as *exclusions of intent*, never as resolved paths, so it stays
+/// correct across machines: a game can be native on one OS and a Windows build
+/// (under Proton) on another, with different manifest paths per OS. Each device
+/// re-derives its own ludusavi `customGames` override from *its* manifest minus
+/// these exclusions ([`crate::custom_saves::sync_ludusavi_custom_games`]).
+///
+/// * `excluded_tags` — manifest file tags to drop (e.g. `"config"`). Semantic and
+///   device-independent, so this is the cross-OS-correct primary mechanism.
+/// * `excluded_paths` — literal manifest templates to drop, for per-path control.
+///   Template strings are device-specific, so an entry only matches on a device
+///   whose manifest carries that exact template (it degrades to a no-op
+///   elsewhere) — acceptable, since tags carry the intent across OSes.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(default)]
+pub struct ManifestOverride {
+    pub excluded_tags: Vec<String>,
+    pub excluded_paths: Vec<String>,
+}
+
+impl ManifestOverride {
+    /// Whether this override actually excludes anything. An empty override is
+    /// equivalent to none — the plain manifest entry stands, no `customGames`
+    /// override is written.
+    pub fn is_active(&self) -> bool {
+        !self.excluded_tags.is_empty() || !self.excluded_paths.is_empty()
+    }
+}
+
 /// One game in the library. Matches the C# `GameEntry` JSON shape exactly
 /// for the legacy fields, plus a small set of manifest-derived metadata
 /// new to the Tauri rewrite (steam id, gog id, save paths, …).
@@ -147,6 +178,14 @@ pub struct GameEntry {
     /// adopt fold, so it's listed in [`RUNTIME_FIELDS`] and survives a
     /// whole-entry editor save.
     pub custom_save: Option<CustomSave>,
+
+    /// User's narrowing of which manifest save locations sync for this game (e.g.
+    /// "exclude settings/config"). `None`/empty = the full manifest entry applies.
+    /// When active, [`crate::custom_saves`] re-derives a ludusavi `customGames`
+    /// override from this device's manifest minus the exclusions. Written
+    /// out-of-band by the Saves editor and the cross-device adopt fold, so it's in
+    /// [`RUNTIME_FIELDS`] and survives a whole-entry editor save.
+    pub manifest_override: Option<ManifestOverride>,
     /// Dominant cover-art colour as `#rrggbb`, extracted when the cover
     /// downloads. Drives hero / button / accent tinting in the detail
     /// view; falls back to the brand `spool` colour when None.
@@ -228,6 +267,7 @@ impl Default for GameEntry {
             manifest_install_dir: None,
             save_paths: Vec::new(),
             custom_save: None,
+            manifest_override: None,
             accent_color: None,
             sync_badge: None,
             cloud_sync_baseline: None,
@@ -320,6 +360,7 @@ const RUNTIME_FIELDS: &[&str] = &[
     // Written out-of-band by the Saves editor / cross-device adopt fold, not the
     // whole-entry editor save, so the editor's `replace` must re-overlay it.
     "custom_save",
+    "manifest_override",
     // Flipped out-of-band by uninstall / reinstall (and the Decky plugin), not
     // the editor save. Overlaying it stops a stale open editor from resurrecting
     // an uninstalled game on save. (`game_folder_path` / `exe_path` are NOT
@@ -927,6 +968,40 @@ impl Library {
         let value = serde_json::to_string(&deduped)?;
         let sql = "UPDATE games SET data = json_set(data, '$.custom_save', json(?2))
                    WHERE id = ?1 AND json_extract(data, '$.custom_save') IS NULL";
+        let res = sqlx::query(sql)
+            .bind(id)
+            .bind(value)
+            .execute(&self.pool)
+            .await?;
+        Ok(res.rows_affected() > 0)
+    }
+
+    /// Sets (or clears, with `None`) a game's manifest override. Written via
+    /// `json_set` like `custom_save`, and `manifest_override` is in
+    /// [`RUNTIME_FIELDS`] so a whole-entry editor save re-overlays it.
+    pub async fn set_manifest_override(
+        &self,
+        id: &str,
+        ov: Option<&ManifestOverride>,
+    ) -> AppResult<bool> {
+        // An inactive (empty) override is equivalent to none — store NULL so the
+        // re-derivation and the UI both treat it as "plain manifest".
+        let normalized = ov.filter(|o| o.is_active());
+        let value = serde_json::to_value(normalized)?;
+        self.update_fields(id, &[("manifest_override", value)]).await
+    }
+
+    /// Sets the manifest override only when the entry doesn't already have one —
+    /// the cross-device adopt path, so it can't clobber an override the user set
+    /// during the (network) fetch. Returns whether a row was set.
+    pub async fn set_manifest_override_if_absent(
+        &self,
+        id: &str,
+        ov: &ManifestOverride,
+    ) -> AppResult<bool> {
+        let value = serde_json::to_string(ov)?;
+        let sql = "UPDATE games SET data = json_set(data, '$.manifest_override', json(?2))
+                   WHERE id = ?1 AND json_extract(data, '$.manifest_override') IS NULL";
         let res = sqlx::query(sql)
             .bind(id)
             .bind(value)

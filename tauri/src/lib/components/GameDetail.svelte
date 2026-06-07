@@ -53,6 +53,7 @@
   let {
     game,
     runPhase = null,
+    backingUp = false,
     autofocusPlay = false,
     cloudConfigured = false,
     onPullConflict,
@@ -60,6 +61,8 @@
     game: GameEntry;
     /** Current Run-workflow phase for *this* game (null if idle). */
     runPhase?: RunPhase | null;
+    /** A forced post-override backup is running for this game — disables Play. */
+    backingUp?: boolean;
     /** When true, the Play button is the gamepad-nav initial-focus target.
      *  Set by the touch detail overlay (its own nav scope); desktop leaves it
      *  off so focus stays on the library list. */
@@ -84,8 +87,9 @@
   });
 
   const isRunning = $derived(runPhase != null);
-  // Launchable only when installed, with an exe, and not already running.
-  const canPlay = $derived(!isRunning && !!game.exe_path && game.installed);
+  // Launchable only when installed, with an exe, not already running, and not
+  // mid forced-backup (its saves are being rewritten + uploaded).
+  const canPlay = $derived(!isRunning && !backingUp && !!game.exe_path && game.installed);
   const playLabel = $derived.by(() => {
     switch (runPhase) {
       case 'restoring':
@@ -99,7 +103,7 @@
       case 'uploading':
         return 'Uploading saves…';
       default:
-        return 'Play';
+        return backingUp ? 'Backing up…' : 'Play';
     }
   });
 

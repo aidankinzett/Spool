@@ -1850,8 +1850,7 @@ async fn preflight(ctx: &WorkflowCtx<'_>, exe_pathbuf: &Path, steal_lock: bool) 
     // so a non-manifest game with a custom save location is *recognised* (else
     // ludusavi lists it under `unknownGames` and the workflow skips its backup).
     // Covers a definition just adopted from another device, or set this session.
-    let library = ctx.app.state::<SharedLibrary>().inner().clone();
-    crate::custom_saves::sync_best_effort(&library).await;
+    crate::custom_saves::sync_best_effort(ctx.app).await;
 
     match rclone::claim_session(ctx.app, ctx.game_name, steal_lock).await {
         SessionClass::Free => {}

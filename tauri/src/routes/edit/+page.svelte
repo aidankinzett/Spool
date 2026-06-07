@@ -26,7 +26,7 @@
   import { fmtCatalog, absDateTime } from '$lib/format';
   import { toasts } from '$lib/toasts.svelte';
   import { removeGameDialog } from '$lib/removeGame.svelte';
-  import type { GameEntry, ProtonVersion } from '$lib/types';
+  import type { GameEntry, ManifestOverride, ProtonVersion } from '$lib/types';
   import AppChrome from '$lib/components/AppChrome.svelte';
   import MonoLabel from '$lib/components/MonoLabel.svelte';
   import CatalogId from '$lib/components/CatalogId.svelte';
@@ -89,6 +89,17 @@
   const BRAND_SPOOL = '#d7c9a0';
   const accent = $derived(form?.accent_color ?? BRAND_SPOOL);
   const cover = $derived(assetUrl(form?.cover_image_path));
+  // Stable key for a manifest override so the dirty-compare and the save path
+  // agree. Empty/absent → '' (no override); arrays sorted so order can't show a
+  // false change.
+  function overrideKey(ov: ManifestOverride | null | undefined): string {
+    if (!ov || (ov.excluded_tags.length === 0 && ov.excluded_paths.length === 0)) return '';
+    return JSON.stringify({
+      t: [...ov.excluded_tags].sort(),
+      p: [...ov.excluded_paths].sort(),
+    });
+  }
+
   const dirty = $derived.by(() => {
     if (!form || !original) return false;
     // Cheap shallow compare on the editable fields.
@@ -100,7 +111,9 @@
       form.lan_shared !== original.lan_shared ||
       (form.proton_version_path ?? '') !== (original.proton_version_path ?? '') ||
       (form.wine_prefix_path ?? '') !== (original.wine_prefix_path ?? '') ||
-      (form.launch_args ?? '') !== (original.launch_args ?? '')
+      (form.launch_args ?? '') !== (original.launch_args ?? '') ||
+      // Saves tab: the manifest override stages here and commits on save.
+      overrideKey(form.manifest_override) !== overrideKey(original.manifest_override)
     );
   });
 
@@ -304,6 +317,17 @@
       payload.wine_prefix_path = payload.wine_prefix_path || null;
       payload.launch_args = payload.launch_args || null;
       await api.updateGame(payload);
+      // The manifest override is written out-of-band (it's a RUNTIME_FIELD, so
+      // updateGame's overlay preserves rather than writes it). Commit the staged
+      // value here — this is also what kicks off the forced backup + its toasts.
+      if (overrideKey(form.manifest_override) !== overrideKey(original?.manifest_override)) {
+        const ov = form.manifest_override;
+        if (ov && (ov.excluded_tags.length > 0 || ov.excluded_paths.length > 0)) {
+          await api.setManifestOverride(form.id, ov.excluded_tags, ov.excluded_paths);
+        } else {
+          await api.clearManifestOverride(form.id);
+        }
+      }
       await getCurrentWindow().close();
     } catch (e) {
       error = String(e);
@@ -635,7 +659,9 @@
             usesProton={isLinux && exeIsWindows}
             {prefixReady}
             customSave={form.custom_save}
+            manifestOverride={form.manifest_override}
             onChange={(cs) => (form!.custom_save = cs)}
+            onOverrideChange={(ov) => (form!.manifest_override = ov)}
           />
         {:else if tab === 'sharing'}
           {@render field(

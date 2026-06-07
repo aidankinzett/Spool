@@ -60,6 +60,7 @@ function makeGame(over: Partial<GameEntry> = {}): GameEntry {
     manifest_install_dir: null,
     save_paths: [],
     custom_save: null,
+    manifest_override: null,
     accent_color: null,
     sync_badge: null,
     cloud_sync_baseline: null,
