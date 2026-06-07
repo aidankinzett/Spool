@@ -97,6 +97,35 @@ export type CustomSave = {
   registry: string[];
 };
 
+/**
+ * A user's narrowing of which manifest-declared save locations actually sync for
+ * a manifest-covered game ("back up my saves, not my settings"). Mirrors the Rust
+ * `ManifestOverride`. Stored as *exclusions of intent*, never resolved paths:
+ * `excluded_tags` (e.g. `"config"`) carry across OSes; `excluded_paths` are
+ * literal manifest templates for per-path control. Each device re-derives its own
+ * ludusavi override from its manifest minus these.
+ */
+export type ManifestOverride = {
+  excluded_tags: string[];
+  excluded_paths: string[];
+};
+
+/**
+ * One manifest-declared save location for an added game, from
+ * `manifest_save_locations`. Mirrors the Rust `ManifestPath`. `applies` reflects
+ * the per-device `when:` evaluation for the game's launch mode.
+ */
+export type ManifestPath = {
+  /** Raw ludusavi template, e.g. `<winLocalAppData>/Game` — the override key. */
+  template: string;
+  /** Human-readable form, e.g. `%LOCALAPPDATA%/Game`. */
+  pretty: string;
+  /** Manifest tags (`save`, `config`, …) used to group and bulk-toggle. */
+  tags: string[];
+  /** Whether this path applies on this device. */
+  applies: boolean;
+};
+
 // Mirror of the Rust `GameEntry` struct in src-tauri/src/library.rs.
 // Keep field names in lockstep — `serde` on the Rust side serializes with
 // these exact snake_case names.
@@ -171,6 +200,14 @@ export type GameEntry = {
    * picks the folder once. Mirrors the Rust `CustomSave`.
    */
   custom_save: CustomSave | null;
+
+  /**
+   * User's narrowing of which manifest save locations sync (e.g. exclude
+   * settings/config). `null`/empty = the full manifest entry applies. Set via the
+   * Saves editor and replicated across devices. Mirrors the Rust
+   * `ManifestOverride`.
+   */
+  manifest_override: ManifestOverride | null;
 
   /** Dominant cover-art colour as `#rrggbb`, or null to use the brand default. */
   accent_color: string | null;

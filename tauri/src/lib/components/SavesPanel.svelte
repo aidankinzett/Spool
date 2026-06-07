@@ -1,26 +1,31 @@
 <script lang="ts">
   /**
-   * Saves tab of the game editor — track custom save location(s) for a game
-   * ludusavi's manifest doesn't cover (or covers wrongly). Shows the current
-   * locations as a list (each removable), plus an add row: pick a folder (the
-   * picker opens inside the game's Proton prefix) or type a ludusavi path
-   * template. A game can save in several places, so any number can be added;
-   * the whole set is registered with ludusavi and replicated to the user's
-   * other devices.
+   * Saves tab of the game editor. Two jobs:
+   *
+   *  1. **Manifest override** (manifest-covered games) — show the save locations
+   *     ludusavi's manifest declares for this game, grouped/tagged, and let the
+   *     user choose which actually sync. Turning off the "settings" tag (or an
+   *     individual path) keeps per-device config (graphics options, keybinds)
+   *     from being clobbered when saves sync across machines. Stored as exclusion
+   *     intent and re-derived per device, so it stays correct cross-OS.
+   *  2. **Custom save** (non-manifest games, or extra folders) — track a folder
+   *     ludusavi doesn't know about: pick it (the picker opens inside the game's
+   *     Proton prefix) or type a ludusavi template.
    *
    * Self-contained (drives `set_custom_save` / `clear_custom_save` /
-   * `derive_save_template`) so it can be storied directly. `customSave` is
-   * reported up via `onChange` rather than two-way bound, so the parent owns
-   * the entry state. Every add/remove writes the full list through
-   * `set_custom_save`; removing the last one clears tracking entirely.
+   * `derive_save_template` / `manifest_save_locations` / `set_manifest_override` /
+   * `clear_manifest_override`) so it can be storied directly. `customSave` and
+   * `manifestOverride` are reported up via callbacks rather than two-way bound, so
+   * the parent owns the entry state.
    */
   import type { Snippet } from 'svelte';
+  import { untrack } from 'svelte';
   import { Folder, FolderX, Info, Plus, Trash2 } from '@lucide/svelte';
   import { open as openDialog } from '@tauri-apps/plugin-dialog';
   import { api } from '$lib/api';
   import { fmtCatalog } from '$lib/format';
   import { toasts } from '$lib/toasts.svelte';
-  import type { CustomSave } from '$lib/types';
+  import type { CustomSave, ManifestOverride, ManifestPath } from '$lib/types';
   import Btn from './Btn.svelte';
   import EditRow from './EditRow.svelte';
   import TextField from './TextField.svelte';
@@ -32,7 +37,9 @@
     usesProton,
     prefixReady,
     customSave,
+    manifestOverride,
     onChange,
+    onOverrideChange,
   }: {
     gameId: string;
     catalogNumber: number;
@@ -44,8 +51,12 @@
     prefixReady: boolean;
     /** Current custom save definition, or null when none is set. */
     customSave: CustomSave | null;
+    /** Current manifest override (which manifest locations to skip), or null. */
+    manifestOverride: ManifestOverride | null;
     /** Called after the custom save changes so the parent can update its entry. */
     onChange: (custom: CustomSave | null) => void;
+    /** Called after the manifest override changes so the parent can update it. */
+    onOverrideChange: (override: ManifestOverride | null) => void;
   } = $props();
 
   // In-progress template for the add row (from the picker or typed), plus busy.
@@ -55,6 +66,78 @@
   const files = $derived(customSave?.files ?? []);
   const registry = $derived(customSave?.registry ?? []);
   const hasCustom = $derived(files.length > 0);
+  const isManifestGame = $derived(savePaths.length > 0);
+
+  // ── Manifest override state ────────────────────────────────────────────────
+  // The manifest's declared locations for this game (applicable on this device),
+  // and the user's exclusions. Optimistic local copies of the override: this
+  // panel is the only writer for one game, so we mutate locally and commit.
+  let manifestPaths = $state<ManifestPath[]>([]);
+  let manifestLoading = $state(false);
+  let overrideBusy = $state(false);
+  // Optimistic local copies of the override's exclusions, seeded from the prop in
+  // an effect (below) so they re-seed when the panel is pointed at another game.
+  let exclTags = $state<string[]>([]);
+  let exclPaths = $state<string[]>([]);
+
+  const applicablePaths = $derived(manifestPaths.filter((p) => p.applies));
+  // Distinct tags across the applicable paths, in a stable order (saves first).
+  const distinctTags = $derived(
+    [...new Set(applicablePaths.flatMap((p) => p.tags))].sort((a, b) =>
+      a === 'save' ? -1 : b === 'save' ? 1 : a.localeCompare(b),
+    ),
+  );
+  const overrideActive = $derived(exclTags.length > 0 || exclPaths.length > 0);
+  // Show the manifest picker for manifest games that aren't using a custom-folder
+  // override (the two modes don't overlap in the UI).
+  const showManifestPicker = $derived(isManifestGame && !hasCustom);
+
+  function tagLabel(tag: string): string {
+    if (tag === 'save') return 'Saves';
+    if (tag === 'config') return 'Settings';
+    return tag.charAt(0).toUpperCase() + tag.slice(1);
+  }
+
+  // A path is dropped by tags only when it has tags and EVERY one is excluded —
+  // so excluding "Settings" keeps a file tagged both Save and Settings (mirrors
+  // the backend `apply_override`).
+  function tagDropped(p: ManifestPath): boolean {
+    return p.tags.length > 0 && p.tags.every((t) => exclTags.includes(t));
+  }
+  function pathSynced(p: ManifestPath): boolean {
+    return !exclPaths.includes(p.template) && !tagDropped(p);
+  }
+
+  // Seed the optimistic exclusion state from the override, re-seeding when the
+  // panel is pointed at another game.
+  $effect(() => {
+    void gameId; // re-seed only when the game changes...
+    // ...reading the override untracked, so a later prop write (our own commit
+    // feeding back, or any parent refresh) can't clobber a pending optimistic edit.
+    const ov = untrack(() => manifestOverride);
+    exclTags = ov?.excluded_tags ?? [];
+    exclPaths = ov?.excluded_paths ?? [];
+  });
+
+  // Fetch the manifest's locations when this is a manifest game.
+  $effect(() => {
+    const id = gameId;
+    if (!isManifestGame) {
+      manifestPaths = [];
+      return;
+    }
+    manifestLoading = true;
+    api
+      .manifestSaveLocations(id)
+      .then((paths) => {
+        // Ignore a stale response if the panel was re-pointed at another game.
+        if (id === gameId) manifestPaths = paths;
+      })
+      .catch((e) => console.error('[saves] manifestSaveLocations failed:', e))
+      .finally(() => {
+        if (id === gameId) manifestLoading = false;
+      });
+  });
 
   // A SAVES toast; the label flips to "FAILED" for errors. Closes over catalog.
   function notify(kind: 'ok' | 'bad' | 'info', title: string, sub: string) {
@@ -67,9 +150,48 @@
     });
   }
 
-  // Pick a save folder; the backend opens the picker inside the prefix and
-  // turns the chosen folder into a portable template, filled into the add row
-  // so the user can review/tweak it before adding.
+  // ── Manifest override commit ───────────────────────────────────────────────
+  async function commitOverride(prevTags: string[], prevPaths: string[]) {
+    overrideBusy = true;
+    try {
+      if (!overrideActive) {
+        await api.clearManifestOverride(gameId);
+        onOverrideChange(null);
+      } else {
+        await api.setManifestOverride(gameId, exclTags, exclPaths);
+        onOverrideChange({ excluded_tags: exclTags, excluded_paths: exclPaths });
+      }
+    } catch (e) {
+      // Roll the optimistic change back to what the backend still has.
+      exclTags = prevTags;
+      exclPaths = prevPaths;
+      notify('bad', "Couldn't update which saves sync", String(e));
+    } finally {
+      overrideBusy = false;
+    }
+  }
+
+  function toggleTag(tag: string) {
+    if (overrideBusy) return;
+    const prevTags = exclTags;
+    const prevPaths = exclPaths;
+    exclTags = exclTags.includes(tag)
+      ? exclTags.filter((t) => t !== tag)
+      : [...exclTags, tag];
+    commitOverride(prevTags, prevPaths);
+  }
+
+  function togglePath(p: ManifestPath) {
+    if (overrideBusy || tagDropped(p)) return;
+    const prevTags = exclTags;
+    const prevPaths = exclPaths;
+    exclPaths = exclPaths.includes(p.template)
+      ? exclPaths.filter((t) => t !== p.template)
+      : [...exclPaths, p.template];
+    commitOverride(prevTags, prevPaths);
+  }
+
+  // ── Custom save ────────────────────────────────────────────────────────────
   async function pickSaveFolder() {
     let defaultPath: string | undefined;
     try {
@@ -156,9 +278,20 @@
 {/snippet}
 
 {@render field('Save tracking', '', savesStatus)}
+
+{#if showManifestPicker}
+  {@render field(
+    'What syncs',
+    'Choose which of this game’s save locations sync across your devices. Turn off settings to keep per-device options (e.g. graphics) from being overwritten.',
+    manifestPicker,
+  )}
+{/if}
+
 {@render field(
-  'Save locations',
-  "Folders Spool backs up for this game. Add one for each place it saves — they sync to all your devices.",
+  showManifestPicker ? 'Extra folders' : 'Save locations',
+  showManifestPicker
+    ? 'Add a folder ludusavi doesn’t know about — it’s tracked on top of the manifest locations above.'
+    : 'Folders Spool backs up for this game. Add one for each place it saves — they sync to all your devices.',
   savesList,
 )}
 
@@ -166,13 +299,89 @@
   <span class="text-[11.5px] text-ink-2">
     {#if hasCustom}
       Custom — tracked and synced across your devices.
-    {:else if savePaths.length > 0}
+    {:else if overrideActive}
+      Manifest — some locations excluded; only the ones you picked sync.
+    {:else if isManifestGame}
       Tracked automatically via the ludusavi manifest.
     {:else}
       Not tracked — ludusavi doesn't recognise this game. Add a folder below to
       back up and sync its saves.
     {/if}
   </span>
+{/snippet}
+
+{#snippet manifestPicker()}
+  <div class="flex flex-col gap-2.5">
+    {#if manifestLoading}
+      <span class="text-[11.5px] text-ink-3">Loading manifest locations…</span>
+    {:else if applicablePaths.length === 0}
+      <span class="text-[11.5px] text-ink-3">
+        ludusavi lists this game but declares no save locations for this platform.
+      </span>
+    {:else}
+      <!-- Tag toggles: bulk include/exclude a whole category. -->
+      <div class="flex flex-wrap gap-1.5">
+        {#each distinctTags as tag (tag)}
+          {@const excluded = exclTags.includes(tag)}
+          <button
+            type="button"
+            onclick={() => toggleTag(tag)}
+            disabled={overrideBusy}
+            aria-pressed={!excluded}
+            class="cursor-pointer rounded-full border px-2.5 py-1 text-[11px] font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 {excluded
+              ? 'border-line-2 bg-bg-1 text-ink-3 line-through'
+              : 'border-spool/40 bg-spool/10 text-ink-0'}"
+            title={excluded ? `Click to sync ${tagLabel(tag)}` : `Click to skip ${tagLabel(tag)}`}
+          >
+            {tagLabel(tag)}
+          </button>
+        {/each}
+      </div>
+
+      <!-- Per-path checkboxes for fine-grained control. -->
+      <ul class="flex flex-col gap-1">
+        {#each applicablePaths as p (p.template)}
+          {@const driven = tagDropped(p)}
+          <li
+            class="flex items-center gap-2 rounded-[4px] border border-line-1 bg-bg-1 px-2.5 py-1.5"
+          >
+            <input
+              type="checkbox"
+              checked={pathSynced(p)}
+              disabled={overrideBusy || driven}
+              onchange={() => togglePath(p)}
+              aria-label={`Sync ${p.pretty}`}
+              class="shrink-0 accent-[var(--color-spool)] disabled:opacity-50"
+            />
+            <span
+              class="font-mono min-w-0 flex-1 break-all text-[11px] {pathSynced(p)
+                ? 'text-ink-1'
+                : 'text-ink-3 line-through'}">{p.pretty}</span
+            >
+            {#each p.tags as t (t)}
+              <span
+                class="shrink-0 rounded-[3px] border border-line-2 px-1.5 py-0.5 text-[9.5px] uppercase tracking-wide text-ink-3"
+                >{tagLabel(t)}</span
+              >
+            {/each}
+          </li>
+        {/each}
+      </ul>
+
+      {#if overrideActive}
+        <div
+          class="flex items-start gap-2 rounded-[4px] border border-line-1 bg-bg-1 px-2.5 py-2 text-[11px] leading-relaxed text-ink-3"
+        >
+          <Info size={13} class="mt-0.5 shrink-0" />
+          <span>
+            Excluded locations stop syncing from now on. A backup you restore from
+            <em>before</em> this change can still bring the old data back until older
+            backups age out.
+          </span>
+        </div>
+      {/if}
+    {/if}
+  </div>
 {/snippet}
 
 {#snippet savesList()}

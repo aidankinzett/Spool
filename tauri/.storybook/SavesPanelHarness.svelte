@@ -7,7 +7,7 @@
    * mock installed by the story resolves the backend calls.
    */
   import SavesPanel from '$lib/components/SavesPanel.svelte';
-  import type { CustomSave } from '$lib/types';
+  import type { CustomSave, ManifestOverride } from '$lib/types';
 
   let {
     gameId = 'g1',
@@ -16,6 +16,7 @@
     usesProton = true,
     prefixReady = true,
     customSave: initial = null,
+    manifestOverride: initialOverride = null,
   }: {
     gameId?: string;
     catalogNumber?: number;
@@ -23,11 +24,14 @@
     usesProton?: boolean;
     prefixReady?: boolean;
     customSave?: CustomSave | null;
+    manifestOverride?: ManifestOverride | null;
   } = $props();
 
-  // Seed once from the story arg; the panel drives it from here on.
+  // Seed once from the story args; the panel drives these from here on.
   // svelte-ignore state_referenced_locally
   let customSave = $state<CustomSave | null>(initial);
+  // svelte-ignore state_referenced_locally
+  let manifestOverride = $state<ManifestOverride | null>(initialOverride);
 </script>
 
 <SavesPanel
@@ -37,5 +41,7 @@
   {usesProton}
   {prefixReady}
   {customSave}
+  {manifestOverride}
   onChange={(cs) => (customSave = cs)}
+  onOverrideChange={(ov) => (manifestOverride = ov)}
 />

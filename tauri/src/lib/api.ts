@@ -22,6 +22,7 @@ import type {
   RawConflictDetails,
   SaveRevision,
   PullResult,
+  ManifestPath,
 } from './types';
 
 /** Status of the companion Spool Backup Decky plugin (mirrors the Rust
@@ -234,6 +235,28 @@ export const api = {
   /** Stop tracking a custom save location and remove the replicated definition. */
   clearCustomSave: (gameId: string): Promise<void> =>
     invoke('clear_custom_save', { gameId }),
+  /**
+   * Every manifest-declared save location for an added game, tagged and flagged
+   * for this device's launch mode — backs the Saves editor's override picker.
+   * Empty when the game isn't in the ludusavi manifest.
+   */
+  manifestSaveLocations: (gameId: string): Promise<ManifestPath[]> =>
+    invoke('manifest_save_locations', { gameId }),
+  /**
+   * Narrow which manifest save locations sync for a game (e.g. exclude
+   * settings/config). Persists the exclusions, re-derives ludusavi's override,
+   * forces a fresh backup so the change takes effect immediately, and replicates
+   * the intent to your other devices. Passing no exclusions clears the override.
+   */
+  setManifestOverride: (
+    gameId: string,
+    excludedTags: string[],
+    excludedPaths: string[],
+  ): Promise<void> =>
+    invoke('set_manifest_override', { gameId, excludedTags, excludedPaths }),
+  /** Clear a manifest override — back to syncing the full manifest entry. */
+  clearManifestOverride: (gameId: string): Promise<void> =>
+    invoke('clear_manifest_override', { gameId }),
   /**
    * Resolve a cloud-sync conflict in-app by picking which copy wins, then
    * land the reconciled saves. `side` is `'local'` (keep this device, upload)

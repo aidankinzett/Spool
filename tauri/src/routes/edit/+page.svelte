@@ -635,7 +635,9 @@
             usesProton={isLinux && exeIsWindows}
             {prefixReady}
             customSave={form.custom_save}
+            manifestOverride={form.manifest_override}
             onChange={(cs) => (form!.custom_save = cs)}
+            onOverrideChange={(ov) => (form!.manifest_override = ov)}
           />
         {:else if tab === 'sharing'}
           {@render field(
