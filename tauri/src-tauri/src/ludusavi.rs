@@ -669,6 +669,7 @@ fn hidden_command(exe: &Path, config_dir: &Path) -> Command {
 /// so Spool's `customGames` entries (which replace manifest entries with a
 /// reduced path set for active overrides) don't affect the raw manifest read.
 fn hidden_command_no_config(exe: &Path) -> Command {
+    #[allow(unused_mut)]
     let mut cmd = Command::new(exe);
     #[cfg(windows)]
     {
