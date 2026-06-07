@@ -569,7 +569,7 @@ impl LudusaviClient {
     async fn manifest_or_load(
         &self,
         ludusavi_exe: &Path,
-        config_dir: &Path,
+        _config_dir: &Path,
     ) -> AppResult<Arc<HashMap<String, ManifestEntry>>> {
         // Read-side fast path.
         {
@@ -578,9 +578,12 @@ impl LudusaviClient {
                 return Ok(Arc::clone(m));
             }
         }
-        // Slow path: load the manifest from ludusavi. Cheap to hold the
-        // write lock since this only happens once per session.
-        let manifest = load_manifest(ludusavi_exe, config_dir).await?;
+        // Slow path: load the manifest from ludusavi WITHOUT --config so that
+        // Spool's customGames entries (which replace manifest entries with a
+        // reduced path set for the active overrides) don't leak into the raw
+        // manifest lookup. The global manifest.yaml is found relative to the
+        // executable regardless of the config location.
+        let manifest = load_manifest(ludusavi_exe).await?;
         let arc = Arc::new(manifest);
         let mut guard = self.manifest.write().await;
         *guard = Some(Arc::clone(&arc));
@@ -657,6 +660,18 @@ fn hidden_command(exe: &Path, config_dir: &Path) -> Command {
     #[cfg(windows)]
     {
         // CREATE_NO_WINDOW — winbase.h. Avoids a winapi dep for one constant.
+        cmd.creation_flags(0x0800_0000);
+    }
+    cmd
+}
+
+/// Like [`hidden_command`] but without `--config`. Used for `manifest show`
+/// so Spool's `customGames` entries (which replace manifest entries with a
+/// reduced path set for active overrides) don't affect the raw manifest read.
+fn hidden_command_no_config(exe: &Path) -> Command {
+    let mut cmd = Command::new(exe);
+    #[cfg(windows)]
+    {
         cmd.creation_flags(0x0800_0000);
     }
     cmd
@@ -839,8 +854,8 @@ async fn run_api(ludusavi_exe: &Path, config_dir: &Path, args: &[&str]) -> AppRe
     crate::util::parse_json(stdout.as_bytes(), "ludusavi output")
 }
 
-async fn load_manifest(ludusavi_exe: &Path, config_dir: &Path) -> AppResult<HashMap<String, ManifestEntry>> {
-    let output = hidden_command(ludusavi_exe, config_dir)
+async fn load_manifest(ludusavi_exe: &Path) -> AppResult<HashMap<String, ManifestEntry>> {
+    let output = hidden_command_no_config(ludusavi_exe)
         .args(["manifest", "show", "--api"])
         .output()
         .await
