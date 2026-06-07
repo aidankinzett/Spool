@@ -456,27 +456,40 @@
           {@render field('Added on', 'When this entry first appeared in your library.', installAdded)}
 
           {#snippet installFolder()}
-            <div class="flex gap-1.5">
-              <TextField
-                bind:value={form!.game_folder_path as unknown as string}
-                placeholder="(unset)"
-                mono
-                full
-              />
-              <Btn variant="ghost" onclick={browseFolder}>
-                {#snippet icon()}<Folder size={14} />{/snippet}
-                Browse
-              </Btn>
-            </div>
+            {#if form!.installed}
+              <div class="flex gap-1.5">
+                <TextField
+                  bind:value={form!.game_folder_path as unknown as string}
+                  placeholder="(unset)"
+                  mono
+                  full
+                />
+                <Btn variant="ghost" onclick={browseFolder}>
+                  {#snippet icon()}<Folder size={14} />{/snippet}
+                  Browse
+                </Btn>
+              </div>
+            {:else}
+              <!-- Uninstalled: install paths are owned by Reinstall, not the
+                   editor — editing them here would be silently discarded on save
+                   (replace() keeps the cleared paths while installed=false). -->
+              <span class="text-[12px] text-ink-3"
+                >Not installed — use Reinstall to set the install location.</span
+              >
+            {/if}
           {/snippet}
           {#snippet installExe()}
-            <div class="flex gap-1.5">
-              <TextField bind:value={form!.exe_path} mono full />
-              <Btn variant="ghost" onclick={browseExe}>
-                {#snippet icon()}<Folder size={14} />{/snippet}
-                Browse
-              </Btn>
-            </div>
+            {#if form!.installed}
+              <div class="flex gap-1.5">
+                <TextField bind:value={form!.exe_path} mono full />
+                <Btn variant="ghost" onclick={browseExe}>
+                  {#snippet icon()}<Folder size={14} />{/snippet}
+                  Browse
+                </Btn>
+              </div>
+            {:else}
+              <span class="text-[12px] text-ink-3">Not installed — reinstall to set the executable.</span>
+            {/if}
           {/snippet}
           {#snippet installAdded()}
             <span class="font-mono text-[11.5px] text-ink-2">

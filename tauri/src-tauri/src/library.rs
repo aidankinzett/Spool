@@ -564,6 +564,12 @@ impl Library {
     /// overwritten. Legacy rows missing the `installed` field yield SQL NULL for
     /// `json_extract(... '$.installed')`, which `= 0` excludes — i.e. they're
     /// treated as installed and left alone.
+    ///
+    /// The name fallback skips a candidate whose `steam_id` *positively
+    /// conflicts* with `steam_id` (both known and differing): two genuinely
+    /// different games that happen to share a name must not be merged into one
+    /// entry. A candidate with no steam id (an untracked entry), or a `None`
+    /// request, has no conflict and is still reused by name.
     pub async fn find_reusable_entry(
         &self,
         steam_id: Option<u64>,
@@ -588,9 +594,13 @@ impl Library {
             "SELECT data FROM games
              WHERE json_extract(data, '$.installed') = 0
                AND game_name = ?1
+               AND (?2 IS NULL
+                    OR json_extract(data, '$.steam_id') IS NULL
+                    OR json_extract(data, '$.steam_id') = ?2)
              ORDER BY catalog_number LIMIT 1",
         )
         .bind(name)
+        .bind(steam_id.map(|s| s as i64))
         .fetch_optional(&self.pool)
         .await?;
         match row {
@@ -1286,6 +1296,11 @@ pub async fn delete_game_from_disk(
     app: AppHandle,
     id: String,
 ) -> AppResult<()> {
+    if app.state::<crate::runner::RunState>().is_running(&id) {
+        return Err(AppError::Other(
+            "Can't delete this game while it's running — close it first.".into(),
+        ));
+    }
     delete_game_core(state.inner(), &id).await?;
     if let Err(e) = app.emit("library:changed", &id) {
         tracing::warn!(error = %e, "failed to emit library:changed after delete_game_from_disk");
@@ -1305,6 +1320,11 @@ pub async fn uninstall_game(
     app: AppHandle,
     id: String,
 ) -> AppResult<()> {
+    if app.state::<crate::runner::RunState>().is_running(&id) {
+        return Err(AppError::Other(
+            "Can't remove this game from disk while it's running — close it first.".into(),
+        ));
+    }
     let ludusavi_exe = crate::paths::resolve_ludusavi_path().ok_or_else(|| {
         AppError::Other("Ludusavi sidecar not found — reinstall Spool.".into())
     })?;
@@ -1822,6 +1842,38 @@ mod tests {
 
         // No match → None.
         assert!(lib.find_reusable_entry(None, "Nonexistent").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn find_reusable_entry_name_fallback_rejects_steam_id_conflict() {
+        let lib = Library::open_in_memory().await.unwrap();
+        // Uninstalled "Doom" with a steam id.
+        let mut doom = sample("doom", "Doom");
+        doom.installed = false;
+        doom.steam_id = Some(379720);
+        lib.insert(doom).await.unwrap();
+
+        // A *different* game also named "Doom" with a different steam id must
+        // NOT reuse it (would merge two distinct games into one entry).
+        assert!(
+            lib.find_reusable_entry(Some(2371630), "Doom").await.unwrap().is_none(),
+            "name match rejected on a positive steam-id conflict"
+        );
+        // No requested steam id → no conflict → reuse by name.
+        assert_eq!(
+            lib.find_reusable_entry(None, "Doom").await.unwrap().unwrap().id,
+            "doom"
+        );
+        // An untracked uninstalled entry (no steam id) is still reusable by name
+        // even when the request carries a steam id (no positive conflict).
+        let mut quake = sample("quake", "Quake");
+        quake.installed = false;
+        quake.steam_id = None;
+        lib.insert(quake).await.unwrap();
+        assert_eq!(
+            lib.find_reusable_entry(Some(2310), "Quake").await.unwrap().unwrap().id,
+            "quake"
+        );
     }
 
     #[tokio::test]

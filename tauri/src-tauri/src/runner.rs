@@ -49,6 +49,18 @@ pub struct RunState {
 }
 
 impl RunState {
+    /// Whether `game_id` is the game currently running in THIS process. Used to
+    /// refuse a disk-wipe (uninstall / delete-from-disk) that would yank an
+    /// active game's install folder + Proton prefix out from under it. In-process
+    /// only: a game launched by another Spool process (attached `--run`, the
+    /// Decky headless server) isn't visible here.
+    pub fn is_running(&self, game_id: &str) -> bool {
+        self.current
+            .lock()
+            .map(|g| g.as_deref() == Some(game_id))
+            .unwrap_or(false)
+    }
+
     fn try_acquire(&self, game_id: &str) -> AppResult<RunGuard<'_>> {
         let mut guard = self.current.lock().map_err(|_| AppError::LockPoisoned)?;
         if let Some(running) = guard.as_ref() {
