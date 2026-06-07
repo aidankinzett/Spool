@@ -230,6 +230,22 @@ export const SAMPLE_PEER_GAMES: PeerGame[] = [
     lutris_slug: null,
     shareable: true,
   },
+  // Matches the uninstalled local "Hades" (g6) by name — in the merged sidebar
+  // it folds onto that row, turning its Play into Download (no second row).
+  {
+    id: 'pg3',
+    catalog_number: 11,
+    game_name: 'Hades',
+    developer: 'Supergiant Games',
+    publisher: 'Supergiant Games',
+    genres: ['Action', 'Roguelike'],
+    install_size_mb: 15360,
+    release_date: '2020-09-17',
+    steam_id: null,
+    gog_id: null,
+    lutris_slug: null,
+    shareable: true,
+  },
 ];
 
 /**
@@ -244,7 +260,14 @@ const STEAM_CDN = 'https://steamcdn-a.akamaihd.net/steam/apps';
 const cover = (appid: number) => `${STEAM_CDN}/${appid}/library_600x900_2x.jpg`;
 const hero = (appid: number) => `${STEAM_CDN}/${appid}/library_hero.jpg`;
 
-/** A multi-entry library for the main-window stories. */
+/**
+ * A multi-entry library for the main-window stories. Four installed games plus
+ * two uninstalled ones that exercise the sidebar's non-installed states: Hollow
+ * Knight (uninstalled, no peer → dimmed with a Reinstall affordance) and Hades
+ * (uninstalled but offered by a LAN peer → dimmed with a Download affordance,
+ * the merged row). A LAN-only game (Terraria) appears as a synthetic peer row
+ * from `SAMPLE_PEER_GAMES` when peers are present, not from this list.
+ */
 export const SAMPLE_LIBRARY: GameEntry[] = [
   makeGame({ cover_image_path: cover(292030), hero_image_path: hero(292030) }),
   makeGame({
@@ -299,6 +322,57 @@ export const SAMPLE_LIBRARY: GameEntry[] = [
     sync_badge: 'local-newer',
     cover_image_path: cover(268910),
     hero_image_path: hero(268910),
+  }),
+  // Uninstalled, with no peer offering it: renders dimmed with a Reinstall
+  // affordance. Art/playtime/backups are kept across an uninstall, so they stay
+  // populated here.
+  makeGame({
+    id: 'g5',
+    catalog_number: 5,
+    game_name: 'Hollow Knight',
+    safe_name: 'hollow-knight',
+    developer: 'Team Cherry',
+    publisher: 'Team Cherry',
+    genres: ['Metroidvania', 'Action'],
+    accent_color: '#5a8bbf',
+    gog_id: 1308320804,
+    installed: false,
+    exe_path: '',
+    game_folder_path: null,
+    playtime_minutes: 640,
+    install_size_mb: 0,
+    last_played_at: '2026-03-02T18:00:00Z',
+    save_backup_count: 4,
+    save_last_backed_up_at: '2026-03-02T20:00:00Z',
+    sync_badge: null,
+    cover_image_path: cover(367520),
+    hero_image_path: hero(367520),
+  }),
+  // Uninstalled, but a LAN peer shares it (matched by name to `pg3`): the merged
+  // sidebar folds the peer source onto this row and shows Download instead of
+  // Reinstall. steam_id/gog_id null so the name match against the peer game holds.
+  makeGame({
+    id: 'g6',
+    catalog_number: 6,
+    game_name: 'Hades',
+    safe_name: 'hades',
+    developer: 'Supergiant Games',
+    publisher: 'Supergiant Games',
+    genres: ['Action', 'Roguelike'],
+    accent_color: '#d24b3a',
+    steam_id: null,
+    gog_id: null,
+    installed: false,
+    exe_path: '',
+    game_folder_path: null,
+    playtime_minutes: 1290,
+    install_size_mb: 0,
+    last_played_at: '2026-04-15T22:00:00Z',
+    save_backup_count: 7,
+    save_last_backed_up_at: '2026-04-15T23:00:00Z',
+    sync_badge: 'cloud-newer',
+    cover_image_path: cover(1145360),
+    hero_image_path: hero(1145360),
   }),
 ];
 

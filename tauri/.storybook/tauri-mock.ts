@@ -8,7 +8,7 @@
  */
 import { mockIPC, mockConvertFileSrc, mockWindows } from '@tauri-apps/api/mocks';
 import { emit } from '@tauri-apps/api/event';
-import { makeConfig, makeGame, makePlaySessions } from './fixtures';
+import { makeConfig, makeGame, makePlaySessions, SAMPLE_PEER_GAMES } from './fixtures';
 import TauriMockDecorator from './TauriMockDecorator.svelte';
 
 /**
@@ -34,6 +34,10 @@ function defaultHandlers(): TauriHandlers {
     list_proton_versions: [],
     check_dependencies: [],
     list_lan_peers: [],
+    // The merged sidebar (and the peer-drill-down popover) fetch each browsable
+    // peer's catalogue. Only called when a story actually supplies peers via
+    // `list_lan_peers`, so this is inert in peerless stories.
+    fetch_peer_games: SAMPLE_PEER_GAMES,
     list_active_uploads: [],
     take_pending_run: null,
     decky_plugin_status: { supported: false },
