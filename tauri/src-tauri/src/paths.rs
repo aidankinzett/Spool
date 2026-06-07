@@ -72,6 +72,27 @@ pub fn control_plane_lock_file() -> PathBuf {
     app_data_dir().join("control-plane.lock")
 }
 
+/// Directory holding the per-game run-lock marker files (see
+/// [`run_lock_file`] / `proc_lock::try_acquire_run`).
+pub fn run_locks_dir() -> PathBuf {
+    app_data_dir().join("locks")
+}
+
+/// Marker file for the machine-wide **per-game run lock** — `flock`ed by the run
+/// workflow for a whole play session, and by a disk-wipe (uninstall / delete)
+/// for the wipe's duration, so the two can never overlap for one game across any
+/// Spool process (tray GUI, attached `spool --run`, Decky headless server).
+/// Same lifecycle as [`backup_lock_file`] — only its lock state matters, and the
+/// OS frees it when the holder exits. `game_id` is a UUID; sanitised defensively
+/// so a stray id can't escape the locks dir.
+pub fn run_lock_file(game_id: &str) -> PathBuf {
+    let safe: String = game_id
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '_' })
+        .collect();
+    run_locks_dir().join(format!("run-{safe}.lock"))
+}
+
 pub fn covers_dir() -> PathBuf {
     app_data_dir().join("covers")
 }

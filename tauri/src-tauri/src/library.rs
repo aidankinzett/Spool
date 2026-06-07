@@ -1296,11 +1296,9 @@ pub async fn delete_game_from_disk(
     app: AppHandle,
     id: String,
 ) -> AppResult<()> {
-    if app.state::<crate::runner::RunState>().is_running(&id) {
-        return Err(AppError::Other(
-            "Can't delete this game while it's running — close it first.".into(),
-        ));
-    }
+    // Run-vs-wipe exclusion lives in `wipe_install_files` (the shared chokepoint),
+    // so it covers this command, the uninstall path, and the Decky plugin server
+    // uniformly — and across processes, which the in-process RunState can't.
     delete_game_core(state.inner(), &id).await?;
     if let Err(e) = app.emit("library:changed", &id) {
         tracing::warn!(error = %e, "failed to emit library:changed after delete_game_from_disk");
@@ -1320,11 +1318,8 @@ pub async fn uninstall_game(
     app: AppHandle,
     id: String,
 ) -> AppResult<()> {
-    if app.state::<crate::runner::RunState>().is_running(&id) {
-        return Err(AppError::Other(
-            "Can't remove this game from disk while it's running — close it first.".into(),
-        ));
-    }
+    // The run-vs-wipe exclusion is enforced in `wipe_install_files` (reached via
+    // uninstall_game_with_backup → uninstall_game_core), cross-process.
     let ludusavi_exe = crate::paths::resolve_ludusavi_path().ok_or_else(|| {
         AppError::Other("Ludusavi sidecar not found — reinstall Spool.".into())
     })?;
@@ -1353,7 +1348,21 @@ pub async fn uninstall_game(
 /// managed on Linux, so it's resolved + deleted there alone — a populated
 /// `wine_prefix_path` override on Windows/macOS must never be recurse-deleted.
 /// Best-effort prefix cleanup never aborts the operation.
+///
+/// Holds the machine-wide per-game run lock across the whole wipe so it can't
+/// overlap a play session for this game in ANY Spool process (the run workflow
+/// holds the same lock for the session). `None` ⇒ the game is currently running
+/// (or another wipe is in flight) — refuse rather than delete files out from
+/// under it. This is the single chokepoint, so every wipe caller (the
+/// uninstall / delete commands and the Decky plugin server) is covered.
 async fn wipe_install_files(library: &SharedLibrary, id: &str) -> AppResult<()> {
+    let _run_lock = crate::proc_lock::try_acquire_run(id)?.ok_or_else(|| {
+        AppError::Other(
+            "This game is busy — it's running, or finishing a save backup. Close it and try again."
+                .into(),
+        )
+    })?;
+
     // Capture the folder + prefix paths before any blocking IO.
     let (folder, prefix_root) = {
         let entry = library
@@ -1774,17 +1783,18 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("game.exe"), b"x").unwrap();
 
-        let mut g = sample("a", "Hades");
+        // A unique id so the per-game run lock can't collide with other tests.
+        let mut g = sample("uninst-keep", "Hades");
         g.exe_path = dir.join("game.exe").to_string_lossy().to_string();
         g.game_folder_path = Some(dir.to_string_lossy().to_string());
         g.install_size_mb = 1234.0;
         lib.insert(g).await.unwrap();
-        lib.bump_session("a", Utc::now(), 50).await.unwrap();
+        lib.bump_session("uninst-keep", Utc::now(), 50).await.unwrap();
 
-        uninstall_game_core(&lib, "a").await.unwrap();
+        uninstall_game_core(&lib, "uninst-keep").await.unwrap();
 
         assert!(!dir.exists(), "install folder deleted");
-        let e = lib.find("a").await.unwrap().unwrap();
+        let e = lib.find("uninst-keep").await.unwrap().unwrap();
         assert!(!e.installed, "entry kept but marked uninstalled");
         assert_eq!(e.game_folder_path, None);
         assert_eq!(e.exe_path, "");
@@ -1802,13 +1812,14 @@ mod tests {
         // and the entry stays installed (marking it "removed from disk" when
         // nothing was deleted would be a lie — "remove from library" is right).
         let lib: SharedLibrary = Arc::new(Library::open_in_memory().await.unwrap());
-        let mut g = sample("a", "Hades");
+        // A unique id so the per-game run lock can't collide with other tests.
+        let mut g = sample("uninst-nofolder", "Hades");
         g.game_folder_path = None;
         g.exe_path = "/gone/h.exe".into();
         lib.insert(g).await.unwrap();
 
-        assert!(uninstall_game_core(&lib, "a").await.is_err());
-        let e = lib.find("a").await.unwrap().unwrap();
+        assert!(uninstall_game_core(&lib, "uninst-nofolder").await.is_err());
+        let e = lib.find("uninst-nofolder").await.unwrap().unwrap();
         assert!(e.installed, "entry stays installed when nothing was deleted");
     }
 
