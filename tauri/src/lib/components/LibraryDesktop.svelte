@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { SvelteSet } from 'svelte/reactivity';
   import {
     ArrowLeft,
     ChevronRight,
@@ -15,16 +16,17 @@
     X,
   } from '@lucide/svelte';
   import { openView } from '$lib/nav';
-  import { api, assetUrl } from '$lib/api';
-  import { fmtCatalog, fmtRate, relDate } from '$lib/format';
-  import type { GameEntry } from '$lib/types';
-  import type { Library } from '$lib/library.svelte';
+  import { api, assetUrl, peerAssetUrl } from '$lib/api';
+  import { fmtCatalog, relDate } from '$lib/format';
+  import type { DisplayGame, GameEntry } from '$lib/types';
+  import { isSyntheticPeerId, type Library } from '$lib/library.svelte';
   import AppChrome from '$lib/components/AppChrome.svelte';
   import MonoLabel from '$lib/components/MonoLabel.svelte';
   import GameDetail from '$lib/components/GameDetail.svelte';
   import LibraryContextMenu from '$lib/components/LibraryContextMenu.svelte';
   import TransferPill from '$lib/components/TransferPill.svelte';
   import TransfersPanel from '$lib/components/TransfersPanel.svelte';
+  import LanDownloadProgress from '$lib/components/LanDownloadProgress.svelte';
   import { gamepadScope } from '$lib/gamepad';
 
   let { lib }: { lib: Library } = $props();
@@ -35,6 +37,9 @@
   let lanOpen = $state(false);
   let transfersOpen = $state(false);
   let ctxMenu = $state<{ game: GameEntry; x: number; y: number } | null>(null);
+  // Sidebar rows whose peer-served cover failed to load (peer offline / 404) —
+  // they fall back to the letter tile instead of a broken image.
+  const coverErrors = new SvelteSet<string>();
 
   // Element refs for click-outside detection
   let lanWifiBtn: HTMLButtonElement | undefined = $state();
@@ -49,8 +54,10 @@
     { id: 'played', label: 'Played' },
   ];
 
-  function openContextMenu(e: MouseEvent, g: GameEntry) {
+  function openContextMenu(e: MouseEvent, g: DisplayGame) {
     e.preventDefault();
+    // Synthetic peer-only rows aren't real library entries — no local actions.
+    if (isSyntheticPeerId(g.id)) return;
     ctxMenu = { game: g, x: e.clientX, y: e.clientY };
   }
 
@@ -298,28 +305,7 @@
                   </div>
                   {#if inflight && dl}
                     <div class="mt-1.5">
-                      <div class="h-1 w-full overflow-hidden rounded-full bg-bg-2">
-                        <div
-                          class="h-full transition-[width] duration-150 ease-out"
-                          style:width={dl.bytes_total > 0
-                            ? Math.min(100, (dl.bytes_done / dl.bytes_total) * 100) + '%'
-                            : '0%'}
-                          style:background="var(--color-spool)"
-                        ></div>
-                      </div>
-                      <div
-                        class="font-mono mt-1 flex justify-between gap-2 text-[9.5px] text-ink-3 tracking-[0.04em]"
-                      >
-                        <span class="truncate" title={dl.current_file}>
-                          {dl.current_file || '…'}
-                        </span>
-                        <span class="shrink-0 whitespace-nowrap">
-                          {fmtRate(dl.bytes_per_second)}
-                          {#if dl.bytes_total > 0}
-                            · {Math.round((dl.bytes_done / dl.bytes_total) * 100)}%
-                          {/if}
-                        </span>
-                      </div>
+                      <LanDownloadProgress download={dl} />
                     </div>
                   {/if}
                 </div>
@@ -436,7 +422,7 @@
           <Search size={14} class="text-ink-2" />
           <input
             bind:value={lib.searchQuery}
-            placeholder={`Search ${lib.games.length || 0} games`}
+            placeholder={`Search ${lib.displayGames.length || 0} games`}
             class="font-sans min-w-0 flex-1 bg-transparent text-[length:var(--text-base)] text-ink-0 outline-none placeholder:text-ink-3"
           />
         </div>
@@ -456,11 +442,7 @@
                 class="font-mono text-[9.5px]"
                 style:color={active ? 'var(--color-ink-2)' : 'var(--color-ink-3)'}
               >
-                {f.id === 'all'
-                  ? lib.games.length
-                  : f.id === 'recent'
-                    ? lib.games.filter((g) => g.last_played_at || g.added_at).length
-                    : lib.games.filter((g) => g.playtime_minutes > 0).length}
+                {lib.tabCounts[f.id]}
               </span>
             </button>
           {/each}
@@ -495,7 +477,11 @@
         {:else}
           {#each lib.filteredGames as g, i (g.id)}
             {@const selected = lib.selectedId === g.id}
-            {@const cover = assetUrl(g.cover_image_path)}
+            {@const peer = g.peer_source ?? null}
+            {@const peerOnly = isSyntheticPeerId(g.id)}
+            {@const cover =
+              assetUrl(g.cover_image_path) ??
+              (peer && !coverErrors.has(g.id) ? peerAssetUrl(peer, 'cover') : null)}
             {@const rowAccent = g.accent_color ?? '#d7c9a0'}
             {@const badgeColor =
               g.sync_badge === 'synced'
@@ -536,6 +522,7 @@
                     src={cover}
                     alt={g.game_name}
                     class="h-full w-full object-cover"
+                    onerror={() => coverErrors.add(g.id)}
                   />
                 {:else}
                   <div
@@ -571,11 +558,22 @@
                 <div
                   class="font-mono mt-0.5 flex items-center gap-1.5 text-[9.5px] tracking-[0.06em] text-ink-3"
                 >
-                  <span>{fmtCatalog(g.catalog_number)}</span>
+                  <span style:color={peerOnly ? rowAccent : undefined}>
+                    {peerOnly ? 'ON LAN' : fmtCatalog(g.catalog_number)}
+                  </span>
                   <span>·</span>
-                  <span>{g.last_played_at ? relDate(g.last_played_at) : 'unplayed'}</span>
+                  {#if peer}
+                    <span class="truncate">from {peer.device_name}</span>
+                  {:else}
+                    <span>{g.last_played_at ? relDate(g.last_played_at) : 'unplayed'}</span>
+                  {/if}
                 </div>
               </div>
+              {#if peer}
+                <!-- Downloadable from a LAN peer — prominent download glyph in
+                     the row's accent so it reads as "fetch", not "play". -->
+                <Download size={14} class="shrink-0" style="color: {rowAccent}" />
+              {/if}
             </button>
           {/each}
         {/if}
@@ -612,6 +610,10 @@
         backingUp={lib.isBackingUp(lib.selectedGame.id)}
         cloudConfigured={lib.syncStatus.reachability !== 'unconfigured'}
         onPullConflict={(id) => (lib.conflictGameId = id)}
+        download={lib.activeDownload}
+        startingGameId={lib.startingGameId}
+        onDownload={(g) => lib.downloadGame(g)}
+        onCancelDownload={lib.cancelActiveInstall}
       />
     {:else if lib.loaded && lib.games.length === 0}
       <div class="flex flex-col items-center justify-center gap-3 text-center">

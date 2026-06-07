@@ -13,6 +13,7 @@ import type {
   LanPeer,
   NewGame,
   PeerGame,
+  PeerSource,
   PlaySession,
   ProtonVersion,
   GuidedInstallResult,
@@ -287,4 +288,15 @@ export const api = {
 export function assetUrl(path: string | null | undefined): string | null {
   if (!path) return null;
   return convertFileSrc(path);
+}
+
+/**
+ * Build a URL to a peer's cover/hero artwork, served over plain HTTP by the
+ * peer's in-process file server (`/games/{id}/cover` and `/hero`). Used for
+ * sidebar rows / detail pages backed by a `PeerSource` rather than local art
+ * on disk. The webview loads these directly (the app ships with no CSP), so no
+ * download-and-cache round-trip is needed just to preview a peer game.
+ */
+export function peerAssetUrl(source: PeerSource, kind: 'cover' | 'hero'): string {
+  return `http://${source.addr}:${source.file_server_port}/games/${source.source_game_id}/${kind}`;
 }

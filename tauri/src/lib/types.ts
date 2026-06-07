@@ -310,6 +310,35 @@ export type PeerGame = {
 };
 
 /**
+ * Frontend-only annotation describing where a sidebar row can be downloaded
+ * from over the LAN. Never produced by the backend — synthesized in
+ * `library.svelte.ts` when merging peer catalogues into the library list.
+ * Present on synthetic "available on LAN" rows AND on local *uninstalled* rows
+ * that a peer can supply.
+ */
+export type PeerSource = {
+  device_id: string;
+  device_name: string;
+  addr: string;
+  file_server_port: number;
+  /** The peer's `PeerGame.id` — the argument to `start_peer_install`. */
+  source_game_id: string;
+  /** Mirrors `PeerGame.shareable`; false disables the Download button. */
+  shareable: boolean;
+};
+
+/**
+ * A `GameEntry` as rendered in the sidebar, optionally annotated with a LAN
+ * peer it can be downloaded from. `peer_source` is present on:
+ *   - synthetic peer-only rows (`id` is `peer:<key>`, an otherwise-empty shell), and
+ *   - local uninstalled rows a peer can supply (the real entry id is kept).
+ * Absent on installed local games and uninstalled games with no peer source.
+ * Because it merely extends `GameEntry`, every existing field access still
+ * type-checks; only the Play/Download and artwork branches read `peer_source`.
+ */
+export type DisplayGame = GameEntry & { peer_source?: PeerSource };
+
+/**
  * One in-flight (or just-finished) LAN install. Emitted as `lan:download`
  * events and also returned by `current_peer_download` for late-mount
  * catch-up. Mirrors the Rust `DownloadProgress` struct in lan.rs.

@@ -52,9 +52,12 @@ const skipReadme = args.has('--no-readme');
  */
 const SHOTS = [
   {
+    // The peers variant so the shot shows the full sidebar: installed games,
+    // an uninstalled game (Reinstall), an uninstalled game a peer offers
+    // (Download), and a LAN-only synthetic row.
     file: 'library-desktop.png',
     title: 'Screens/Library',
-    name: 'Desktop',
+    name: 'Desktop · with peers',
     width: 1440,
     height: 900,
     htmlMode: 'desktop',
@@ -220,6 +223,11 @@ async function capture(browser, port, index, shot) {
     colorScheme: 'dark',
   });
   const page = await context.newPage();
+  // Peer cover/hero art (`/games/<id>/cover|hero`) points at live LAN devices
+  // that don't exist in Storybook. Abort those so the request fails fast and the
+  // row falls back to its letter tile, instead of hanging `networkidle` on an
+  // unroutable LAN IP. Steam CDN art (a different path) is left untouched.
+  await page.route(/\/games\/[^/]+\/(cover|hero)$/, (route) => route.abort());
   const url = `http://127.0.0.1:${port}/iframe.html?id=${id}&viewMode=story`;
   await page.goto(url, { waitUntil: 'networkidle' });
   if (shot.htmlMode) {

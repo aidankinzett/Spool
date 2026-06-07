@@ -21,6 +21,7 @@
     Cloud,
     CloudDownload,
     Copy,
+    Download,
     Folder,
     HardDriveDownload,
     Pencil,
@@ -28,13 +29,15 @@
     RotateCcw,
     Sparkles,
     Trash2,
+    X,
   } from '@lucide/svelte';
   import { onMount } from 'svelte';
   import { openView } from '$lib/nav';
-  import { api, assetUrl } from '$lib/api';
+  import { isSyntheticPeerId } from '$lib/library.svelte';
+  import { api, assetUrl, peerAssetUrl } from '$lib/api';
   import { toasts } from '$lib/toasts.svelte';
   import { confirmDialog } from '$lib/confirm.svelte';
-  import type { GameEntry, RunPhase, SaveRevision } from '$lib/types';
+  import type { DisplayGame, DownloadProgress, GameEntry, RunPhase, SaveRevision } from '$lib/types';
   import {
     absDate,
     absDateTime,
@@ -44,6 +47,7 @@
     relDate,
   } from '$lib/format';
   import MonoLabel from './MonoLabel.svelte';
+  import LanDownloadProgress from './LanDownloadProgress.svelte';
   import CatalogId from './CatalogId.svelte';
   import Btn from './Btn.svelte';
   import DetailCard from './DetailCard.svelte';
@@ -57,8 +61,12 @@
     autofocusPlay = false,
     cloudConfigured = false,
     onPullConflict,
+    download = null,
+    startingGameId = null,
+    onDownload,
+    onCancelDownload,
   }: {
-    game: GameEntry;
+    game: DisplayGame;
     /** Current Run-workflow phase for *this* game (null if idle). */
     runPhase?: RunPhase | null;
     /** A forced post-override backup is running for this game — disables Play. */
@@ -74,6 +82,15 @@
      *  the parent can open the `CloudConflictModal` (sets `lib.conflictGameId`).
      *  Without it the conflict falls back to an error toast. */
     onPullConflict?: (gameId: string) => void;
+    /** The single in-flight LAN install, if any — used to show live progress on
+     *  the Download button when it's *this* game being fetched from a peer. */
+    download?: DownloadProgress | null;
+    /** The peer game id whose install is mid-handshake (pre-progress). */
+    startingGameId?: string | null;
+    /** Start downloading this peer-sourced game (the Download button). */
+    onDownload?: (g: DisplayGame) => void;
+    /** Cancel the in-flight LAN install. */
+    onCancelDownload?: () => void;
   } = $props();
 
   // When the selected game changes, refresh its save-backup stats from
@@ -83,6 +100,9 @@
   // unrelated field update.
   $effect(() => {
     const id = game.id;
+    // Synthetic peer-only rows (id `peer:…`) aren't real library entries —
+    // there's nothing for the backend to refresh.
+    if (isSyntheticPeerId(id)) return;
     void api.refreshSaveMetadata(id).catch(() => {});
   });
 
@@ -117,6 +137,51 @@
       console.error('[runner] launch failed:', e);
     }
   }
+
+  // ── LAN download (peer-sourced rows) ────────────────────────────────────
+  // A merged sidebar row backed by a peer shows Download instead of Play. This
+  // covers both synthetic "available on LAN" rows and local uninstalled rows a
+  // peer can supply.
+  const peerSource = $derived(game.peer_source ?? null);
+  // A synthetic "available on LAN" row — not a real library entry on this
+  // device, so per-entry actions (Edit, Remove, Steam…) don't apply yet.
+  const isSyntheticPeer = $derived(isSyntheticPeerId(game.id));
+  // The in-flight install, only when it's *this* peer game (id + device match).
+  const peerDownload = $derived(
+    peerSource &&
+      download &&
+      download.source_game_id === peerSource.source_game_id &&
+      download.source_device_id === peerSource.device_id
+      ? download
+      : null,
+  );
+  const peerInflight = $derived(
+    peerDownload != null &&
+      (peerDownload.status === 'starting' || peerDownload.status === 'transferring'),
+  );
+  const peerStarting = $derived(peerSource != null && startingGameId === peerSource.source_game_id);
+  // Disabled while any install is in progress (one slot), or the peer can't
+  // actually stream it.
+  const anyInstallBusy = $derived(
+    startingGameId != null ||
+      (download != null && (download.status === 'starting' || download.status === 'transferring')),
+  );
+  // The Download button is unusable when the peer can't stream it, another
+  // install holds the single slot, or no handler is wired (e.g. touch layout).
+  const downloadDisabled = $derived(
+    !peerSource || !peerSource.shareable || anyInstallBusy || !onDownload,
+  );
+
+  function startDownload() {
+    if (!peerSource || peerInflight || peerStarting) return;
+    onDownload?.(game);
+  }
+
+  // Hero art: local file on disk first (kept even when uninstalled), else the
+  // peer's hero over HTTP for a peer-sourced row, else the gradient fallback.
+  const heroUrl = $derived(
+    assetUrl(game.hero_image_path) ?? (peerSource ? peerAssetUrl(peerSource, 'hero') : null),
+  );
 
   /**
    * Per-game accent colour. Extracted from the cover image when it
@@ -381,9 +446,9 @@
     style:background="linear-gradient(135deg, color-mix(in srgb, {accentHex} 22%, var(--color-bg-1)) 0%, var(--color-bg-0) 100%)"
   >
     <!-- Hero image (when available) — full-bleed, fades into bg at bottom -->
-    {#if assetUrl(game.hero_image_path)}
+    {#if heroUrl}
       <img
-        src={assetUrl(game.hero_image_path)!}
+        src={heroUrl}
         alt=""
         class="absolute inset-0 h-full w-full object-cover object-center"
       />
@@ -443,68 +508,135 @@
         </h1>
 
         <div class="mt-3.5 flex items-center gap-3.5">
-          <button
-            type="button"
-            data-testid="play-button"
-            data-gp-autofocus={autofocusPlay && canPlay ? '' : undefined}
-            onclick={launch}
-            disabled={!canPlay}
-            class="font-sans inline-flex items-center gap-2.5 rounded-md border-none font-semibold transition-opacity"
-            style:height="var(--control-h)"
-            style:padding-inline="calc(var(--space-unit) * 4)"
-            style:font-size="var(--text-base)"
-            class:cursor-pointer={canPlay}
-            class:cursor-not-allowed={!canPlay}
-            class:opacity-70={!canPlay}
-            style:background={accentHex}
-            style:color="#0b0c0e"
-            style:box-shadow="0 6px 20px color-mix(in srgb, {accentHex} 26%, transparent)"
-            title={!game.installed
-              ? 'Not installed — reinstall to play'
-              : !game.exe_path
-                ? 'No executable set'
-                : isRunning
-                  ? playLabel
-                  : 'Restore saves, launch game, back up on exit'}
-          >
-            <Play size={16} fill="currentColor" />
-            {playLabel}
-          </button>
-
-          {#if !game.installed}
-            <!-- Uninstalled: Play is greyed; offer a Reinstall affordance that
-                 opens the Add flow (which reuses this same library entry). -->
+          {#if peerSource}
+            <!-- Peer-sourced row: Download (from another device on the LAN)
+                 replaces Play. Shows live progress + Cancel while in flight. -->
+            {#if peerInflight && peerDownload}
+              <div class="flex flex-col gap-1.5" style:min-width="260px">
+                <div class="flex items-center gap-2.5">
+                  <span class="font-sans text-[length:var(--text-base)] font-semibold text-ink-0">
+                    Downloading…
+                  </span>
+                  <button
+                    type="button"
+                    onclick={() => onCancelDownload?.()}
+                    class="inline-flex items-center gap-1 rounded-sm border border-line-2 bg-bg-2 px-2 py-1 text-[11px] text-ink-2 transition-colors hover:border-bad/60 hover:text-bad"
+                    title="Cancel install"
+                  >
+                    <X size={12} />
+                    Cancel
+                  </button>
+                </div>
+                <LanDownloadProgress
+                  download={peerDownload}
+                  accent={accentHex}
+                  barClass="h-1.5"
+                  metaClass="text-[10px]"
+                />
+              </div>
+            {:else}
+              <button
+                type="button"
+                data-testid="download-button"
+                data-gp-autofocus={autofocusPlay ? '' : undefined}
+                onclick={startDownload}
+                disabled={downloadDisabled}
+                class="font-sans inline-flex items-center gap-2.5 rounded-md border-none font-semibold transition-opacity"
+                style:height="var(--control-h)"
+                style:padding-inline="calc(var(--space-unit) * 4)"
+                style:font-size="var(--text-base)"
+                class:cursor-pointer={!downloadDisabled}
+                class:cursor-not-allowed={downloadDisabled}
+                class:opacity-70={downloadDisabled}
+                style:background={accentHex}
+                style:color="#0b0c0e"
+                style:box-shadow="0 6px 20px color-mix(in srgb, {accentHex} 26%, transparent)"
+                title={!peerSource.shareable
+                  ? 'Source device has no install folder configured for this game'
+                  : anyInstallBusy
+                    ? 'Another install is in progress'
+                    : `Download from ${peerSource.device_name}`}
+              >
+                <Download size={16} />
+                {peerStarting ? 'Starting…' : 'Download'}
+              </button>
+            {/if}
+          {:else}
             <button
               type="button"
-              data-testid="reinstall-button"
-              data-gp-autofocus=""
-              onclick={() => openView('add', { reinstall: game.id })}
-              class="font-sans inline-flex cursor-pointer items-center gap-2 rounded-md font-semibold transition-colors"
+              data-testid="play-button"
+              data-gp-autofocus={autofocusPlay && canPlay ? '' : undefined}
+              onclick={launch}
+              disabled={!canPlay}
+              class="font-sans inline-flex items-center gap-2.5 rounded-md border-none font-semibold transition-opacity"
               style:height="var(--control-h)"
               style:padding-inline="calc(var(--space-unit) * 4)"
               style:font-size="var(--text-base)"
-              style:color={accentHex}
-              style:background="transparent"
-              style:border="1px solid color-mix(in srgb, {accentHex} 45%, transparent)"
-              title="Add the game again to reinstall — your saves, playtime and artwork are kept"
+              class:cursor-pointer={canPlay}
+              class:cursor-not-allowed={!canPlay}
+              class:opacity-70={!canPlay}
+              style:background={accentHex}
+              style:color="#0b0c0e"
+              style:box-shadow="0 6px 20px color-mix(in srgb, {accentHex} 26%, transparent)"
+              title={!game.installed
+                ? 'Not installed — reinstall to play'
+                : !game.exe_path
+                  ? 'No executable set'
+                  : isRunning
+                    ? playLabel
+                    : 'Restore saves, launch game, back up on exit'}
             >
-              <HardDriveDownload size={15} />
-              Reinstall…
+              <Play size={16} fill="currentColor" />
+              {playLabel}
             </button>
+
+            {#if !game.installed}
+              <!-- Uninstalled with no peer source: Play is greyed; offer a
+                   Reinstall affordance that opens the Add flow (which reuses
+                   this same library entry). -->
+              <button
+                type="button"
+                data-testid="reinstall-button"
+                data-gp-autofocus=""
+                onclick={() => openView('add', { reinstall: game.id })}
+                class="font-sans inline-flex cursor-pointer items-center gap-2 rounded-md font-semibold transition-colors"
+                style:height="var(--control-h)"
+                style:padding-inline="calc(var(--space-unit) * 4)"
+                style:font-size="var(--text-base)"
+                style:color={accentHex}
+                style:background="transparent"
+                style:border="1px solid color-mix(in srgb, {accentHex} 45%, transparent)"
+                title="Add the game again to reinstall — your saves, playtime and artwork are kept"
+              >
+                <HardDriveDownload size={15} />
+                Reinstall…
+              </button>
+            {/if}
           {/if}
 
-          <div class="flex flex-col gap-px">
-            <MonoLabel size={9.5}>
-              <span style:color={accentHex}>
-                LAST · {game.last_played_at ? relDate(game.last_played_at).toUpperCase() : 'NEVER'}
+          {#if peerSource}
+            <div class="flex flex-col gap-px">
+              <MonoLabel size={9.5}>
+                <span style:color={accentHex}>FROM · {peerSource.device_name.toUpperCase()}</span>
+              </MonoLabel>
+              <span class="font-mono text-[11.5px] tracking-[0.04em] text-ink-2">
+                {fmtSize(game.install_size_mb)} · LAN download
               </span>
-            </MonoLabel>
-            <span
-              class="font-mono text-[11.5px] tracking-[0.04em] text-ink-2"
-            >
-              {fmtPlaytime(game.playtime_minutes)} · {game.save_backup_count} backup{game.save_backup_count === 1 ? '' : 's'}
-            </span>
-          </div>
+            </div>
+          {:else}
+            <div class="flex flex-col gap-px">
+              <MonoLabel size={9.5}>
+                <span style:color={accentHex}>
+                  LAST · {game.last_played_at ? relDate(game.last_played_at).toUpperCase() : 'NEVER'}
+                </span>
+              </MonoLabel>
+              <span
+                class="font-mono text-[11.5px] tracking-[0.04em] text-ink-2"
+              >
+                {fmtPlaytime(game.playtime_minutes)} · {game.save_backup_count} backup{game.save_backup_count === 1 ? '' : 's'}
+              </span>
+            </div>
+          {/if}
         </div>
       </div>
     </div>
@@ -557,7 +689,8 @@
     )}
   </div>
 
-  <!-- Action toolbar -->
+  <!-- Action toolbar — hidden for synthetic peer rows (no local entry to act on) -->
+  {#if !isSyntheticPeer}
   <div class="flex shrink-0 items-center gap-1.5 border-b border-line-1 px-7 py-3">
     <Btn variant="ghost" onclick={openFolder} disabled={!folderForGame(game)}>
       {#snippet icon()}<Folder size={14} />{/snippet}
@@ -598,6 +731,7 @@
       Remove
     </Btn>
   </div>
+  {/if}
 
   <!-- Two-column body (scrolls independently so the hero + Play button stay
        visible on short displays) -->
