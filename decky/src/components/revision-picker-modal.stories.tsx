@@ -31,6 +31,7 @@ const game = (overrides: Partial<LibraryGame> = {}): LibraryGame => ({
   last_played_at: null,
   sync_badge: null,
   game_folder_path: "C:/Games/HollowKnight",
+  installed: true,
   save_backup_count: 4,
   save_last_backed_up_at: null,
   save_backup_size_mb: 12,

@@ -5,6 +5,7 @@
   import { listen } from '@tauri-apps/api/event';
   import ToastStack from '$lib/components/ToastStack.svelte';
   import ConfirmHost from '$lib/components/ConfirmHost.svelte';
+  import RemoveGameHost from '$lib/components/RemoveGameHost.svelte';
   import { api } from '$lib/api';
   import { uiMode } from '$lib/uiMode.svelte';
   import { startGamepadNav } from '$lib/gamepad';
@@ -62,3 +63,6 @@
 
 <!-- Global confirmation-dialog host — replaces the unreliable window.confirm(). -->
 <ConfirmHost />
+
+<!-- Global remove-game chooser host — opened via removeGameDialog.request(). -->
+<RemoveGameHost />

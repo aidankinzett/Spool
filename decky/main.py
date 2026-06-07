@@ -399,6 +399,25 @@ class Plugin:
             return {"ok": False, "reason": "server unavailable"}
         return result
 
+    async def uninstall_game(self, game_id: str) -> dict:
+        """Delete a game's install folder from disk but KEEP its library entry
+        (playtime / art / save backups survive; re-adding reuses the entry).
+        Forwards to the headless server's POST /games/<id>/uninstall."""
+        path = f"/games/{quote(game_id, safe='')}/uninstall"
+        result = await _spool("POST", path, timeout=120.0)
+        if result is None:
+            return {"ok": False, "reason": "server unavailable"}
+        return result
+
+    async def forget_game(self, game_id: str) -> dict:
+        """Forget a game's library entry but leave its files on disk. Forwards
+        to the headless server's POST /games/<id>/forget."""
+        path = f"/games/{quote(game_id, safe='')}/forget"
+        result = await _spool("POST", path, timeout=120.0)
+        if result is None:
+            return {"ok": False, "reason": "server unavailable"}
+        return result
+
     async def pull_cloud_saves(self, game_id: str) -> dict:
         """Pull a game's latest cloud saves down to this device and restore them
         to disk, without launching ("Sync now"). Forwards to the headless

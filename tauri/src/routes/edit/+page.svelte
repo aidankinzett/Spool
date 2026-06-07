@@ -19,13 +19,13 @@
    */
   import { onMount } from 'svelte';
   import { SvelteSet } from 'svelte/reactivity';
-  import { Download, Folder, FolderX, RefreshCw, Trash2 } from '@lucide/svelte';
+  import { Download, Folder, RefreshCw, Trash2 } from '@lucide/svelte';
   import { open as openDialog } from '@tauri-apps/plugin-dialog';
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import { api, assetUrl } from '$lib/api';
   import { fmtCatalog, absDateTime } from '$lib/format';
   import { toasts } from '$lib/toasts.svelte';
-  import { confirmDialog } from '$lib/confirm.svelte';
+  import { removeGameDialog } from '$lib/removeGame.svelte';
   import type { GameEntry, ProtonVersion } from '$lib/types';
   import AppChrome from '$lib/components/AppChrome.svelte';
   import MonoLabel from '$lib/components/MonoLabel.svelte';
@@ -110,12 +110,6 @@
   const hasFolder = $derived(
     !!form && (form.game_folder_path ?? '').length > 0,
   );
-
-  // Delete-from-disk acts on the PERSISTED install folder — the backend
-  // (delete_game_core) reads the saved DB row, not the in-form edit. Gate the
-  // button and show the path from `original` so the confirm dialog can't promise
-  // to delete one folder while the backend deletes another. (#293)
-  const persistedFolder = $derived(original?.game_folder_path ?? '');
 
   // Whether the configured executable is a Windows `.exe`. On Linux these
   // launch through Proton automatically (no toggle — issue #80); the Proton
@@ -328,58 +322,15 @@
     await getCurrentWindow().close();
   }
 
-  async function removeGame() {
-    if (!form) return;
-    if (
-      !(await confirmDialog({
-        label: 'REMOVE · ENTRY',
-        title: 'Remove from library?',
-        body: `"${form.game_name}" will be forgotten. Your files on disk and save backups are left untouched — you can add it again later.`,
-        confirmLabel: 'Remove',
-        accent,
-        catalog: fmtCatalog(form.catalog_number),
-      }))
-    )
-      return;
-    try {
-      await api.removeGame(form.id);
-      await getCurrentWindow().close();
-    } catch (e) {
-      toasts.show({
-        kind: 'bad',
-        label: 'REMOVE · FAILED',
-        title: "Couldn't remove",
-        sub: String(e),
-      });
-    }
-  }
-
-  async function deleteFromDisk() {
-    if (!form) return;
-    if (
-      !(await confirmDialog({
-        label: 'DELETE · DISK',
-        title: 'Delete from disk?',
-        body:
-          `This permanently removes the install folder` +
-          `${persistedFolder ? ` (${persistedFolder})` : ''} and the library entry for "${form.game_name}". This can't be undone.`,
-        confirmLabel: 'Delete from disk',
-        danger: true,
-        catalog: fmtCatalog(form.catalog_number),
-      }))
-    )
-      return;
-    try {
-      await api.deleteGameFromDisk(form.id);
-      await getCurrentWindow().close();
-    } catch (e) {
-      toasts.show({
-        kind: 'bad',
-        label: 'DELETE · FAILED',
-        title: "Couldn't delete from disk",
-        sub: String(e),
-      });
-    }
+  // Open the three-option remove chooser (remove from disk / from library /
+  // from disk and library). On success the edit window closes itself. Uses the
+  // persisted `original` entry (not the editable `form`) so the folder it acts
+  // on is the saved one, not an unsaved edit.
+  function remove() {
+    if (!original) return;
+    removeGameDialog.request(original, {
+      onDone: () => void getCurrentWindow().close(),
+    });
   }
 
   const tabs: { id: Tab; label: string }[] = [
@@ -505,27 +456,40 @@
           {@render field('Added on', 'When this entry first appeared in your library.', installAdded)}
 
           {#snippet installFolder()}
-            <div class="flex gap-1.5">
-              <TextField
-                bind:value={form!.game_folder_path as unknown as string}
-                placeholder="(unset)"
-                mono
-                full
-              />
-              <Btn variant="ghost" onclick={browseFolder}>
-                {#snippet icon()}<Folder size={14} />{/snippet}
-                Browse
-              </Btn>
-            </div>
+            {#if form!.installed}
+              <div class="flex gap-1.5">
+                <TextField
+                  bind:value={form!.game_folder_path as unknown as string}
+                  placeholder="(unset)"
+                  mono
+                  full
+                />
+                <Btn variant="ghost" onclick={browseFolder}>
+                  {#snippet icon()}<Folder size={14} />{/snippet}
+                  Browse
+                </Btn>
+              </div>
+            {:else}
+              <!-- Uninstalled: install paths are owned by Reinstall, not the
+                   editor — editing them here would be silently discarded on save
+                   (replace() keeps the cleared paths while installed=false). -->
+              <span class="text-[12px] text-ink-3"
+                >Not installed — use Reinstall to set the install location.</span
+              >
+            {/if}
           {/snippet}
           {#snippet installExe()}
-            <div class="flex gap-1.5">
-              <TextField bind:value={form!.exe_path} mono full />
-              <Btn variant="ghost" onclick={browseExe}>
-                {#snippet icon()}<Folder size={14} />{/snippet}
-                Browse
-              </Btn>
-            </div>
+            {#if form!.installed}
+              <div class="flex gap-1.5">
+                <TextField bind:value={form!.exe_path} mono full />
+                <Btn variant="ghost" onclick={browseExe}>
+                  {#snippet icon()}<Folder size={14} />{/snippet}
+                  Browse
+                </Btn>
+              </div>
+            {:else}
+              <span class="text-[12px] text-ink-3">Not installed — reinstall to set the executable.</span>
+            {/if}
           {/snippet}
           {#snippet installAdded()}
             <span class="font-mono text-[11.5px] text-ink-2">
@@ -711,13 +675,9 @@
 
       <!-- Footer -->
       <footer class="flex items-center gap-2 border-t border-line-1 bg-black/20 px-5 py-3">
-        <Btn variant="danger" onclick={removeGame}>
+        <Btn variant="danger" onclick={remove}>
           {#snippet icon()}<Trash2 size={14} />{/snippet}
-          Remove from library
-        </Btn>
-        <Btn variant="danger" onclick={deleteFromDisk} disabled={!persistedFolder}>
-          {#snippet icon()}<FolderX size={14} />{/snippet}
-          Delete from disk
+          Remove…
         </Btn>
         <div class="flex-1"></div>
         <Btn variant="ghost" onclick={cancel}>Cancel</Btn>

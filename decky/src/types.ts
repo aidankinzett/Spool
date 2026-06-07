@@ -19,6 +19,10 @@ export interface LibraryGame {
   last_played_at: string | null;
   sync_badge: string | null;
   game_folder_path: string | null;
+  // Whether the game's files are on disk. False after "Remove from disk"
+  // (uninstall) — files gone, entry kept. Defaults to true; legacy entries
+  // (written before the field existed) load as installed.
+  installed: boolean;
   save_backup_count: number;
   save_last_backed_up_at: string | null;
   save_backup_size_mb: number;

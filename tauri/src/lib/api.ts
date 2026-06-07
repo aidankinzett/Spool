@@ -52,6 +52,9 @@ export const api = {
   removeGame: (id: string): Promise<boolean> => invoke('remove_game', { id }),
   /** Removes the library entry AND deletes its install folder from disk. */
   deleteGameFromDisk: (id: string): Promise<void> => invoke('delete_game_from_disk', { id }),
+  /** Deletes the install folder from disk but KEEPS the library entry (dimmed,
+   *  Play disabled). Re-adding the game reuses this same entry. */
+  uninstallGame: (id: string): Promise<void> => invoke('uninstall_game', { id }),
 
   // Config
   getConfig: (): Promise<ConfigData> => invoke('get_config'),
