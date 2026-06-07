@@ -224,10 +224,16 @@ impl BlobStore<'_> {
 
     /// List this namespace and return every parseable `*.json` blob as
     /// `(key, T)` pairs. The key is the filename stem (device-id or
-    /// name-hash, depending on the namespace). Missing or unreadable entries
-    /// are silently skipped; an unreachable directory returns an empty vec.
-    async fn read_all<T: serde::de::DeserializeOwned>(&self) -> Vec<(String, T)> {
-        read_json_blobs(self.remote, &self.dir()).await
+    /// name-hash, depending on the namespace). Blobs whose stored schema
+    /// exceeds `self.schema` are silently skipped (same forward-compat gate
+    /// as `fetch`). Missing or unreadable entries are also skipped; an
+    /// unreachable directory returns an empty vec.
+    async fn read_all<T: serde::de::DeserializeOwned + HasSchema>(&self) -> Vec<(String, T)> {
+        read_json_blobs::<T>(self.remote, &self.dir())
+            .await
+            .into_iter()
+            .filter(|(_, blob)| blob.stored_schema() <= self.schema)
+            .collect()
     }
 }
 
@@ -911,6 +917,10 @@ pub struct DeviceBlob {
     pub schema: u32,
 }
 
+impl HasSchema for DeviceBlob {
+    fn stored_schema(&self) -> u32 { self.schema }
+}
+
 /// Read-modify-write of THIS device's blob. Cats the current file (default if
 /// absent), applies `f`, rcats it back.
 ///
@@ -934,12 +944,23 @@ where
         .await
         .ok();
     let store = remote.store("devices", 1);
-    let mut blob: DeviceBlob = cat(&remote.exe, &store.target(device_id))
-        .await
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default();
+    let mut blob: DeviceBlob = match cat(&remote.exe, &store.target(device_id)).await {
+        Some(s) => match serde_json::from_str::<DeviceBlob>(&s) {
+            Ok(b) if b.schema <= store.schema => b,
+            Ok(b) => {
+                tracing::warn!(
+                    device_id,
+                    schema = b.schema,
+                    "device blob was written by a newer Spool version — skipping update to avoid downgrade"
+                );
+                return;
+            }
+            Err(_) => DeviceBlob::default(),
+        },
+        None => DeviceBlob::default(),
+    };
     f(&mut blob);
-    blob.schema = 1;
+    blob.schema = store.schema;
     store.publish(device_id, &blob).await;
 }
 
@@ -1012,6 +1033,10 @@ pub struct HistoryBlob {
     pub device_name: String,
     pub sessions: Vec<crate::library::PlaySession>,
     pub schema: u32,
+}
+
+impl HasSchema for HistoryBlob {
+    fn stored_schema(&self) -> u32 { self.schema }
 }
 
 /// Push this device's play-session history to the remote: read every local
@@ -1096,7 +1121,7 @@ async fn fold_name_keyed<B, D, F, Fut>(
     set_if_absent: F,
 ) -> usize
 where
-    B: serde::de::DeserializeOwned,
+    B: serde::de::DeserializeOwned + HasSchema,
     D: Clone,
     F: Fn(SharedLibrary, String, D) -> Fut,
     Fut: Future<Output = bool>,
@@ -1931,6 +1956,20 @@ mod tests {
             remote: "Dropbox".into(),
             base: "Spool".into(),
         }
+    }
+
+    #[test]
+    fn has_schema_rejects_newer_blobs() {
+        // DeviceBlob and HistoryBlob now implement HasSchema; schema > store cap is rejected.
+        let new_dev = DeviceBlob { schema: 2, ..Default::default() };
+        let old_dev = DeviceBlob { schema: 1, ..Default::default() };
+        assert!(new_dev.stored_schema() > 1, "schema 2 must be filtered by a schema-1 store");
+        assert!(old_dev.stored_schema() <= 1, "schema 1 must pass a schema-1 store");
+
+        let new_hist = HistoryBlob { schema: 3, ..Default::default() };
+        let old_hist = HistoryBlob { schema: 1, ..Default::default() };
+        assert!(new_hist.stored_schema() > 1);
+        assert!(old_hist.stored_schema() <= 1);
     }
 
     #[test]
