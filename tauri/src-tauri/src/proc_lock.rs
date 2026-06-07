@@ -146,6 +146,28 @@ pub fn try_acquire_run(game_id: &str) -> AppResult<Option<FileLock>> {
     try_acquire_at(paths::run_lock_file(game_id))
 }
 
+/// Best-effort removal of a game's run-lock marker file once its library entry
+/// is permanently retired (forget / delete-from-disk), so the per-game files
+/// don't accumulate. Called from [`crate::library::Library::remove`] — never on
+/// uninstall, which keeps the entry (and may run the game again).
+///
+/// Safe because retirement is *terminal*: `flock` lives on the open file
+/// description, not the directory entry, so unlinking leaves any current holder's
+/// lock intact, and the id is gone for good — every add mints a fresh UUID and
+/// never reuses a retired id, so nothing recreates this marker to be locked
+/// again. (A recreated marker would be a *new* inode, lockable independently of
+/// an old holder's — which is exactly why cleanup only runs at terminal
+/// retirement, not on uninstall.) Missing file / non-fatal errors are ignored —
+/// a leftover zero-byte marker is harmless and just reused on the next launch.
+pub fn remove_run_lock(game_id: &str) {
+    let path = paths::run_lock_file(game_id);
+    if let Err(e) = std::fs::remove_file(&path) {
+        if e.kind() != std::io::ErrorKind::NotFound {
+            tracing::debug!(path = %path.display(), error = %e, "couldn't remove run-lock file");
+        }
+    }
+}
+
 /// Acquire the machine-wide control-plane lock, serialising the brief
 /// read-modify-write of this device's cross-device blob
 /// (`_spool/devices/<id>.json`) against other Spool processes on the machine.
