@@ -16,7 +16,7 @@
   import { onMount } from 'svelte';
   import { open as openDialog } from '@tauri-apps/plugin-dialog';
   import { getCurrentWindow } from '@tauri-apps/api/window';
-  import { FileWarning, Folder, Search, ExternalLink, Wifi } from '@lucide/svelte';
+  import { FileWarning, Folder, HardDriveDownload, Search, ExternalLink, Wifi } from '@lucide/svelte';
   import { api } from '$lib/api';
   import type { SearchCandidate } from '$lib/types';
   import AppChrome from '$lib/components/AppChrome.svelte';
@@ -42,6 +42,12 @@
   // True once the user picks a folder by hand, so auto-detection stops
   // overwriting their choice when they switch candidates.
   let folderTouched = $state(false);
+  // Set when opened from an uninstalled game's "Reinstall…" affordance
+  // (`?reinstall=<id>`): the existing entry's id (and name, for the hint).
+  // Passed to add_game so that exact library entry is reused — saves, playtime
+  // and artwork carry over — instead of a duplicate being created.
+  let reinstallTargetId = $state<string | null>(null);
+  let reinstallName = $state<string | null>(null);
 
   /** Parent directory of a file path, handling both `\` and `/` separators. */
   function parentDir(path: string): string | null {
@@ -102,6 +108,17 @@
 
   // ── Mount: pick exe immediately, or bail back to library ───────────────
   onMount(async () => {
+    // Reinstall flow: opened with `?reinstall=<id>` from an uninstalled game.
+    const reinstall = new URLSearchParams(window.location.search).get('reinstall');
+    if (reinstall) {
+      reinstallTargetId = reinstall;
+      try {
+        const games = await api.listGames();
+        reinstallName = games.find((g) => g.id === reinstall)?.game_name ?? null;
+      } catch {
+        // Best-effort hint only — the backend still reuses the entry by id.
+      }
+    }
     await pickExe();
   });
 
@@ -212,6 +229,7 @@
         manifest_install_dir: picked.manifest_install_dir,
         save_paths: picked.save_paths,
         game_folder_path: gameFolder,
+        reinstall_target_id: reinstallTargetId,
       });
       await getCurrentWindow().close();
     } catch (e) {
@@ -228,6 +246,7 @@
         exe_path: exePath,
         save_paths: [],
         game_folder_path: gameFolder,
+        reinstall_target_id: reinstallTargetId,
       });
       await getCurrentWindow().close();
     } catch (e) {
@@ -265,6 +284,25 @@
         automatically.
       </p>
     </header>
+
+    {#if reinstallTargetId}
+      <!-- Reinstall hint: opened from an uninstalled game's "Reinstall…". -->
+      <div
+        class="mx-6 mb-1 flex items-center gap-2.5 rounded-md border px-3.5 py-2.5"
+        style:border-color="color-mix(in srgb, var(--color-spool) 35%, transparent)"
+        style:background="color-mix(in srgb, var(--color-spool) 10%, transparent)"
+      >
+        <HardDriveDownload size={15} class="shrink-0 text-spool" />
+        <span class="text-[12px] leading-snug text-ink-1">
+          {#if reinstallName}
+            Reinstalling <strong class="font-semibold">{reinstallName}</strong> — your saves, playtime and
+            artwork are kept.
+          {:else}
+            Reinstalling an existing entry — your saves, playtime and artwork are kept.
+          {/if}
+        </span>
+      </div>
+    {/if}
 
     <!-- Body -->
     <div class="flex flex-1 flex-col gap-3 overflow-hidden px-6 pb-2 pt-2">

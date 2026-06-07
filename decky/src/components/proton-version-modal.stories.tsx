@@ -21,6 +21,7 @@ const game = (overrides: Partial<LibraryGame> = {}): LibraryGame => ({
   last_played_at: null,
   sync_badge: null,
   game_folder_path: null,
+  installed: true,
   save_backup_count: 0,
   save_last_backed_up_at: null,
   save_backup_size_mb: 0,

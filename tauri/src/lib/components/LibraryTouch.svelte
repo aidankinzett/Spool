@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { Info, Package, Play, Search, Settings } from '@lucide/svelte';
+  import { HardDriveDownload, Info, Package, Play, Search, Settings } from '@lucide/svelte';
   import { api, assetUrl } from '$lib/api';
   import { fmtCatalog, fmtPlaytime, relDate } from '$lib/format';
   import { openView } from '$lib/nav';
@@ -106,7 +106,7 @@
   // launch. A cloud conflict surfaces via the conflict modal (lib.conflictGameId
   // is set from the workflow), so only toast genuine launch failures.
   async function launchSelected() {
-    if (!selectedGame?.exe_path || !lib.selectedId) return;
+    if (!selectedGame?.exe_path || !selectedGame.installed || !lib.selectedId) return;
     detailOpen = true;
     try {
       await api.launchGame(lib.selectedId);
@@ -311,19 +311,37 @@
 
           <!-- Action strip -->
           <div class="mt-1 flex flex-wrap items-center gap-2">
-            <button
-              type="button"
-              onclick={launchSelected}
-              disabled={!selectedGame.exe_path}
-              class="inline-flex cursor-pointer items-center gap-2 rounded-sm font-semibold text-bg-0 transition-opacity disabled:cursor-not-allowed disabled:opacity-50"
-              style:background={accent ?? 'var(--color-spool)'}
-              style:height="var(--control-h)"
-              style:padding-inline="calc(var(--space-unit) * 5)"
-              style:font-size="var(--text-base)"
-            >
-              <Play size={15} fill="currentColor" />
-              Play
-            </button>
+            {#if selectedGame.installed}
+              <button
+                type="button"
+                onclick={launchSelected}
+                disabled={!selectedGame.exe_path}
+                class="inline-flex cursor-pointer items-center gap-2 rounded-sm font-semibold text-bg-0 transition-opacity disabled:cursor-not-allowed disabled:opacity-50"
+                style:background={accent ?? 'var(--color-spool)'}
+                style:height="var(--control-h)"
+                style:padding-inline="calc(var(--space-unit) * 5)"
+                style:font-size="var(--text-base)"
+              >
+                <Play size={15} fill="currentColor" />
+                Play
+              </button>
+            {:else}
+              <!-- Uninstalled: offer Reinstall (opens Add, which reuses this entry). -->
+              <button
+                type="button"
+                onclick={() => openView('add', { reinstall: selectedGame.id })}
+                class="inline-flex cursor-pointer items-center gap-2 rounded-sm font-semibold transition-colors"
+                style:color={accent ?? 'var(--color-spool)'}
+                style:background="transparent"
+                style:border="1px solid color-mix(in srgb, {accent ?? 'var(--color-spool)'} 45%, transparent)"
+                style:height="var(--control-h)"
+                style:padding-inline="calc(var(--space-unit) * 5)"
+                style:font-size="var(--text-base)"
+              >
+                <HardDriveDownload size={15} />
+                Reinstall…
+              </button>
+            {/if}
             <button
               type="button"
               onclick={() => (detailOpen = true)}
@@ -416,6 +434,7 @@
               style:scroll-snap-align="start"
               style:width={tileW}
               style:transform={active ? 'translateY(-6px)' : 'none'}
+              style:opacity={game.installed ? 1 : 0.45}
             >
               <div
                 class="overflow-hidden rounded-sm"

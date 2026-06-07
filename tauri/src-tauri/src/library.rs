@@ -27,7 +27,7 @@ use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use sqlx::{Row, SqlitePool};
 use std::sync::Arc;
 use std::time::Duration;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 /// A user-defined save location for a game ludusavi's manifest doesn't cover
 /// (or covers wrongly). Projected into a ludusavi `customGames` entry by
@@ -72,6 +72,16 @@ pub struct GameEntry {
 
     pub launcher_exe_path: Option<String>,
     pub game_folder_path: Option<String>,
+
+    /// Whether the game's files are currently on disk. `true` for a normal
+    /// added/installed entry; flipped to `false` by `uninstall_game` (remove
+    /// from disk but keep the catalogue entry — playtime, art, save backups
+    /// survive). An uninstalled entry renders dimmed with its Play button
+    /// disabled until it's re-added (which reuses this same row). Defaults to
+    /// `true` so legacy rows missing the field load as installed; written
+    /// out-of-band by uninstall/reinstall, so it's in [`RUNTIME_FIELDS`] to
+    /// survive a whole-entry editor save.
+    pub installed: bool,
 
     pub run_as_admin: bool,
 
@@ -191,6 +201,7 @@ impl Default for GameEntry {
             last_played_at: None,
             launcher_exe_path: None,
             game_folder_path: None,
+            installed: true,
             run_as_admin: false,
             use_proton: false,
             proton_version_path: None,
@@ -273,6 +284,13 @@ pub struct NewGame {
     /// "identify via manifest" / "without save tracking" paths.
     #[serde(default)]
     pub custom_save: Option<CustomSave>,
+    /// When set, re-add (reinstall) this exact existing entry rather than
+    /// creating a new one — passed by the "Reinstall…" affordance, which knows
+    /// the uninstalled entry's id. Ignored (falls back to a steam-id / name
+    /// match, then a fresh insert) if the id is missing or no longer refers to
+    /// an uninstalled entry. See [`add_game`].
+    #[serde(default)]
+    pub reinstall_target_id: Option<String>,
 }
 
 /// JSON paths (under `$.`) of the fields that are owned by the running
@@ -302,6 +320,12 @@ const RUNTIME_FIELDS: &[&str] = &[
     // Written out-of-band by the Saves editor / cross-device adopt fold, not the
     // whole-entry editor save, so the editor's `replace` must re-overlay it.
     "custom_save",
+    // Flipped out-of-band by uninstall / reinstall (and the Decky plugin), not
+    // the editor save. Overlaying it stops a stale open editor from resurrecting
+    // an uninstalled game on save. (`game_folder_path` / `exe_path` are NOT
+    // overlaid — the editor legitimately edits those; `installed` being the
+    // launch/UI source of truth makes any stale path harmless.)
+    "installed",
 ];
 
 /// One finished play session — an immutable record of a single launch on a
@@ -531,6 +555,63 @@ impl Library {
         Ok(row.map(|r| r.get::<String, _>("id")))
     }
 
+    /// An existing *uninstalled* entry to reuse when the user re-adds a game
+    /// (via the Add flow or a LAN install), so playtime / art / save backups
+    /// carry over instead of spawning a duplicate. Prefers a `steam_id` match
+    /// (most reliable), falling back to an exact `game_name`; the oldest
+    /// `catalog_number` wins when several match. Only ever returns entries with
+    /// `installed = false`, so a currently-installed game is never silently
+    /// overwritten. Legacy rows missing the `installed` field yield SQL NULL for
+    /// `json_extract(... '$.installed')`, which `= 0` excludes — i.e. they're
+    /// treated as installed and left alone.
+    ///
+    /// The name fallback skips a candidate whose `steam_id` *positively
+    /// conflicts* with `steam_id` (both known and differing): two genuinely
+    /// different games that happen to share a name must not be merged into one
+    /// entry. A candidate with no steam id (an untracked entry), or a `None`
+    /// request, has no conflict and is still reused by name.
+    pub async fn find_reusable_entry(
+        &self,
+        steam_id: Option<u64>,
+        name: &str,
+    ) -> AppResult<Option<GameEntry>> {
+        if let Some(sid) = steam_id {
+            let row = sqlx::query(
+                "SELECT data FROM games
+                 WHERE json_extract(data, '$.installed') = 0
+                   AND json_extract(data, '$.steam_id') = ?1
+                 ORDER BY catalog_number LIMIT 1",
+            )
+            .bind(sid as i64)
+            .fetch_optional(&self.pool)
+            .await?;
+            if let Some(row) = row {
+                let data: String = row.get("data");
+                return Ok(Some(serde_json::from_str(&data)?));
+            }
+        }
+        let row = sqlx::query(
+            "SELECT data FROM games
+             WHERE json_extract(data, '$.installed') = 0
+               AND game_name = ?1
+               AND (?2 IS NULL
+                    OR json_extract(data, '$.steam_id') IS NULL
+                    OR json_extract(data, '$.steam_id') = ?2)
+             ORDER BY catalog_number LIMIT 1",
+        )
+        .bind(name)
+        .bind(steam_id.map(|s| s as i64))
+        .fetch_optional(&self.pool)
+        .await?;
+        match row {
+            Some(row) => {
+                let data: String = row.get("data");
+                Ok(Some(serde_json::from_str(&data)?))
+            }
+            None => Ok(None),
+        }
+    }
+
     /// Number of games in the library.
     pub async fn count(&self) -> AppResult<usize> {
         let c: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM games")
@@ -579,11 +660,41 @@ impl Library {
     /// values. Returns `false` if no row matched the id.
     pub async fn replace(&self, entry: &GameEntry) -> AppResult<bool> {
         let base = serde_json::to_string(entry)?;
-        // Build json_set(?1, '$.f', json_extract(data,'$.f'), …) nesting so the
-        // incoming blob (?1) keeps the existing row's runtime field values.
+        // Build json_set(?1, '$.f', COALESCE(data -> '$.f', ?1 -> '$.f'), …)
+        // nesting so the incoming blob (?1) keeps the existing row's runtime
+        // field values. Two subtleties:
+        //   * `->` (not json_extract): returns the value preserving its JSON
+        //     type, so a boolean like `installed` round-trips as JSON
+        //     true/false. json_extract coerces a JSON boolean to SQL integer
+        //     0/1, which json_set then writes back as a JSON *number* —
+        //     unparseable as a serde `bool`.
+        //   * COALESCE(..., ?1 -> '$.f'): when the existing row LACKS the field
+        //     (a row written before that field existed — e.g. `installed` on a
+        //     pre-upgrade entry), `data -> '$.f'` is SQL NULL and a bare
+        //     json_set would write an explicit `"f":null`, which a non-Option
+        //     field (`installed: bool`) can't deserialize, corrupting the row.
+        //     The fallback uses the incoming entry's own value instead. A field
+        //     that's PRESENT but JSON-null (a legitimately null Option) is
+        //     SQL-non-NULL via `->`, so COALESCE keeps it — the live value
+        //     still wins.
         let mut expr = "?1".to_string();
         for f in RUNTIME_FIELDS {
-            expr = format!("json_set({expr}, '$.{f}', json_extract(data, '$.{f}'))");
+            expr = format!("json_set({expr}, '$.{f}', COALESCE(data -> '$.{f}', ?1 -> '$.{f}'))");
+        }
+        // `exe_path` / `game_folder_path` are editor-owned (browse buttons), so
+        // they're NOT runtime fields — the editor's value normally wins. The one
+        // exception: when the LIVE row is uninstalled (`installed = false`, paths
+        // already cleared), a stale editor copy opened while the game was still
+        // installed must not resurrect those paths on save. Keep the live
+        // (cleared) values in that case; otherwise apply the editor's value.
+        // (`json_extract(data,'$.installed') = 0` is false/NULL for an installed
+        // or legacy row, so the editor keeps full control there.)
+        for f in ["exe_path", "game_folder_path"] {
+            expr = format!(
+                "json_set({expr}, '$.{f}', \
+                 CASE WHEN json_extract(data, '$.installed') = 0 \
+                 THEN data -> '$.{f}' ELSE ?1 -> '$.{f}' END)"
+            );
         }
         let sql = format!("UPDATE games SET game_name = ?2, data = {expr} WHERE id = ?3");
         let res = sqlx::query(sqlx::AssertSqlSafe(sql))
@@ -958,6 +1069,98 @@ pub async fn add_game(
     // the registry at runtime regardless, but reflecting it on the entry keeps
     // the editor toggle truthful instead of showing "off" for an elevated exe.
     let run_as_admin = crate::registry::run_as_admin_in_registry(&new_game.exe_path);
+
+    // Re-add reuse: if this game matches an existing *uninstalled* entry,
+    // reinstall it in place so its catalog number, playtime, art, and save
+    // backups carry over instead of spawning a duplicate. An explicit
+    // `reinstall_target_id` (from the "Reinstall…" affordance) wins; otherwise
+    // match by steam id / name. A stale target (deleted, or already installed)
+    // falls through to the name/steam-id match, then to a fresh insert.
+    let reuse = match &new_game.reinstall_target_id {
+        Some(id) => match state.find(id).await? {
+            // Reuse the explicitly chosen target only when it's uninstalled AND
+            // not clearly a *different* game. A positive steam-id conflict (both
+            // known and differing) means the user picked another game's exe, so
+            // we fall through rather than repurpose the entry. Name isn't
+            // required to match — an "add without save tracking" or renamed
+            // reinstall legitimately differs from the stored name.
+            Some(e)
+                if !e.installed
+                    && !matches!(
+                        (e.steam_id, new_game.steam_id),
+                        (Some(a), Some(b)) if a != b
+                    ) =>
+            {
+                Some(e)
+            }
+            _ => {
+                state
+                    .find_reusable_entry(new_game.steam_id, &new_game.game_name)
+                    .await?
+            }
+        },
+        None => {
+            state
+                .find_reusable_entry(new_game.steam_id, &new_game.game_name)
+                .await?
+        }
+    };
+
+    if let Some(existing) = reuse {
+        // Overwrite the install-identifying fields and flip `installed` back on.
+        // Manifest / identification fields are only overwritten when the add
+        // actually supplies them, so an "add without save tracking" reinstall
+        // doesn't wipe the entry's existing steam id / save paths. Everything
+        // else (catalog_number, added_at, accent, playtime, save stats,
+        // custom_save) is left untouched by `update_fields`.
+        let mut fields: Vec<(&str, Value)> = vec![
+            ("installed", json!(true)),
+            ("exe_path", json!(new_game.exe_path)),
+            (
+                "game_folder_path",
+                match &new_game.game_folder_path {
+                    Some(f) => json!(f),
+                    None => Value::Null,
+                },
+            ),
+            ("run_as_admin", json!(run_as_admin)),
+        ];
+        if new_game.steam_id.is_some() {
+            fields.push(("steam_id", json!(new_game.steam_id)));
+        }
+        if new_game.gog_id.is_some() {
+            fields.push(("gog_id", json!(new_game.gog_id)));
+        }
+        if new_game.lutris_slug.is_some() {
+            fields.push(("lutris_slug", json!(new_game.lutris_slug)));
+        }
+        if new_game.manifest_install_dir.is_some() {
+            fields.push(("manifest_install_dir", json!(new_game.manifest_install_dir)));
+        }
+        if !new_game.save_paths.is_empty() {
+            fields.push(("save_paths", json!(new_game.save_paths)));
+        }
+        if new_game.wine_prefix_path.is_some() {
+            fields.push(("wine_prefix_path", json!(new_game.wine_prefix_path)));
+        }
+        if new_game.proton_version_path.is_some() {
+            fields.push(("proton_version_path", json!(new_game.proton_version_path)));
+        }
+        if new_game.custom_save.is_some() {
+            fields.push(("custom_save", json!(new_game.custom_save)));
+        }
+        state.update_fields(&existing.id, &fields).await?;
+        if let Err(e) = app.emit("library:changed", &existing.id) {
+            tracing::warn!(error = %e, "failed to emit library:changed after reinstall");
+        }
+        // The entry already has its cover / hero / metadata from when it was
+        // first added, so no art or Steam-Store fetch is needed here.
+        let refreshed = state.find(&existing.id).await?.ok_or_else(|| {
+            AppError::Other(format!("reinstalled game {} vanished", existing.id))
+        })?;
+        return Ok(refreshed);
+    }
+
     let entry = GameEntry {
         id: uuid::Uuid::new_v4().to_string(),
         // 0 → insert() assigns the next catalog number atomically.
@@ -1093,6 +1296,11 @@ pub async fn delete_game_from_disk(
     app: AppHandle,
     id: String,
 ) -> AppResult<()> {
+    if app.state::<crate::runner::RunState>().is_running(&id) {
+        return Err(AppError::Other(
+            "Can't delete this game while it's running — close it first.".into(),
+        ));
+    }
     delete_game_core(state.inner(), &id).await?;
     if let Err(e) = app.emit("library:changed", &id) {
         tracing::warn!(error = %e, "failed to emit library:changed after delete_game_from_disk");
@@ -1100,14 +1308,53 @@ pub async fn delete_game_from_disk(
     Ok(())
 }
 
-/// Folder-delete + entry-removal shared by the [`delete_game_from_disk`]
-/// command and the Decky plugin server's `DELETE /games/:id`. Does not emit
-/// `library:changed` — the caller does that where a Tauri `AppHandle` exists.
-pub async fn delete_game_core(library: &SharedLibrary, id: &str) -> AppResult<()> {
-    // Capture the folder + prefix paths before any blocking IO. The Proton
-    // prefix is only ever managed on Linux, so its path is resolved (and later
-    // deleted) on Linux alone — a populated `wine_prefix_path` override on
-    // Windows/macOS must never be recurse-deleted.
+/// Removes a game's installed files from disk but keeps its library entry
+/// (dimmed, Play disabled) so playtime / art / save backups survive and a
+/// re-add reuses the same row. Backs the saves up first (the wipe also deletes
+/// the Proton prefix, which holds live in-prefix save state) — see
+/// [`crate::runner::uninstall_game_with_backup`]; a backup failure aborts the
+/// uninstall so files are never wiped before their saves are captured.
+#[tauri::command]
+pub async fn uninstall_game(
+    state: State<'_, SharedLibrary>,
+    app: AppHandle,
+    id: String,
+) -> AppResult<()> {
+    if app.state::<crate::runner::RunState>().is_running(&id) {
+        return Err(AppError::Other(
+            "Can't remove this game from disk while it's running — close it first.".into(),
+        ));
+    }
+    let ludusavi_exe = crate::paths::resolve_ludusavi_path().ok_or_else(|| {
+        AppError::Other("Ludusavi sidecar not found — reinstall Spool.".into())
+    })?;
+    let config_dir = crate::paths::ludusavi_config_dir();
+    let ludusavi_client = app.state::<crate::ludusavi::LudusaviClient>();
+    crate::runner::uninstall_game_with_backup(
+        &ludusavi_client,
+        &ludusavi_exe,
+        &config_dir,
+        state.inner(),
+        &id,
+    )
+    .await?;
+    if let Err(e) = app.emit("library:changed", &id) {
+        tracing::warn!(error = %e, "failed to emit library:changed after uninstall_game");
+    }
+    Ok(())
+}
+
+/// Deletes a game's install folder (and, on Linux, its per-game Proton/Wine
+/// prefix) from disk. Shared by [`delete_game_core`] (which then forgets the
+/// entry) and [`uninstall_game_core`] (which keeps it). A missing/empty
+/// `game_folder_path` is an error — both callers act on files on disk, so with
+/// nothing to delete there's nothing to do (and marking an entry "removed from
+/// disk" when no files were touched would be a lie). The Proton prefix is only
+/// managed on Linux, so it's resolved + deleted there alone — a populated
+/// `wine_prefix_path` override on Windows/macOS must never be recurse-deleted.
+/// Best-effort prefix cleanup never aborts the operation.
+async fn wipe_install_files(library: &SharedLibrary, id: &str) -> AppResult<()> {
+    // Capture the folder + prefix paths before any blocking IO.
     let (folder, prefix_root) = {
         let entry = library
             .find(id)
@@ -1134,15 +1381,14 @@ pub async fn delete_game_core(library: &SharedLibrary, id: &str) -> AppResult<()
             "This game has no known install folder to delete.".to_string(),
         ));
     };
-
     // Recursive delete can be slow for a large game — run it off the async
     // runtime's worker threads.
     tokio::task::spawn_blocking(move || delete_install_dir(&folder))
         .await
         .map_err(|e| AppError::Other(format!("delete task join failed: {e}")))??;
 
-    // Best-effort Proton prefix cleanup (Linux only) — never aborts the
-    // removal. A missing prefix (e.g. a never-launched game) is a no-op.
+    // Best-effort Proton prefix cleanup (Linux only) — never aborts. A missing
+    // prefix (e.g. a never-launched game) is a no-op.
     if let Some(prefix_root) = prefix_root {
         let prefix_str = prefix_root.to_string_lossy().to_string();
         match tokio::task::spawn_blocking(move || delete_install_dir(&prefix_str)).await {
@@ -1155,9 +1401,42 @@ pub async fn delete_game_core(library: &SharedLibrary, id: &str) -> AppResult<()
             Err(e) => tracing::warn!(error = %e, "prefix delete task join failed"),
         }
     }
+    Ok(())
+}
 
+/// Folder-delete + entry-removal shared by the [`delete_game_from_disk`]
+/// command and the Decky plugin server's `DELETE /games/:id`. Does not emit
+/// `library:changed` — the caller does that where a Tauri `AppHandle` exists.
+pub async fn delete_game_core(library: &SharedLibrary, id: &str) -> AppResult<()> {
+    wipe_install_files(library, id).await?;
     // Folder gone (or already absent) — now forget the entry.
     library.remove(id).await?;
+    Ok(())
+}
+
+/// Removes a game's installed files from disk but KEEPS its library entry —
+/// the "remove from disk, keep in library" option. Wipes the install folder
+/// and Proton prefix like [`delete_game_core`], then flips `installed` off and
+/// clears the now-stale install paths/size instead of deleting the row. The
+/// catalog number, playtime, cover art, accent colour, and save backups all
+/// survive, so re-adding the game (Add flow or LAN install) reuses this same
+/// entry via [`Library::find_reusable_entry`]. Errors (leaving the entry
+/// installed) when there's no install folder to delete — there's nothing to
+/// remove from disk, so [`remove_game`] (forget) is the right action instead.
+/// Does not emit `library:changed` — the caller does.
+pub async fn uninstall_game_core(library: &SharedLibrary, id: &str) -> AppResult<()> {
+    wipe_install_files(library, id).await?;
+    library
+        .update_fields(
+            id,
+            &[
+                ("installed", json!(false)),
+                ("game_folder_path", Value::Null),
+                ("exe_path", json!("")),
+                ("install_size_mb", json!(0)),
+            ],
+        )
+        .await?;
     Ok(())
 }
 
@@ -1464,5 +1743,235 @@ mod tests {
         assert!(lib.set_custom_save_if_absent("a", &b).await.unwrap());
         let e = lib.find("a").await.unwrap().unwrap();
         assert_eq!(e.custom_save.unwrap().files, vec!["<winLocalAppData>/B".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn installed_defaults_true_for_legacy_rows() {
+        // A row whose JSON predates the `installed` field must load as installed
+        // (the container-level serde default uses GameEntry::default()), so an
+        // upgrade doesn't grey out everyone's library.
+        let lib = Library::open_in_memory().await.unwrap();
+        // Insert raw JSON missing `installed`.
+        let data = r#"{"id":"a","catalog_number":1,"game_name":"Hades","exe_path":"/x/h.exe"}"#;
+        sqlx::query("INSERT INTO games (id, catalog_number, game_name, data) VALUES ('a', 1, 'Hades', ?1)")
+            .bind(data)
+            .execute(&lib.pool)
+            .await
+            .unwrap();
+        let e = lib.find("a").await.unwrap().unwrap();
+        assert!(e.installed, "legacy row without the field defaults to installed");
+    }
+
+    #[tokio::test]
+    async fn uninstall_marks_entry_and_clears_paths() {
+        // "Remove from disk, keep in library": the folder is deleted but the
+        // entry survives with installed=false, paths cleared, and all the
+        // catalogue identity (catalog_number, playtime) intact.
+        let lib: SharedLibrary = Arc::new(Library::open_in_memory().await.unwrap());
+
+        // A real folder on disk to be wiped.
+        let dir = std::env::temp_dir().join("spool-uninstall-test-keep").join("Hades");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("game.exe"), b"x").unwrap();
+
+        let mut g = sample("a", "Hades");
+        g.exe_path = dir.join("game.exe").to_string_lossy().to_string();
+        g.game_folder_path = Some(dir.to_string_lossy().to_string());
+        g.install_size_mb = 1234.0;
+        lib.insert(g).await.unwrap();
+        lib.bump_session("a", Utc::now(), 50).await.unwrap();
+
+        uninstall_game_core(&lib, "a").await.unwrap();
+
+        assert!(!dir.exists(), "install folder deleted");
+        let e = lib.find("a").await.unwrap().unwrap();
+        assert!(!e.installed, "entry kept but marked uninstalled");
+        assert_eq!(e.game_folder_path, None);
+        assert_eq!(e.exe_path, "");
+        assert_eq!(e.install_size_mb, 0.0);
+        assert_eq!(e.catalog_number, 1, "catalog number preserved");
+        assert_eq!(e.playtime_minutes, 50, "playtime preserved");
+
+        // cleanup
+        let _ = std::fs::remove_dir_all(std::env::temp_dir().join("spool-uninstall-test-keep"));
+    }
+
+    #[tokio::test]
+    async fn uninstall_errors_without_folder_and_keeps_entry_installed() {
+        // No install folder → nothing to remove from disk, so uninstall errors
+        // and the entry stays installed (marking it "removed from disk" when
+        // nothing was deleted would be a lie — "remove from library" is right).
+        let lib: SharedLibrary = Arc::new(Library::open_in_memory().await.unwrap());
+        let mut g = sample("a", "Hades");
+        g.game_folder_path = None;
+        g.exe_path = "/gone/h.exe".into();
+        lib.insert(g).await.unwrap();
+
+        assert!(uninstall_game_core(&lib, "a").await.is_err());
+        let e = lib.find("a").await.unwrap().unwrap();
+        assert!(e.installed, "entry stays installed when nothing was deleted");
+    }
+
+    #[tokio::test]
+    async fn find_reusable_entry_prefers_steam_id_and_gates_on_uninstalled() {
+        let lib = Library::open_in_memory().await.unwrap();
+
+        // Installed entry with the same steam id must NOT be reused.
+        let mut installed = sample("inst", "Hades");
+        installed.steam_id = Some(1145360);
+        lib.insert(installed).await.unwrap();
+        assert!(
+            lib.find_reusable_entry(Some(1145360), "Hades").await.unwrap().is_none(),
+            "an installed entry is never offered for reuse"
+        );
+
+        // Uninstalled entry, different name, same steam id → matched by steam id.
+        let mut uninst = sample("uninst", "Hades Classic");
+        uninst.steam_id = Some(1145360);
+        uninst.installed = false;
+        lib.insert(uninst).await.unwrap();
+        let hit = lib.find_reusable_entry(Some(1145360), "Hades").await.unwrap();
+        assert_eq!(hit.unwrap().id, "uninst", "matched by steam id over name");
+
+        // Name fallback when no steam id given.
+        let mut named = sample("named", "Celeste");
+        named.installed = false;
+        lib.insert(named).await.unwrap();
+        let hit = lib.find_reusable_entry(None, "Celeste").await.unwrap();
+        assert_eq!(hit.unwrap().id, "named");
+
+        // No match → None.
+        assert!(lib.find_reusable_entry(None, "Nonexistent").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn find_reusable_entry_name_fallback_rejects_steam_id_conflict() {
+        let lib = Library::open_in_memory().await.unwrap();
+        // Uninstalled "Doom" with a steam id.
+        let mut doom = sample("doom", "Doom");
+        doom.installed = false;
+        doom.steam_id = Some(379720);
+        lib.insert(doom).await.unwrap();
+
+        // A *different* game also named "Doom" with a different steam id must
+        // NOT reuse it (would merge two distinct games into one entry).
+        assert!(
+            lib.find_reusable_entry(Some(2371630), "Doom").await.unwrap().is_none(),
+            "name match rejected on a positive steam-id conflict"
+        );
+        // No requested steam id → no conflict → reuse by name.
+        assert_eq!(
+            lib.find_reusable_entry(None, "Doom").await.unwrap().unwrap().id,
+            "doom"
+        );
+        // An untracked uninstalled entry (no steam id) is still reusable by name
+        // even when the request carries a steam id (no positive conflict).
+        let mut quake = sample("quake", "Quake");
+        quake.installed = false;
+        quake.steam_id = None;
+        lib.insert(quake).await.unwrap();
+        assert_eq!(
+            lib.find_reusable_entry(Some(2310), "Quake").await.unwrap().unwrap().id,
+            "quake"
+        );
+    }
+
+    #[tokio::test]
+    async fn replace_preserves_installed_flag() {
+        // A stale open editor saving must not resurrect an uninstalled game:
+        // `installed` is a runtime field re-overlaid by replace().
+        let lib = Library::open_in_memory().await.unwrap();
+        lib.insert(sample("a", "Hades")).await.unwrap();
+        // Mark uninstalled out-of-band (as uninstall_game_core does).
+        lib.update_fields("a", &[("installed", json!(false))]).await.unwrap();
+
+        // Editor loaded the entry while installed and saves with installed=true.
+        let mut edited = sample("a", "Hades");
+        edited.installed = true;
+        assert!(lib.replace(&edited).await.unwrap());
+
+        let e = lib.find("a").await.unwrap().unwrap();
+        assert!(!e.installed, "live uninstalled state survives an editor save");
+    }
+
+    #[tokio::test]
+    async fn replace_keeps_cleared_install_paths_when_uninstalled() {
+        // A stale editor opened while the game was installed must not resurrect
+        // exe_path / game_folder_path on save once the live row is uninstalled.
+        let lib = Library::open_in_memory().await.unwrap();
+        let mut g = sample("a", "Hades");
+        g.exe_path = "/games/Hades/h.exe".into();
+        g.game_folder_path = Some("/games/Hades".into());
+        lib.insert(g).await.unwrap();
+        // Live row uninstalled out-of-band: installed=false, paths cleared.
+        lib.update_fields(
+            "a",
+            &[
+                ("installed", json!(false)),
+                ("game_folder_path", Value::Null),
+                ("exe_path", json!("")),
+            ],
+        )
+        .await
+        .unwrap();
+
+        // Editor saves its stale (installed-era) snapshot.
+        let mut stale = sample("a", "Hades");
+        stale.installed = true;
+        stale.exe_path = "/games/Hades/h.exe".into();
+        stale.game_folder_path = Some("/games/Hades".into());
+        assert!(lib.replace(&stale).await.unwrap());
+
+        let e = lib.find("a").await.unwrap().unwrap();
+        assert!(!e.installed, "stays uninstalled");
+        assert_eq!(e.exe_path, "", "cleared exe_path not resurrected");
+        assert_eq!(e.game_folder_path, None, "cleared game_folder_path not resurrected");
+    }
+
+    #[tokio::test]
+    async fn replace_applies_path_edits_for_installed_game() {
+        // For an installed game the editor's browse-button path edits must still
+        // win — the uninstalled-path guard only applies when the live row is off.
+        let lib = Library::open_in_memory().await.unwrap();
+        let mut g = sample("a", "Hades");
+        g.exe_path = "/old/h.exe".into();
+        g.game_folder_path = Some("/old".into());
+        lib.insert(g).await.unwrap();
+
+        let mut edited = sample("a", "Hades");
+        edited.exe_path = "/new/h.exe".into();
+        edited.game_folder_path = Some("/new".into());
+        assert!(lib.replace(&edited).await.unwrap());
+
+        let e = lib.find("a").await.unwrap().unwrap();
+        assert_eq!(e.exe_path, "/new/h.exe", "editor path edit applies when installed");
+        assert_eq!(e.game_folder_path.as_deref(), Some("/new"));
+    }
+
+    #[tokio::test]
+    async fn replace_survives_legacy_row_missing_installed() {
+        // A row written before `installed` existed lacks the key. The editor
+        // save (replace) must NOT write `"installed":null` into it — a
+        // non-Option `bool` can't deserialize null, which would corrupt the row
+        // (and break list() for the whole library). The COALESCE fallback uses
+        // the incoming entry's value instead, and a present-null Option
+        // (`sync_badge`) must still be preserved as null, not clobbered.
+        let lib = Library::open_in_memory().await.unwrap();
+        let data = r#"{"id":"a","catalog_number":1,"game_name":"Hades","exe_path":"/x/h.exe","playtime_minutes":42,"sync_badge":null}"#;
+        sqlx::query("INSERT INTO games (id, catalog_number, game_name, data) VALUES ('a', 1, 'Hades', ?1)")
+            .bind(data)
+            .execute(&lib.pool)
+            .await
+            .unwrap();
+
+        // Editor loads + renames + saves (its GameEntry carries installed=true).
+        assert!(lib.replace(&sample("a", "Hades Renamed")).await.unwrap());
+
+        // Row still deserializes — no `"installed":null` corruption.
+        let e = lib.find("a").await.unwrap().unwrap();
+        assert_eq!(e.game_name, "Hades Renamed");
+        assert!(e.installed, "missing-key installed falls back to incoming true, not null");
+        assert_eq!(e.playtime_minutes, 42, "present runtime field preserved");
+        assert_eq!(e.sync_badge, None, "present-null Option preserved, not clobbered");
     }
 }

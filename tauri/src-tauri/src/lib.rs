@@ -282,6 +282,7 @@ pub fn run() {
             library::update_game,
             library::remove_game,
             library::delete_game_from_disk,
+            library::uninstall_game,
             // config
             config::get_config,
             config::update_config,

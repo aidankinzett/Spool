@@ -174,7 +174,7 @@ export function PatchWrapper() {
             zIndex: 100,
           }}
         >
-          <SpoolBar game={game} backingUp={backingUp} appid={appid} />
+          <SpoolBar game={game} backingUp={backingUp} appid={appid} onChanged={refresh} />
         </div>
       )}
     </div>

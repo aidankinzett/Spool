@@ -56,6 +56,19 @@ export const deleteGame = callable<
   { ok: boolean; reason?: string }
 >("delete_game");
 
+// Deletes a game's install folder from disk but KEEPS its library entry
+// (playtime / art / save backups survive; re-adding reuses the entry).
+export const uninstallGame = callable<
+  [id: string],
+  { ok: boolean; reason?: string }
+>("uninstall_game");
+
+// Forgets a game's library entry but leaves its files on disk.
+export const forgetGame = callable<
+  [id: string],
+  { ok: boolean; reason?: string }
+>("forget_game");
+
 // Installs Windows runtime deps (winetricks verbs, e.g. "vcrun2022 dotnet48")
 // into a game's Proton prefix. Long-running — the caller shows a spinner and
 // the Python side uses a generous timeout. `ok` is false (with a `reason`)

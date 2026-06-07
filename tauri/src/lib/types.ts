@@ -118,6 +118,14 @@ export type GameEntry = {
   launcher_exe_path: string | null;
   game_folder_path: string | null;
 
+  /**
+   * Whether the game's files are on disk. `false` after "Remove from disk"
+   * (uninstall) — the entry stays (playtime/art/save backups kept) but renders
+   * dimmed with Play disabled until it's re-added (which reuses this row).
+   * Defaults to `true`; legacy entries load as installed.
+   */
+  installed: boolean;
+
   run_as_admin: boolean;
 
   /** Launch this Windows exe through Proton (umu-run) on Linux. */
@@ -431,6 +439,10 @@ export type NewGame = {
   /** Optional custom save location set at add-time (rarely used; usually
    *  adopted from a cross-device definition instead). */
   custom_save?: CustomSave | null;
+  /** When set, reinstall this exact uninstalled entry instead of creating a
+   *  new one (passed by the "Reinstall…" affordance). Falls back to a
+   *  steam-id/name match, then a fresh insert, if the id is stale. */
+  reinstall_target_id?: string | null;
 };
 
 /**

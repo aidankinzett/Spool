@@ -14,12 +14,13 @@
    * non-danger rows, red hover for Remove.
    */
   import { onMount, onDestroy } from 'svelte';
-  import { ArrowDownToLine, ArrowUpFromLine, Folder, FolderX, Package, Pencil, Play, Trash2 } from '@lucide/svelte';
+  import { ArrowDownToLine, ArrowUpFromLine, Folder, HardDriveDownload, Package, Pencil, Play, Trash2 } from '@lucide/svelte';
   import { openView } from '$lib/nav';
   import { api, assetUrl } from '$lib/api';
   import { fmtCatalog } from '$lib/format';
   import { toasts } from '$lib/toasts.svelte';
   import { confirmDialog } from '$lib/confirm.svelte';
+  import { removeGameDialog } from '$lib/removeGame.svelte';
   import { gamepadScope } from '$lib/gamepad';
   import type { GameEntry } from '$lib/types';
 
@@ -264,62 +265,17 @@
     openView('edit', { id: game.id });
   }
 
-  async function remove() {
+  // Open the three-option remove chooser (remove from disk / from library /
+  // from disk and library), hosted globally by RemoveGameHost.
+  function remove() {
     onclose();
-    if (
-      !(await confirmDialog({
-        label: 'REMOVE · ENTRY',
-        title: 'Remove from library?',
-        body: `"${game.game_name}" will be forgotten. Your files on disk and save backups are left untouched — you can add it again later.`,
-        confirmLabel: 'Remove',
-        accent,
-        catalog: fmtCatalog(game.catalog_number),
-      }))
-    )
-      return;
-    try {
-      await api.removeGame(game.id);
-    } catch (e) {
-      toasts.show({
-        kind: 'bad',
-        label: 'REMOVE · FAILED',
-        title: "Couldn't remove",
-        sub: String(e),
-      });
-    }
+    removeGameDialog.request(game);
   }
 
-  async function deleteFromDisk() {
+  // Re-add an uninstalled game via the Add flow (which reuses this entry).
+  function reinstall() {
     onclose();
-    if (
-      !(await confirmDialog({
-        label: 'DELETE · DISK',
-        title: 'Delete from disk?',
-        body:
-          `This permanently removes the install folder` +
-          `${game.game_folder_path ? ` (${game.game_folder_path})` : ''} and the library entry for "${game.game_name}". This can't be undone.`,
-        confirmLabel: 'Delete from disk',
-        danger: true,
-        catalog: fmtCatalog(game.catalog_number),
-      }))
-    )
-      return;
-    try {
-      await api.deleteGameFromDisk(game.id);
-      toasts.show({
-        kind: 'ok',
-        label: 'DELETE · DONE',
-        title: 'Deleted from disk',
-        sub: game.game_name,
-      });
-    } catch (e) {
-      toasts.show({
-        kind: 'bad',
-        label: 'DELETE · FAILED',
-        title: "Couldn't delete from disk",
-        sub: String(e),
-      });
-    }
+    openView('add', { reinstall: game.id });
   }
 </script>
 
@@ -383,7 +339,7 @@
       'Play',
       playIcon,
       play,
-      !game.exe_path,
+      !game.exe_path || !game.installed,
     )}
     {@render item(
       'Open install folder',
@@ -391,9 +347,9 @@
       openFolder,
       !folderForGame(game),
     )}
-    {@render item('Add to Steam', steamIcon, addToSteam, !game.exe_path)}
+    {@render item('Add to Steam', steamIcon, addToSteam, !game.exe_path || !game.installed)}
     {#if isWindows}
-      {@render item('Generate Armoury Crate launcher', armouryIcon, generateArmouryLauncher, !game.exe_path)}
+      {@render item('Generate Armoury Crate launcher', armouryIcon, generateArmouryLauncher, !game.exe_path || !game.installed)}
     {/if}
   </div>
 
@@ -410,18 +366,14 @@
   {#snippet restoreIcon()}<ArrowDownToLine size={13} />{/snippet}
   {#snippet pencilIcon()}<Pencil size={13} />{/snippet}
   {#snippet trashIcon()}<Trash2 size={13} />{/snippet}
-  {#snippet diskIcon()}<FolderX size={13} />{/snippet}
+  {#snippet reinstallIcon()}<HardDriveDownload size={13} />{/snippet}
 
   <div class="border-t border-dashed border-line-1 py-1">
     {@render item('Edit…', pencilIcon, openEdit)}
-    {@render item('Remove from library…', trashIcon, remove, false, true)}
-    {@render item(
-      'Delete from disk…',
-      diskIcon,
-      deleteFromDisk,
-      !game.game_folder_path,
-      true,
-    )}
+    {#if !game.installed}
+      {@render item('Reinstall…', reinstallIcon, reinstall)}
+    {/if}
+    {@render item('Remove…', trashIcon, remove, false, true)}
   </div>
 </div>
 

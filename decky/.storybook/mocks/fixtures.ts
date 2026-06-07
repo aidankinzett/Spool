@@ -17,6 +17,7 @@ export function makeGame(overrides: Partial<LibraryGame> = {}): LibraryGame {
     last_played_at: "2026-06-04T18:00:00Z",
     sync_badge: "synced",
     game_folder_path: "C:/Games/HollowKnight",
+    installed: true,
     save_backup_count: 5,
     save_last_backed_up_at: "2026-06-05T09:30:00Z",
     save_backup_size_mb: 12,
