@@ -170,7 +170,24 @@
   }
 
   function togglePath(p: ManifestPath) {
-    if (tagDropped(p)) return;
+    if (tagDropped(p)) {
+      // Promote tag-level exclusion to individual control: un-exclude the tag
+      // and individually exclude the other paths that had it, so they stay
+      // excluded while this one becomes synced.
+      const droppingTags = p.tags.filter((t) => exclTags.includes(t));
+      exclTags = exclTags.filter((t) => !droppingTags.includes(t));
+      const toAdd = applicablePaths
+        .filter(
+          (other) =>
+            other.template !== p.template &&
+            other.tags.some((t) => droppingTags.includes(t)) &&
+            !exclPaths.includes(other.template),
+        )
+        .map((other) => other.template);
+      exclPaths = [...exclPaths, ...toAdd];
+      reportOverride();
+      return;
+    }
     exclPaths = exclPaths.includes(p.template)
       ? exclPaths.filter((t) => t !== p.template)
       : [...exclPaths, p.template];
@@ -328,17 +345,15 @@
       <!-- Per-path checkboxes for fine-grained control. -->
       <ul class="flex flex-col gap-1">
         {#each applicablePaths as p (p.template)}
-          {@const driven = tagDropped(p)}
           <li
             class="flex items-center gap-2 rounded-[4px] border border-line-1 bg-bg-1 px-2.5 py-1.5"
           >
             <input
               type="checkbox"
               checked={pathSynced(p)}
-              disabled={driven}
               onchange={() => togglePath(p)}
               aria-label={`Sync ${p.pretty}`}
-              class="shrink-0 accent-[var(--color-spool)] disabled:opacity-50"
+              class="shrink-0 accent-[var(--color-spool)]"
             />
             <span
               class="font-mono min-w-0 flex-1 break-all text-[11px] {pathSynced(p)
