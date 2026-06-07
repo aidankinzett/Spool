@@ -49,18 +49,6 @@ pub struct RunState {
 }
 
 impl RunState {
-    /// Whether `game_id` is the game currently running in THIS process. Used to
-    /// refuse a disk-wipe (uninstall / delete-from-disk) that would yank an
-    /// active game's install folder + Proton prefix out from under it. In-process
-    /// only: a game launched by another Spool process (attached `--run`, the
-    /// Decky headless server) isn't visible here.
-    pub fn is_running(&self, game_id: &str) -> bool {
-        self.current
-            .lock()
-            .map(|g| g.as_deref() == Some(game_id))
-            .unwrap_or(false)
-    }
-
     fn try_acquire(&self, game_id: &str) -> AppResult<RunGuard<'_>> {
         let mut guard = self.current.lock().map_err(|_| AppError::LockPoisoned)?;
         if let Some(running) = guard.as_ref() {
@@ -1449,6 +1437,19 @@ pub async fn launch_game_inner_steal(
 ) -> AppResult<()> {
     let run_state = app.state::<RunState>();
     let _guard = run_state.try_acquire(game_id)?;
+
+    // Hold the machine-wide per-game run lock for the whole session so a disk
+    // wipe (uninstall / delete-from-disk) in ANY Spool process can't delete this
+    // game's install folder + Proton prefix out from under it mid-play — the
+    // in-process `RunState` above only covers this process. `None` ⇒ the game is
+    // already running in another process, or is being removed; fail fast rather
+    // than race. The OS frees the lock when this process exits.
+    let _run_lock = crate::proc_lock::try_acquire_run(game_id)?.ok_or_else(|| {
+        AppError::Other(
+            "This game is busy right now (already running, or being removed) — try again in a moment."
+                .into(),
+        )
+    })?;
 
     // Snapshot what we need from state up front so we don't hold any
     // sync Mutex across the long-running awaits below. We also fold

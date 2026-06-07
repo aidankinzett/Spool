@@ -1,4 +1,4 @@
-//! Cross-process advisory lock for the save backup/upload critical section.
+//! Cross-process advisory locks for side effects the database can't guard.
 //!
 //! The per-process run-lock in `runner.rs` (`RunState`) only serialises game
 //! launches *within a single Spool process*. Several Spool processes routinely
@@ -9,6 +9,13 @@
 //! `ludusavi backup` / `cloud upload` at the same time can corrupt the backup
 //! dir or last-writer-win on the remote and lose a save. The database is safe
 //! (SQLite WAL) — this guards the *side effects* the database can't.
+//!
+//! There's also a **per-game run lock** ([`try_acquire_run`]): the run workflow
+//! holds it for a whole play session and a disk-wipe (uninstall / delete) holds
+//! it for the wipe, so a wipe can never delete a game's files out from under a
+//! session in *another* Spool process (e.g. the Decky badge "Remove from disk"
+//! while the game is playing in Game Mode) — something the in-process `RunState`
+//! can't see.
 //!
 //! Implemented as an OS advisory file lock (`flock` on Unix, `LockFileEx` on
 //! Windows, via `std::fs::File`'s native locking) on a single marker file under
@@ -96,6 +103,24 @@ pub async fn acquire_backup(timeout: Duration) -> AppResult<FileLock> {
     .await
 }
 
+/// Single non-blocking attempt to take the advisory lock on `path` (creating the
+/// file and any missing parent dir). `Ok(Some)` = acquired, `Ok(None)` = held by
+/// another open file description (another process, or another guard on the same
+/// path in this one), `Err` only if the file can't be opened.
+fn try_acquire_at(path: PathBuf) -> AppResult<Option<FileLock>> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| AppError::Other(format!("lock: mkdir {}: {e}", parent.display())))?;
+    }
+    let file = File::create(&path)
+        .map_err(|e| AppError::Other(format!("lock: open {}: {e}", path.display())))?;
+    match file.try_lock() {
+        Ok(()) => Ok(Some(FileLock { file })),
+        Err(TryLockError::WouldBlock) => Ok(None),
+        Err(TryLockError::Error(e)) => Err(AppError::Other(format!("lock: {e}"))),
+    }
+}
+
 /// Non-blocking attempt to take the machine-wide backup/upload lock. Returns
 /// `Ok(Some(guard))` when it's free and was acquired, `Ok(None)` when another
 /// Spool process currently holds it, and `Err` only if the lock file can't be
@@ -103,13 +128,43 @@ pub async fn acquire_backup(timeout: Duration) -> AppResult<FileLock> {
 /// (e.g. the Decky forced-close `--backup` fallback) so it can show a
 /// "waiting for backup" splash message before blocking on [`acquire_backup`].
 pub fn try_acquire_backup() -> AppResult<Option<FileLock>> {
-    let path = paths::backup_lock_file();
-    let file = File::create(&path)
-        .map_err(|e| AppError::Other(format!("lock: open {}: {e}", path.display())))?;
-    match file.try_lock() {
-        Ok(()) => Ok(Some(FileLock { file })),
-        Err(TryLockError::WouldBlock) => Ok(None),
-        Err(TryLockError::Error(e)) => Err(AppError::Other(format!("lock: {e}"))),
+    try_acquire_at(paths::backup_lock_file())
+}
+
+/// Non-blocking attempt to take the machine-wide **per-game run lock**. The run
+/// workflow holds it across a whole play session; a disk-wipe (uninstall /
+/// delete) holds it across the wipe. `Ok(Some(guard))` = acquired (free);
+/// `Ok(None)` = a live session — or a concurrent wipe — in *some* Spool process
+/// holds it; `Err` only if the lock file can't be opened. The OS frees it when
+/// the holder exits, so a crash or Game-Mode force-kill can't wedge it.
+///
+/// Because `flock` is per open file description, a second `try_acquire_run` on
+/// the same `game_id` within one process also returns `None` while the first
+/// guard is alive — so the run-vs-wipe exclusion holds intra-process too. Don't
+/// nest two run-lock guards for the same game in one call chain.
+pub fn try_acquire_run(game_id: &str) -> AppResult<Option<FileLock>> {
+    try_acquire_at(paths::run_lock_file(game_id))
+}
+
+/// Best-effort removal of a game's run-lock marker file once its library entry
+/// is permanently retired (forget / delete-from-disk), so the per-game files
+/// don't accumulate. Called from [`crate::library::Library::remove`] — never on
+/// uninstall, which keeps the entry (and may run the game again).
+///
+/// Safe because retirement is *terminal*: `flock` lives on the open file
+/// description, not the directory entry, so unlinking leaves any current holder's
+/// lock intact, and the id is gone for good — every add mints a fresh UUID and
+/// never reuses a retired id, so nothing recreates this marker to be locked
+/// again. (A recreated marker would be a *new* inode, lockable independently of
+/// an old holder's — which is exactly why cleanup only runs at terminal
+/// retirement, not on uninstall.) Missing file / non-fatal errors are ignored —
+/// a leftover zero-byte marker is harmless and just reused on the next launch.
+pub fn remove_run_lock(game_id: &str) {
+    let path = paths::run_lock_file(game_id);
+    if let Err(e) = std::fs::remove_file(&path) {
+        if e.kind() != std::io::ErrorKind::NotFound {
+            tracing::debug!(path = %path.display(), error = %e, "couldn't remove run-lock file");
+        }
     }
 }
 
@@ -129,4 +184,39 @@ pub async fn acquire_control_plane(timeout: Duration) -> AppResult<FileLock> {
         "Another Spool process is updating cross-device state. Try again in a moment.",
     )
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn run_lock_is_mutually_exclusive_per_game() {
+        // Unique id so the lock file can't collide with other tests / runs.
+        let id = "test-run-lock-self-exclusion-7f3a";
+        let held = try_acquire_run(id).unwrap();
+        assert!(held.is_some(), "first acquire of a free run lock succeeds");
+        // A second attempt while the first guard is alive reports contention —
+        // `flock` is per open file description, so this holds even in-process,
+        // which is exactly the run-vs-wipe exclusion we rely on.
+        assert!(
+            try_acquire_run(id).unwrap().is_none(),
+            "second acquire while held returns None"
+        );
+        drop(held);
+        assert!(
+            try_acquire_run(id).unwrap().is_some(),
+            "re-acquire after release succeeds"
+        );
+    }
+
+    #[test]
+    fn run_locks_for_different_games_are_independent() {
+        let _a = try_acquire_run("test-run-lock-indep-a-9b2c").unwrap().unwrap();
+        // A different game id is a different lock file → independently acquirable.
+        assert!(
+            try_acquire_run("test-run-lock-indep-b-9b2c").unwrap().is_some(),
+            "different games don't block each other"
+        );
+    }
 }
