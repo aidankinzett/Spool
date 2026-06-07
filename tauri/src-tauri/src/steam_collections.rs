@@ -177,17 +177,9 @@ fn now_secs() -> u64 {
 /// Serialises + writes atomically (write `.tmp`, rename), keeping a `.bak` of the
 /// previous file — mirrors [`crate::steam::write_shortcuts`].
 fn write_namespace_file(path: &Path, file: &[(String, serde_json::Value)]) -> AppResult<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
     let bytes = serde_json::to_vec(file)
         .map_err(|e| AppError::Other(format!("serialise collections: {e}")))?;
-    if path.is_file() {
-        let _ = std::fs::copy(path, path.with_extension("json.bak"));
-    }
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, &bytes)?;
-    std::fs::rename(&tmp, path)?;
+    crate::paths::write_atomic(path, &bytes, true)?;
     Ok(())
 }
 

@@ -5,7 +5,7 @@
 //! mirrors the existing C# Spool app so an existing user's library and config
 //! are picked up automatically on first launch.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Root data directory: `%LOCALAPPDATA%\Spool` on Windows,
 /// `~/.local/share/Spool` on Linux, `~/Library/Application Support/Spool` on macOS.
@@ -13,6 +13,50 @@ pub fn app_data_dir() -> PathBuf {
     dirs::data_local_dir()
         .expect("local data dir must be resolvable")
         .join("Spool")
+}
+
+/// Atomically write `bytes` to `path`: write a sibling temp file, fsync it,
+/// optionally copy the existing target to `<path>.bak`, then rename the temp
+/// over the target. The rename is atomic on a single filesystem (and
+/// replace-over-existing on Windows, via `MoveFileExW`), so a crash or
+/// force-kill mid-write leaves either the old file or the complete new one —
+/// never a truncated mix. The parent directory is created if missing.
+///
+/// The temp file is named `<filename>.tmp.<pid>` so two processes writing the
+/// same target at once don't share a temp file and clobber each other. When
+/// `keep_bak` is set, the previous file is copied to `<filename>.bak` first
+/// (best-effort — a failed copy doesn't abort the write) so a corrupted target
+/// can be restored manually.
+///
+/// Returns [`io::Result`](std::io::Result); callers returning
+/// [`AppResult`](crate::error::AppResult) get the conversion for free via `?`,
+/// since `AppError: From<io::Error>`.
+pub fn write_atomic(path: &Path, bytes: &[u8], keep_bak: bool) -> std::io::Result<()> {
+    use std::io::Write;
+
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let file_name = path.file_name().and_then(|n| n.to_str()).ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "path has no file name")
+    })?;
+    let tmp = path.with_file_name(format!("{file_name}.tmp.{}", std::process::id()));
+
+    {
+        let mut f = std::fs::File::create(&tmp)?;
+        f.write_all(bytes)?;
+        // fsync the data + metadata before the rename so a power loss right
+        // after the rename can't surface an empty/short file (the rename could
+        // otherwise reach disk before the data does).
+        f.sync_all()?;
+    }
+
+    if keep_bak && path.is_file() {
+        let _ = std::fs::copy(path, path.with_file_name(format!("{file_name}.bak")));
+    }
+
+    std::fs::rename(&tmp, path)?;
+    Ok(())
 }
 
 pub fn library_file() -> PathBuf {

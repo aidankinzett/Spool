@@ -23,20 +23,6 @@ use std::sync::Mutex;
 /// serialised by the attached process being dead by the time they run.
 static SESSION_LOCK: Mutex<()> = Mutex::new(());
 
-/// Write `bytes` to `path` atomically (tmp in the same dir → rename) so a crash
-/// or force-kill mid-write can't leave a truncated record that `read_at` then
-/// fails to parse — which would skip the forced-close backup entirely. The tmp
-/// name carries the pid so two processes writing at once don't share a tmp file.
-fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("active-session.json");
-    let tmp = path.with_file_name(format!("{name}.tmp.{}", std::process::id()));
-    std::fs::write(&tmp, bytes)?;
-    std::fs::rename(&tmp, path)
-}
-
 /// Set once when this process writes an active-session record (only attached
 /// `--run` launches do — see [`write_start`]). The in-process play-session
 /// recorder consults it before adopting the record's `started_at` as the
@@ -86,7 +72,7 @@ fn write_start_at(path: &Path, game: &str, steam_appid: u32, started_at: DateTim
         suspended_secs: 0,
     };
     let _guard = SESSION_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    write_atomic(path, &serde_json::to_vec_pretty(&rec)?)?;
+    crate::paths::write_atomic(path, &serde_json::to_vec_pretty(&rec)?, false)?;
     Ok(session_id)
 }
 
@@ -126,7 +112,7 @@ fn mark_backed_up_if_at(path: &Path, expected_id: &str) {
         if rec.session_id == expected_id {
             rec.backed_up = true;
             if let Ok(bytes) = serde_json::to_vec_pretty(&rec) {
-                let _ = write_atomic(path, &bytes);
+                let _ = crate::paths::write_atomic(path, &bytes, false);
             }
         }
     }
@@ -153,7 +139,7 @@ fn record_suspended_secs_at(path: &Path, game_name: &str, total_secs: i64) {
         if rec.game == game_name {
             rec.suspended_secs = total_secs;
             if let Ok(bytes) = serde_json::to_vec_pretty(&rec) {
-                let _ = write_atomic(path, &bytes);
+                let _ = crate::paths::write_atomic(path, &bytes, false);
             }
         }
     }
