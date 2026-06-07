@@ -510,7 +510,14 @@ pub async fn add_to_steam(
         }
     };
 
-    // 7. Notify the library so the UI can react if any state changed.
+    // 7. Keep the "Spool" Steam collection in sync with the managed shortcuts.
+    //    Best-effort: a collection write failing never aborts the shortcut (the
+    //    game is already in the library; the collection is a convenience).
+    if let Err(e) = crate::steam_collections::sync_spool_collection(&user) {
+        tracing::warn!(%e, "add_to_steam: failed to sync Spool collection");
+    }
+
+    // 8. Notify the library so the UI can react if any state changed.
     let _ = app.emit("library:changed", &game_id);
 
     Ok(AddToSteamResult {

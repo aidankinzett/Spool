@@ -110,6 +110,8 @@ export const api = {
   // Steam shortcut
   addSpoolToSteam: (): Promise<AddToSteamResult> => invoke('add_spool_to_steam'),
   addToSteam: (gameId: string): Promise<AddToSteamResult> => invoke('add_to_steam', { gameId }),
+  // Rebuild the "Spool" Steam library collection from the managed shortcuts.
+  syncSpoolSteamCollection: (): Promise<void> => invoke('sync_spool_steam_collection'),
 
   // Open a file/folder with the OS default handler. Goes through Rust (not
   // the opener plugin) so it can strip the AppImage environment before
