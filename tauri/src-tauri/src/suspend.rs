@@ -146,7 +146,12 @@ mod linux {
                 // it from the session's wall-clock play time.
                 if let Some(start) = slept_at.take() {
                     let secs = (Utc::now() - start).num_seconds().max(0);
-                    suspended_secs.fetch_add(secs, Ordering::Relaxed);
+                    // fetch_add returns the previous total; new total = prev + secs.
+                    let total = suspended_secs.fetch_add(secs, Ordering::Relaxed) + secs;
+                    // Persist the running total to the session record so it survives
+                    // a Game-Mode force-kill — the forced-close backup runs in a
+                    // separate process and reads this instead of our in-memory tally.
+                    crate::session::record_suspended_secs(&game_name, total);
                     tracing::info!(game = %game_name, asleep_secs = secs, "suspend: system resumed — refreshing session marker");
                 } else {
                     tracing::info!(game = %game_name, "suspend: system resumed — refreshing session marker");

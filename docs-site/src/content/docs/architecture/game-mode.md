@@ -38,8 +38,8 @@ gamemode::is_steam_game_mode() -> bool
 
 `lib.rs::run()` parses argv early and branches before building the Tauri app:
 
-### (a) `--backup "Name"` → fully headless
-No Tauri builder, no window, no tray, no single-instance, no background tasks. Loads `Config` + `Library`, resolves ludusavi, runs `runner::backup_game_core(...)`, marks the session record `backed_up = true`, exits. Always runs standalone — never forwards to a running instance — so the Decky plugin gets deterministic "spawn → backs up → exits" semantics.
+### (a) `--headless-server` → fully headless
+No Tauri builder, no window, no tray, no single-instance, no background tasks. Starts a loopback HTTP server (`plugin_server.rs`) and runs until killed. The Decky plugin drives game-stop backups, the unsynced "release lock" marker, and "Back up now" through its endpoints — which load `Config` + `Library` fresh per request, run `runner::backup_game_core(...)`, record the play session the killed workflow missed, and flip the session record `backed_up = true`. (This replaced the old per-operation `--backup` / `--release-lock` one-shot subcommands.)
 
 ### (b) `--run` AND `is_steam_game_mode()` → attached
 Builds the Tauri app **without**: `tauri-plugin-single-instance`, tray mount, LAN discovery, sync health poller, startup sync, accent/size backfills. Opens the `splash` window/route instead of `main`. When the workflow future completes, calls `app.exit(0)`. The existing `RunEvent::ExitRequested` guard (`api.prevent_exit()` when `code.is_none()`) is correct as-is: `app_handle.exit(0)` passes `code = Some(0)` so it's allowed through.
@@ -57,13 +57,16 @@ Today's path verbatim: single-instance, tray, pollers, library window, `PendingR
   "steam_appid": 2147483649,
   "session_id": "2147483649-1717000000000",
   "started_at": "2026-05-30T12:00:00Z",
-  "backed_up": false
+  "backed_up": false,
+  "suspended_secs": 0
 }
 ```
 
+`suspended_secs` is the running total of time spent suspended this session. The suspend watcher checkpoints it on each resume so a Game-Mode force-kill still subtracts sleep from the recorded playtime (the in-memory tally dies with the SIGKILLed workflow).
+
 `steam_appid` is computed with the same CRC formula as the Steam shortcut (`steam_shortcuts_util::calculate_app_id("\"<exe>\"", game_name)` using `spool_executable()`), so it equals the `unAppID` Steam reports to the Decky plugin on the lifecycle event.
 
-`backed_up` is flipped to `true` by Spool's own post-session backup (`runner::run_workflow` → `session::mark_backed_up`) and by `spool --backup`. The Decky plugin reads this on game-stop: if still `false`, Spool was force-killed before backup, so the plugin spawns the fallback.
+`backed_up` is flipped to `true` by Spool's own post-session backup (`runner::run_workflow` → `session::mark_backed_up`) and by the headless server's game-stop backup. The Decky plugin reads this on game-stop: if still `false`, Spool was force-killed before backup, so the plugin asks the headless server to run the fallback.
 
 ## Splash window
 

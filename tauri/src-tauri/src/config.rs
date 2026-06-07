@@ -296,6 +296,18 @@ pub type SharedConfig = Mutex<Config>;
 /// we adopt it. A name the user actually set is left untouched.
 fn ensure_device_identity(data: &mut ConfigData) -> bool {
     let mut changed = false;
+    // Normalise surrounding whitespace so every consumer keys on the same
+    // string. `device_id` feeds the play-session `session_id` and the
+    // `_spool/devices/<id>.json` blob target; some paths read it raw and others
+    // `.trim()` it, so a hand-edited / migrated config with whitespace would make
+    // them disagree — different session_ids (dedup fails → double-count) and a
+    // split device blob. Normalising once here makes the raw value canonical, so
+    // the asymmetry can't arise. (#7)
+    let trimmed = data.device_id.trim();
+    if trimmed != data.device_id {
+        data.device_id = trimmed.to_string();
+        changed = true;
+    }
     if data.device_id.is_empty() {
         data.device_id = uuid::Uuid::new_v4().to_string();
         changed = true;
@@ -662,6 +674,30 @@ mod tests {
             assert_ne!(data.device_name, DEFAULT_DEVICE_NAME);
         }
         assert_eq!(data.device_id, "fixed"); // never regenerated when present
+    }
+
+    #[test]
+    fn device_id_whitespace_is_normalised() {
+        // A hand-edited/migrated config with surrounding whitespace gets trimmed
+        // so every consumer keys on the same canonical string. (#7)
+        let mut data = ConfigData {
+            device_id: "  abc-123  ".to_string(),
+            device_name: "Deck".to_string(),
+            ..ConfigData::default()
+        };
+        assert!(ensure_device_identity(&mut data));
+        assert_eq!(data.device_id, "abc-123");
+
+        // A whitespace-only id is treated as empty and regenerated (non-empty,
+        // and itself trimmed).
+        let mut blank = ConfigData {
+            device_id: "   ".to_string(),
+            device_name: "Deck".to_string(),
+            ..ConfigData::default()
+        };
+        assert!(ensure_device_identity(&mut blank));
+        assert!(!blank.device_id.is_empty());
+        assert_eq!(blank.device_id.trim(), blank.device_id);
     }
 
     #[test]

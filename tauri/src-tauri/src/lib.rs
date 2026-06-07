@@ -152,17 +152,8 @@ pub fn run() {
     // Headless subcommands — no GUI, no tray, no single-instance. Parse once
     // here so we can exit early before any Tauri setup.
     let initial_args: Vec<String> = std::env::args().collect();
-    match cli::parse_args(&initial_args) {
-        CliMode::Backup { ref game_name } => {
-            std::process::exit(headless::run_backup_headless(game_name));
-        }
-        CliMode::ReleaseLock { ref game_name } => {
-            std::process::exit(headless::run_release_lock_headless(game_name));
-        }
-        CliMode::HeadlessServer => {
-            std::process::exit(headless::run_headless_server());
-        }
-        _ => {}
+    if let CliMode::HeadlessServer = cli::parse_args(&initial_args) {
+        std::process::exit(headless::run_headless_server());
     }
 
     // One-shot migration: pull `%LOCALAPPDATA%\ludusavi-wrap\` data
@@ -514,12 +505,6 @@ fn handle_forwarded_launch(app: &AppHandle, argv: &[String]) {
             });
         }
         CliMode::Normal => tray::show_library(app),
-        CliMode::Backup { game_name } => {
-            tracing::warn!(name = %game_name, "forwarded --backup: ignored (use --headless-server)");
-        }
-        CliMode::ReleaseLock { game_name } => {
-            tracing::warn!(name = %game_name, "forwarded --release-lock: ignored (use --headless-server)");
-        }
         CliMode::HeadlessServer => {
             // --headless-server doesn't register with single-instance, so
             // this branch is unreachable in practice.

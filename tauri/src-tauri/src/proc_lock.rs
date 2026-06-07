@@ -2,9 +2,9 @@
 //!
 //! The per-process run-lock in `runner.rs` (`RunState`) only serialises game
 //! launches *within a single Spool process*. Several Spool processes routinely
-//! run at once on one machine — the tray GUI, an attached `spool --run`, the
-//! Decky `spool --headless-server`, and one-shot `spool --backup` /
-//! `--release-lock` fallbacks. ludusavi's backup directory and the rclone
+//! run at once on one machine — the tray GUI, an attached `spool --run`, and the
+//! Decky `spool --headless-server` (which runs game-stop backups for the plugin).
+//! ludusavi's backup directory and the rclone
 //! remote folder are a single shared tree, so two of those processes running
 //! `ludusavi backup` / `cloud upload` at the same time can corrupt the backup
 //! dir or last-writer-win on the remote and lose a save. The database is safe
@@ -125,7 +125,7 @@ fn try_acquire_at(path: PathBuf) -> AppResult<Option<FileLock>> {
 /// `Ok(Some(guard))` when it's free and was acquired, `Ok(None)` when another
 /// Spool process currently holds it, and `Err` only if the lock file can't be
 /// opened. The launch restore phase uses this to detect a concurrent backup
-/// (e.g. the Decky forced-close `--backup` fallback) so it can show a
+/// (e.g. the Decky forced-close backup via the headless server) so it can show a
 /// "waiting for backup" splash message before blocking on [`acquire_backup`].
 pub fn try_acquire_backup() -> AppResult<Option<FileLock>> {
     try_acquire_at(paths::backup_lock_file())
