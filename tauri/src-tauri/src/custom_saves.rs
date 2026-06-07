@@ -394,31 +394,56 @@ fn clean_list(items: Vec<String>) -> Vec<String> {
     out
 }
 
+/// Progress event for the post-override forced backup, consumed by the frontend
+/// to toast and to flip the game's Play button to "Backing up…". `phase` is one of
+/// `started` / `done` / `failed`; `cloud_synced` is only meaningful on `done`.
+#[derive(Clone, serde::Serialize)]
+struct SavesBackupEvent<'a> {
+    game_id: &'a str,
+    game_name: &'a str,
+    phase: &'a str,
+    cloud_synced: Option<bool>,
+}
+
+fn emit_backup(app: &AppHandle, game_id: &str, game_name: &str, phase: &str, cloud_synced: Option<bool>) {
+    let _ = app.emit(
+        "saves:backup",
+        SavesBackupEvent { game_id, game_name, phase, cloud_synced },
+    );
+}
+
 /// Force a fresh backup (local + cloud) in the background so the *latest* snapshot
 /// — the one normal launches restore — reflects a just-narrowed override. Spawned
 /// detached so the editor doesn't block on the (possibly multi-minute) cloud
 /// upload or up to 180 s of contention on the cross-process backup lock; the
 /// override itself is already persisted and synced before this runs, so future
-/// backups apply it regardless. Best-effort: emits `library:changed` on success so
-/// the badge refreshes; logs and moves on otherwise. Assumes the `customGames`
-/// block was already re-synced (call [`sync_best_effort`] first).
-fn spawn_force_backup(app: AppHandle, game_id: String) {
+/// backups apply it regardless. Emits `saves:backup` (started/done/failed) so the
+/// UI can toast and reflect progress, plus `library:changed` on success so the
+/// badge refreshes. Best-effort otherwise. Assumes the `customGames` block was
+/// already re-synced (call [`sync_best_effort`] first).
+fn spawn_force_backup(app: AppHandle, game_id: String, game_name: String) {
     tauri::async_runtime::spawn(async move {
+        emit_backup(&app, &game_id, &game_name, "started", None);
         let Some(exe) = crate::paths::resolve_ludusavi_path() else {
             tracing::warn!("ludusavi sidecar not found — skipping forced backup after override change");
+            emit_backup(&app, &game_id, &game_name, "failed", None);
             return;
         };
         let config_dir = crate::paths::ludusavi_config_dir();
         let client = app.state::<LudusaviClient>();
         let library = app.state::<SharedLibrary>();
         match crate::runner::backup_game_core(&client, &exe, &config_dir, &library, &game_id).await {
-            Ok(_) => {
+            Ok(res) => {
+                emit_backup(&app, &game_id, &game_name, "done", Some(res.cloud_synced));
                 let _ = app.emit("library:changed", &game_id);
             }
-            Err(e) => tracing::warn!(
-                error = %e,
-                "forced backup after manifest-override change failed; future backups will still apply it"
-            ),
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "forced backup after manifest-override change failed; future backups will still apply it"
+                );
+                emit_backup(&app, &game_id, &game_name, "failed", None);
+            }
         }
     });
 }
@@ -466,7 +491,7 @@ pub async fn set_manifest_override(
     let _ = app.emit("library:changed", &game_id);
     // Background: refresh the latest snapshot so the exclusion takes effect for the
     // next launch without blocking the editor on the cloud upload.
-    spawn_force_backup(app.clone(), game_id);
+    spawn_force_backup(app.clone(), game_id, game_name);
     Ok(())
 }
 

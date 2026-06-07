@@ -73,7 +73,6 @@
   // panel is the only writer for one game, so we mutate locally and commit.
   let manifestPaths = $state<ManifestPath[]>([]);
   let manifestLoading = $state(false);
-  let overrideBusy = $state(false);
   // Optimistic local copies of the override's exclusions, seeded from the prop in
   // an effect (below) so they re-seed when the panel is pointed at another game.
   let exclTags = $state<string[]>([]);
@@ -155,45 +154,27 @@
     });
   }
 
-  // ── Manifest override commit ───────────────────────────────────────────────
-  async function commitOverride(prevTags: string[], prevPaths: string[]) {
-    overrideBusy = true;
-    try {
-      if (!overrideActive) {
-        await api.clearManifestOverride(gameId);
-        onOverrideChange(null);
-      } else {
-        await api.setManifestOverride(gameId, exclTags, exclPaths);
-        onOverrideChange({ excluded_tags: exclTags, excluded_paths: exclPaths });
-      }
-    } catch (e) {
-      // Roll the optimistic change back to what the backend still has.
-      exclTags = prevTags;
-      exclPaths = prevPaths;
-      notify('bad', "Couldn't update which saves sync", String(e));
-    } finally {
-      overrideBusy = false;
-    }
+  // ── Manifest override (staged) ─────────────────────────────────────────────
+  // Toggles only stage locally and report the new override up to the parent —
+  // they are NOT persisted here. The editor's "Save changes" button commits them
+  // (one backup for the whole edit, not one per tick); see edit/+page.svelte.
+  function reportOverride() {
+    onOverrideChange(overrideActive ? { excluded_tags: exclTags, excluded_paths: exclPaths } : null);
   }
 
   function toggleTag(tag: string) {
-    if (overrideBusy) return;
-    const prevTags = exclTags;
-    const prevPaths = exclPaths;
     exclTags = exclTags.includes(tag)
       ? exclTags.filter((t) => t !== tag)
       : [...exclTags, tag];
-    commitOverride(prevTags, prevPaths);
+    reportOverride();
   }
 
   function togglePath(p: ManifestPath) {
-    if (overrideBusy || tagDropped(p)) return;
-    const prevTags = exclTags;
-    const prevPaths = exclPaths;
+    if (tagDropped(p)) return;
     exclPaths = exclPaths.includes(p.template)
       ? exclPaths.filter((t) => t !== p.template)
       : [...exclPaths, p.template];
-    commitOverride(prevTags, prevPaths);
+    reportOverride();
   }
 
   // ── Custom save ────────────────────────────────────────────────────────────
@@ -333,7 +314,6 @@
           <button
             type="button"
             onclick={() => toggleTag(tag)}
-            disabled={overrideBusy}
             aria-pressed={!excluded}
             class="cursor-pointer rounded-full border px-2.5 py-1 text-[11px] font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 {excluded
               ? 'border-line-2 bg-bg-1 text-ink-3 line-through'
@@ -355,7 +335,7 @@
             <input
               type="checkbox"
               checked={pathSynced(p)}
-              disabled={overrideBusy || driven}
+              disabled={driven}
               onchange={() => togglePath(p)}
               aria-label={`Sync ${p.pretty}`}
               class="shrink-0 accent-[var(--color-spool)] disabled:opacity-50"
@@ -381,9 +361,9 @@
         >
           <Info size={13} class="mt-0.5 shrink-0" />
           <span>
-            Excluded locations stop syncing from now on. A backup you restore from
-            <em>before</em> this change can still bring the old data back until older
-            backups age out.
+            Applied when you <em>Save changes</em> — Spool then re-backs-up so the
+            excluded locations stop syncing. A backup you restore from <em>before</em>
+            that can still bring the old data back until older backups age out.
           </span>
         </div>
       {/if}

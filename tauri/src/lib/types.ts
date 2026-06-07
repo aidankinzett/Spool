@@ -431,6 +431,18 @@ export type RunPhaseEvent = {
 };
 
 /**
+ * Payload for `saves:backup` — the forced backup that runs after a manifest
+ * override is saved in the editor. Mirrors the Rust `SavesBackupEvent`.
+ */
+export type SavesBackupEvent = {
+  game_id: string;
+  game_name: string;
+  phase: 'started' | 'done' | 'failed';
+  /** Whether the upload reached the cloud. Only meaningful on the `done` phase. */
+  cloud_synced: boolean | null;
+};
+
+/**
  * Payload for `add_game`. id / catalog_number / timestamps are assigned by
  * the backend. Empty / falsy manifest fields are the signal for the "add
  * without save tracking" path.

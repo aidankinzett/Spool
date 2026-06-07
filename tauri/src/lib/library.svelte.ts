@@ -13,6 +13,7 @@ import type {
   PeerGame,
   RunPhase,
   RunPhaseEvent,
+  SavesBackupEvent,
   SyncStatus,
   UploadSnapshot,
 } from '$lib/types';
@@ -63,6 +64,11 @@ export function createLibrary() {
   // Run tracking
   let runningId = $state<string | null>(null);
   let runningPhase = $state<RunPhase | null>(null);
+
+  // Game ids with a forced post-override backup in flight (drives the Play
+  // button's "Backing up…" state). Usually holds at most one id — the backup lock
+  // serialises them.
+  const backupsInProgress = new SvelteSet<string>();
 
   // LAN state
   let lanPeers = $state<LanPeer[]>([]);
@@ -283,6 +289,7 @@ export function createLibrary() {
     let unlistenLanDownload: (() => void) | undefined;
     let unlistenLanUploads: (() => void) | undefined;
     let unlistenSyncStatus: (() => void) | undefined;
+    let unlistenSavesBackup: (() => void) | undefined;
     // Guards against a leaked subscription when the component unmounts before a
     // listen() promise resolves: the teardown sets this, and each handler below
     // immediately unlistens a late-resolving handle instead of storing it on a
@@ -472,6 +479,56 @@ export function createLibrary() {
       })
       .catch((e) => console.error('[lan] download listener failed:', e));
 
+    // Forced backup after a manifest-override change (set in the Saves editor).
+    // Tracks the in-flight set for the Play button and toasts start/finish.
+    listen<SavesBackupEvent>('saves:backup', (event) => {
+      const { game_id, game_name, phase, cloud_synced } = event.payload;
+      const game = games.find((g) => g.id === game_id);
+      const catalog = game ? fmtCatalog(game.catalog_number) : undefined;
+      if (phase === 'started') {
+        backupsInProgress.add(game_id);
+        toasts.show({
+          kind: 'info',
+          label: 'LUDUSAVI',
+          title: 'Backing up saves',
+          sub: `${game_name} · applying your changes`,
+          catalog,
+        });
+        return;
+      }
+      backupsInProgress.delete(game_id);
+      if (phase === 'failed') {
+        toasts.show({
+          kind: 'bad',
+          label: 'LUDUSAVI · FAILED',
+          title: 'Backup failed',
+          sub: `${game_name} · your changes are saved; the next launch will back up`,
+          catalog,
+        });
+      } else if (cloud_synced) {
+        toasts.show({
+          kind: 'ok',
+          label: 'LUDUSAVI',
+          title: 'Saves backed up & synced',
+          sub: `${game_name} · cloud updated`,
+          catalog,
+        });
+      } else {
+        toasts.show({
+          kind: 'warn',
+          label: 'LUDUSAVI',
+          title: 'Backed up locally',
+          sub: `${game_name} · cloud sync pending`,
+          catalog,
+        });
+      }
+    })
+      .then((fn) => {
+        if (disposed) fn();
+        else unlistenSavesBackup = fn;
+      })
+      .catch((e) => console.error('[library] saves-backup listener failed:', e));
+
     return () => {
       disposed = true;
       unlistenLibraryChanged?.();
@@ -482,6 +539,7 @@ export function createLibrary() {
       unlistenLanDownload?.();
       unlistenLanUploads?.();
       unlistenSyncStatus?.();
+      unlistenSavesBackup?.();
     };
   });
 
@@ -493,6 +551,8 @@ export function createLibrary() {
     get error() { return error; },
     get runningId() { return runningId; },
     get runningPhase() { return runningPhase; },
+    /** Whether a forced post-override backup is currently running for this game. */
+    isBackingUp(id: string) { return backupsInProgress.has(id); },
     get lanPeers() { return lanPeers; },
     get openPeer() { return openPeer; },
     get peerGames() { return peerGames; },

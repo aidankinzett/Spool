@@ -609,6 +609,7 @@
       <GameDetail
         game={lib.selectedGame}
         runPhase={lib.runningId === lib.selectedGame.id ? lib.runningPhase : null}
+        backingUp={lib.isBackingUp(lib.selectedGame.id)}
         cloudConfigured={lib.syncStatus.reachability !== 'unconfigured'}
         onPullConflict={(id) => (lib.conflictGameId = id)}
       />
