@@ -361,6 +361,12 @@ const RUNTIME_FIELDS: &[&str] = &[
     // whole-entry editor save, so the editor's `replace` must re-overlay it.
     "custom_save",
     "manifest_override",
+    // Resolved out-of-band by the add-game enrich task (Steam store search →
+    // steam id) for untracked adds, not by the whole-entry editor save, which
+    // has no steam-id control. Overlaying it stops a stale open editor (loaded
+    // before the async resolve landed) from clobbering the resolved id back to
+    // null on save — which would lose the Steam-CDN art + Steam-Store metadata.
+    "steam_id",
     // Flipped out-of-band by uninstall / reinstall (and the Decky plugin), not
     // the editor save. Overlaying it stops a stale open editor from resurrecting
     // an uninstalled game on save. (`game_folder_path` / `exe_path` are NOT
@@ -1273,27 +1279,52 @@ pub async fn add_game(
         tracing::warn!(error = %e, "failed to emit library:changed after add_game");
     }
 
-    // Kick off cover-art + hero banner fetches. Non-blocking — the user sees
-    // the new card immediately and both images land a moment later via a single
-    // library:changed emit. One sgdb game-id lookup feeds both downloads.
-    let app_for_art = app.clone();
-    let id_for_art = entry.id.clone();
+    // Enrich the new entry in the background — the card shows immediately while
+    // artwork and Steam-Store metadata land a moment later via library:changed
+    // emits. For an untracked add (no steam id from ludusavi) we first try to
+    // resolve a steam id from the game name via Steam's store search and persist
+    // it, so the art + metadata fetches below key off it (Steam-CDN art +
+    // Steam-Store metadata) instead of a name-only SteamGridDB lookup. The
+    // resolved id only drives art/metadata; it does not enable save tracking.
+    // Best-effort throughout — any miss leaves steam_id unset and falls back.
+    let app_for_enrich = app.clone();
+    let id_for_enrich = entry.id.clone();
+    let name_for_enrich = entry.game_name.clone();
+    let had_steam_id = entry.steam_id.is_some();
     tauri::async_runtime::spawn(async move {
-        if let Err(e) =
-            crate::steamgriddb::fetch_and_save_cover_and_hero(&app_for_art, &id_for_art).await
-        {
-            tracing::warn!(game_id = %id_for_art, error = %e, "cover/hero fetch failed");
+        if !had_steam_id {
+            let client = app_for_enrich.state::<crate::metadata::MetadataClient>();
+            match crate::metadata::resolve_steam_appid(client.http(), &name_for_enrich).await {
+                Ok(Some(appid)) => {
+                    let library = app_for_enrich.state::<SharedLibrary>();
+                    if let Err(e) = library
+                        .update_fields(&id_for_enrich, &[("steam_id", json!(appid))])
+                        .await
+                    {
+                        tracing::warn!(game_id = %id_for_enrich, error = %e, "failed to persist resolved steam id");
+                    } else if let Err(e) = app_for_enrich.emit("library:changed", &id_for_enrich) {
+                        tracing::warn!(error = %e, "failed to emit library:changed after steam id resolve");
+                    }
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    tracing::warn!(name = %name_for_enrich, error = %e, "steam appid resolve failed");
+                }
+            }
         }
-    });
 
-    // Fetch Steam Store metadata (description, developer, publisher,
-    // genres, release date) in parallel. Best-effort and only fills
-    // empty fields — a no-op when the game has no steam_id.
-    let app_for_meta = app.clone();
-    let id_for_meta = entry.id.clone();
-    tauri::async_runtime::spawn(async move {
-        if let Err(e) = crate::metadata::fetch_and_save_metadata(&app_for_meta, &id_for_meta).await {
-            tracing::warn!(game_id = %id_for_meta, error = %e, "metadata fetch failed");
+        // Cover + hero banner (one sgdb game-id / Steam CDN lookup feeds both)
+        // and Steam-Store metadata (fills only empty fields; a no-op without a
+        // steam id) run concurrently — they touch different fields. Any steam id
+        // resolved above is already persisted, so both see it.
+        let art = crate::steamgriddb::fetch_and_save_cover_and_hero(&app_for_enrich, &id_for_enrich);
+        let meta = crate::metadata::fetch_and_save_metadata(&app_for_enrich, &id_for_enrich);
+        let (art_res, meta_res) = tokio::join!(art, meta);
+        if let Err(e) = art_res {
+            tracing::warn!(game_id = %id_for_enrich, error = %e, "cover/hero fetch failed");
+        }
+        if let Err(e) = meta_res {
+            tracing::warn!(game_id = %id_for_enrich, error = %e, "metadata fetch failed");
         }
     });
 
@@ -1723,6 +1754,32 @@ mod tests {
         assert_eq!(e.game_name, "Hades Renamed"); // editor change applied
         assert_eq!(e.playtime_minutes, 45); // runtime field preserved
         assert_eq!(lib.find_id_by_name("Hades Renamed").await.unwrap().as_deref(), Some("a"));
+    }
+
+    #[tokio::test]
+    async fn replace_preserves_resolved_steam_id() {
+        // An untracked add resolves a steam id asynchronously (Steam store
+        // search) and persists it via update_fields. An editor opened before
+        // that resolve landed has steam_id: None; saving it must not clobber the
+        // resolved id, so steam_id is overlaid from the existing row like other
+        // out-of-band fields.
+        let lib = Library::open_in_memory().await.unwrap();
+        lib.insert(sample("a", "Game")).await.unwrap();
+        lib.update_fields("a", &[("steam_id", json!(1145360u64))])
+            .await
+            .unwrap();
+
+        let mut edited = sample("a", "Game"); // editor's stale copy, steam_id None
+        assert!(edited.steam_id.is_none());
+        assert!(lib.replace(&edited).await.unwrap());
+        assert_eq!(lib.find("a").await.unwrap().unwrap().steam_id, Some(1145360));
+
+        // A genuine identity change still applies the rest of the editor's edits.
+        edited.game_name = "Renamed".into();
+        assert!(lib.replace(&edited).await.unwrap());
+        let e = lib.find("a").await.unwrap().unwrap();
+        assert_eq!(e.game_name, "Renamed");
+        assert_eq!(e.steam_id, Some(1145360));
     }
 
     #[tokio::test]

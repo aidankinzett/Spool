@@ -16,7 +16,15 @@
   import { onMount } from 'svelte';
   import { open as openDialog } from '@tauri-apps/plugin-dialog';
   import { getCurrentWindow } from '@tauri-apps/api/window';
-  import { FileWarning, Folder, HardDriveDownload, Search, ExternalLink, Wifi } from '@lucide/svelte';
+  import {
+    FileWarning,
+    Folder,
+    HardDriveDownload,
+    Search,
+    ExternalLink,
+    Wifi,
+    Type,
+  } from '@lucide/svelte';
   import { api } from '$lib/api';
   import type { SearchCandidate } from '$lib/types';
   import AppChrome from '$lib/components/AppChrome.svelte';
@@ -30,6 +38,14 @@
   let identifying = $state(false);
   let candidates = $state<SearchCandidate[]>([]);
   let picked = $state<SearchCandidate | null>(null);
+  // Editable game name — the title used when adding *without* save tracking,
+  // and the single source of truth for that path. Defaults to the cleaned exe
+  // filename; an auto-highlighted candidate (candidates[0]) never touches it, so
+  // a wrong ludusavi match can't smuggle its name (and cover art) onto an
+  // untracked add, while explicitly clicking a candidate fills it in. The name
+  // also drives artwork (Steam store search → Steam CDN, else SteamGridDB by
+  // name) when no manifest steam id is available.
+  let untrackedName = $state('');
   let searchQuery = $state('');
   let searchMode = $state(false); // true once the user types in the search box
   let error = $state<string | null>(null);
@@ -65,10 +81,25 @@
     gameFolder = cand?.install_root ?? parentDir(exePath);
   }
 
-  /** Highlight a candidate and re-derive the install folder from it. */
+  /**
+   * Highlight a candidate (explicit user click) and re-derive the install
+   * folder from it. Clicking is a deliberate choice, so it also fills the
+   * editable name — an auto-highlight (see identify/search) never does.
+   */
   function pick(cand: SearchCandidate) {
     picked = cand;
+    untrackedName = cand.name;
     applyDetectedFolder(cand);
+  }
+
+  /** Last path segment, handling both `\` and `/` separators. */
+  function baseName(path: string): string {
+    return path.split(/[\\/]/).at(-1) ?? path;
+  }
+
+  /** Strip the directory and extension off a path to get a display name. */
+  function cleanFileName(path: string): string {
+    return baseName(path).replace(/\.[^.]+$/, '') || 'Untitled Game';
   }
 
   /**
@@ -91,9 +122,8 @@
 
   const fileMeta = $derived.by(() => {
     if (!exePath) return null;
-    const parts = exePath.split(/[\\/]/);
     return {
-      name: parts.at(-1) ?? exePath,
+      name: baseName(exePath),
       path: exePath,
     };
   });
@@ -142,6 +172,9 @@
     // with a detected install root comes back.
     folderTouched = false;
     gameFolder = parentDir(result);
+    // Seed the untracked name from the filename so the no-match path has a
+    // sensible default the user can edit.
+    untrackedName = cleanFileName(result);
     await identify();
   }
 
@@ -240,9 +273,13 @@
   async function addWithoutTracking() {
     if (!exePath) return;
     try {
-      const fallbackName = fileMeta?.name.replace(/\.[^.]+$/, '') ?? 'Untitled Game';
+      // The editable name field is the single source of truth here — it's
+      // seeded from the filename, filled in when a candidate is explicitly
+      // clicked, and freely editable, so a wrong auto-highlighted match never
+      // names the entry. Fall back to the cleaned filename if it's been cleared.
+      const name = untrackedName.trim() || cleanFileName(exePath);
       await api.addGame({
-        game_name: picked?.name ?? fallbackName,
+        game_name: name,
         exe_path: exePath,
         save_paths: [],
         game_folder_path: gameFolder,
@@ -362,6 +399,36 @@
             Change folder
           </Btn>
         </div>
+
+        <!-- Game name — the title, and the name used when adding without save
+             tracking (its single source of truth). Seeded from the filename;
+             clicking a candidate below fills it in. Editable in every stage so a
+             wrong ludusavi match can be corrected. Also drives artwork (Steam
+             store search → Steam CDN, else SteamGridDB by name) for an untracked
+             add. -->
+        <div
+          class="relative flex items-center gap-3.5 overflow-hidden rounded-md border border-line-1 bg-bg-1 px-3.5 py-3"
+        >
+          <div class="absolute inset-y-0 left-0 w-[3px]" style:background="var(--color-spool)"></div>
+          <div
+            class="flex size-[38px] shrink-0 items-center justify-center rounded-sm border border-line-2 bg-bg-2 text-ink-1"
+          >
+            <Type size={18} strokeWidth={1.4} />
+          </div>
+          <div class="min-w-0 flex-1">
+            <input
+              id="untracked-name"
+              bind:value={untrackedName}
+              placeholder="Game name"
+              class="font-mono w-full bg-transparent text-[13px] font-medium text-ink-0 outline-none placeholder:text-ink-3"
+            />
+            <div
+              class="font-mono mt-1 text-[10.5px] tracking-[0.04em] text-ink-3"
+            >
+              Title — and the name (and artwork) used when adding without save tracking.
+            </div>
+          </div>
+        </div>
       {/if}
 
       <!-- Search bar -->
@@ -441,7 +508,9 @@
               </div>
               <p class="m-0 mt-1.5 max-w-[460px] text-[12.5px] leading-relaxed text-ink-2">
                 Try the search above with a shorter name. If ludusavi still doesn't know this game,
-                you can add it without save tracking — Spool will launch it but won't back up saves.
+                set the <span class="text-ink-1">Game name</span> above and add it without save
+                tracking — Spool will launch it and use that name to fetch cover art, but won't back
+                up saves.
               </p>
               <p class="m-0 mt-2 max-w-[460px] text-[11.5px] leading-relaxed text-ink-3">
                 You can still track its saves later: add it, play once so the game
