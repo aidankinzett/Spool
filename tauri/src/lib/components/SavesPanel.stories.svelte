@@ -9,7 +9,7 @@
   // sets/clears the custom save. Mock those so the story is fully interactive —
   // Browse (then Add) appends a location, the trash icons remove them, and
   // "Stop tracking" clears the list.
-  mockIPC((cmd) => {
+  mockIPC((cmd, args) => {
     switch (cmd) {
       case 'save_picker_start_dir':
         return '/home/deck/.local/share/Spool/prefixes/abc/drive_c/users/steamuser';
@@ -25,14 +25,17 @@
       case 'clear_manifest_override':
         return undefined;
       case 'manifest_save_locations':
-        // The manifest's declared locations for a manifest game — a couple of
-        // save folders, a settings/config folder, and a file that's both.
-        return [
-          { template: '<winLocalAppData>/MyGame/Saved', pretty: '%LOCALAPPDATA%/MyGame/Saved', tags: ['save'], applies: true },
-          { template: '<winDocuments>/My Games/MyGame', pretty: '%USERPROFILE%/Documents/My Games/MyGame', tags: ['save'], applies: true },
-          { template: '<winLocalAppData>/MyGame/Config', pretty: '%LOCALAPPDATA%/MyGame/Config', tags: ['config'], applies: true },
-          { template: '<base>/profile.dat', pretty: '<base>/profile.dat', tags: ['save', 'config'], applies: true },
-        ];
+        // Recognition comes from this LIVE lookup, not the savePaths snapshot —
+        // so only the manifest-game stories (gameId 'manifest-game') return
+        // locations; the rest are genuinely unknown to ludusavi.
+        return (args as { gameId?: string })?.gameId === 'manifest-game'
+          ? [
+              { template: '<winLocalAppData>/MyGame/Saved', pretty: '%LOCALAPPDATA%/MyGame/Saved', tags: ['save'], applies: true },
+              { template: '<winDocuments>/My Games/MyGame', pretty: '%USERPROFILE%/Documents/My Games/MyGame', tags: ['save'], applies: true },
+              { template: '<winLocalAppData>/MyGame/Config', pretty: '%LOCALAPPDATA%/MyGame/Config', tags: ['config'], applies: true },
+              { template: '<base>/profile.dat', pretty: '<base>/profile.dat', tags: ['save', 'config'], applies: true },
+            ]
+          : [];
       default:
         return undefined;
     }
@@ -87,7 +90,14 @@
      path) to stop syncing it. -->
 <Story
   name="Manifest tracked"
-  args={{ usesProton: false, savePaths: ['%LOCALAPPDATA%/MyGame'], customSave: null }}
+  args={{ gameId: 'manifest-game', usesProton: false, savePaths: ['%LOCALAPPDATA%/MyGame'], customSave: null }}
+/>
+
+<!-- Recognised live by ludusavi even though the stored save_paths snapshot is
+     empty (added without save tracking): the picker still appears. -->
+<Story
+  name="Manifest tracked · empty snapshot"
+  args={{ gameId: 'manifest-game', usesProton: false, savePaths: [], customSave: null }}
 />
 
 <!-- Same game with the Settings tag excluded: the config row is struck through
@@ -95,6 +105,7 @@
 <Story
   name="Manifest · settings excluded"
   args={{
+    gameId: 'manifest-game',
     usesProton: false,
     savePaths: ['%LOCALAPPDATA%/MyGame'],
     customSave: null,

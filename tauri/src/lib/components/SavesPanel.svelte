@@ -66,7 +66,6 @@
   const files = $derived(customSave?.files ?? []);
   const registry = $derived(customSave?.registry ?? []);
   const hasCustom = $derived(files.length > 0);
-  const isManifestGame = $derived(savePaths.length > 0);
 
   // ── Manifest override state ────────────────────────────────────────────────
   // The manifest's declared locations for this game (applicable on this device),
@@ -88,9 +87,16 @@
     ),
   );
   const overrideActive = $derived(exclTags.length > 0 || exclPaths.length > 0);
-  // Show the manifest picker for manifest games that aren't using a custom-folder
-  // override (the two modes don't overlap in the UI).
-  const showManifestPicker = $derived(isManifestGame && !hasCustom);
+  // Whether ludusavi recognises this game, from the LIVE manifest lookup. This is
+  // authoritative: the `savePaths` prop is only an add-time snapshot and is empty
+  // for a game added without save tracking that ludusavi still recognises (and
+  // backs up) by name. We fall back to the snapshot only while the lookup loads.
+  const manifestRecognized = $derived(applicablePaths.length > 0);
+  const isManifestGame = $derived(manifestRecognized || savePaths.length > 0);
+  // Show the manifest picker for recognised games that aren't using a custom-folder
+  // override (the two modes don't overlap in the UI). Gated on the live result
+  // since the picker renders those paths.
+  const showManifestPicker = $derived(manifestRecognized && !hasCustom);
 
   function tagLabel(tag: string): string {
     if (tag === 'save') return 'Saves';
@@ -119,13 +125,12 @@
     exclPaths = ov?.excluded_paths ?? [];
   });
 
-  // Fetch the manifest's locations when this is a manifest game.
+  // Always look up the live manifest for this game — never gate on the stored
+  // `savePaths` snapshot, or a game added without save tracking (empty snapshot)
+  // that ludusavi actually recognises would never get checked, and its override
+  // picker would never appear.
   $effect(() => {
     const id = gameId;
-    if (!isManifestGame) {
-      manifestPaths = [];
-      return;
-    }
     manifestLoading = true;
     api
       .manifestSaveLocations(id)
@@ -303,6 +308,8 @@
       Manifest — some locations excluded; only the ones you picked sync.
     {:else if isManifestGame}
       Tracked automatically via the ludusavi manifest.
+    {:else if manifestLoading}
+      Checking whether ludusavi recognises this game…
     {:else}
       Not tracked — ludusavi doesn't recognise this game. Add a folder below to
       back up and sync its saves.
