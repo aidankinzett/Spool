@@ -7,10 +7,12 @@ import { toasts } from '$lib/toasts.svelte';
 import { checkForUpdateOnStartup } from '$lib/updater';
 import type {
   ConfigData,
+  DisplayGame,
   DownloadProgress,
   GameEntry,
   LanPeer,
   PeerGame,
+  PeerSource,
   RunPhase,
   RunPhaseEvent,
   SavesBackupEvent,
@@ -19,12 +21,15 @@ import type {
 } from '$lib/types';
 
 // ── Pure filter helper — exported so tests can call it without a component ──
-/** Filter and sort the game list by the current filter + search query. */
+/** Filter and sort the game list by the current filter + search query.
+ *  Operates on `DisplayGame` so it covers both local entries and the synthetic
+ *  peer rows merged into the sidebar (which carry null timestamps + 0 playtime,
+ *  so they fall out of the Recent/Played tabs on their own). */
 export function filterGames(
-  games: GameEntry[],
+  games: DisplayGame[],
   filter: 'all' | 'recent' | 'played',
   searchQuery: string,
-): GameEntry[] {
+): DisplayGame[] {
   let list = games.slice();
   if (filter === 'recent') {
     list = list
@@ -42,6 +47,150 @@ export function filterGames(
     list = list.filter((g) => g.game_name.toLowerCase().includes(q));
   }
   return list;
+}
+
+// ── Peer-game merge helpers ────────────────────────────────────────────────
+// These mirror the Rust `find_reusable_entry` match rule (library.rs) on the
+// frontend so the merged sidebar dedups exactly the way an actual install
+// would. Pure + module-level so they're unit-testable without a component.
+
+/** What a peer game is matched against — only the two fields the match rule
+ *  reads, so both `GameEntry` and `PeerGame` satisfy it. */
+type Matchable = { steam_id: number | null; game_name: string };
+
+/**
+ * Find the local entry a peer game corresponds to: steam_id first, then exact
+ * game name with a steam_id conflict guard (two known, differing steam_ids
+ * never merge). Returns null when there's no match.
+ */
+export function matchLocal<T extends Matchable>(candidates: T[], pg: Matchable): T | null {
+  if (pg.steam_id != null) {
+    const byId = candidates.find((g) => g.steam_id === pg.steam_id);
+    if (byId) return byId;
+  }
+  return (
+    candidates.find(
+      (g) =>
+        g.game_name === pg.game_name &&
+        !(g.steam_id != null && pg.steam_id != null && g.steam_id !== pg.steam_id),
+    ) ?? null
+  );
+}
+
+/** Stable key for a peer game with no local match: steam_id when known
+ *  (stable across peers), else the normalized name. Drives both the synthetic
+ *  row id and cross-peer dedup. */
+export function dedupKey(pg: Matchable): string {
+  return pg.steam_id != null ? `sid:${pg.steam_id}` : `name:${pg.game_name.toLowerCase()}`;
+}
+
+function toPeerSource(peer: LanPeer, pg: PeerGame): PeerSource {
+  return {
+    device_id: peer.device_id,
+    device_name: peer.device_name,
+    addr: peer.addr,
+    file_server_port: peer.file_server_port,
+    source_game_id: pg.id,
+    shareable: pg.shareable,
+  };
+}
+
+/**
+ * A `GameEntry`-shaped shell for a peer game that has no local entry. The id is
+ * `peer:<dedupKey>` so it's stable across discovery heartbeats and across which
+ * peer happens to supply it. Backend-only fields are zeroed/blanked — the
+ * uninstalled + no-exe code paths already render those gracefully.
+ */
+function syntheticPeerEntry(peer: LanPeer, pg: PeerGame): DisplayGame {
+  return {
+    id: `peer:${dedupKey(pg)}`,
+    catalog_number: 0,
+    game_name: pg.game_name,
+    exe_path: '',
+    safe_name: '',
+    cover_image_path: null,
+    hero_image_path: null,
+    added_at: null,
+    last_played_at: null,
+    launcher_exe_path: null,
+    game_folder_path: null,
+    installed: false,
+    run_as_admin: false,
+    use_proton: false,
+    proton_version_path: null,
+    wine_prefix_path: null,
+    launch_args: null,
+    description: '',
+    developer: pg.developer,
+    publisher: pg.publisher,
+    genres: pg.genres,
+    release_date: pg.release_date,
+    install_size_mb: pg.install_size_mb,
+    playtime_minutes: 0,
+    lan_shared: false,
+    lan_share_folder: null,
+    save_backup_count: 0,
+    save_last_backed_up_at: null,
+    save_backup_size_mb: 0,
+    install_source: 'lan',
+    lan_install_source_device_name: peer.device_name,
+    lan_install_source_device_id: peer.device_id,
+    steam_id: pg.steam_id,
+    gog_id: pg.gog_id,
+    lutris_slug: pg.lutris_slug,
+    manifest_install_dir: null,
+    save_paths: [],
+    custom_save: null,
+    manifest_override: null,
+    accent_color: null,
+    sync_badge: null,
+    cloud_sync_baseline: null,
+    save_last_backer_device: null,
+    save_cloud_revision_at: null,
+    peer_source: toPeerSource(peer, pg),
+  };
+}
+
+/**
+ * Merge local games with peer catalogues into one sidebar list.
+ *   - installed locally → drop the peer copy (no duplicate row)
+ *   - uninstalled locally → annotate that existing row as downloadable
+ *   - no local entry → a synthetic "available on LAN" row (deduped across peers)
+ * Pure (takes plain data) so it's unit-testable; the store wraps it in a derived.
+ */
+export function mergeDisplayGames(
+  games: GameEntry[],
+  lanPeers: LanPeer[],
+  peerCatalogs: Record<string, PeerGame[]>,
+): DisplayGame[] {
+  const installed = games.filter((g) => g.installed);
+  const uninstalled = games.filter((g) => !g.installed);
+  const out: DisplayGame[] = games.map((g) => ({ ...g }));
+  // Dedup keys for synthetic rows already added (plain object, not a Set — this
+  // is a pure helper, nothing reactive).
+  const claimed: Record<string, boolean> = {};
+
+  for (const peer of lanPeers) {
+    const catalog = peerCatalogs[peer.device_id];
+    if (!catalog) continue;
+    for (const pg of catalog) {
+      // (1) already installed here → no duplicate.
+      if (matchLocal(installed, pg)) continue;
+      // (2) uninstalled here → make that row downloadable (first peer wins).
+      const local = matchLocal(uninstalled, pg);
+      if (local) {
+        const row = out.find((r) => r.id === local.id);
+        if (row && !row.peer_source) row.peer_source = toPeerSource(peer, pg);
+        continue;
+      }
+      // (3) no local entry → synthetic row, one per game across all peers.
+      const key = dedupKey(pg);
+      if (claimed[key]) continue;
+      claimed[key] = true;
+      out.push(syntheticPeerEntry(peer, pg));
+    }
+  }
+  return out;
 }
 
 // ── Controller ───────────────────────────────────────────────────────────────
@@ -78,6 +227,19 @@ export function createLibrary() {
   let peerGamesError = $state<string | null>(null);
   let activeDownload = $state<DownloadProgress | null>(null);
   let startingGameId = $state<string | null>(null);
+  // Per-device peer catalogues aggregated for the merged sidebar (keyed by
+  // device_id). Populated lazily in the background; never blocks first paint.
+  // Mutated in place (property add/delete) — its deep $state proxy makes those
+  // reactive, so it never needs reassignment.
+  const peerCatalogs = $state<Record<string, PeerGame[]>>({});
+  // device_id → "addr:port" last fetched, so the heartbeat-driven
+  // `lan:peers-changed` doesn't refetch peers whose endpoint hasn't moved.
+  // Plain object (not a Map) — it only gates network calls, never rendering.
+  const peerFetchKey: Record<string, string> = {};
+  // When a peer-only download finishes, the synthetic `peer:` row it was shown
+  // as is replaced by a real installed entry with a fresh id. This carries the
+  // new id so `refresh()` can retarget selection onto it.
+  let pendingSelectFollow: string | null = null;
   // Lives outside $state — changing it never affects rendering.
   const toastedDownloadTokens = new SvelteSet<string>();
   let activeUploads = $state<UploadSnapshot[]>([]);
@@ -91,9 +253,13 @@ export function createLibrary() {
   });
 
   // Derived
-  const filteredGames = $derived(filterGames(games, filter, searchQuery));
+  // Local library merged with peer catalogues (auto-tracks games/lanPeers/
+  // peerCatalogs). Everything downstream — filtering, selection — reads this so
+  // peer rows are first-class sidebar entries.
+  const displayGames = $derived(mergeDisplayGames(games, lanPeers, peerCatalogs));
+  const filteredGames = $derived(filterGames(displayGames, filter, searchQuery));
   const selectedGame = $derived(
-    selectedId ? games.find((g) => g.id === selectedId) ?? null : null,
+    selectedId ? displayGames.find((g) => g.id === selectedId) ?? null : null,
   );
   const syncOk = $derived(syncStatus.reachability === 'online');
   const syncOff = $derived(syncStatus.reachability === 'offline');
@@ -127,11 +293,25 @@ export function createLibrary() {
   async function refresh() {
     try {
       games = await api.listGames();
-      if (selectedId && !games.some((g) => g.id === selectedId)) {
-        selectedId = games[0]?.id ?? null;
-      } else if (!selectedId && games.length > 0) {
-        selectedId = games[0].id;
-      } else if (games.length === 0) {
+      // A just-completed peer-only install: the synthetic `peer:` row the user
+      // was viewing is gone (the game is now installed locally) — follow the
+      // selection onto the real entry so the detail pane doesn't jump away.
+      if (
+        pendingSelectFollow &&
+        selectedId?.startsWith('peer:') &&
+        games.some((g) => g.id === pendingSelectFollow)
+      ) {
+        selectedId = pendingSelectFollow;
+        pendingSelectFollow = null;
+      }
+      // Reconcile against the merged list (not just local games) so a valid
+      // `peer:` selection isn't reset to the first row on every change.
+      const list = displayGames;
+      if (selectedId && !list.some((g) => g.id === selectedId)) {
+        selectedId = list[0]?.id ?? null;
+      } else if (!selectedId && list.length > 0) {
+        selectedId = list[0].id;
+      } else if (list.length === 0) {
         selectedId = null;
       }
     } catch (e) {
@@ -139,6 +319,39 @@ export function createLibrary() {
     } finally {
       loaded = true;
     }
+  }
+
+  /**
+   * Fetch every browsable peer's catalogue into `peerCatalogs` for the merged
+   * sidebar. Fire-and-forget — failures are isolated per peer (one offline peer
+   * never blanks the rest), and the `peerFetchKey` cache skips peers whose
+   * endpoint hasn't changed so the frequent `lan:peers-changed` heartbeat is a
+   * no-op in the common case.
+   */
+  async function refreshPeerCatalogs() {
+    const browsable = lanPeers.filter((p) => p.file_server_port > 0);
+    const liveIds = browsable.map((p) => p.device_id);
+    // Drop catalogues for peers that have gone away.
+    for (const id of Object.keys(peerCatalogs)) {
+      if (!liveIds.includes(id)) {
+        delete peerCatalogs[id];
+        delete peerFetchKey[id];
+      }
+    }
+    await Promise.allSettled(
+      browsable.map(async (p) => {
+        const key = `${p.addr}:${p.file_server_port}`;
+        if (peerFetchKey[p.device_id] === key) return; // already cached
+        try {
+          peerCatalogs[p.device_id] = await api.fetchPeerGames(p.addr, p.file_server_port);
+          peerFetchKey[p.device_id] = key;
+        } catch (e) {
+          delete peerCatalogs[p.device_id];
+          delete peerFetchKey[p.device_id];
+          console.warn('[lan] fetchPeerGames failed for', p.device_name, e);
+        }
+      }),
+    );
   }
 
   async function refreshLanPeers() {
@@ -237,6 +450,43 @@ export function createLibrary() {
     } finally {
       if (startingGameId === game.id) startingGameId = null;
     }
+  }
+
+  /**
+   * Start a download for a merged sidebar row backed by a `PeerSource` (the
+   * detail page's Download button). Looks up the live peer by device_id so it
+   * uses the current endpoint, then reuses `installFromPeer`. Toasts if the
+   * source device has dropped off the network since the row was rendered.
+   */
+  async function downloadGame(g: DisplayGame) {
+    const ps = g.peer_source;
+    if (!ps) return;
+    const peer = lanPeers.find((p) => p.device_id === ps.device_id);
+    if (!peer || peer.file_server_port === 0) {
+      toasts.show({
+        kind: 'warn',
+        label: 'LAN',
+        title: 'Source device offline',
+        sub: `${g.game_name} is no longer shared on the network.`,
+      });
+      return;
+    }
+    // installFromPeer only reads id/game_name plus the display fields below; the
+    // rest of PeerGame is reconstructed from the merged row.
+    await installFromPeer(peer, {
+      id: ps.source_game_id,
+      catalog_number: g.catalog_number,
+      game_name: g.game_name,
+      developer: g.developer,
+      publisher: g.publisher,
+      genres: g.genres,
+      install_size_mb: g.install_size_mb,
+      release_date: g.release_date,
+      steam_id: g.steam_id,
+      gog_id: g.gog_id,
+      lutris_slug: g.lutris_slug,
+      shareable: ps.shareable,
+    });
   }
 
   function showRunErrorToast(gameId: string, message: string) {
@@ -419,8 +669,10 @@ export function createLibrary() {
       })
       .catch((e) => console.error('[tray] intro listener failed:', e));
 
-    refreshLanPeers();
-    listen<null>('lan:peers-changed', () => refreshLanPeers())
+    refreshLanPeers().then(() => refreshPeerCatalogs());
+    listen<null>('lan:peers-changed', () =>
+      refreshLanPeers().then(() => refreshPeerCatalogs()),
+    )
       .then((fn) => {
         if (disposed) fn();
         else unlistenLanPeers = fn;
@@ -463,6 +715,10 @@ export function createLibrary() {
       if (firstTerminal) toastedDownloadTokens.add(p.install_token);
       activeDownload = p;
       if (p.status === 'done' && firstTerminal) {
+        // The new entry replaces the synthetic peer row; carry its id so the
+        // refresh below (and any racing library:changed) can follow selection.
+        pendingSelectFollow = p.new_game_id;
+        refresh();
         toasts.show({ kind: 'ok', label: 'LAN', title: 'Install complete',
           sub: `${p.game_name} · from ${p.source_device_name}` });
       } else if (p.status === 'error' && firstTerminal) {
@@ -574,6 +830,7 @@ export function createLibrary() {
     get suspendedConflict() { return suspendedConflict; },
     set suspendedConflict(v: { gameId: string; deviceName: string } | null) { suspendedConflict = v; },
     // Derived (read-only)
+    get displayGames() { return displayGames; },
     get filteredGames() { return filteredGames; },
     get selectedGame() { return selectedGame; },
     get syncOk() { return syncOk; },
@@ -588,6 +845,7 @@ export function createLibrary() {
     // Methods
     refresh,
     refreshLanPeers,
+    refreshPeerCatalogs,
     refreshActiveUploads,
     kickUpload,
     openPeerView,
@@ -595,6 +853,7 @@ export function createLibrary() {
     clearPeerView,
     cancelActiveInstall,
     installFromPeer,
+    downloadGame,
   };
 }
 

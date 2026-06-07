@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { filterGames } from '$lib/library.svelte';
-import type { GameEntry } from '$lib/types';
+import { filterGames, matchLocal, dedupKey, mergeDisplayGames } from '$lib/library.svelte';
+import type { GameEntry, LanPeer, PeerGame } from '$lib/types';
 
 function g(over: Partial<GameEntry> & { id: string; game_name: string }): GameEntry {
   return {
@@ -106,5 +106,111 @@ describe('filterGames — filter: recent', () => {
 
   it('combines recent filter with search', () => {
     expect(filterGames(GAMES, 'recent', 'elden')).toEqual([ELDEN]);
+  });
+});
+
+// ── Peer-game merge ────────────────────────────────────────────────────────
+
+function pg(over: Partial<PeerGame> & { id: string; game_name: string }): PeerGame {
+  return {
+    catalog_number: 0,
+    developer: '',
+    publisher: '',
+    genres: [],
+    install_size_mb: 100,
+    release_date: null,
+    steam_id: null,
+    gog_id: null,
+    lutris_slug: null,
+    shareable: true,
+    ...over,
+  };
+}
+
+const PEER_A: LanPeer = {
+  device_id: 'dev-a',
+  device_name: 'Deck',
+  addr: '192.168.1.10',
+  game_count: 1,
+  version: 1,
+  file_server_port: 47632,
+  last_seen_ago_secs: 1,
+};
+const PEER_B: LanPeer = { ...PEER_A, device_id: 'dev-b', device_name: 'Desktop', addr: '192.168.1.11' };
+
+describe('matchLocal', () => {
+  it('matches by steam_id first', () => {
+    const local = [g({ id: 'x', game_name: 'Other', steam_id: 42 })];
+    expect(matchLocal(local, { steam_id: 42, game_name: 'Renamed' })?.id).toBe('x');
+  });
+
+  it('falls back to exact game_name when no steam_id', () => {
+    const local = [g({ id: 'x', game_name: 'Hollow Knight' })];
+    expect(matchLocal(local, { steam_id: null, game_name: 'Hollow Knight' })?.id).toBe('x');
+  });
+
+  it('does not match two known, differing steam_ids by name', () => {
+    const local = [g({ id: 'x', game_name: 'Hollow Knight', steam_id: 1 })];
+    expect(matchLocal(local, { steam_id: 2, game_name: 'Hollow Knight' })).toBeNull();
+  });
+
+  it('returns null with no match', () => {
+    expect(matchLocal([g({ id: 'x', game_name: 'A' })], { steam_id: null, game_name: 'B' })).toBeNull();
+  });
+});
+
+describe('dedupKey', () => {
+  it('keys by steam_id when present', () => {
+    expect(dedupKey({ steam_id: 7, game_name: 'A' })).toBe('sid:7');
+  });
+  it('keys by normalized name otherwise', () => {
+    expect(dedupKey({ steam_id: null, game_name: 'Hollow Knight' })).toBe('name:hollow knight');
+  });
+});
+
+describe('mergeDisplayGames', () => {
+  it('drops a peer copy of a game already installed here', () => {
+    const games = [g({ id: 'local', game_name: 'Hollow Knight', installed: true })];
+    const catalogs = { 'dev-a': [pg({ id: 'p1', game_name: 'Hollow Knight' })] };
+    const out = mergeDisplayGames(games, [PEER_A], catalogs);
+    expect(out).toHaveLength(1);
+    expect(out[0].id).toBe('local');
+    expect(out[0].peer_source).toBeUndefined();
+  });
+
+  it('annotates an uninstalled local row as downloadable (no duplicate row)', () => {
+    const games = [g({ id: 'local', game_name: 'Hollow Knight', installed: false })];
+    const catalogs = { 'dev-a': [pg({ id: 'p1', game_name: 'Hollow Knight' })] };
+    const out = mergeDisplayGames(games, [PEER_A], catalogs);
+    expect(out).toHaveLength(1);
+    expect(out[0].id).toBe('local');
+    expect(out[0].peer_source?.device_id).toBe('dev-a');
+    expect(out[0].peer_source?.source_game_id).toBe('p1');
+  });
+
+  it('adds a synthetic row for a peer game with no local entry', () => {
+    const catalogs = { 'dev-a': [pg({ id: 'p1', game_name: 'Celeste', steam_id: 504230 })] };
+    const out = mergeDisplayGames([], [PEER_A], catalogs);
+    expect(out).toHaveLength(1);
+    expect(out[0].id).toBe('peer:sid:504230');
+    expect(out[0].installed).toBe(false);
+    expect(out[0].peer_source?.device_id).toBe('dev-a');
+  });
+
+  it('collapses the same game shared by two peers to one synthetic row', () => {
+    const catalogs = {
+      'dev-a': [pg({ id: 'p1', game_name: 'Celeste' })],
+      'dev-b': [pg({ id: 'p2', game_name: 'Celeste' })],
+    };
+    const out = mergeDisplayGames([], [PEER_A, PEER_B], catalogs);
+    expect(out).toHaveLength(1);
+    // First peer wins as the source.
+    expect(out[0].peer_source?.device_id).toBe('dev-a');
+  });
+
+  it('ignores peers with no fetched catalogue', () => {
+    const out = mergeDisplayGames([g({ id: 'local', game_name: 'A' })], [PEER_A], {});
+    expect(out).toHaveLength(1);
+    expect(out[0].id).toBe('local');
   });
 });
