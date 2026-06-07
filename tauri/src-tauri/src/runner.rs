@@ -1722,7 +1722,6 @@ impl<'a> WorkflowCtx<'a> {
 /// Timing of the play session, produced by [`phase_launch`] and consumed by the
 /// backup + completion phases.
 struct SessionTiming {
-    end: chrono::DateTime<Utc>,
     minutes: i32,
 }
 
@@ -2104,20 +2103,26 @@ async fn phase_launch(ctx: &WorkflowCtx<'_>, exe_pathbuf: &Path) -> AppResult<Se
     let suspended = suspended_secs.load(std::sync::atomic::Ordering::Relaxed);
     let played_secs = ((session_end - session_start).num_seconds() - suspended).max(0);
     let session_minutes = (played_secs / 60) as i32;
-    ctx.app
-        .state::<SharedLibrary>()
-        .bump_session(ctx.game_id, session_end, session_minutes)
-        .await?;
-    let _ = ctx.app.emit("library:changed", &ctx.game_id.to_string());
 
     // Record this launch as a discrete play-session row (the per-session,
-    // per-device history that feeds the cross-device timeline). Independent of
-    // the playtime aggregate above and of backup outcome — a session happened
-    // regardless. Best-effort: failures here must not fail the run. The local
-    // table is the source of truth; the rclone push makes it visible to peers.
-    record_play_session(ctx, session_start, session_end, played_secs).await;
+    // per-device history) FIRST — the row is the dedup token. Its `INSERT OR
+    // IGNORE` returns whether a *new* row landed; only then do we bump the local
+    // playtime aggregate and push cross-device playtime, so a Game-Mode
+    // forced-close fallback that already recorded this session (or a double
+    // fire) can't double-count. (#1/#2) Best-effort: failures here must not fail
+    // the run. The local table is the source of truth; the rclone push makes it
+    // visible to peers.
+    let newly_recorded =
+        record_play_session(ctx, session_start, session_end, played_secs).await;
+    if newly_recorded {
+        ctx.app
+            .state::<SharedLibrary>()
+            .bump_session(ctx.game_id, session_end, session_minutes)
+            .await?;
+        let _ = ctx.app.emit("library:changed", &ctx.game_id.to_string());
+    }
 
-    Ok(SessionTiming { end: session_end, minutes: session_minutes })
+    Ok(SessionTiming { minutes: session_minutes })
 }
 
 /// The instant a play session's `session_id` is keyed on. Both the in-process
@@ -2132,31 +2137,70 @@ async fn phase_launch(ctx: &WorkflowCtx<'_>, exe_pathbuf: &Path) -> AppResult<Se
 /// then *also* by a forced-close backup that fired before the workflow flipped
 /// `backed_up`, both derive the same `session_id`, so `insert_session`'s
 /// `INSERT OR IGNORE` dedupes it instead of writing a second row and
-/// double-counting playtime. The `!backed_up` filter rejects a stale record
-/// left behind by an earlier cloud-upload failure (so a later desktop launch of
-/// the same game can't adopt its start time).
+/// double-counting playtime.
+///
+/// The record is only consulted when THIS process wrote it (an attached `--run`
+/// launch — [`crate::session::wrote_start_this_process`]). A desktop launch
+/// never writes a record, so any it finds is a stale leftover from a past
+/// attached session whose forced-close backup failed (leaving `backed_up =
+/// false`); adopting that record's `started_at` would key the fresh desktop
+/// session on an old start and let `INSERT OR IGNORE` dedupe it away. Desktop
+/// launches therefore fall through to `fallback` (their own session start), and
+/// can't collide because no fallback fires for a non-Steam launch anyway.
 fn session_id_seed(game_name: &str, fallback: DateTime<Utc>) -> DateTime<Utc> {
-    crate::session::read()
-        .filter(|r| r.game == game_name && !r.backed_up)
+    seed_from_record(
+        crate::session::wrote_start_this_process(),
+        crate::session::read(),
+        game_name,
+        fallback,
+    )
+}
+
+/// Pure decision behind [`session_id_seed`], split out so it's testable without
+/// the process-global flag or on-disk record. Adopts `rec.started_at` only when
+/// this process wrote the record (`wrote_start`) AND it's a live (`!backed_up`)
+/// record for this game; otherwise returns `fallback`.
+fn seed_from_record(
+    wrote_start: bool,
+    rec: Option<crate::session::ActiveSession>,
+    game_name: &str,
+    fallback: DateTime<Utc>,
+) -> DateTime<Utc> {
+    if !wrote_start {
+        return fallback;
+    }
+    rec.filter(|r| r.game == game_name && !r.backed_up)
         .map(|r| r.started_at)
         .unwrap_or(fallback)
 }
 
-/// Insert a [`PlaySession`] row for the just-finished launch and push the
-/// updated history to the rclone remote. Best-effort: every failure is logged
-/// and swallowed so it can't fail the run workflow. No-op for the cross-device
-/// push when cloud isn't configured (the local row is still written).
+/// Insert a [`PlaySession`] row for the just-finished launch and, when the row
+/// is new, push this session's cross-device playtime and the updated history to
+/// the rclone remote. Returns whether a *new* row landed: `false` when the row
+/// already existed (a forced-close fallback beat us to it, or no device
+/// identity), so the caller skips the local-aggregate bump too.
+///
+/// The cross-device playtime push happens HERE, alongside the row insert, rather
+/// than later in [`phase_backup`]. The backup can take many seconds, and a
+/// Game-Mode force-kill in that window would otherwise leave the row written but
+/// the device-blob playtime unpushed — and the fallback, seeing the row, would
+/// dedupe and never push it (#1). Tying both to the same insert keeps the device
+/// blob's additive playtime pushed exactly once per session, even on a kill.
+///
+/// Best-effort: every failure is logged and swallowed so it can't fail the run
+/// workflow. No-op for the cross-device pushes when cloud isn't configured (the
+/// local row is still written).
 async fn record_play_session(
     ctx: &WorkflowCtx<'_>,
     started_at: DateTime<Utc>,
     ended_at: DateTime<Utc>,
     duration_secs: i64,
-) {
+) -> bool {
     let (device_id, device_name) = rclone::device_identity(ctx.app);
     if device_id.is_empty() {
         // No device identity (poisoned config) — skip rather than write a row
         // with a blank device id that the cross-device fold can't attribute.
-        return;
+        return false;
     }
     let seed = session_id_seed(ctx.game_name, started_at);
     let session = crate::library::PlaySession {
@@ -2168,11 +2212,20 @@ async fn record_play_session(
         ended_at,
         duration_secs,
     };
-    if let Err(e) = ctx.app.state::<SharedLibrary>().insert_session(&session).await {
-        tracing::warn!(error = %e, game = ctx.game_name, "failed to record play session");
-        return;
+    match ctx.app.state::<SharedLibrary>().insert_session(&session).await {
+        Ok(true) => {}
+        // Already recorded (a forced-close fallback won the race, or a retry) —
+        // don't re-push playtime; signal the caller to skip the aggregate bump.
+        Ok(false) => return false,
+        Err(e) => {
+            tracing::warn!(error = %e, game = ctx.game_name, "failed to record play session");
+            return false;
+        }
     }
+    let minutes = (duration_secs / 60) as i32;
+    rclone::record_session(ctx.app, ctx.game_name, minutes, &ended_at.to_rfc3339()).await;
     rclone::sync_play_history(ctx.app).await;
+    true
 }
 
 /// Record the LOCAL side of a session Spool's own workflow never got to finish:
@@ -2182,16 +2235,20 @@ async fn record_play_session(
 /// the active-session record ([`crate::session`]) — which is exactly the
 /// [`session_id_seed`] the in-process path uses, so the two dedupe.
 ///
-/// Writes the `play_sessions` row, bumps local playtime, and pushes the history
-/// blob. It does NOT touch the cross-device *device* blob (playtime/last_played)
-/// — the caller folds that into the single post-backup device-blob write so a
-/// forced-close session is one remote round-trip, not two.
+/// Writes the `play_sessions` row, bumps local playtime, and pushes BOTH the
+/// history blob and this session's cross-device playtime — all gated on the row
+/// being new, exactly as the in-process [`record_play_session`] does. Pushing
+/// playtime here (not in the caller, after the backup) is what makes the device
+/// blob's additive playtime land exactly once per session: whoever inserts the
+/// row pushes the playtime, and `INSERT OR IGNORE` lets only one path win, so a
+/// forced-close that the in-process workflow already partly recorded, a Decky
+/// retry, or a double-fire can't double-count or drop it (#1/#2). The caller is
+/// left with only the backup-completion side effects (marker delete + backup
+/// stamp), which are idempotent.
 ///
-/// Returns `Some(minutes)` when a **new** row landed (so the caller knows to add
-/// that playtime to the device blob), or `None` when the session was already
-/// recorded — the in-process workflow beat us to it ([`session_id_seed`]), a
-/// retry, or there's no device identity. The `None` return is what keeps the
-/// additive device-blob playtime pushed exactly once across both paths.
+/// Returns `Some(minutes)` when a **new** row landed, or `None` when the session
+/// was already recorded (the in-process workflow beat us to it via
+/// [`session_id_seed`], a retry) or there's no device identity.
 ///
 /// Duration is `(ended_at - started_at) - suspended_secs`, mirroring the
 /// in-process path: `suspended_secs` is the suspend total the watcher
@@ -2242,6 +2299,10 @@ pub async fn record_session_headless(
     if let Err(e) = library.bump_session(game_id, ended_at, minutes).await {
         tracing::warn!(error = %e, game = game_name, "forced-close: failed to bump playtime");
     }
+    // Push cross-device playtime now, gated on the row insert above — same
+    // contract as the in-process path. The caller only does the backup-completion
+    // side effects (marker delete + backup stamp).
+    rclone::record_session_from_config(cfg, game_name, minutes, &ended_at.to_rfc3339()).await;
     rclone::sync_play_history_from_config(cfg, library).await;
     tracing::info!(game = game_name, duration_secs, "forced-close: recorded play session");
     Some(minutes)
@@ -2254,7 +2315,6 @@ pub async fn record_session_headless(
 /// sync.
 async fn phase_backup(ctx: &WorkflowCtx<'_>, no_saves: bool, timing: &SessionTiming) -> AppResult<bool> {
     let session_minutes = timing.minutes;
-    let session_end = timing.end;
     let mut cloud_upload_failed = false;
     if !no_saves {
         emit_phase(ctx.app, ctx.game_id, "backing-up", Some("Backing up saves…"), ctx.cloud_configured, Some(session_minutes), false);
@@ -2273,15 +2333,15 @@ async fn phase_backup(ctx: &WorkflowCtx<'_>, no_saves: bool, timing: &SessionTim
         // concurrent ludusavi/rclone write could corrupt the backup or clobber
         // the remote. Nothing's been written yet, the live save is safe on
         // disk, and the lock being held means another process is *already*
-        // backing this up — so we record playtime, flag the save unsynced
-        // (local-newer badge + leave the PendingBackup marker so peers keep
-        // warning), and let the next launch reconcile.
+        // backing this up — so we flag the save unsynced (local-newer badge +
+        // leave the PendingBackup marker so peers keep warning) and let the next
+        // launch reconcile. Playtime was already pushed at record time
+        // (phase_launch), so there's nothing to record here.
         let _backup_lock =
             match crate::proc_lock::acquire_backup(std::time::Duration::from_secs(180)).await {
                 Ok(guard) => guard,
                 Err(e) => {
                     tracing::warn!(game_id = %ctx.game_id, error = %e, "post-session backup deferred — backup lock held by another process");
-                    rclone::record_session(ctx.app, ctx.game_name, session_minutes, &session_end.to_rfc3339()).await;
                     if ctx
                         .app
                         .state::<SharedLibrary>()
@@ -2404,17 +2464,13 @@ async fn phase_backup(ctx: &WorkflowCtx<'_>, no_saves: bool, timing: &SessionTim
                         }
                     }
                 }
-                // Record this session in the cross-device blob and, when the
-                // upload succeeded, clear the session marker and stamp this
-                // device as the latest backer — all in one roundtrip. When the
-                // upload failed we only record playtime/last-played and leave
-                // the PendingBackup marker so peers keep warning.
+                // Playtime/last-played were already pushed at record time
+                // (phase_launch). Here we only finish the backup: when the
+                // upload reached the cloud, clear the session marker and stamp
+                // this device as the latest backer. When it failed, leave the
+                // PendingBackup marker so peers keep warning.
                 if !cloud_upload_failed {
-                    rclone::record_session_and_complete_backup(
-                        ctx.app, ctx.game_name, session_minutes, &session_end.to_rfc3339(),
-                    ).await;
-                } else {
-                    rclone::record_session(ctx.app, ctx.game_name, session_minutes, &session_end.to_rfc3339()).await;
+                    rclone::complete_session_backup(ctx.app, ctx.game_name).await;
                 }
 
                 // Advance the cloud-sync baseline to the freshly-written tip,
@@ -2448,17 +2504,16 @@ async fn phase_backup(ctx: &WorkflowCtx<'_>, no_saves: bool, timing: &SessionTim
                 // successfully and getting a red toast for a flaky network
                 // call would be misleading. Surface it in the log instead.
                 tracing::warn!(game_id = %ctx.game_id, error = %e, "post-session backup failed");
-                // Still record playtime even when backup failed.
-                rclone::record_session(ctx.app, ctx.game_name, session_minutes, &session_end.to_rfc3339()).await;
+                // Playtime was already pushed at record time (phase_launch); the
+                // PendingBackup marker stays so peers/next-launch reconcile.
             }
         }
     } else {
         // Ludusavi doesn't recognise this game — no backup will ever clear the
         // PendingBackup marker. Delete it now so other devices aren't
-        // permanently blocked from launching this game.
+        // permanently blocked from launching this game. (Playtime was already
+        // pushed at record time in phase_launch.)
         rclone::delete_session_marker(ctx.app, ctx.game_name).await;
-        // Still record playtime/last-played for the session.
-        rclone::record_session(ctx.app, ctx.game_name, session_minutes, &session_end.to_rfc3339()).await;
     }
     Ok(cloud_upload_failed)
 }
@@ -2658,6 +2713,62 @@ mod tests {
         record_session_headless(&lib, &cfg, "a", "Hades", start, start + chrono::Duration::minutes(45), 0).await;
         assert_eq!(lib.list_sessions(Some("Hades")).await.unwrap().len(), 0);
         assert_eq!(lib.find("a").await.unwrap().unwrap().playtime_minutes, 0);
+    }
+
+    fn active_record(game: &str, started_at: DateTime<Utc>, backed_up: bool) -> crate::session::ActiveSession {
+        crate::session::ActiveSession {
+            game: game.to_string(),
+            steam_appid: 0x8000_0001,
+            session_id: format!("x-{}", started_at.timestamp_millis()),
+            started_at,
+            backed_up,
+            suspended_secs: 0,
+        }
+    }
+
+    #[test]
+    fn seed_adopts_live_record_only_when_this_process_wrote_it() {
+        // Attached launch (wrote_start = true): the fresh record's start is the
+        // seed, so the in-process and forced-close paths derive the same
+        // session_id and dedupe.
+        let rec_start = chrono::DateTime::parse_from_rfc3339("2026-06-06T10:00:00Z").unwrap().with_timezone(&Utc);
+        let fallback = chrono::DateTime::parse_from_rfc3339("2026-06-06T10:05:00Z").unwrap().with_timezone(&Utc);
+        assert_eq!(
+            seed_from_record(true, Some(active_record("Hades", rec_start, false)), "Hades", fallback),
+            rec_start,
+        );
+    }
+
+    #[test]
+    fn seed_ignores_record_on_desktop_launch() {
+        // Desktop launch (wrote_start = false) must NOT adopt a stale record left
+        // by a past attached session — else a fresh session keyed on the old
+        // start would be deduped away. (#4) Falls through to its own start.
+        let stale_start = chrono::DateTime::parse_from_rfc3339("2026-06-01T08:00:00Z").unwrap().with_timezone(&Utc);
+        let fallback = chrono::DateTime::parse_from_rfc3339("2026-06-06T10:05:00Z").unwrap().with_timezone(&Utc);
+        assert_eq!(
+            seed_from_record(false, Some(active_record("Hades", stale_start, false)), "Hades", fallback),
+            fallback,
+            "desktop launch ignores the active-session record",
+        );
+    }
+
+    #[test]
+    fn seed_ignores_backed_up_or_other_game_record() {
+        let rec_start = chrono::DateTime::parse_from_rfc3339("2026-06-06T10:00:00Z").unwrap().with_timezone(&Utc);
+        let fallback = chrono::DateTime::parse_from_rfc3339("2026-06-06T10:05:00Z").unwrap().with_timezone(&Utc);
+        // backed_up record (a reconciled / failed-upload leftover) is ignored.
+        assert_eq!(
+            seed_from_record(true, Some(active_record("Hades", rec_start, true)), "Hades", fallback),
+            fallback,
+        );
+        // a record for a different game is ignored.
+        assert_eq!(
+            seed_from_record(true, Some(active_record("Celeste", rec_start, false)), "Hades", fallback),
+            fallback,
+        );
+        // no record at all → fallback.
+        assert_eq!(seed_from_record(true, None, "Hades", fallback), fallback);
     }
 
     #[test]

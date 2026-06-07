@@ -10,6 +10,46 @@ use crate::error::AppResult;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
+
+/// Serialises read-modify-write of the active-session record so concurrent
+/// in-process writers can't lose each other's updates. The suspend watcher
+/// (checkpointing `suspended_secs` on resume) and the run workflow (flipping
+/// `backed_up` / clearing the record) both mutate the file, and an unguarded
+/// read-then-write could interleave so one clobbers the other's field. The
+/// guard is held only across the synchronous read+write (no await), so it can't
+/// deadlock. Cross-process writers (the headless server) are effectively
+/// serialised by the attached process being dead by the time they run.
+static SESSION_LOCK: Mutex<()> = Mutex::new(());
+
+/// Write `bytes` to `path` atomically (tmp in the same dir → rename) so a crash
+/// or force-kill mid-write can't leave a truncated record that `read_at` then
+/// fails to parse — which would skip the forced-close backup entirely. The tmp
+/// name carries the pid so two processes writing at once don't share a tmp file.
+fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("active-session.json");
+    let tmp = path.with_file_name(format!("{name}.tmp.{}", std::process::id()));
+    std::fs::write(&tmp, bytes)?;
+    std::fs::rename(&tmp, path)
+}
+
+/// Set once when this process writes an active-session record (only attached
+/// `--run` launches do — see [`write_start`]). The in-process play-session
+/// recorder consults it before adopting the record's `started_at` as the
+/// session-id seed: a desktop process never wrote a record, so any record it
+/// finds is a stale leftover from a past attached session it must not adopt
+/// (else it would key a fresh session on an old start and dedupe it away).
+static WROTE_START: AtomicBool = AtomicBool::new(false);
+
+/// True when this process wrote the active-session record (i.e. it's the
+/// attached launch the record belongs to). Desktop launches return false.
+pub fn wrote_start_this_process() -> bool {
+    WROTE_START.load(Ordering::Relaxed)
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ActiveSession {
@@ -45,10 +85,8 @@ fn write_start_at(path: &Path, game: &str, steam_appid: u32, started_at: DateTim
         backed_up: false,
         suspended_secs: 0,
     };
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    std::fs::write(path, serde_json::to_vec_pretty(&rec)?)?;
+    let _guard = SESSION_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    write_atomic(path, &serde_json::to_vec_pretty(&rec)?)?;
     Ok(session_id)
 }
 
@@ -57,9 +95,13 @@ fn read_at(path: &Path) -> Option<ActiveSession> {
     serde_json::from_slice(&bytes).ok()
 }
 
-/// Write the session record for a launch starting now.
+/// Write the session record for a launch starting now. Only attached `--run`
+/// launches call this, so it also flags this process as the record's owner so
+/// the play-session recorder will adopt its `started_at` (see [`WROTE_START`]).
 pub fn write_start(game: &str, steam_appid: u32) -> AppResult<String> {
-    write_start_at(&crate::paths::active_session_file(), game, steam_appid, Utc::now())
+    let id = write_start_at(&crate::paths::active_session_file(), game, steam_appid, Utc::now())?;
+    WROTE_START.store(true, Ordering::Relaxed);
+    Ok(id)
 }
 
 /// Read the current session record, if any.
@@ -79,11 +121,12 @@ pub fn mark_backed_up_if(expected_id: &str) {
 
 #[allow(dead_code)]
 fn mark_backed_up_if_at(path: &Path, expected_id: &str) {
+    let _guard = SESSION_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(mut rec) = read_at(path) {
         if rec.session_id == expected_id {
             rec.backed_up = true;
             if let Ok(bytes) = serde_json::to_vec_pretty(&rec) {
-                let _ = std::fs::write(path, bytes);
+                let _ = write_atomic(path, &bytes);
             }
         }
     }
@@ -96,16 +139,21 @@ fn mark_backed_up_if_at(path: &Path, expected_id: &str) {
 /// watcher is aborted/killed at session end, so no stale writer survives. The
 /// forced-close backup reads this and subtracts it from wall-clock playtime.
 /// No-op when no record exists or it names a different game.
+///
+/// Only the Linux suspend watcher calls this, so it's dead on other platforms.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub fn record_suspended_secs(game_name: &str, total_secs: i64) {
     record_suspended_secs_at(&crate::paths::active_session_file(), game_name, total_secs);
 }
 
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn record_suspended_secs_at(path: &Path, game_name: &str, total_secs: i64) {
+    let _guard = SESSION_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(mut rec) = read_at(path) {
         if rec.game == game_name {
             rec.suspended_secs = total_secs;
             if let Ok(bytes) = serde_json::to_vec_pretty(&rec) {
-                let _ = std::fs::write(path, bytes);
+                let _ = write_atomic(path, &bytes);
             }
         }
     }
@@ -123,6 +171,7 @@ pub fn clear_if(expected_id: &str) {
 }
 
 fn clear_if_at(path: &Path, expected_id: &str) {
+    let _guard = SESSION_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(rec) = read_at(path) {
         if rec.session_id == expected_id {
             let _ = std::fs::remove_file(path);
@@ -156,6 +205,37 @@ mod tests {
         // …the matching id does.
         mark_backed_up_if_at(&path, &id);
         assert!(read_at(&path).unwrap().backed_up);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn writes_are_atomic_and_leave_no_tmp() {
+        // The record is written via a tmp→rename so a crash mid-write can't
+        // leave a truncated file the forced-close fallback then fails to parse.
+        // After a write the dir holds only the final file, no leftover tmp. (#6)
+        let dir = std::env::temp_dir().join(format!("spool-session-atomic-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("active-session.json");
+        let now = Utc::now();
+
+        let id = write_start_at(&path, "Hades", 0x8000_0001, now).unwrap();
+        record_suspended_secs_at(&path, "Hades", 120);
+        mark_backed_up_if_at(&path, &id);
+
+        // Record parses cleanly and reflects every write.
+        let rec = read_at(&path).expect("record parses");
+        assert_eq!(rec.suspended_secs, 120);
+        assert!(rec.backed_up);
+
+        // No `*.tmp.*` sibling survived any of the writes.
+        let leftovers: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.contains(".tmp."))
+            .collect();
+        assert!(leftovers.is_empty(), "stray tmp files: {leftovers:?}");
 
         std::fs::remove_dir_all(&dir).ok();
     }
