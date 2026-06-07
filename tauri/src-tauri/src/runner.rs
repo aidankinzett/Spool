@@ -313,6 +313,22 @@ pub async fn uninstall_game_with_backup(
     library: &SharedLibrary,
     game_id: &str,
 ) -> AppResult<()> {
+    // Fail fast before the (potentially slow, cloud-uploading) backup if the
+    // game is currently running — or already being wiped — in any Spool process.
+    // `wipe_install_files` re-checks this authoritatively, but only after the
+    // backup; without this peek we'd run a full ludusavi backup + cloud upload
+    // (force-pushing a mid-session save to the remote) and *then* refuse the
+    // wipe. Acquire-and-drop is a peek, not a hold: holding the run lock across
+    // the backup would self-block wipe's own acquire (flock is per open file
+    // description). A live session/wipe could still start in the gap before the
+    // wipe re-checks, but then wipe refuses — only the backup is wasted, never a
+    // wipe-out-from-under.
+    if crate::proc_lock::try_acquire_run(game_id)?.is_none() {
+        return Err(AppError::Other(
+            "This game is busy — it's running, or being removed. Close it and try again.".into(),
+        ));
+    }
+
     backup_game_core(ludusavi_client, ludusavi_exe, config_dir, library, game_id)
         .await
         .map_err(|e| {
