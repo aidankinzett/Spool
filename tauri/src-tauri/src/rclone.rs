@@ -730,6 +730,7 @@ pub async fn mark_session_pending_backup(app: &AppHandle, game_name: &str) {
 
 /// AppHandle-free `PendingBackup` flip for the plugin server's game-stop path
 /// (the Decky forced-close fallback). No-op when cloud isn't configured.
+#[cfg_attr(windows, allow(dead_code))] // only called from the unix-gated plugin server
 pub async fn mark_session_pending_backup_from_config(cfg: &ConfigData, game_name: &str) {
     let Some(remote) = resolve_remote_from_config(cfg) else {
         return;
@@ -918,6 +919,7 @@ pub async fn record_session(app: &AppHandle, game_name: &str, session_minutes: i
 /// device's blob from config. No-op when cloud isn't configured. The backup
 /// timestamp + marker delete are a separate concern handled by
 /// [`complete_session_backup_from_config`] once the upload lands.
+#[cfg_attr(windows, allow(dead_code))] // only reached via the unix-gated plugin server
 pub async fn record_session_from_config(
     cfg: &ConfigData,
     game_name: &str,
@@ -991,6 +993,7 @@ pub async fn sync_play_history(app: &AppHandle) {
 /// AppHandle-free [`sync_play_history`] for the Game-Mode forced-close fallback:
 /// push this device's local play-session rows to its history blob from config.
 /// Best-effort and idempotent; no-op when cloud isn't configured.
+#[cfg_attr(windows, allow(dead_code))] // only reached via the unix-gated plugin server
 pub async fn sync_play_history_from_config(cfg: &ConfigData, library: &crate::library::Library) {
     let Some(remote) = resolve_remote_from_config(cfg) else {
         return;

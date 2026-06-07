@@ -2255,6 +2255,7 @@ async fn record_play_session(
 /// checkpointed into the session record on each resume (see [`crate::session`]),
 /// so a session spanning a Deck sleep isn't counted as play time even though the
 /// in-memory tally died with the force-killed workflow.
+#[cfg_attr(windows, allow(dead_code))] // only reached via the unix-gated plugin server
 pub async fn record_session_headless(
     library: &crate::library::Library,
     cfg: &crate::config::ConfigData,
