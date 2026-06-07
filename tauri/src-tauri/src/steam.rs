@@ -511,9 +511,11 @@ pub async fn add_to_steam(
     };
 
     // 7. Keep the "Spool" Steam collection in sync with the managed shortcuts.
-    //    Best-effort: a collection write failing never aborts the shortcut (the
-    //    game is already in the library; the collection is a convenience).
-    if let Err(e) = crate::steam_collections::sync_spool_collection(&user) {
+    //    Pass the in-memory shortcuts we just wrote (authoritative — avoids a
+    //    re-read that could diverge). Best-effort: a collection write failing
+    //    never aborts the shortcut (the game is already in the library; the
+    //    collection is a convenience).
+    if let Err(e) = crate::steam_collections::sync_spool_collection(&user, &shortcuts) {
         tracing::warn!(%e, "add_to_steam: failed to sync Spool collection");
     }
 

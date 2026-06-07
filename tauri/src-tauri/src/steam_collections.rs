@@ -23,6 +23,7 @@
 
 use crate::error::{AppError, AppResult};
 use crate::steam::{read_shortcuts, SteamUser};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 use steam_shortcuts_util::shortcut::ShortcutOwned;
@@ -49,25 +50,27 @@ struct CollectionValue {
 }
 
 /// Converts a non-Steam shortcut appid (`u32`, high bit set) to the integer form
-/// Steam stores in a collection's `added` array — the unsigned 32-bit value.
+/// Steam stores in a collection's `added` array — the **unsigned** 32-bit value.
 ///
-/// Isolated here on purpose: this is the one representation that needs empirical
-/// confirmation against a real `cloud-storage-namespace-1.json`. If Steam turns
-/// out to store the signed-32-bit form, this is the only line to change
-/// (`shortcut_app_id as i32 as i64`).
+/// Matches what other tools writing this same file use (e.g.
+/// `fewtarius/SteamGridManager` converts the signed-in-VDF shortcut id to the
+/// unsigned 32-bit form before adding it to a collection). Isolated here so the
+/// wire representation lives in one place.
 fn collection_appid(shortcut_app_id: u32) -> i64 {
     shortcut_app_id as i64
 }
 
-/// Appids of Spool-managed *game* shortcuts. A shortcut is a Spool game when its
-/// launch options drive our `--run` workflow (set by
-/// [`crate::steam::build_launch_options`]). The bare "Spool" library-launcher
-/// shortcut has empty launch options and is intentionally excluded — the
-/// collection is for games, not the launcher.
+/// Appids of Spool-managed *game* shortcuts. A shortcut is a Spool game when it
+/// carries the `"Spool"` tag (the canonical marker stamped by
+/// [`crate::steam::upsert_spool_shortcut`]) **and** its launch options drive our
+/// `--run` workflow. The tag is the source of truth; the `--run` check (a
+/// `contains`, so a reformatted/leading-space variant still matches) excludes
+/// the bare "Spool" library-launcher shortcut, which shares the tag but has no
+/// launch options — the collection is for games, not the launcher.
 fn spool_managed_appids(shortcuts: &[ShortcutOwned]) -> Vec<u32> {
     shortcuts
         .iter()
-        .filter(|s| s.launch_options.starts_with("--run"))
+        .filter(|s| s.tags.iter().any(|t| t == "Spool") && s.launch_options.contains("--run"))
         .map(|s| s.app_id)
         .collect()
 }
@@ -82,14 +85,45 @@ fn bump_version(existing: Option<&serde_json::Value>, now: u64) -> String {
             .or_else(|| v.as_u64())
     });
     match prev {
-        Some(p) => (p + 1).max(now).to_string(),
+        Some(p) => p.saturating_add(1).max(now).to_string(),
         None => now.to_string(),
     }
 }
 
-/// Upserts the Spool-managed collection into the parsed namespace file. Replaces
-/// the collection's `added` set wholesale from `appids` (rebuild semantics — a
-/// game removed from Steam simply drops out). Every other record is left
+/// Serialises the inner `value` object to the stringified JSON Steam stores.
+fn serialize_value(added: &[i64], removed: &[i64]) -> String {
+    let value = CollectionValue {
+        id: SPOOL_COLLECTION_ID.to_string(),
+        name: SPOOL_COLLECTION_NAME.to_string(),
+        added: added.to_vec(),
+        removed: removed.to_vec(),
+    };
+    serde_json::to_string(&value).unwrap_or_default()
+}
+
+/// Fresh `removed` tombstone set: everything our collection previously tracked
+/// (its old `added` plus existing tombstones) that is no longer in `added_set`.
+///
+/// `union-collections` merges collections across devices by *unioning* `added`,
+/// so a game dropping out of `added` is not enough to remove it — the cloud copy
+/// (or another device) unions it straight back in. Removal only sticks as an
+/// explicit tombstone in `removed`, which this carries forward monotonically.
+fn tombstones(prev_value: Option<&serde_json::Value>, added_set: &HashSet<i64>) -> Vec<i64> {
+    let mut removed: Vec<i64> = prev_value
+        .and_then(|v| v.as_str())
+        .and_then(|s| serde_json::from_str::<CollectionValue>(s).ok())
+        .map(|cv| cv.added.into_iter().chain(cv.removed).collect())
+        .unwrap_or_default();
+    removed.retain(|id| !added_set.contains(id));
+    removed.sort_unstable();
+    removed.dedup();
+    removed
+}
+
+/// Upserts the Spool-managed collection into the parsed namespace file. Sets
+/// `added` to the current Spool games and tombstones anything we previously
+/// tracked that has dropped out (see [`tombstones`] — required for removal to
+/// survive `union-collections` cloud merge). Every other record is left
 /// untouched, including unknown keys.
 fn upsert_spool_collection(file: &mut Vec<(String, serde_json::Value)>, appids: &[u32], now: u64) {
     let key = collection_key();
@@ -97,19 +131,16 @@ fn upsert_spool_collection(file: &mut Vec<(String, serde_json::Value)>, appids: 
     let mut added: Vec<i64> = appids.iter().copied().map(collection_appid).collect();
     added.sort_unstable();
     added.dedup();
-
-    let value = CollectionValue {
-        id: SPOOL_COLLECTION_ID.to_string(),
-        name: SPOOL_COLLECTION_NAME.to_string(),
-        added,
-        removed: Vec::new(),
-    };
-    let value_str = serde_json::to_string(&value).unwrap_or_default();
+    let added_set: HashSet<i64> = added.iter().copied().collect();
 
     if let Some((_, record)) = file.iter_mut().find(|(k, _)| k == &key) {
         if let Some(obj) = record.as_object_mut() {
+            let removed = tombstones(obj.get("value"), &added_set);
             let next_version = bump_version(obj.get("version"), now);
-            obj.insert("value".into(), serde_json::Value::String(value_str));
+            obj.insert(
+                "value".into(),
+                serde_json::Value::String(serialize_value(&added, &removed)),
+            );
             obj.insert("timestamp".into(), serde_json::json!(now));
             obj.insert("is_deleted".into(), serde_json::json!(false));
             obj.insert("version".into(), serde_json::Value::String(next_version));
@@ -120,7 +151,7 @@ fn upsert_spool_collection(file: &mut Vec<(String, serde_json::Value)>, appids: 
     let record = serde_json::json!({
         "key": key,
         "timestamp": now,
-        "value": value_str,
+        "value": serialize_value(&added, &[]),
         "version": now.to_string(),
         "conflictResolutionMethod": "custom",
         "strMethodId": "union-collections",
@@ -160,20 +191,31 @@ fn write_namespace_file(path: &Path, file: &[(String, serde_json::Value)]) -> Ap
     Ok(())
 }
 
-/// Reconciles the "Spool" collection for one Steam user with the current set of
-/// Spool-managed game shortcuts. Reads `shortcuts.vdf` to derive the appid set,
-/// merges into the existing namespace file (or creates one), writes atomically.
-pub fn sync_spool_collection(user: &SteamUser) -> AppResult<()> {
-    let shortcuts = read_shortcuts(&user.shortcuts_path)?;
-    let appids = spool_managed_appids(&shortcuts);
+/// Reconciles the "Spool" collection for one Steam user against `shortcuts` (the
+/// caller's authoritative shortcut set — on the add path the in-memory `Vec` we
+/// just wrote, so we don't re-read and risk diverging from it). Merges into the
+/// existing namespace file (or creates one), writes atomically.
+///
+/// A parse failure of an existing file is propagated, **not** swallowed into a
+/// fresh write: the namespace file holds the user's other collections, so
+/// overwriting an unparseable (possibly mid-write) file would destroy real data.
+/// A genuinely empty file is the one safe "treat as fresh" case.
+pub fn sync_spool_collection(user: &SteamUser, shortcuts: &[ShortcutOwned]) -> AppResult<()> {
+    let appids = spool_managed_appids(shortcuts);
 
     let path = cloudstorage_namespace_path(user)
         .ok_or_else(|| AppError::Other("can't resolve cloudstorage path".into()))?;
 
     let mut file: Vec<(String, serde_json::Value)> = if path.is_file() {
         let bytes = std::fs::read(&path)?;
-        serde_json::from_slice(&bytes)
-            .map_err(|e| AppError::Other(format!("failed to parse {}: {e}", path.display())))?
+        if bytes.iter().all(|b| b.is_ascii_whitespace()) {
+            // Empty/whitespace file (e.g. a prior interrupted write) — no records
+            // to preserve, so it's safe to start a fresh namespace.
+            Vec::new()
+        } else {
+            serde_json::from_slice(&bytes)
+                .map_err(|e| AppError::Other(format!("failed to parse {}: {e}", path.display())))?
+        }
     } else {
         Vec::new()
     };
@@ -191,7 +233,8 @@ pub async fn sync_spool_steam_collection() -> AppResult<()> {
     let user = users
         .first()
         .ok_or_else(|| AppError::Other("No Steam user accounts found".into()))?;
-    sync_spool_collection(user)
+    let shortcuts = read_shortcuts(&user.shortcuts_path)?;
+    sync_spool_collection(user, &shortcuts)
 }
 
 #[cfg(test)]
@@ -271,9 +314,12 @@ mod tests {
             .unwrap()
             .contains("Other"));
 
-        // Spool collection is replaced wholesale (rebuild), not appended to.
+        // Spool `added` is set to the current games; the previously-tracked
+        // appid (111) that dropped out is tombstoned in `removed` so it survives
+        // union-collections cloud merge as a removal.
         let v = spool_value(&file);
         assert_eq!(v.added, vec![0x8000_0009_i64]);
+        assert_eq!(v.removed, vec![111]);
 
         let rec = spool_record(&file).as_object().unwrap();
         assert_eq!(rec.get("timestamp").unwrap(), 2000);
@@ -307,6 +353,52 @@ mod tests {
             .get("value")
             .unwrap();
         assert!(value_field.is_string(), "value must be stringified JSON");
+    }
+
+    #[test]
+    fn tombstones_accumulate_and_clear_on_readd() {
+        let mut file = Vec::new();
+        // Start with two games.
+        upsert_spool_collection(&mut file, &[0x8000_0001, 0x8000_0002], 1);
+        // Game 2 dropped → tombstoned; game 3 added.
+        upsert_spool_collection(&mut file, &[0x8000_0001, 0x8000_0003], 2);
+        let v = spool_value(&file);
+        assert_eq!(v.added, vec![0x8000_0001_i64, 0x8000_0003]);
+        assert_eq!(v.removed, vec![0x8000_0002_i64]);
+
+        // Re-adding game 2 moves it out of the tombstone set and back to added.
+        upsert_spool_collection(&mut file, &[0x8000_0001, 0x8000_0002, 0x8000_0003], 3);
+        let v = spool_value(&file);
+        assert_eq!(
+            v.added,
+            vec![0x8000_0001_i64, 0x8000_0002, 0x8000_0003]
+        );
+        assert!(v.removed.is_empty(), "re-added game must leave the tombstones");
+    }
+
+    #[test]
+    fn excludes_untagged_run_shortcuts() {
+        // A non-Spool shortcut that happens to carry --run must not be collected.
+        let foreign = ShortcutOwned {
+            order: "0".into(),
+            app_id: 42,
+            app_name: "Foreign".into(),
+            exe: "x".into(),
+            start_dir: "/".into(),
+            icon: String::new(),
+            shortcut_path: String::new(),
+            launch_options: "--run whatever".into(),
+            is_hidden: false,
+            allow_desktop_config: true,
+            allow_overlay: true,
+            open_vr: 0,
+            dev_kit: 0,
+            dev_kit_game_id: String::new(),
+            dev_kit_overrite_app_id: 0,
+            last_play_time: 0,
+            tags: vec!["NotSpool".into()],
+        };
+        assert!(spool_managed_appids(&[foreign]).is_empty());
     }
 
     #[test]
