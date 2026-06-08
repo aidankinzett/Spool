@@ -202,7 +202,12 @@ export function mergeDisplayGames(
       const local = matchLocal(uninstalled, pg);
       if (local) {
         const row = out.find((r) => r.id === local.id);
-        if (row && !row.peer_source) row.peer_source = toPeerSource(peer, pg);
+        if (row && !row.peer_source) {
+          row.peer_source = toPeerSource(peer, pg);
+          // The entry is uninstalled here, so its own recorded install size is
+          // stale/zero. Show the peer's size — the bytes that will download.
+          if (pg.install_size_mb > 0) row.install_size_mb = pg.install_size_mb;
+        }
         continue;
       }
       // (3) no local entry → synthetic row, one per game across all peers.

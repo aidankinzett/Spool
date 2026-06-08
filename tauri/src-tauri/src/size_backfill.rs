@@ -95,7 +95,7 @@ async fn run_backfill(app: AppHandle) {
 /// `walkdir::WalkDir::follow_links(true)` used by the LAN walk).
 /// Errors on individual files are silently skipped — a partial
 /// total is still informative.
-fn directory_size(path: &std::path::Path) -> u64 {
+pub(crate) fn directory_size(path: &std::path::Path) -> u64 {
     let mut total = 0u64;
     for entry in walkdir::WalkDir::new(path).follow_links(true) {
         let Ok(entry) = entry else { continue };
