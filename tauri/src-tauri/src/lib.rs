@@ -389,8 +389,8 @@ pub fn run() {
 /// Looks up a game by exact `game_name` match. Returns the entry id.
 /// Sync wrapper (block_on) for the cold-start / single-instance callback paths,
 /// which run on the main thread rather than inside the async runtime.
-fn find_game_id_by_name(library: &SharedLibrary, name: &str) -> Option<String> {
-    tauri::async_runtime::block_on(library.find_id_by_name(name))
+fn find_game_id_by_name(library: &SharedLibrary, name: &str, exe_path: Option<&str>) -> Option<String> {
+    tauri::async_runtime::block_on(library.find_id_by_name(name, exe_path))
         .ok()
         .flatten()
 }
@@ -503,9 +503,9 @@ fn install_panic_hook() {
 /// library (no args) or queues a game launch (`--run "Name" "Exe"`).
 fn handle_forwarded_launch(app: &AppHandle, argv: &[String]) {
     match cli::parse_args(argv) {
-        CliMode::Run { game_name, .. } => {
+        CliMode::Run { game_name, exe_path, .. } => {
             tray::show_library(app); // bring the window up so the user sees the workflow run
-            let Some(id) = find_game_id_by_name(&app.state::<SharedLibrary>(), &game_name) else {
+            let Some(id) = find_game_id_by_name(&app.state::<SharedLibrary>(), &game_name, Some(&exe_path)) else {
                 tracing::warn!(name = %game_name, "forwarded --run: no library entry matches");
                 return;
             };
@@ -532,11 +532,11 @@ fn run_attached_launch(
     app: &tauri::App,
     initial_args: &[String],
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let CliMode::Run { game_name, .. } = cli::parse_args(initial_args) else {
+    let CliMode::Run { game_name, exe_path, .. } = cli::parse_args(initial_args) else {
         app.handle().exit(1);
         return Ok(());
     };
-    let Some(id) = find_game_id_by_name(&app.state::<SharedLibrary>(), &game_name) else {
+    let Some(id) = find_game_id_by_name(&app.state::<SharedLibrary>(), &game_name, Some(&exe_path)) else {
         tracing::error!(name = %game_name, "attached --run: no library entry matches");
         app.handle().exit(1);
         return Ok(());
@@ -691,10 +691,10 @@ fn run_normal_setup(
 
     // Startup --run dispatch: queue the game id so the frontend can pick it up
     // once its listeners are ready.
-    if let CliMode::Run { ref game_name, .. } = cli::parse_args(initial_args) {
+    if let CliMode::Run { ref game_name, ref exe_path, .. } = cli::parse_args(initial_args) {
         let library = app.state::<SharedLibrary>();
         let pending = app.state::<PendingRun>();
-        if let Some(id) = find_game_id_by_name(&library, game_name) {
+        if let Some(id) = find_game_id_by_name(&library, game_name, Some(exe_path)) {
             pending.set(id);
         } else {
             tracing::warn!(name = %game_name, "startup --run: no library entry matches");

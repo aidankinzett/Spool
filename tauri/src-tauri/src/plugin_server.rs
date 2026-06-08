@@ -930,7 +930,7 @@ async fn run_backup(
 ) -> Json<Value> {
     let config_dir = crate::paths::ludusavi_config_dir();
 
-    let Some(game_id) = state.library.find_id_by_name(game_name).await.ok().flatten() else {
+    let Some(game_id) = state.library.find_id_by_name(game_name, None).await.ok().flatten() else {
         tracing::error!(name = %game_name, "plugin backup: game not in library");
         return Json(json!({ "acted": true, "ok": false, "reason": "game not in library" }));
     };
