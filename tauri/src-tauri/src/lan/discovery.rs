@@ -347,6 +347,9 @@ async fn listen_loop(
             let port_changed = entry
                 .map(|e| (e.peer.file_server_port == 0) != (packet.file_server_port == 0))
                 .unwrap_or(false);
+            let name_changed = entry
+                .map(|e| e.peer.device_name != packet.device_name)
+                .unwrap_or(false);
             peers.insert(
                 packet.device_id.clone(),
                 PeerEntry {
@@ -362,7 +365,7 @@ async fn listen_loop(
                     last_seen: Instant::now(),
                 },
             );
-            is_new || count_changed || port_changed
+            is_new || count_changed || port_changed || name_changed
         };
         if changed {
             on_change();
