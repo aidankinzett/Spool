@@ -256,11 +256,10 @@ pub async fn fetch_steam_metadata(
         .await
         .map_err(|e| AppError::Other(format!("steam appdetails failed: {e}")))?;
     if !resp.status().is_success() {
-        // 429 (rate limited) and friends land here — surface as a
-        // soft None so callers log-and-continue rather than abort a
-        // whole backfill run.
-        tracing::warn!(steam_id, status = %resp.status(), "steam appdetails non-2xx");
-        return Ok(None);
+        return Err(AppError::Other(format!(
+            "steam appdetails status: {}",
+            resp.status()
+        )));
     }
 
     // Top-level shape is { "<appid>": { success, data } }.
