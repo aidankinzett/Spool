@@ -197,35 +197,56 @@ async fn get_games_handler(
         .list()
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    // Build the response in library order first. Each shared game that still
+    // reads a 0 install size (the startup backfill hasn't reached it — common
+    // for a game shared the same session it was added) needs its folder size
+    // computed on demand so the peer doesn't see a blank size. `shareable`
+    // already guarantees a real folder on disk to walk.
     let mut games: Vec<PeerGame> = Vec::new();
-    let mut filled_any = false;
+    // (index into `games`, game id, folder path) for each game needing a walk.
+    let mut pending: Vec<(usize, String, std::path::PathBuf)> = Vec::new();
     for g in entries.iter().filter(|g| g.lan_shared) {
-        let mut pg = PeerGame::from_entry(g);
-        // A peer needs the download size before installing. The recorded
-        // install size is filled by the startup backfill, but a game shared
-        // the same session it was added still reads 0 — compute it from the
-        // folder on demand (and persist via `set_install_size_if_empty`, so
-        // later requests and our own UI don't pay for it again) rather than
-        // showing the peer a blank size. `shareable` already guarantees a
-        // real folder on disk to walk.
-        if pg.install_size_mb <= 0.0 && pg.shareable {
+        let pg = PeerGame::from_entry(g);
+        let needs_walk = pg.install_size_mb <= 0.0 && pg.shareable;
+        let idx = games.len();
+        if needs_walk {
             if let Some(folder) = g.game_folder_path.clone() {
-                let path = std::path::PathBuf::from(folder);
-                let bytes = tokio::task::spawn_blocking(move || {
-                    crate::size_backfill::directory_size(&path)
-                })
-                .await
-                .unwrap_or(0);
-                if bytes > 0 {
-                    let mb = (bytes as f64) / (1024.0 * 1024.0);
-                    pg.install_size_mb = mb;
-                    if matches!(library.set_install_size_if_empty(&g.id, mb).await, Ok(true)) {
-                        filled_any = true;
-                    }
-                }
+                pending.push((idx, g.id.clone(), std::path::PathBuf::from(folder)));
             }
         }
         games.push(pg);
+    }
+
+    // Fan the per-game directory walks out concurrently with a bounded limit
+    // so the first browse after bulk-adding games doesn't walk every folder
+    // strictly one-after-another (each walk is blocking IO, hence
+    // `spawn_blocking`). The bound keeps us from hammering the disk with an
+    // unbounded number of parallel recursive walks. `buffer_unordered` yields
+    // out of order, so each future carries the `games` index + id back so we
+    // can re-associate the size to the right game and preserve response order.
+    const SIZE_WALK_CONCURRENCY: usize = 6;
+    let walks = pending.into_iter().map(|(idx, id, path)| async move {
+        let bytes = tokio::task::spawn_blocking(move || crate::size_backfill::directory_size(&path))
+            .await
+            .unwrap_or(0);
+        (idx, id, bytes)
+    });
+    let results: Vec<(usize, String, u64)> = futures_util::stream::iter(walks)
+        .buffer_unordered(SIZE_WALK_CONCURRENCY)
+        .collect()
+        .await;
+
+    let mut filled_any = false;
+    for (idx, id, bytes) in results {
+        if bytes > 0 {
+            let mb = (bytes as f64) / (1024.0 * 1024.0);
+            games[idx].install_size_mb = mb;
+            // Persist via `set_install_size_if_empty` so later requests and our
+            // own UI don't pay for the walk again.
+            if matches!(library.set_install_size_if_empty(&id, mb).await, Ok(true)) {
+                filled_any = true;
+            }
+        }
     }
     // A newly-computed size was written to the DB — repaint our own UI so the
     // size stops showing "—" without waiting for the next unrelated change.
