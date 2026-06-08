@@ -178,10 +178,12 @@
     await lib.downloadGame(selectedGame);
   }
 
-  // X / banner action: install a peer-only game, otherwise play.
+  // X / banner action — mirrors the banner buttons: an installed game plays, a
+  // peer-only game installs, an uninstalled local game reinstalls (opens Add).
   function activateSelected() {
-    if (selectedIsPeer) installSelected();
-    else launchSelected();
+    if (selectedGame?.installed) launchSelected();
+    else if (selectedIsPeer) installSelected();
+    else if (selectedGame) openView('add', { reinstall: selectedGame.id });
   }
 
   const cats = $derived<{ id: ShelfCat; label: string }[]>([
@@ -210,7 +212,7 @@
 
   const shelfLegend = $derived<{ button: GpButton; label: string }[]>([
     { button: 'a', label: 'Open' },
-    { button: 'x', label: selectedIsPeer ? 'Install' : 'Play' },
+    { button: 'x', label: selectedGame?.installed ? 'Play' : selectedIsPeer ? 'Install' : 'Reinstall' },
     { button: 'y', label: 'Search' },
     { button: 'lb', label: 'Prev' },
     { button: 'rb', label: 'Next' },
@@ -226,7 +228,7 @@
     style:--gp-focus={accent ?? 'var(--color-spool)'}
   >
     <AppChrome
-      sub={selectedGame.game_name.toUpperCase().slice(0, 18)}
+      sub={selectedGame.game_name}
       accent={accent ?? undefined}
       onback={() => (detailOpen = false)}
     />
