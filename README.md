@@ -51,6 +51,18 @@ automatically when done.
 <!-- spool:endshot -->
 
 
+### Built for handhelds
+
+On a handheld the library switches to a big-target touch layout — a shelf of large
+tiles you can drive with a touchscreen or a gamepad, instead of the desktop sidebar.
+It picks the layout automatically (or you can force desktop or touch in settings),
+so the same app feels right whether you're at your PC or on a Steam Deck.
+
+<!-- spool:shot id=library-touch -->
+<img src="docs/screenshots/library-touch.png" alt="Library Touch" width="1280" />
+<!-- spool:endshot -->
+
+
 ### Decky plugin for Game Mode
 
 A companion [Decky Loader](https://github.com/SteamDeckHomebrew/decky-loader)

@@ -63,6 +63,16 @@ const SHOTS = [
     htmlMode: 'desktop',
   },
   {
+    // The big-target touch/handheld layout (the shelf), captured at the Steam
+    // Deck's native 1280×800. The peers variant gives the LAN tab content.
+    file: 'library-touch.png',
+    title: 'Screens/Library',
+    name: 'Touch · with peers',
+    width: 1280,
+    height: 800,
+    htmlMode: 'touch',
+  },
+  {
     file: 'cloud-conflict.png',
     title: 'Modals/CloudConflictModal',
     name: 'Cloud newer',
