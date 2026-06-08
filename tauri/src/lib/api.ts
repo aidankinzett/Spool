@@ -172,7 +172,7 @@ export const api = {
     invoke('launch_game', { gameId, steal }),
   manualBackup: (
     gameId: string,
-  ): Promise<{ game_count: number; bytes_total: number; cloud_synced: boolean }> =>
+  ): Promise<{ game_count: number; bytes_total: number; cloud_synced: boolean; game_name: string }> =>
     invoke('manual_backup', { gameId }),
   manualRestore: (gameId: string): Promise<{ game_count: number }> =>
     invoke('manual_restore', { gameId }),
