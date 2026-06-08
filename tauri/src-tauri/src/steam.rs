@@ -21,12 +21,21 @@
 use crate::error::{AppError, AppResult};
 use crate::library::SharedLibrary;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::time::SystemTime;
 use steam_shortcuts_util::{
     app_id_generator::calculate_app_id, parse_shortcuts, shortcut::ShortcutOwned,
     shortcuts_to_bytes,
 };
 use tauri::{AppHandle, Emitter, State};
+use tokio::sync::Mutex;
+
+static STEAM_SHORTCUT_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+fn get_steam_shortcut_lock() -> &'static Mutex<()> {
+    STEAM_SHORTCUT_LOCK.get_or_init(|| Mutex::new(()))
+}
+
 
 /// One discovered Steam user — the userdata subfolder + path to their
 /// existing shortcuts.vdf (which may not exist yet).
@@ -379,6 +388,7 @@ fn first_steam_user() -> Option<SteamUser> {
 /// would be clobbered by Steam's own exit-write. The caller log-and-continues,
 /// since the library entry has already been (or is about to be) removed.
 pub async fn remove_game_from_steam(app_id: u32, app_name: &str) -> AppResult<bool> {
+    let _lock = get_steam_shortcut_lock().lock().await;
     let Some(user) = first_steam_user() else {
         return Ok(false);
     };
@@ -427,6 +437,7 @@ pub async fn reconcile_renamed_game(
     new_name: &str,
     exe_path: &str,
 ) -> AppResult<u32> {
+    let _lock = get_steam_shortcut_lock().lock().await;
     let spool_exe = crate::paths::spool_executable()
         .ok_or_else(|| AppError::Other("can't resolve own exe path".to_string()))?;
     let spool_exe_str = spool_exe.to_string_lossy().to_string();
@@ -489,6 +500,7 @@ const STEAM_SHUTDOWN_FAILED_MSG: &str =
 /// library from Steam's Gaming Mode on SteamOS / Steam Deck.
 #[tauri::command]
 pub async fn add_spool_to_steam() -> AppResult<AddToSteamResult> {
+    let _lock = get_steam_shortcut_lock().lock().await;
     let spool_exe = crate::paths::spool_executable()
         .ok_or_else(|| AppError::Other("can't resolve own exe path".to_string()))?;
     let spool_exe_str = spool_exe.to_string_lossy().to_string();
@@ -565,6 +577,7 @@ pub async fn add_to_steam(
     library: State<'_, SharedLibrary>,
     game_id: String,
 ) -> AppResult<AddToSteamResult> {
+    let _lock = get_steam_shortcut_lock().lock().await;
     // 1. Snapshot the data we need from the library (drop lock fast).
     let (app_name, exe_path, save_path_str, cover_image_path, steam_id, prev_app_id) = {
         let entry = library
