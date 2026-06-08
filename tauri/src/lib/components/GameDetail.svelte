@@ -37,6 +37,7 @@
   import { api, assetUrl, peerAssetUrl } from '$lib/api';
   import { toasts } from '$lib/toasts.svelte';
   import { confirmDialog } from '$lib/confirm.svelte';
+  import { confirmSteamRestart } from '$lib/steamRestart';
   import type { DisplayGame, DownloadProgress, GameEntry, RunPhase, SaveRevision } from '$lib/types';
   import {
     absDate,
@@ -412,17 +413,21 @@
 
   let addingToSteam = $state(false);
   async function addToSteam() {
+    if (!(await confirmSteamRestart())) return;
     addingToSteam = true;
     try {
       const result = await api.addToSteam(game.id);
       const extras = result.extras_placed.length
         ? ` · ${result.extras_placed.join(', ')} art placed`
         : '';
+      const sub = result.steam_restarted
+        ? `Restarting Steam — "${game.game_name}" will appear in your library${extras}.`
+        : `Restart Steam to see "${game.game_name}" in your library${extras}.`;
       toasts.show({
         kind: 'ok',
         label: 'STEAM',
         title: 'Added to Steam',
-        sub: `Restart Steam to see "${game.game_name}" in your library${extras}.`,
+        sub,
         catalog: fmtCatalog(game.catalog_number),
       });
     } catch (e) {

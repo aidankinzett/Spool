@@ -25,6 +25,7 @@
   import { emit, listen } from '@tauri-apps/api/event';
   import { api, type DeckyPluginInfo } from '$lib/api';
   import { toasts } from '$lib/toasts.svelte';
+  import { confirmSteamRestart } from '$lib/steamRestart';
   import { isNewerVersion } from '$lib/format';
   import { checkForUpdateInteractive } from '$lib/updater';
   import type { ConfigData, DepStatus, LanPeer, ProtonVersion, SyncStatus } from '$lib/types';
@@ -214,15 +215,19 @@
 
   let addingToSteam = $state(false);
   async function addSpoolToSteam() {
+    if (!(await confirmSteamRestart())) return;
     addingToSteam = true;
     try {
       const r = await api.addSpoolToSteam();
       const extras = r.extras_placed.length ? ` · ${r.extras_placed.join(', ')} art placed` : '';
+      const sub = r.steam_restarted
+        ? `Restarting Steam — launch Spool from your library${extras}. In Game Mode it opens fullscreen.`
+        : `Restart Steam, then launch Spool from your library${extras}. In Game Mode it opens fullscreen.`;
       toasts.show({
         kind: 'ok',
         label: 'STEAM',
         title: 'Added Spool to Steam',
-        sub: `Restart Steam, then launch Spool from your library${extras}. In Game Mode it opens fullscreen.`,
+        sub,
       });
     } catch (e) {
       toasts.show({ kind: 'bad', label: 'STEAM · FAILED', title: "Couldn't add to Steam", sub: String(e) });

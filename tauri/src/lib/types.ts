@@ -423,6 +423,9 @@ export type AddToSteamResult = {
   shortcuts_path: string;
   portrait_placed: boolean;
   extras_placed: string[];
+  /** True when Spool shut Steam down and relaunched it so the shortcut loads
+   * immediately. False when Steam wasn't running or couldn't be restarted. */
+  steam_restarted: boolean;
 };
 
 /**

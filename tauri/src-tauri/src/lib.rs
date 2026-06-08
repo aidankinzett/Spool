@@ -58,6 +58,7 @@ mod size_backfill;
 mod steam;
 mod steam_cdn;
 mod steam_collections;
+mod steam_process;
 mod steamgriddb;
 mod suspend;
 mod system_open;
@@ -298,6 +299,7 @@ pub fn run() {
             // steam shortcut
             steam::add_spool_to_steam,
             steam::add_to_steam,
+            steam_process::steam_game_running,
             steam_collections::sync_spool_steam_collection,
             // armoury crate launcher
             launcher::generate_armoury_launcher,
