@@ -2575,6 +2575,49 @@ async fn phase_backup(ctx: &WorkflowCtx<'_>, no_saves: bool, timing: &SessionTim
                     }
                 }
 
+                // Read the freshly-written local tip once; reused below for both
+                // the skip decision and the baseline advance. (The cloud upload
+                // doesn't touch the local mapping.yaml, so this stays valid
+                // across it.)
+                let backup_dir = ludusavi_config::backup_dir();
+                let local_tip = redirects::read_local_backup_tip(&backup_dir, ctx.game_name);
+
+                // Skip the cloud upload when this session produced no save
+                // changes and the remote already holds the current revision.
+                // ludusavi's scan reports `new + different == 0` when the live
+                // save is byte-identical to the latest backup (no new tip was
+                // written) — the same signal ludusavi-playnite uses to avoid
+                // redundant backups. But "unchanged this session" doesn't on its
+                // own mean "already uploaded": a *prior* upload could have failed
+                // and left the remote behind. So we also require the cloud-sync
+                // baseline (last tip confirmed on the remote) to match the local
+                // tip before skipping — otherwise we still owe the cloud an
+                // upload even though nothing changed this time. Only meaningful
+                // when a remote is configured.
+                let skip_upload = ctx.cloud_configured && !out.saves_changed() && {
+                    // A failed baseline read is not a reason to abort the real
+                    // upload — treat an unreadable/absent baseline as "not
+                    // current" and upload to be safe.
+                    let baseline = ctx
+                        .app
+                        .state::<SharedLibrary>()
+                        .find(ctx.game_id)
+                        .await
+                        .ok()
+                        .flatten()
+                        .and_then(|e| e.cloud_sync_baseline);
+                    match (local_tip.as_ref(), baseline) {
+                        (Some(tip), Some(base)) => tip.name == base,
+                        _ => false,
+                    }
+                };
+                if skip_upload {
+                    tracing::info!(
+                        game_name = ctx.game_name,
+                        "saves unchanged and already on the cloud — skipping upload"
+                    );
+                }
+
                 // The local revision is written. Now mirror it to the cloud as
                 // a separate, observable step so the splash can show a live
                 // "uploading" spinner instead of jumping straight from the local
@@ -2584,7 +2627,7 @@ async fn phase_backup(ctx: &WorkflowCtx<'_>, no_saves: bool, timing: &SessionTim
                 // forced `cloud upload` overwrites the remote (the same
                 // resolution the old combined path applied on a cloud conflict),
                 // so a remote that advanced under us still fast-forwards cleanly.
-                if ctx.cloud_configured {
+                if ctx.cloud_configured && !skip_upload {
                     emit_phase(
                         ctx.app,
                         ctx.game_id,
@@ -2635,8 +2678,7 @@ async fn phase_backup(ctx: &WorkflowCtx<'_>, no_saves: bool, timing: &SessionTim
                 // local and cloud genuinely differ and the next launch should
                 // re-evaluate rather than assume we're synced.
                 if ctx.cloud_configured && !cloud_upload_failed {
-                    let backup_dir = ludusavi_config::backup_dir();
-                    if let Some(tip) = redirects::read_local_backup_tip(&backup_dir, ctx.game_name) {
+                    if let Some(tip) = local_tip.as_ref() {
                         let _ = set_cloud_baseline(ctx.app, ctx.game_id, &tip.name).await;
                     }
                 }
