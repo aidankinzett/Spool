@@ -474,15 +474,42 @@ async fn run_op(
     }
 }
 
-/// `rclone cat <target>` → stdout as a String. `None` on any failure (missing
-/// file, network error, timeout).
-pub async fn cat(exe: &Path, target: &str) -> Option<String> {
+/// Outcome of a `cat`, distinguishing a genuinely missing object from a remote
+/// we couldn't reach. Lets callers tell "no cloud backup for this game yet" (a
+/// clean first upload) apart from "transient/unreachable" (don't guess).
+pub enum CatOutcome {
+    /// Object read successfully — its contents.
+    Found(String),
+    /// Remote reachable, object/dir not there (rclone exit 3 = dir, 4 = file).
+    NotFound,
+    /// Couldn't determine — connection error, retries exhausted, timeout, spawn.
+    Unreachable,
+}
+
+/// `rclone cat <target>`, classifying the result (see [`CatOutcome`]).
+pub async fn cat_outcome(exe: &Path, target: &str) -> CatOutcome {
     let mut cmd = base_command(exe);
     cmd.arg("cat").arg(target);
-    let out = run_op(cmd, "cat", None).await?;
-    out.status
-        .success()
-        .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+    match run_op(cmd, "cat", None).await {
+        Some(out) if out.status.success() => {
+            CatOutcome::Found(String::from_utf8_lossy(&out.stdout).into_owned())
+        }
+        // rclone exit codes: 3 = directory not found, 4 = file not found — a
+        // definite "it isn't there". Anything else (5 temporary, 7 fatal, or a
+        // timeout/spawn failure → None) means we can't be sure.
+        Some(out) if matches!(out.status.code(), Some(3) | Some(4)) => CatOutcome::NotFound,
+        _ => CatOutcome::Unreachable,
+    }
+}
+
+/// `rclone cat <target>` → stdout as a String. `None` on any failure (missing
+/// file, network error, timeout). Thin wrapper over [`cat_outcome`] for callers
+/// that don't need to tell missing from unreachable apart.
+pub async fn cat(exe: &Path, target: &str) -> Option<String> {
+    match cat_outcome(exe, target).await {
+        CatOutcome::Found(s) => Some(s),
+        _ => None,
+    }
 }
 
 /// `rclone rcat <target>` reading `body` from stdin → object. rclone creates
