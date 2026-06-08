@@ -4,11 +4,30 @@
    * mono eyebrow + optional catalog + time, title, sub, optional CTA,
    * dismiss X in the corner.
    */
-  import { X } from '@lucide/svelte';
-  import { toasts, fmtToastTime, type Toast } from '$lib/toasts.svelte';
+  import { X, Bug } from '@lucide/svelte';
+  import {
+    toasts,
+    fmtToastTime,
+    buildIssueUrl,
+    type Toast,
+  } from '$lib/toasts.svelte';
+  import { api } from '$lib/api';
   import MonoLabel from './MonoLabel.svelte';
 
   let { toast }: { toast: Toast } = $props();
+
+  // Opens a prefilled GitHub issue in the default browser, then dismisses.
+  // `openPath` routes through the OS handler, which opens URLs too.
+  async function openReport() {
+    if (!toast.report) return;
+    try {
+      const url = await buildIssueUrl(toast.report);
+      await api.openPath(url);
+    } catch (e) {
+      console.error('[toast] failed to open issue report:', e);
+    }
+    toasts.dismiss(toast.id);
+  }
 
   // Kind → accent CSS variable so the left strip + eyebrow tint match.
   const accent = $derived(
@@ -79,7 +98,7 @@
     </div>
     <div
       class="whitespace-pre-line text-[11.5px] text-ink-2"
-      class:mb-2.5={!!toast.cta || hasProgress}
+      class:mb-2.5={!!toast.cta || !!toast.report || hasProgress}
       style:line-height="1.45"
     >
       {toast.sub}
@@ -108,18 +127,30 @@
       </div>
     {/if}
 
-    {#if toast.cta}
+    {#if toast.cta || toast.report}
       <div class="flex gap-1.5">
-        <button
-          type="button"
-          onclick={() => {
-            toast.cta?.onClick();
-            toasts.dismiss(toast.id);
-          }}
-          class="inline-flex h-6 cursor-pointer items-center rounded-sm border border-line-1 px-2.5 text-[11.5px] font-medium text-ink-0 transition-colors hover:bg-white/5"
-        >
-          {toast.cta.label}
-        </button>
+        {#if toast.cta}
+          <button
+            type="button"
+            onclick={() => {
+              toast.cta?.onClick();
+              toasts.dismiss(toast.id);
+            }}
+            class="inline-flex h-6 cursor-pointer items-center rounded-sm border border-line-1 px-2.5 text-[11.5px] font-medium text-ink-0 transition-colors hover:bg-white/5"
+          >
+            {toast.cta.label}
+          </button>
+        {/if}
+        {#if toast.report}
+          <button
+            type="button"
+            onclick={openReport}
+            class="inline-flex h-6 cursor-pointer items-center gap-1.5 rounded-sm border border-line-1 px-2.5 text-[11.5px] font-medium text-ink-0 transition-colors hover:bg-white/5"
+          >
+            <Bug size={12} />
+            Report issue
+          </button>
+        {/if}
         <button
           type="button"
           onclick={() => toasts.dismiss(toast.id)}
