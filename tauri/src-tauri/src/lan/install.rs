@@ -48,6 +48,11 @@ const PROGRESS_EMIT_INTERVAL: Duration = Duration::from_millis(200);
 const MAX_DOWNLOAD_RETRIES: u32 = 5;
 /// Base delay for retry backoff: attempt 1 → 2 s, 2 → 4 s, 3 → 8 s …
 const RETRY_BASE_DELAY: Duration = Duration::from_secs(2);
+/// How long the install slot keeps showing a terminal `done`/`error`/`canceled`
+/// state before it frees, so a poll-based consumer (the Decky plugin's
+/// `GET /lan/download`) can observe the terminal snapshot rather than seeing the
+/// slot blink straight to empty.
+const TERMINAL_STATE_GRACE: Duration = Duration::from_secs(2);
 
 /// Snapshot of an in-flight (or just-finished) peer install. Emitted as
 /// `lan:download` events and also held in `LanDownloadState` so the UI
@@ -107,7 +112,16 @@ pub struct LanDownloadState {
 }
 
 impl LanDownloadState {
-    fn try_start(&self, p: DownloadProgress) -> AppResult<DownloadGuard<'_>> {
+    /// Claims the single install slot for `p` and returns an RAII guard
+    /// whose `Drop` releases it. The guard owns an `Arc<Self>` (not a
+    /// borrow) so `begin_install` can move it into the detached transfer
+    /// task — keeping the slot occupied for the *whole* operation,
+    /// including the manifest fetch, rather than just the moment between
+    /// claim and the early `drop`. While the slot is held a second
+    /// `try_start` is rejected, `request_cancel` can find the active
+    /// session, and `update` routes terminal errors to the UI.
+    fn try_start(self: &Arc<Self>, p: DownloadProgress) -> AppResult<DownloadGuard> {
+        let token = p.install_token.clone();
         let mut guard = self.current.lock().map_err(|_| AppError::LockPoisoned)?;
         if guard.is_some() {
             return Err(AppError::Other(
@@ -126,7 +140,10 @@ impl LanDownloadState {
             *g = Some(Instant::now());
         }
         *guard = Some(p);
-        Ok(DownloadGuard { state: self })
+        Ok(DownloadGuard {
+            state: self.clone(),
+            token,
+        })
     }
 
     /// Marks the current install as cancelled iff `token` matches. The
@@ -256,15 +273,22 @@ impl LanDownloadState {
 /// RAII guard — clears the slot when the install task ends, even if it
 /// panics. Mirrors `runner::RunGuard`. Without this a crashed transfer
 /// would jam the slot until restart.
-struct DownloadGuard<'a> {
-    state: &'a LanDownloadState,
+///
+/// Owns an `Arc<LanDownloadState>` (not a borrow) so it can be moved into
+/// the detached transfer task and live for the whole install. The clear
+/// is token-gated for the same reason `clear_if_token` is: the install
+/// task publishes its terminal "done"/"error" state and sleeps a 2 s
+/// grace period before releasing the slot, during which the user may have
+/// started a *new* install. An unconditional clear in `Drop` would wipe
+/// that second install's slot; gating on our own token leaves it alone.
+struct DownloadGuard {
+    state: Arc<LanDownloadState>,
+    token: String,
 }
 
-impl Drop for DownloadGuard<'_> {
+impl Drop for DownloadGuard {
     fn drop(&mut self) {
-        if let Ok(mut g) = self.state.current.lock() {
-            *g = None;
-        }
+        self.state.clear_if_token(&self.token);
     }
 }
 
@@ -1240,6 +1264,78 @@ async fn fetch_and_save_peer_image(
 /// manifest once the install completes — the GUI path uses this to spawn
 /// a post-install artwork fetch.
 ///
+/// Emits the terminal "canceled" state for an install cancelled during
+/// the manifest fetch (before the transfer task is spawned), then returns
+/// the matching `cancel_error()`. Mirrors exactly what the spawned
+/// transfer task publishes on cancel — `status: "canceled"`, zeroed
+/// progress, no message/new_game_id — so the UI doesn't stay stuck on the
+/// "Fetching manifest…" placeholder. Identity fields are taken from the
+/// slot snapshot (the placeholder set in `try_start`) since the manifest
+/// hasn't landed yet. The caller hands the held `DownloadGuard` to
+/// `spawn_slot_grace` so the slot keeps showing this terminal state for the
+/// grace window before it frees.
+fn emit_terminal_cancel(
+    download_state: &Arc<LanDownloadState>,
+    on_progress: &Arc<dyn Fn(&DownloadProgress) + Send + Sync>,
+    peer_addr: &str,
+    game_id: &str,
+) -> AppResult<String> {
+    let err = download_state.cancel_error();
+    tracing::info!(
+        by_host = matches!(err, AppError::HostCanceled),
+        "LAN install cancelled during manifest fetch",
+    );
+    let snap = download_state.snapshot();
+    let terminal = DownloadProgress {
+        install_token: snap
+            .as_ref()
+            .map(|p| p.install_token.clone())
+            .unwrap_or_default(),
+        source_device_id: snap
+            .as_ref()
+            .map(|p| p.source_device_id.clone())
+            .unwrap_or_default(),
+        source_device_name: snap
+            .as_ref()
+            .map(|p| p.source_device_name.clone())
+            .unwrap_or_else(|| peer_addr.to_string()),
+        source_game_id: snap
+            .as_ref()
+            .map(|p| p.source_game_id.clone())
+            .unwrap_or_else(|| game_id.to_string()),
+        game_name: snap
+            .as_ref()
+            .map(|p| p.game_name.clone())
+            .unwrap_or_default(),
+        bytes_done: 0,
+        bytes_total: snap.as_ref().map(|p| p.bytes_total).unwrap_or(0),
+        current_file: String::new(),
+        status: "canceled".into(),
+        message: None,
+        new_game_id: None,
+        bytes_per_second: 0.0,
+        cover_image_path: snap.and_then(|p| p.cover_image_path),
+    };
+    download_state.set(Some(terminal.clone()));
+    on_progress(&terminal);
+    Err(err)
+}
+
+/// Hold the install slot for [`TERMINAL_STATE_GRACE`] in a detached task, then
+/// release it (the guard's token-gated `Drop` clears the slot). The
+/// manifest-phase early-return paths in `begin_install` publish a terminal
+/// `canceled`/`error` snapshot and then return; without this the `slot_guard`
+/// local would drop the instant `begin_install` returns, clearing the slot
+/// before a polling consumer (the Decky plugin) could read the terminal state.
+/// Mirrors the grace the spawned transfer task already gives the success and
+/// late-failure paths.
+fn spawn_slot_grace(guard: DownloadGuard) {
+    tokio::spawn(async move {
+        tokio::time::sleep(TERMINAL_STATE_GRACE).await;
+        drop(guard);
+    });
+}
+
 /// Returns the `install_token` (UUID) once the transfer has been queued.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn begin_install(
@@ -1279,11 +1375,15 @@ pub(crate) async fn begin_install(
         bytes_per_second: 0.0,
         cover_image_path: None,
     };
-    // try_start acquires the slot. The returned guard's Drop clears it
-    // on panic, but we drop it manually here since the actual cleanup
-    // happens in the spawned task below.
-    let _check = download_state.try_start(placeholder.clone())?;
-    drop(_check);
+    // Claim the single install slot and hold it for the whole operation.
+    // The guard is moved into the spawned transfer task below, so the
+    // slot stays occupied across the manifest fetch (up to
+    // MANIFEST_FETCH_TIMEOUT): a concurrent `begin_install` is rejected,
+    // `request_cancel` can find this session, and a manifest-fetch
+    // failure routes through `update`/`set` to emit a terminal event.
+    // The guard's token-gated `Drop` releases the slot on every exit
+    // (success, error, cancel, panic, or the early returns below).
+    let slot_guard = download_state.try_start(placeholder.clone())?;
     on_progress(&placeholder);
 
     // Fetch the manifest. Uses MANIFEST_FETCH_TIMEOUT because the host
@@ -1295,7 +1395,7 @@ pub(crate) async fn begin_install(
         "http://{peer_addr}:{peer_port}/games/{game_id}/manifest?session={}",
         urlencoding::encode(&install_token),
     );
-    let manifest_result: AppResult<PeerGameManifest> = async {
+    let manifest_fetch = async {
         let resp = http
             .get(&manifest_url)
             .timeout(MANIFEST_FETCH_TIMEOUT)
@@ -1313,19 +1413,59 @@ pub(crate) async fn begin_install(
         resp.json::<PeerGameManifest>()
             .await
             .map_err(|e| AppError::Other(format!("parse manifest: {e}")))
-    }
-    .await;
+    };
+
+    // Race the manifest fetch (bounded by MANIFEST_FETCH_TIMEOUT, up to
+    // ~5 minutes on a multi-GB game the host has to hash) against a
+    // short cancel-poll. The fetch's HTTP request itself isn't
+    // cancellable, so without this a user who taps Cancel on a wedged
+    // "Fetching manifest…" would wait the full timeout. Since the slot
+    // is held by *this* install and `try_start` cleared the cancel flag,
+    // an observed `is_canceled()` means our own token was cancelled via
+    // `request_cancel`. `tokio::select!` drops the losing branch's
+    // future when one resolves, so a cancel drops the in-flight request.
+    let manifest_result: AppResult<PeerGameManifest> = tokio::select! {
+        biased;
+        () = async {
+            let mut tick = tokio::time::interval(Duration::from_millis(250));
+            loop {
+                tick.tick().await;
+                if download_state.is_canceled() {
+                    return;
+                }
+            }
+        } => Err(download_state.cancel_error()),
+        m = manifest_fetch => m,
+    };
 
     let manifest = match manifest_result {
-        Ok(m) => m,
+        // A cancel can also land in the gap between the fetch resolving
+        // and the spawn below — re-check here so it surfaces as a
+        // cancellation rather than proceeding into the transfer.
+        Ok(m) if !download_state.is_canceled() => m,
+        Ok(_) => {
+            let r = emit_terminal_cancel(&download_state, &on_progress, &peer_addr, &game_id);
+            spawn_slot_grace(slot_guard);
+            return r;
+        }
+        Err(e) if e.is_canceled() => {
+            let r = emit_terminal_cancel(&download_state, &on_progress, &peer_addr, &game_id);
+            spawn_slot_grace(slot_guard);
+            return r;
+        }
         Err(e) => {
+            // The slot is still held, so `update` finds the placeholder and the
+            // UI gets a terminal "error" event instead of staying stuck on
+            // "Fetching manifest…". Hand the guard to a grace holder so the slot
+            // keeps showing "error" briefly for poll-based consumers before it
+            // frees, rather than dropping the instant we return.
             if let Some(snap) = download_state.update(|p| {
                 p.status = "error".into();
                 p.message = Some(format!("{e}"));
             }) {
                 on_progress(&snap);
             }
-            download_state.clear_if_token(&install_token);
+            spawn_slot_grace(slot_guard);
             return Err(e);
         }
     };
@@ -1393,8 +1533,12 @@ pub(crate) async fn begin_install(
         on_progress: on_progress.clone(),
     });
 
-    // Spawn the heavy transfer + library-registration work.
+    // Spawn the heavy transfer + library-registration work. `slot_guard`
+    // moves in here so the slot stays held until this task ends; its Drop
+    // (token-gated) releases it after the terminal-state grace period,
+    // even if `run_install` panics.
     tokio::spawn(async move {
+        let _slot_guard = slot_guard;
         let result = run_install(
             ctx.clone(),
             peer_addr,
@@ -1478,9 +1622,10 @@ pub(crate) async fn begin_install(
         ctx.state.set(Some(final_progress.clone()));
         (ctx.on_progress)(&final_progress);
         // Brief grace period so the UI can pick up the terminal state
-        // before the slot clears.
-        tokio::time::sleep(Duration::from_secs(2)).await;
-        ctx.state.clear_if_token(&install_token);
+        // before the slot clears. `_slot_guard`'s Drop then releases the
+        // slot (token-gated, so a new install started during this window
+        // is left untouched) as the task ends.
+        tokio::time::sleep(TERMINAL_STATE_GRACE).await;
     });
 
     Ok(return_token)

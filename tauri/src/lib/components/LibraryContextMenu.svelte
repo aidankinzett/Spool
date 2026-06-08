@@ -165,13 +165,26 @@
         return;
       }
       const mb = (r.bytes_total / (1024 * 1024)).toFixed(1);
-      toasts.show({
-        kind: 'ok',
-        label: 'LUDUSAVI',
-        title: 'Saves backed up',
-        sub: `${game.game_name} · ${mb} MB`,
-        catalog: fmtCatalog(game.catalog_number),
-      });
+      // cloud_synced is true when no upload was needed/attempted (no remote) or
+      // the upload reached the cloud; it's only false when a configured remote's
+      // upload failed or hit a conflict. Mirror the saves:backup event toast.
+      toasts.show(
+        r.cloud_synced
+          ? {
+              kind: 'ok',
+              label: 'LUDUSAVI',
+              title: 'Saves backed up & synced',
+              sub: `${game.game_name} · ${mb} MB · cloud updated`,
+              catalog: fmtCatalog(game.catalog_number),
+            }
+          : {
+              kind: 'warn',
+              label: 'LUDUSAVI',
+              title: 'Backed up locally',
+              sub: `${game.game_name} · ${mb} MB · cloud sync pending`,
+              catalog: fmtCatalog(game.catalog_number),
+            },
+      );
     } catch (e) {
       toasts.show({
         kind: 'bad',

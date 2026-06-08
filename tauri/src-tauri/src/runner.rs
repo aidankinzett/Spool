@@ -2262,10 +2262,18 @@ async fn phase_launch(ctx: &WorkflowCtx<'_>, exe_pathbuf: &Path) -> AppResult<Se
         // Playtime + last-played are derived from the session timeline (the row
         // just inserted), not accumulated — so a remote switch carries them over
         // for free via the history blob, and a re-fold can't drop them.
-        ctx.app
+        // Best-effort: a transient recompute failure must not abort the run
+        // (else phase_backup never runs and the pending-backup marker is never
+        // cleared, blocking peers until it ages out). The cached value is
+        // derived and self-heals on the next launch/fold, so swallowing is safe.
+        if let Err(e) = ctx
+            .app
             .state::<SharedLibrary>()
             .recompute_playtime(ctx.game_name)
-            .await?;
+            .await
+        {
+            tracing::warn!(error = %e, game = ctx.game_name, "failed to recompute playtime");
+        }
         let _ = ctx.app.emit("library:changed", &ctx.game_id.to_string());
     }
 
