@@ -19,7 +19,7 @@
   import { api, assetUrl, peerAssetUrl } from '$lib/api';
   import { fmtCatalog, relDate } from '$lib/format';
   import type { DisplayGame, GameEntry } from '$lib/types';
-  import { isSyntheticPeerId, type Library } from '$lib/library.svelte';
+  import { isSyntheticPeerId, shareableSources, type Library } from '$lib/library.svelte';
   import AppChrome from '$lib/components/AppChrome.svelte';
   import MonoLabel from '$lib/components/MonoLabel.svelte';
   import GameDetail from '$lib/components/GameDetail.svelte';
@@ -563,7 +563,7 @@
                   </span>
                   <span>·</span>
                   {#if peer}
-                    {@const sourceCount = g.peer_sources?.length ?? 1}
+                    {@const sourceCount = shareableSources(g).length}
                     <span class="truncate">
                       {sourceCount > 1 ? `${sourceCount} devices` : `from ${peer.device_name}`}
                     </span>

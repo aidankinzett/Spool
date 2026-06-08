@@ -35,7 +35,9 @@
     accent?: string | null;
     /** Webview-loadable cover URL; placeholder when null. */
     coverUrl?: string | null;
-    /** Candidate devices offering the game (already deduped + name-sorted). */
+    /** Candidate devices to download from — already filtered to shareable +
+     *  live by `liveSourcesFor` and name-sorted, so a row only needs the
+     *  `online` re-check below to catch a device dropping while the modal is open. */
     sources: PeerSource[];
     /** Live peer list — joined per source for freshness + an offline guard. */
     peers: LanPeer[];

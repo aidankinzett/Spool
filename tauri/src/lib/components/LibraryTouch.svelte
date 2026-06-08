@@ -6,7 +6,7 @@
   import { openView } from '$lib/nav';
   import { toasts } from '$lib/toasts.svelte';
   import type { DisplayGame } from '$lib/types';
-  import { isSyntheticPeerId, downloadMatchesGame, type Library } from '$lib/library.svelte';
+  import { isSyntheticPeerId, downloadMatchesGame, shareableSources, type Library } from '$lib/library.svelte';
   import AppChrome from '$lib/components/AppChrome.svelte';
   import GameDetail from '$lib/components/GameDetail.svelte';
   import LibraryContextMenu from '$lib/components/LibraryContextMenu.svelte';
@@ -548,7 +548,7 @@
                 </div>
                 <div class="mt-px font-mono text-ink-3" style:font-size="9.5px">
                   {#if !game.installed && game.peer_source}
-                    {@const sourceCount = game.peer_sources?.length ?? 1}
+                    {@const sourceCount = shareableSources(game).length}
                     {sourceCount > 1 ? `${sourceCount} devices` : `from ${game.peer_source.device_name}`}
                   {:else}
                     {game.last_played_at ? relDate(game.last_played_at) : 'unplayed'}

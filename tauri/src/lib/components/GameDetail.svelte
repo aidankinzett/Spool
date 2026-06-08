@@ -33,7 +33,7 @@
   } from '@lucide/svelte';
   import { onMount } from 'svelte';
   import { openView } from '$lib/nav';
-  import { isSyntheticPeerId, downloadMatchesGame } from '$lib/library.svelte';
+  import { isSyntheticPeerId, downloadMatchesGame, sourcesOf, shareableSources } from '$lib/library.svelte';
   import { api, assetUrl, peerAssetUrl } from '$lib/api';
   import { toasts } from '$lib/toasts.svelte';
   import { confirmDialog } from '$lib/confirm.svelte';
@@ -144,9 +144,11 @@
   // covers both synthetic "available on LAN" rows and local uninstalled rows a
   // peer can supply.
   const peerSource = $derived(game.peer_source ?? null);
-  // How many devices offer this game. >1 means clicking Download opens the
-  // source chooser rather than installing straight away (issue #321).
-  const peerSourceCount = $derived(game.peer_sources?.length ?? (peerSource ? 1 : 0));
+  // How many devices can serve this game (shareable only — a peer that lists it
+  // without a folder isn't a real source). More than one means the Download
+  // button offers a chooser; the store re-checks which sources are still online
+  // when it's actually clicked (issue #321).
+  const peerSourceCount = $derived(shareableSources(game).length);
   // A synthetic "available on LAN" row — not a real library entry on this
   // device, so per-entry actions (Edit, Remove, Steam…) don't apply yet.
   const isSyntheticPeer = $derived(isSyntheticPeerId(game.id));
@@ -162,10 +164,7 @@
   // first progress event hasn't landed yet. Checks every source so a
   // non-primary chooser pick is recognised too.
   const peerStarting = $derived(
-    startingGameId != null &&
-      (game.peer_sources ?? (peerSource ? [peerSource] : [])).some(
-        (s) => s.source_game_id === startingGameId,
-      ),
+    startingGameId != null && sourcesOf(game).some((s) => s.source_game_id === startingGameId),
   );
   // Disabled while any install is in progress (one slot), or the peer can't
   // actually stream it.

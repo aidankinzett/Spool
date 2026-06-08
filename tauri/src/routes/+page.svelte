@@ -239,7 +239,7 @@
     gameName={pc.game.game_name}
     accent={pc.game.accent_color}
     coverUrl={assetUrl(pc.game.cover_image_path) ??
-      (pc.game.peer_source ? peerAssetUrl(pc.game.peer_source, 'cover') : null)}
+      (pc.sources[0] ? peerAssetUrl(pc.sources[0], 'cover') : null)}
     sources={pc.sources}
     peers={lib.lanPeers}
     context={uiMode.resolved === 'touch' ? 'gamemode' : 'desktop'}

@@ -6,6 +6,8 @@ import {
   mergeDisplayGames,
   isSyntheticPeerId,
   downloadMatchesGame,
+  sourcesOf,
+  shareableSources,
 } from '$lib/library.svelte';
 import type { GameEntry, LanPeer, PeerGame, PeerSource } from '$lib/types';
 
@@ -261,10 +263,47 @@ describe('mergeDisplayGames', () => {
     expect(out[0].peer_sources?.map((s) => s.device_name)).toEqual(['Deck', 'Desktop']);
   });
 
+  it('prefers a shareable source as primary over a non-shareable one that sorts first by name', () => {
+    // 'Deck' (sorts first alphabetically) lists the game but can't serve it
+    // (shareable:false — no folder); 'Desktop' can. The primary must be the
+    // device that can actually be downloaded from, so the Download button isn't
+    // disabled while a working copy exists.
+    const out = mergeDisplayGames(
+      [],
+      catalogs(
+        [PEER_A, [pg({ id: 'p1', game_name: 'Celeste', shareable: false })]],
+        [PEER_B, [pg({ id: 'p2', game_name: 'Celeste', shareable: true })]],
+      ),
+    );
+    expect(out).toHaveLength(1);
+    expect(out[0].peer_source?.device_id).toBe('dev-b');
+    // Both are still listed (the non-shareable one for context), shareable first.
+    expect(out[0].peer_sources?.map((s) => s.device_id)).toEqual(['dev-b', 'dev-a']);
+  });
+
   it('ignores an empty catalogue set', () => {
     const out = mergeDisplayGames([g({ id: 'local', game_name: 'A' })], {});
     expect(out).toHaveLength(1);
     expect(out[0].id).toBe('local');
+  });
+});
+
+describe('sourcesOf / shareableSources', () => {
+  function ps(device_id: string, shareable: boolean): PeerSource {
+    return { device_id, device_name: device_id, addr: '', file_server_port: 1, source_game_id: 'g', shareable };
+  }
+
+  it('sourcesOf reads peer_sources, falling back to the lone peer_source', () => {
+    const all = [ps('a', true), ps('b', false)];
+    expect(sourcesOf({ peer_sources: all }).map((s) => s.device_id)).toEqual(['a', 'b']);
+    expect(sourcesOf({ peer_source: ps('a', true) }).map((s) => s.device_id)).toEqual(['a']);
+    expect(sourcesOf({})).toEqual([]);
+  });
+
+  it('shareableSources drops devices that can not serve the game', () => {
+    const all = [ps('a', true), ps('b', false), ps('c', true)];
+    expect(shareableSources({ peer_sources: all }).map((s) => s.device_id)).toEqual(['a', 'c']);
+    expect(shareableSources({ peer_source: ps('b', false) })).toEqual([]);
   });
 });
 
