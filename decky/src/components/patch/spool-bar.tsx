@@ -1,5 +1,6 @@
 import type { LibraryGame } from "../../types";
 import { formatPlaytime, formatRelativeTime } from "../../lib/format";
+import { useNow } from "../../hooks/use-now";
 import { SpoolMark } from "../spool-mark";
 import { Reel, TapeMeter } from "./reel";
 import { BadgeMenuButton } from "./badge-menu";
@@ -85,6 +86,11 @@ export function SpoolBar({
    *  snapshot — and the menu's folder-gated items — reflect the new state. */
   onChanged?: () => void;
 }) {
+  // Re-render once a minute so the relative-time labels below ("last played",
+  // backup detail) advance on their own instead of going stale until the
+  // library re-fetches.
+  useNow();
+
   const accent = game.accent_color || C.spool;
   const st = resolveState(game, backingUp, accent);
 

@@ -4,8 +4,14 @@
  * row / hero label uses the same rendering.
  */
 
+import { clock } from './clock.svelte';
+
 /** Relative time like "3d ago", "2h ago", "just now". Returns "—" if null. */
 export function relDate(iso: string | null | undefined): string {
+  // Subscribe to the shared clock so a rendered label recomputes on its own
+  // ("just now" → "1m ago") instead of freezing until the view re-renders.
+  // Outside a reactive context this read is a harmless plain number access.
+  void clock.now;
   if (!iso) return '—';
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return '—';
