@@ -811,12 +811,16 @@ pub async fn complete_session_backup(app: &AppHandle, game_name: &str) {
     if device_id.is_empty() {
         return;
     }
-    delete_marker_if_ours(&remote, game_name, &device_id).await;
-    update_device_blob(&remote, &device_id, |b| {
-        b.device_name = device_name.clone();
-        b.backups.insert(game_name.to_string(), Utc::now().to_rfc3339());
-    })
-    .await;
+    // Marker delete and the device-blob stamp hit independent remote files, and
+    // only the blob update takes the control-plane lock — run them concurrently
+    // so their round-trips don't stack on a high-latency remote.
+    tokio::join!(
+        delete_marker_if_ours(&remote, game_name, &device_id),
+        update_device_blob(&remote, &device_id, |b| {
+            b.device_name = device_name.clone();
+            b.backups.insert(game_name.to_string(), Utc::now().to_rfc3339());
+        }),
+    );
 }
 
 /// Delete our session marker without recording a backup — used when a game
@@ -843,13 +847,15 @@ pub async fn complete_session_backup_from_config(cfg: &ConfigData, game_name: &s
     if device_id.is_empty() {
         return;
     }
-    delete_marker_if_ours(&remote, game_name, device_id).await;
     let device_name = cfg.device_name.trim().to_string();
-    update_device_blob(&remote, device_id, |b| {
-        b.device_name = device_name.clone();
-        b.backups.insert(game_name.to_string(), Utc::now().to_rfc3339());
-    })
-    .await;
+    // Independent remote files — run concurrently (mirrors complete_session_backup).
+    tokio::join!(
+        delete_marker_if_ours(&remote, game_name, device_id),
+        update_device_blob(&remote, device_id, |b| {
+            b.device_name = device_name.clone();
+            b.backups.insert(game_name.to_string(), Utc::now().to_rfc3339());
+        }),
+    );
 }
 
 // ── Suspend integration (Linux logind) ──────────────────────────────────────

@@ -2300,8 +2300,14 @@ async fn record_play_session(
         }
     }
     let minutes = (duration_secs / 60) as i32;
-    rclone::record_session(ctx.app, ctx.game_name, minutes, &ended_at.to_rfc3339()).await;
-    rclone::sync_play_history(ctx.app).await;
+    // These write independent remote files (the device blob vs the history blob)
+    // and only the first takes the control-plane lock, so run them concurrently —
+    // on a high-latency remote their round-trips would otherwise stack.
+    let ended = ended_at.to_rfc3339();
+    tokio::join!(
+        rclone::record_session(ctx.app, ctx.game_name, minutes, &ended),
+        rclone::sync_play_history(ctx.app),
+    );
     true
 }
 
@@ -2379,9 +2385,13 @@ pub async fn record_session_headless(
     }
     // Push cross-device playtime now, gated on the row insert above — same
     // contract as the in-process path. The caller only does the backup-completion
-    // side effects (marker delete + backup stamp).
-    rclone::record_session_from_config(cfg, game_name, minutes, &ended_at.to_rfc3339()).await;
-    rclone::sync_play_history_from_config(cfg, library).await;
+    // side effects (marker delete + backup stamp). Independent remote files, so
+    // run concurrently (mirrors record_play_session).
+    let ended = ended_at.to_rfc3339();
+    tokio::join!(
+        rclone::record_session_from_config(cfg, game_name, minutes, &ended),
+        rclone::sync_play_history_from_config(cfg, library),
+    );
     tracing::info!(game = game_name, duration_secs, "forced-close: recorded play session");
     Some(minutes)
 }
