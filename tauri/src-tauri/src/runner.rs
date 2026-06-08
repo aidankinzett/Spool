@@ -618,13 +618,13 @@ pub async fn pull_cloud_saves_core(
         .find(game_id)
         .await?
         .and_then(|e| e.cloud_sync_baseline);
-    let decision = decide_cloud_sync(base.as_deref(), local_tip.as_ref(), cloud_tip.as_ref());
+    let decision = decide_cloud_sync(base.as_deref(), local_tip.as_ref(), &cloud_tip);
     tracing::info!(
         game_name,
         ?decision,
         base = ?base,
         local = ?local_tip.as_ref().map(|t| t.name.as_str()),
-        cloud = ?cloud_tip.as_ref().map(|t| t.name.as_str()),
+        cloud = ?cloud_tip,
         "pull_cloud_saves reconciliation"
     );
     match decision {
@@ -667,7 +667,7 @@ pub async fn pull_cloud_saves_core(
                     "Cloud sync conflict — local and cloud saves both changed.".into(),
                 ));
             }
-            if let Some(tip) = cloud_tip.as_ref() {
+            if let Some(tip) = cloud_tip.tip() {
                 let _ = set_baseline_in(library, game_id, &tip.name).await;
             }
             mark_synced_badge(library, game_id).await;
@@ -1109,31 +1109,68 @@ fn resolve_rclone_remote() -> Option<(PathBuf, String, String)> {
     Some((rclone_exe, remote_name, remote_path))
 }
 
-/// Fetch and parse a remote `mapping.yaml` as a backup tip.
-/// Uses `rclone::cat` (which applies FAST_FLAGS) so unreachable remotes
-/// fail quickly rather than blocking for rclone's full default timeout.
-async fn rclone_cat_tip(rclone_exe: &Path, target: &str) -> Option<redirects::BackupTip> {
-    let body = crate::rclone::cat(rclone_exe, target).await?;
-    redirects::read_backup_tip_from_str(&body)
+/// The cloud side of a reconciliation. Distinguishes a backup that's genuinely
+/// absent (remote reachable, this game has no cloud backup yet — a clean first
+/// upload) from one we simply couldn't read (unreachable / transient), so the
+/// reconciler can push silently in the first case but stay conservative in the
+/// second.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CloudTip {
+    /// A readable cloud backup tip.
+    Present(redirects::BackupTip),
+    /// Remote reachable, no cloud backup for this game — safe to push.
+    Absent,
+    /// Couldn't determine (unreachable / transient / unparseable) — don't guess.
+    Unknown,
+}
+
+impl CloudTip {
+    /// The tip when present, else `None` — for callers that only need the tip.
+    fn tip(&self) -> Option<&redirects::BackupTip> {
+        match self {
+            CloudTip::Present(t) => Some(t),
+            _ => None,
+        }
+    }
 }
 
 /// Fetch the cloud copy of a game's `mapping.yaml` tip. Tries the exact game
 /// folder name then the Windows-safe variant (mirrors the local lookup and
-/// `query_rclone_details`). `None` when cloud isn't configured or absent.
-async fn fetch_cloud_backup_tip(game_name: &str) -> Option<redirects::BackupTip> {
-    let (rclone_exe, remote_name, remote_path) = resolve_rclone_remote()?;
+/// `query_rclone_details`). Returns [`CloudTip::Absent`] only when every
+/// candidate is definitively not found (remote reachable); any unreachable or
+/// unparseable result yields [`CloudTip::Unknown`]. Uses `rclone::cat_outcome`
+/// (which applies FAST_FLAGS) so unreachable remotes fail quickly.
+async fn fetch_cloud_backup_tip(game_name: &str) -> CloudTip {
+    let Some((rclone_exe, remote_name, remote_path)) = resolve_rclone_remote() else {
+        return CloudTip::Unknown;
+    };
     let mut folders = vec![game_name.to_string()];
     let safe = redirects::windows_safe_name(game_name);
     if safe != game_name {
         folders.push(safe);
     }
+    // Absent only if *every* candidate was a definite NotFound. A single
+    // Unreachable (or a read-but-unparseable mapping.yaml) means we can't be
+    // sure the cloud is empty, so we stay conservative.
+    let mut all_not_found = true;
     for folder in folders {
         let target = format!("{remote_name}:{remote_path}/{folder}/mapping.yaml");
-        if let Some(tip) = rclone_cat_tip(&rclone_exe, &target).await {
-            return Some(tip);
+        match crate::rclone::cat_outcome(&rclone_exe, &target).await {
+            crate::rclone::CatOutcome::Found(body) => {
+                if let Some(tip) = redirects::read_backup_tip_from_str(&body) {
+                    return CloudTip::Present(tip);
+                }
+                all_not_found = false; // read but couldn't parse — don't clobber
+            }
+            crate::rclone::CatOutcome::NotFound => {}
+            crate::rclone::CatOutcome::Unreachable => all_not_found = false,
         }
     }
-    None
+    if all_not_found {
+        CloudTip::Absent
+    } else {
+        CloudTip::Unknown
+    }
 }
 
 /// How to reconcile a ludusavi-reported cloud conflict.
@@ -1160,16 +1197,20 @@ enum CloudSyncDecision {
 /// equals `base`, both moved → divergence. Without a baseline (legacy entry /
 /// never synced) we fall back to a timestamp heuristic — the newer tip wins as
 /// a fast-forward; ties or missing data are treated as divergence so we prompt
-/// rather than guess. A missing *cloud* tip while ludusavi reports a conflict is
-/// also treated as divergence: the conflict means the cloud has *something* we
-/// couldn't read (e.g. transient rclone failure), so we must not clobber it.
+/// rather than guess.
+///
+/// A cloud side that's genuinely [`CloudTip::Absent`] (remote reachable, no
+/// backup for this game) is a clean first upload, not a conflict — push it. Only
+/// an *unreadable* cloud ([`CloudTip::Unknown`]) is treated as divergence: the
+/// conflict ludusavi reported means the cloud may have something we couldn't
+/// read, so we must not clobber it.
 fn decide_cloud_sync(
     base: Option<&str>,
     local: Option<&redirects::BackupTip>,
-    cloud: Option<&redirects::BackupTip>,
+    cloud: &CloudTip,
 ) -> CloudSyncDecision {
     match (local, cloud) {
-        (Some(l), Some(c)) => {
+        (Some(l), CloudTip::Present(c)) => {
             if l.name == c.name {
                 return CloudSyncDecision::InSync;
             }
@@ -1189,11 +1230,15 @@ fn decide_cloud_sync(
                 std::cmp::Ordering::Equal => CloudSyncDecision::Diverged,
             }
         }
+        // Local has a backup, cloud genuinely has none → clean first upload.
+        (Some(_), CloudTip::Absent) => CloudSyncDecision::FastForwardUpload,
+        // Local has a backup but the cloud is unreadable → don't guess, prompt.
+        (Some(_), CloudTip::Unknown) => CloudSyncDecision::Diverged,
         // Local has no backup → nothing to lose locally, pulling is safe.
-        (None, Some(_)) => CloudSyncDecision::FastForwardDownload,
-        // Cloud tip unreadable despite a reported conflict → don't guess, prompt.
-        (Some(_), None) => CloudSyncDecision::Diverged,
-        (None, None) => CloudSyncDecision::Diverged,
+        (None, CloudTip::Present(_)) => CloudSyncDecision::FastForwardDownload,
+        // Nothing on either side → nothing to reconcile (proceed).
+        (None, CloudTip::Absent) => CloudSyncDecision::InSync,
+        (None, CloudTip::Unknown) => CloudSyncDecision::Diverged,
     }
 }
 
@@ -1996,13 +2041,16 @@ async fn reconcile_cloud_conflict(ctx: &WorkflowCtx<'_>) -> AppResult<()> {
         .find(ctx.game_id)
         .await?
         .and_then(|e| e.cloud_sync_baseline);
-    let decision = decide_cloud_sync(base.as_deref(), local_tip.as_ref(), cloud_tip.as_ref());
+    let decision = decide_cloud_sync(base.as_deref(), local_tip.as_ref(), &cloud_tip);
+    // A genuinely empty cloud means this is the game's first upload, not a
+    // conflict — note that distinctly so we can reassure the user it's expected.
+    let first_upload = matches!(cloud_tip, CloudTip::Absent);
     tracing::info!(
         game_name = ctx.game_name,
         ?decision,
         base = ?base,
         local = ?local_tip.as_ref().map(|t| t.name.as_str()),
-        cloud = ?cloud_tip.as_ref().map(|t| t.name.as_str()),
+        cloud = ?cloud_tip,
         "cloud conflict reconciliation"
     );
     match decision {
@@ -2031,7 +2079,7 @@ async fn reconcile_cloud_conflict(ctx: &WorkflowCtx<'_>) -> AppResult<()> {
                     "Cloud sync conflict — open Ludusavi to resolve before launching.".into(),
                 ));
             }
-            if let Some(tip) = cloud_tip.as_ref() {
+            if let Some(tip) = cloud_tip.tip() {
                 let _ = set_cloud_baseline(ctx.app, ctx.game_id, &tip.name).await;
             }
             emit_cloud_notice(ctx.app, ctx.game_id, "Restored newer saves from the cloud");
@@ -2044,6 +2092,11 @@ async fn reconcile_cloud_conflict(ctx: &WorkflowCtx<'_>) -> AppResult<()> {
                 .await?;
             if let Some(tip) = local_tip.as_ref() {
                 let _ = set_cloud_baseline(ctx.app, ctx.game_id, &tip.name).await;
+            }
+            if first_upload {
+                // The cloud was empty for this game — reassure rather than stay
+                // silent, since the old behaviour wrongly showed a conflict here.
+                emit_cloud_notice(ctx.app, ctx.game_id, "Uploaded your saves to the cloud for the first time");
             }
         }
         CloudSyncDecision::InSync => {}
@@ -2839,9 +2892,9 @@ mod tests {
     fn ff_download_when_local_equals_base() {
         // Local unchanged since last sync, cloud advanced → pull cloud.
         let local = tip("A", 100);
-        let cloud = tip("B", 200);
+        let cloud = CloudTip::Present(tip("B", 200));
         assert_eq!(
-            decide_cloud_sync(Some("A"), Some(&local), Some(&cloud)),
+            decide_cloud_sync(Some("A"), Some(&local), &cloud),
             CloudSyncDecision::FastForwardDownload
         );
     }
@@ -2850,9 +2903,9 @@ mod tests {
     fn ff_upload_when_cloud_equals_base() {
         // Cloud unchanged since last sync, local advanced → push local.
         let local = tip("B", 200);
-        let cloud = tip("A", 100);
+        let cloud = CloudTip::Present(tip("A", 100));
         assert_eq!(
-            decide_cloud_sync(Some("A"), Some(&local), Some(&cloud)),
+            decide_cloud_sync(Some("A"), Some(&local), &cloud),
             CloudSyncDecision::FastForwardUpload
         );
     }
@@ -2861,9 +2914,9 @@ mod tests {
     fn diverged_when_both_moved_past_base() {
         // Neither side matches the baseline → both changed → real conflict.
         let local = tip("B", 200);
-        let cloud = tip("C", 210);
+        let cloud = CloudTip::Present(tip("C", 210));
         assert_eq!(
-            decide_cloud_sync(Some("A"), Some(&local), Some(&cloud)),
+            decide_cloud_sync(Some("A"), Some(&local), &cloud),
             CloudSyncDecision::Diverged
         );
     }
@@ -2871,9 +2924,9 @@ mod tests {
     #[test]
     fn in_sync_when_tips_match() {
         let local = tip("A", 100);
-        let cloud = tip("A", 100);
+        let cloud = CloudTip::Present(tip("A", 100));
         assert_eq!(
-            decide_cloud_sync(Some("A"), Some(&local), Some(&cloud)),
+            decide_cloud_sync(Some("A"), Some(&local), &cloud),
             CloudSyncDecision::InSync
         );
     }
@@ -2884,39 +2937,63 @@ mod tests {
         let newer = tip("B", 200);
         // Cloud newer → download.
         assert_eq!(
-            decide_cloud_sync(None, Some(&older), Some(&newer)),
+            decide_cloud_sync(None, Some(&older), &CloudTip::Present(tip("B", 200))),
             CloudSyncDecision::FastForwardDownload
         );
         // Local newer → upload.
         assert_eq!(
-            decide_cloud_sync(None, Some(&newer), Some(&older)),
+            decide_cloud_sync(None, Some(&newer), &CloudTip::Present(tip("A", 100))),
             CloudSyncDecision::FastForwardUpload
         );
         // Equal timestamps, different names → can't tell → prompt.
         let a = tip("A", 100);
-        let b = tip("B", 100);
         assert_eq!(
-            decide_cloud_sync(None, Some(&a), Some(&b)),
+            decide_cloud_sync(None, Some(&a), &CloudTip::Present(tip("B", 100))),
             CloudSyncDecision::Diverged
         );
     }
 
     #[test]
-    fn missing_cloud_tip_is_conservative() {
-        // ludusavi flagged a conflict but we couldn't read the cloud tip —
-        // don't clobber it, prompt instead.
+    fn unreadable_cloud_tip_is_conservative() {
+        // ludusavi flagged a conflict but we couldn't read the cloud (transient
+        // / unreachable) — don't clobber it, prompt instead.
         let local = tip("A", 100);
         assert_eq!(
-            decide_cloud_sync(Some("A"), Some(&local), None),
+            decide_cloud_sync(Some("A"), Some(&local), &CloudTip::Unknown),
             CloudSyncDecision::Diverged
+        );
+    }
+
+    #[test]
+    fn absent_cloud_with_local_is_first_upload() {
+        // Remote reachable but this game has no cloud backup yet → push, don't
+        // prompt (issue #338).
+        let local = tip("A", 100);
+        assert_eq!(
+            decide_cloud_sync(Some("A"), Some(&local), &CloudTip::Absent),
+            CloudSyncDecision::FastForwardUpload
+        );
+        // Even without a baseline.
+        assert_eq!(
+            decide_cloud_sync(None, Some(&local), &CloudTip::Absent),
+            CloudSyncDecision::FastForwardUpload
+        );
+    }
+
+    #[test]
+    fn nothing_on_either_side_is_in_sync() {
+        // No local backup and a genuinely empty cloud → nothing to reconcile.
+        assert_eq!(
+            decide_cloud_sync(None, None, &CloudTip::Absent),
+            CloudSyncDecision::InSync
         );
     }
 
     #[test]
     fn missing_local_tip_pulls_cloud() {
-        let cloud = tip("B", 200);
+        let cloud = CloudTip::Present(tip("B", 200));
         assert_eq!(
-            decide_cloud_sync(None, None, Some(&cloud)),
+            decide_cloud_sync(None, None, &cloud),
             CloudSyncDecision::FastForwardDownload
         );
     }
