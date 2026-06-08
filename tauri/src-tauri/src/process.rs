@@ -196,10 +196,10 @@ pub async fn run_game(exe_path: &Path, spec: LaunchSpec<'_>) -> AppResult<GameEx
 
             let mut cmd = Command::new(&launch.program);
             cmd.args(&launch.args).envs(launch.env).current_dir(cwd);
-            cmd.envs(extra_env.iter().copied());
             cmd.stdout(std::process::Stdio::piped());
             cmd.stderr(std::process::Stdio::piped());
             strip_appimage_env(&mut cmd);
+            cmd.envs(extra_env.iter().copied());
             let mut child = cmd
                 .spawn()
                 .map_err(|e| AppError::Other(format!("failed to start game via Proton: {e}")))?;

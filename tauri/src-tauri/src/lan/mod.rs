@@ -117,7 +117,11 @@ impl LanUploadsState {
                 last_seen_ago_secs: now.saturating_duration_since(s.last_active).as_secs(),
                 cancelled: s.cancelled,
                 bytes_total: s.bytes_total,
-                bytes_sent: s.bytes_sent,
+                bytes_sent: if s.bytes_total > 0 {
+                    std::cmp::min(s.bytes_sent, s.bytes_total)
+                } else {
+                    s.bytes_sent
+                },
             })
             .collect()
     }

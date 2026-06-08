@@ -73,6 +73,11 @@ describe("fmtSize", () => {
     expect(fmtSize(0.5)).toBe("512 KB");
     expect(fmtSize(0.0001)).toBe("0.1 KB"); // ~102 bytes
   });
+
+  it("rounds up across the KB/MB/GB boundaries cleanly", () => {
+    expect(fmtSize(0.9999)).toBe("1.0 MB");
+    expect(fmtSize(1023.99)).toBe("1.0 GB");
+  });
 });
 
 describe("fmtRate", () => {

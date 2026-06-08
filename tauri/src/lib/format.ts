@@ -66,10 +66,22 @@ export function fmtSize(mb: number | null | undefined): string {
   if (!mb) return '—';
   if (mb < 1) {
     const kb = mb * 1024;
-    // Below 1 KB show one decimal so tiny saves aren't rounded to "0 KB".
-    return kb < 1 ? `${kb.toFixed(1)} KB` : `${Math.round(kb)} KB`;
+    if (kb < 1) {
+      return `${kb.toFixed(1)} KB`;
+    }
+    const roundedKb = Math.round(kb);
+    if (roundedKb < 1024) {
+      return `${roundedKb} KB`;
+    }
+    mb = 1.0;
   }
-  if (mb < 1024) return `${mb.toFixed(1)} MB`;
+  if (mb < 1024) {
+    const s = mb.toFixed(1);
+    if (s !== '1024.0') {
+      return `${s} MB`;
+    }
+    mb = 1024.0;
+  }
   return `${(mb / 1024).toFixed(1)} GB`;
 }
 
