@@ -3,6 +3,7 @@ import { Navigation } from "@decky/ui";
 import type { LaunchInfo, LibraryGame } from "../types";
 import { buildInverseAppidMap, loadAppidMap, rememberAppid } from "./appid-map";
 import {
+  addToSpoolCollection,
   appStillExists,
   applyArtwork,
   resolveSteamGameId,
@@ -123,6 +124,9 @@ async function ensureShortcut(
   // Set library artwork live (portrait/hero/logo/wide). Fired in the background
   // so a slow or stalled loopback server cannot delay the caller.
   void applyArtwork(base, gameId, appid, apps);
+  // Keep the "Spool" library collection in sync, mirroring desktop "Add to
+  // Steam". Background + best-effort — never blocks adding/launching.
+  void addToSpoolCollection(appid);
 
   return { appid, info };
 }

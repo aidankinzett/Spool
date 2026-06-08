@@ -54,6 +54,74 @@ export function appStillExists(appid: number): boolean {
   }
 }
 
+// Display name of the library collection Spool keeps its games in — matches the
+// desktop `steam_collections` sync so both modes land games in the same place.
+const SPOOL_COLLECTION_NAME = "Spool";
+
+// A Steam app overview (opaque to us — we only pass it back to Steam APIs).
+interface AppOverview {
+  appid: number;
+}
+
+// The slice of Steam's in-memory `collectionStore` we use to add a shortcut to a
+// named user collection live, the Game-Mode equivalent of the desktop
+// `steam_collections::sync_spool_collection` (which writes the namespace file).
+interface SteamCollection {
+  allApps?: AppOverview[];
+  AsDragDropCollection(): { AddApps(apps: AppOverview[]): void };
+  Save(): Promise<void> | void;
+}
+interface CollectionStore {
+  GetUserCollectionsByName?(name: string): SteamCollection[] | undefined;
+  NewUnsavedCollection?(name: string, source: undefined, apps: AppOverview[]): SteamCollection;
+}
+
+function collectionStore(): CollectionStore | undefined {
+  return (window as unknown as { collectionStore?: CollectionStore }).collectionStore;
+}
+
+function appOverview(appid: number): AppOverview | undefined {
+  try {
+    const store = (
+      window as unknown as {
+        appStore?: { GetAppOverviewByAppID?: (id: number) => AppOverview | undefined };
+      }
+    ).appStore;
+    return store?.GetAppOverviewByAppID?.(appid);
+  } catch {
+    return undefined;
+  }
+}
+
+// Add a shortcut to the "Spool" library collection, creating the collection if
+// it doesn't exist yet — the desktop "Add to Steam" does the same via the
+// namespace file, but in Game Mode the shortcut is created live so we use the
+// in-memory collectionStore instead. Best-effort: the collectionStore API is
+// undocumented and varies between Steam builds, so every step is guarded and a
+// failure never blocks adding/launching the game.
+export async function addToSpoolCollection(appid: number): Promise<void> {
+  try {
+    const cs = collectionStore();
+    if (!cs?.GetUserCollectionsByName || !cs.NewUnsavedCollection) return;
+    const overview = appOverview(appid);
+    if (!overview) return;
+
+    let collection = cs.GetUserCollectionsByName(SPOOL_COLLECTION_NAME)?.[0];
+    if (!collection) {
+      collection = cs.NewUnsavedCollection(SPOOL_COLLECTION_NAME, undefined, []);
+    }
+    if (!collection) return;
+    // Already a member — nothing to write.
+    if (collection.allApps?.some((a) => a.appid === appid)) return;
+
+    collection.AsDragDropCollection().AddApps([overview]);
+    await collection.Save();
+    console.log(`[Spool] added appid=${appid} to "${SPOOL_COLLECTION_NAME}" collection`);
+  } catch (e) {
+    console.warn("[Spool] addToSpoolCollection failed", e);
+  }
+}
+
 // Steam's gameid for a non-Steam shortcut: (appid << 32) | 0x02000000.
 function shortcutGameId(appid: number): string {
   return ((BigInt(appid) << 32n) | 0x02000000n).toString();
