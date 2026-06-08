@@ -100,6 +100,11 @@ pub fn ensure_config() -> AppResult<()> {
     // Differentials always off (see invariants above).
     changed |= set_path(&mut v, &["backup", "retention", "differential"], Value::Number(0.into()));
 
+    // Upgrade a legacy bare-string remote (written by Spool versions that
+    // targeted an older ludusavi) to ludusavi 0.31's tagged struct-variant form,
+    // so existing installs keep working without re-running cloud setup.
+    changed |= migrate_bare_remote(&mut v);
+
     // Ensure cloud block exists with at least a remote key; leave existing
     // values intact so a user-configured remote survives a restart.
     changed |= ensure_key_exists(&mut v, &["cloud", "remote"], Value::Null);
@@ -156,6 +161,29 @@ fn apply_retention(v: &mut Value, full: u32) {
     );
 }
 
+/// Convert a legacy bare-string `cloud.remote` (e.g. `remote: Dropbox`) into
+/// ludusavi 0.31's tagged struct-variant form (`remote: { Dropbox: { id: Dropbox } }`).
+/// Older Spool versions targeted a ludusavi where these were unit variants;
+/// 0.31 rejects the bare form (see [`apply_cloud`]). Returns true if it rewrote
+/// the value. A remote that's already a map, or null/absent, is left untouched.
+fn migrate_bare_remote(v: &mut Value) -> bool {
+    let name = match v.get(k("cloud")).and_then(|c| c.get(k("remote"))) {
+        Some(Value::String(s)) => s.clone(),
+        _ => return false,
+    };
+    match name.as_str() {
+        // OAuth presets: the bare name equals the ludusavi tag and the rclone
+        // remote name, so it doubles as the `id`.
+        "Box" | "Dropbox" | "GoogleDrive" | "OneDrive" => {
+            set_path(v, &["cloud", "remote"], tagged_remote(&name, &name))
+        }
+        // A bare WebDav/Ftp/Smb can't be repaired here (the connection details
+        // were never stored), so clear it; the user re-runs the dedicated setup.
+        "WebDav" | "Ftp" | "Smb" => set_path(v, &["cloud", "remote"], Value::Null),
+        _ => false,
+    }
+}
+
 /// Write cloud remote / path / rclone settings into the owned config.yaml.
 /// Called from `update_config` (Phase 4) when the user saves those fields.
 /// Pass `None` for a field to leave it unchanged.
@@ -187,28 +215,29 @@ fn apply_cloud(
         if prov.is_empty() {
             set_path(v, &["cloud", "remote"], Value::Null);
         } else {
+            // ludusavi 0.31's `cloud.remote` variants are all *struct* variants
+            // carrying at least an `id` (the rclone remote name). A bare string
+            // serialises as a unit variant, which ludusavi rejects with
+            // "invalid type: unit variant, expected struct variant" — failing the
+            // whole config. So every remote is written as the tagged map
+            // `{ <Tag>: { id: <name> } }`.
             match prov {
-                "custom" => {
-                    let mut custom_map = serde_yaml::Mapping::new();
-                    custom_map.insert(Value::String("id".into()), Value::String(rem.to_string()));
-                    let mut remote_map = serde_yaml::Mapping::new();
-                    remote_map.insert(Value::String("Custom".into()), Value::Mapping(custom_map));
-                    set_path(v, &["cloud", "remote"], Value::Mapping(remote_map));
-                }
-                "box" => { set_path(v, &["cloud", "remote"], Value::String("Box".into())); }
-                "dropbox" => { set_path(v, &["cloud", "remote"], Value::String("Dropbox".into())); }
-                "google-drive" => { set_path(v, &["cloud", "remote"], Value::String("GoogleDrive".into())); }
-                "onedrive" => { set_path(v, &["cloud", "remote"], Value::String("OneDrive".into())); }
-                "ftp" => { set_path(v, &["cloud", "remote"], Value::String("Ftp".into())); }
-                "smb" => { set_path(v, &["cloud", "remote"], Value::String("Smb".into())); }
-                "webdav" => { set_path(v, &["cloud", "remote"], Value::String("WebDav".into())); }
-                "spool-server" => {
-                    // Remote was configured by `ludusavi cloud set webdav` as a
-                    // named rclone remote — leave it untouched.
-                }
-                _ => {
-                    set_path(v, &["cloud", "remote"], Value::Null);
-                }
+                "custom" => { set_path(v, &["cloud", "remote"], tagged_remote("Custom", rem)); }
+                // The OAuth presets create an rclone remote whose name equals the
+                // ludusavi variant tag (see `oauth_remote` in rclone.rs), so the
+                // `id` is the tag itself.
+                "box" => { set_path(v, &["cloud", "remote"], tagged_remote("Box", "Box")); }
+                "dropbox" => { set_path(v, &["cloud", "remote"], tagged_remote("Dropbox", "Dropbox")); }
+                "google-drive" => { set_path(v, &["cloud", "remote"], tagged_remote("GoogleDrive", "GoogleDrive")); }
+                "onedrive" => { set_path(v, &["cloud", "remote"], tagged_remote("OneDrive", "OneDrive")); }
+                // FTP/SMB/WebDAV are struct variants needing connection details
+                // (host/port/url/credentials) that this function isn't given. The
+                // WebDAV form configures its remote through `ludusavi cloud set
+                // webdav` (see `apply_webdav_remote`), which writes the full
+                // struct. Leave any existing remote untouched rather than clobber
+                // it with an incomplete (and invalid) value.
+                "webdav" | "ftp" | "smb" | "spool-server" => {}
+                _ => { set_path(v, &["cloud", "remote"], Value::Null); }
             }
         }
     }
@@ -225,6 +254,18 @@ fn apply_cloud(
             Value::String(ensure_rclone_timeouts(a)),
         );
     }
+}
+
+/// Build ludusavi's tagged struct-variant remote map `{ <tag>: { id: <id> } }`.
+/// See the comment in [`apply_cloud`] for why the bare-string form is invalid in
+/// ludusavi 0.31. `tag` is the ludusavi variant name (`Dropbox`, `Custom`, …);
+/// `id` is the backing rclone remote name.
+fn tagged_remote(tag: &str, id: &str) -> Value {
+    let mut inner = serde_yaml::Mapping::new();
+    inner.insert(Value::String("id".into()), Value::String(id.to_string()));
+    let mut outer = serde_yaml::Mapping::new();
+    outer.insert(Value::String(tag.into()), Value::Mapping(inner));
+    Value::Mapping(outer)
 }
 
 /// Connection / IO timeout + retry caps we always fold into rclone's arguments.
@@ -688,35 +729,78 @@ mod tests {
     }
 
     #[test]
-    fn apply_cloud_preset_remote_is_a_bare_string() {
+    fn apply_cloud_preset_remote_is_a_tagged_map() {
         let mut v = Value::Mapping(Default::default());
         apply_cloud(&mut v, Some("google-drive"), Some(""), None, None, None);
+        // Expect: { GoogleDrive: { id: GoogleDrive } } — a struct variant, not a
+        // bare string (which ludusavi 0.31 rejects as a unit variant).
+        let remote = get_path(&v, &["cloud", "remote"]).unwrap();
         assert_eq!(
-            get_path(&v, &["cloud", "remote"]),
+            get_path(remote, &["GoogleDrive", "id"]),
             Some(&Value::String("GoogleDrive".into())),
+            "got: {remote:?}",
         );
     }
 
     #[test]
-    fn apply_cloud_every_preset_maps_to_ludusavi_variant() {
+    fn apply_cloud_every_oauth_preset_maps_to_tagged_variant() {
         let cases = [
             ("box", "Box"),
             ("dropbox", "Dropbox"),
             ("google-drive", "GoogleDrive"),
             ("onedrive", "OneDrive"),
-            ("ftp", "Ftp"),
-            ("smb", "Smb"),
-            ("webdav", "WebDav"),
         ];
-        for (provider, expected) in cases {
+        for (provider, tag) in cases {
             let mut v = Value::Mapping(Default::default());
             apply_cloud(&mut v, Some(provider), Some(""), None, None, None);
+            let remote = get_path(&v, &["cloud", "remote"]).unwrap();
             assert_eq!(
-                get_path(&v, &["cloud", "remote"]),
-                Some(&Value::String(expected.into())),
-                "provider {provider} should map to {expected}",
+                get_path(remote, &[tag, "id"]),
+                Some(&Value::String(tag.into())),
+                "provider {provider} should map to {{ {tag}: {{ id: {tag} }} }}, got: {remote:?}",
             );
         }
+    }
+
+    #[test]
+    fn apply_cloud_webdav_ftp_smb_leave_remote_untouched() {
+        // These are configured via their dedicated path (e.g. `ludusavi cloud set
+        // webdav`); a settings save that re-runs apply_cloud with the provider
+        // must not clobber the full struct with an incomplete value.
+        for provider in ["webdav", "ftp", "smb", "spool-server"] {
+            let mut v = Value::Mapping(Default::default());
+            set_path(&mut v, &["cloud", "remote"], tagged_remote("Custom", "preset"));
+            apply_cloud(&mut v, Some(provider), Some(""), None, None, None);
+            let remote = get_path(&v, &["cloud", "remote"]).unwrap();
+            assert_eq!(
+                get_path(remote, &["Custom", "id"]),
+                Some(&Value::String("preset".into())),
+                "provider {provider} should leave the existing remote intact",
+            );
+        }
+    }
+
+    #[test]
+    fn migrate_bare_remote_upgrades_legacy_preset() {
+        let mut v = Value::Mapping(Default::default());
+        set_path(&mut v, &["cloud", "remote"], Value::String("Dropbox".into()));
+        assert!(migrate_bare_remote(&mut v));
+        let remote = get_path(&v, &["cloud", "remote"]).unwrap();
+        assert_eq!(
+            get_path(remote, &["Dropbox", "id"]),
+            Some(&Value::String("Dropbox".into())),
+            "got: {remote:?}",
+        );
+        // Idempotent: a second pass over the now-tagged map is a no-op.
+        assert!(!migrate_bare_remote(&mut v));
+    }
+
+    #[test]
+    fn migrate_bare_remote_clears_unrepairable_legacy() {
+        let mut v = Value::Mapping(Default::default());
+        set_path(&mut v, &["cloud", "remote"], Value::String("WebDav".into()));
+        assert!(migrate_bare_remote(&mut v));
+        assert_eq!(get_path(&v, &["cloud", "remote"]), Some(&Value::Null));
     }
 
     #[test]
@@ -779,9 +863,11 @@ mod tests {
         apply_cloud(&mut v, Some("dropbox"), Some(""), Some("p"), None, None);
         // A later call that only touches rclone args must not wipe the remote/path.
         apply_cloud(&mut v, None, None, None, None, Some("--ignore-checksum"));
+        let remote = get_path(&v, &["cloud", "remote"]).unwrap();
         assert_eq!(
-            get_path(&v, &["cloud", "remote"]),
+            get_path(remote, &["Dropbox", "id"]),
             Some(&Value::String("Dropbox".into())),
+            "got: {remote:?}",
         );
         assert_eq!(
             get_path(&v, &["cloud", "path"]),
