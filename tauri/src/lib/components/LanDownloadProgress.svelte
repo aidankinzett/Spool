@@ -30,7 +30,7 @@
   );
 </script>
 
-<div class="flex flex-col gap-1">
+<div class="flex w-full min-w-0 flex-col gap-1">
   <div class="{barClass} w-full overflow-hidden rounded-full bg-bg-2">
     <div
       class="h-full transition-[width] duration-150 ease-out"
