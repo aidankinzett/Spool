@@ -48,6 +48,11 @@ const PROGRESS_EMIT_INTERVAL: Duration = Duration::from_millis(200);
 const MAX_DOWNLOAD_RETRIES: u32 = 5;
 /// Base delay for retry backoff: attempt 1 → 2 s, 2 → 4 s, 3 → 8 s …
 const RETRY_BASE_DELAY: Duration = Duration::from_secs(2);
+/// How long the install slot keeps showing a terminal `done`/`error`/`canceled`
+/// state before it frees, so a poll-based consumer (the Decky plugin's
+/// `GET /lan/download`) can observe the terminal snapshot rather than seeing the
+/// slot blink straight to empty.
+const TERMINAL_STATE_GRACE: Duration = Duration::from_secs(2);
 
 /// Snapshot of an in-flight (or just-finished) peer install. Emitted as
 /// `lan:download` events and also held in `LanDownloadState` so the UI
@@ -1266,8 +1271,9 @@ async fn fetch_and_save_peer_image(
 /// progress, no message/new_game_id — so the UI doesn't stay stuck on the
 /// "Fetching manifest…" placeholder. Identity fields are taken from the
 /// slot snapshot (the placeholder set in `try_start`) since the manifest
-/// hasn't landed yet. The held `DownloadGuard` releases the slot as the
-/// caller returns.
+/// hasn't landed yet. The caller hands the held `DownloadGuard` to
+/// `spawn_slot_grace` so the slot keeps showing this terminal state for the
+/// grace window before it frees.
 fn emit_terminal_cancel(
     download_state: &Arc<LanDownloadState>,
     on_progress: &Arc<dyn Fn(&DownloadProgress) + Send + Sync>,
@@ -1313,6 +1319,21 @@ fn emit_terminal_cancel(
     download_state.set(Some(terminal.clone()));
     on_progress(&terminal);
     Err(err)
+}
+
+/// Hold the install slot for [`TERMINAL_STATE_GRACE`] in a detached task, then
+/// release it (the guard's token-gated `Drop` clears the slot). The
+/// manifest-phase early-return paths in `begin_install` publish a terminal
+/// `canceled`/`error` snapshot and then return; without this the `slot_guard`
+/// local would drop the instant `begin_install` returns, clearing the slot
+/// before a polling consumer (the Decky plugin) could read the terminal state.
+/// Mirrors the grace the spawned transfer task already gives the success and
+/// late-failure paths.
+fn spawn_slot_grace(guard: DownloadGuard) {
+    tokio::spawn(async move {
+        tokio::time::sleep(TERMINAL_STATE_GRACE).await;
+        drop(guard);
+    });
 }
 
 /// Returns the `install_token` (UUID) once the transfer has been queued.
@@ -1423,22 +1444,28 @@ pub(crate) async fn begin_install(
         // cancellation rather than proceeding into the transfer.
         Ok(m) if !download_state.is_canceled() => m,
         Ok(_) => {
-            return emit_terminal_cancel(&download_state, &on_progress, &peer_addr, &game_id);
+            let r = emit_terminal_cancel(&download_state, &on_progress, &peer_addr, &game_id);
+            spawn_slot_grace(slot_guard);
+            return r;
         }
         Err(e) if e.is_canceled() => {
-            return emit_terminal_cancel(&download_state, &on_progress, &peer_addr, &game_id);
+            let r = emit_terminal_cancel(&download_state, &on_progress, &peer_addr, &game_id);
+            spawn_slot_grace(slot_guard);
+            return r;
         }
         Err(e) => {
-            // The slot is still held, so `update` finds the placeholder
-            // and the UI gets a terminal "error" event instead of
-            // staying stuck on "Fetching manifest…". `slot_guard`'s Drop
-            // releases the slot as we return.
+            // The slot is still held, so `update` finds the placeholder and the
+            // UI gets a terminal "error" event instead of staying stuck on
+            // "Fetching manifest…". Hand the guard to a grace holder so the slot
+            // keeps showing "error" briefly for poll-based consumers before it
+            // frees, rather than dropping the instant we return.
             if let Some(snap) = download_state.update(|p| {
                 p.status = "error".into();
                 p.message = Some(format!("{e}"));
             }) {
                 on_progress(&snap);
             }
+            spawn_slot_grace(slot_guard);
             return Err(e);
         }
     };
@@ -1598,7 +1625,7 @@ pub(crate) async fn begin_install(
         // before the slot clears. `_slot_guard`'s Drop then releases the
         // slot (token-gated, so a new install started during this window
         // is left untouched) as the task ends.
-        tokio::time::sleep(Duration::from_secs(2)).await;
+        tokio::time::sleep(TERMINAL_STATE_GRACE).await;
     });
 
     Ok(return_token)
