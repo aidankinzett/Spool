@@ -347,26 +347,29 @@ jobs:
           set -euo pipefail
           PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
 
+          # Bound the changelog to the tagged commit's own history, not wall
+          # time. The release job runs after the tag is pushed, so a purely
+          # time-based PR query would also sweep in PRs merged onto the branch
+          # between the tagged commit and when this job runs. Walk the commit
+          # range PREV_TAG..HEAD (HEAD = the tagged commit) and pull PR numbers
+          # straight from the merge commits, so the notes match what shipped.
           if [ -n "$PREV_TAG" ]; then
-            # Find when the previous tag was created so we can bound the PR search.
-            AFTER=$(git log -1 --format=%aI "$PREV_TAG")
-            SEARCH="merged:>${AFTER}"
+            RANGE="${PREV_TAG}..HEAD"
           else
-            SEARCH="is:merged"
+            RANGE="HEAD"
           fi
 
-          PRS=$(gh pr list \
-            --repo "$REPO" \
-            --state merged \
-            --search "$SEARCH" \
-            --json number,title \
-            --limit 200)
+          PR_NUMS=$(git log "$RANGE" --merges --format=%s \
+            | sed -nE 's/^Merge pull request #([0-9]+) .*/\1/p' \
+            | sort -un)
 
           : > notes.md
-          LINES=$(echo "$PRS" | jq -r 'sort_by(.number) | .[] | "- \(.title) (#\(.number))"')
-          if [ -n "$LINES" ]; then
-            printf '%s\n' "$LINES" >> notes.md
-          fi
+          for n in $PR_NUMS; do
+            title=$(gh pr view "$n" --repo "$REPO" --json title -q .title 2>/dev/null || echo "")
+            if [ -n "$title" ]; then
+              printf -- '- %s (#%s)\n' "$title" "$n" >> notes.md
+            fi
+          done
 
       - name: Create GitHub release
         # tauri-action's release-creation path ignores GITHUB_TOKEN
