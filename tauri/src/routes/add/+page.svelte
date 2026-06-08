@@ -26,6 +26,7 @@
     Type,
   } from '@lucide/svelte';
   import { api } from '$lib/api';
+  import { parentDir } from '$lib/format';
   import type { SearchCandidate } from '$lib/types';
   import AppChrome from '$lib/components/AppChrome.svelte';
   import MonoLabel from '$lib/components/MonoLabel.svelte';
@@ -65,11 +66,7 @@
   let reinstallTargetId = $state<string | null>(null);
   let reinstallName = $state<string | null>(null);
 
-  /** Parent directory of a file path, handling both `\` and `/` separators. */
-  function parentDir(path: string): string | null {
-    const idx = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
-    return idx > 0 ? path.slice(0, idx) : null;
-  }
+
 
   /**
    * Auto-fill the install folder from a candidate, unless the user has already

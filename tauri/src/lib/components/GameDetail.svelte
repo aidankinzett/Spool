@@ -46,6 +46,8 @@
     fmtPlaytime,
     fmtSize,
     relDate,
+    folderForGame,
+    parentDir,
   } from '$lib/format';
   import MonoLabel from './MonoLabel.svelte';
   import LanDownloadProgress from './LanDownloadProgress.svelte';
@@ -201,15 +203,7 @@
   // value either way, just different consumers.
   const accent = $derived(accentHex);
 
-  // Try to derive a folder path for the "Open folder" action: the entry's
-  // own game_folder_path if set, else the parent of the exe path.
-  function folderForGame(g: GameEntry): string | null {
-    if (g.game_folder_path) return g.game_folder_path;
-    if (!g.exe_path) return null;
-    const sep = g.exe_path.includes('\\') ? '\\' : '/';
-    const idx = g.exe_path.lastIndexOf(sep);
-    return idx > 0 ? g.exe_path.slice(0, idx) : null;
-  }
+
 
   async function openFolder() {
     const folder = folderForGame(game);
@@ -386,9 +380,7 @@
     generatingArmoury = true;
     try {
       const path = await api.generateArmouryLauncher(game.id);
-      const sep = path.includes('\\') ? '\\' : '/';
-      const idx = path.lastIndexOf(sep);
-      const dir = idx > 0 ? path.slice(0, idx) : path;
+      const dir = parentDir(path) ?? path;
       toasts.show({
         kind: 'ok',
         label: 'ARMOURY CRATE',
