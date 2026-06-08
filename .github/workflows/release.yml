@@ -414,10 +414,19 @@ jobs:
           PUB_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
           BASE_URL="https://github.com/$REPO/releases/download/$TAG"
 
+          # Embed the actual changelog (the per-PR list built by the
+          # "Generate changelog" step into notes.md) so the in-app updater
+          # toast can list the changes. Fall back to a link if it's empty
+          # (e.g. no merged PRs since the previous tag).
+          NOTES=$(cat notes.md 2>/dev/null || true)
+          if [ -z "$NOTES" ]; then
+            NOTES="See the release notes at $BASE_URL"
+          fi
+
           jq -n \
             --arg version "$VERSION" \
             --arg pub_date "$PUB_DATE" \
-            --arg notes    "See the release notes at $BASE_URL" \
+            --arg notes    "$NOTES" \
             --arg win_sig  "$WIN_SIG" \
             --arg win_url  "$BASE_URL/$WIN_EXE_NAME" \
             --arg lin_sig  "$LIN_SIG" \

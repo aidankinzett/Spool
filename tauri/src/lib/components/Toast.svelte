@@ -78,7 +78,7 @@
       {toast.title}
     </div>
     <div
-      class="text-[11.5px] text-ink-2"
+      class="whitespace-pre-line text-[11.5px] text-ink-2"
       class:mb-2.5={!!toast.cta || hasProgress}
       style:line-height="1.45"
     >

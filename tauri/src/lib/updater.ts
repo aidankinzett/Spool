@@ -111,13 +111,12 @@ function surfaceUpdate(update: Update, force: boolean): void {
   surfacedVersion = update.version;
 
   // Sticky toast — survives across navigations until the user
-  // dismisses it or hits Install. The notes payload from the
-  // manifest goes into the sub line; clipped to avoid runaway toasts
-  // if release notes are long.
-  const notes = (update.body ?? '').trim();
-  const sub = notes
-    ? `v${update.version}${notes ? ' — ' + truncate(notes, 140) : ''}`
-    : `v${update.version} is ready to install.`;
+  // dismisses it or hits Install. The notes payload from the manifest
+  // (the release's per-PR changelog) becomes the sub line as a short
+  // bulleted list; long changelogs collapse to a "+N more" tail so the
+  // toast can't grow without bound.
+  const notes = formatNotes(update.body ?? '');
+  const sub = notes || 'A new version is ready to install.';
 
   toasts.show({
     kind: 'info',
@@ -186,6 +185,28 @@ async function installUpdate(update: Update): Promise<void> {
       sub: String(e),
     });
   }
+}
+
+/** Max changelog lines to show before collapsing the rest to "+N more". */
+const MAX_NOTE_LINES = 6;
+
+/**
+ * Turn the manifest's notes blob (one `- title (#123)` line per change,
+ * built by the release pipeline) into a compact multi-line string for the
+ * toast: trimmed non-empty lines, each clipped so a long PR title can't run
+ * off, capped at `MAX_NOTE_LINES` with a "+N more" tail. Returns '' when
+ * there's nothing to show so the caller can fall back to a generic line.
+ */
+function formatNotes(body: string): string {
+  const lines = body
+    .split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .map((l) => truncate(l, 80));
+  if (lines.length === 0) return '';
+  if (lines.length <= MAX_NOTE_LINES) return lines.join('\n');
+  const rest = lines.length - MAX_NOTE_LINES;
+  return lines.slice(0, MAX_NOTE_LINES).join('\n') + `\n…and ${rest} more`;
 }
 
 function truncate(s: string, max: number): string {
