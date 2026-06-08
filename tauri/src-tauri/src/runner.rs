@@ -1911,6 +1911,20 @@ async fn preflight(ctx: &WorkflowCtx<'_>, exe_pathbuf: &Path, steal_lock: bool) 
     // Covers a definition just adopted from another device, or set this session.
     crate::custom_saves::sync_best_effort(ctx.app).await;
 
+    // Validate the config Spool just (re)wrote before any ludusavi call relies on
+    // it. An invalid config.yaml makes EVERY ludusavi op fail with a cryptic
+    // "config file is invalid" mid-restore (this is how a ludusavi schema change
+    // silently broke cloud sync — see the cloud.remote migration); catching it
+    // here turns that into one clear, actionable message at the right moment.
+    // Runs before claim_session so a failure leaves no session marker behind.
+    if let Err(reason) = crate::ludusavi::validate_config(ctx.ludusavi_exe, &ctx.config_dir).await {
+        tracing::error!(game_name = ctx.game_name, %reason, "ludusavi config rejected by its own loader");
+        return Err(AppError::Other(format!(
+            "Spool's save configuration is invalid, so saves can't be backed up or restored: {reason}. \
+             This is usually a Spool bug — please report it."
+        )));
+    }
+
     match rclone::claim_session(ctx.app, ctx.game_name, steal_lock).await {
         SessionClass::Free => {}
         SessionClass::ActiveElsewhere { device_name } => {

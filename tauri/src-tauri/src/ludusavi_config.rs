@@ -948,4 +948,90 @@ mod tests {
             Some("/tmp/x")
         );
     }
+
+    // ── Drift guard: validate generated config against the real ludusavi ─────
+
+    /// The base invariants `ensure_config` writes, built as a `Value` for the
+    /// validation test (which can't call the IO-bound `ensure_config`).
+    fn base_invariants_config() -> Value {
+        let mut v = Value::Mapping(Default::default());
+        set_path(&mut v, &["manifest", "enable"], Value::Bool(true));
+        set_path(&mut v, &["backup", "path"], Value::String("ludusavi-backup".into()));
+        set_path(&mut v, &["restore", "path"], Value::String("ludusavi-backup".into()));
+        set_path(&mut v, &["backup", "format", "chosen"], Value::String("simple".into()));
+        set_path(&mut v, &["backup", "retention", "full"], Value::Number(5.into()));
+        set_path(&mut v, &["backup", "retention", "differential"], Value::Number(0.into()));
+        v
+    }
+
+    /// Locate a real bundled ludusavi binary, or `None` when only a build.rs
+    /// stub (0 bytes) or nothing is present (a bare checkout). CI runs
+    /// `bun run download-sidecars` before `cargo test`, so the binary is there.
+    fn find_ludusavi_binary() -> Option<std::path::PathBuf> {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("binaries");
+        for entry in std::fs::read_dir(&dir).ok()?.flatten() {
+            if entry.file_name().to_string_lossy().starts_with("ludusavi-") {
+                let path = entry.path();
+                if std::fs::metadata(&path).map(|m| m.len() > 0).unwrap_or(false) {
+                    return Some(path);
+                }
+            }
+        }
+        None
+    }
+
+    /// Drift guard: the config Spool generates for every cloud provider must
+    /// pass ludusavi's OWN loader. ludusavi's config schema is defined by its
+    /// serde structs; when it changed `cloud.remote` from a unit to a struct
+    /// variant, Spool kept emitting the old shape and every backup/restore
+    /// failed with "config file is invalid". This test feeds each generated
+    /// config to the bundled `ludusavi config show` so the next such drift fails
+    /// here instead of in users' hands. Skipped when no real binary is present.
+    #[test]
+    fn generated_cloud_configs_pass_ludusavi_validation() {
+        let Some(ludusavi) = find_ludusavi_binary() else {
+            eprintln!("skipping generated_cloud_configs_pass_ludusavi_validation: \
+                       no real ludusavi binary in binaries/ (run `bun run download-sidecars`)");
+            return;
+        };
+
+        // The providers Spool actually writes a cloud.remote for; FTP/SMB/WebDAV
+        // go through `ludusavi cloud set` and aren't written by apply_cloud.
+        let cases = [
+            ("box", ""),
+            ("dropbox", ""),
+            ("google-drive", ""),
+            ("onedrive", ""),
+            ("custom", "my-remote"),
+        ];
+        for (provider, remote) in cases {
+            let mut v = base_invariants_config();
+            apply_cloud(
+                &mut v,
+                Some(provider),
+                Some(remote),
+                Some("ludusavi-backup"),
+                None,
+                None,
+            );
+
+            let dir = tempfile::tempdir().expect("tempdir");
+            let yaml = serde_yaml::to_string(&v).expect("serialize config");
+            std::fs::write(dir.path().join("config.yaml"), yaml).expect("write config.yaml");
+
+            let out = std::process::Command::new(&ludusavi)
+                .arg("--config")
+                .arg(dir.path())
+                .arg("--no-manifest-update")
+                .args(["config", "show"])
+                .output()
+                .expect("run ludusavi config show");
+
+            assert!(
+                out.status.success(),
+                "ludusavi rejected the config Spool generates for provider '{provider}': {}",
+                String::from_utf8_lossy(&out.stderr).trim(),
+            );
+        }
+    }
 }
