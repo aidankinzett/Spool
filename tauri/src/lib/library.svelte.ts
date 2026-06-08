@@ -168,6 +168,7 @@ function syntheticPeerEntry(peer: PeerMeta, pg: PeerGame): DisplayGame {
     cloud_sync_baseline: null,
     save_last_backer_device: null,
     save_cloud_revision_at: null,
+    steam_app_id: null,
     peer_source: toPeerSource(peer, pg),
   };
 }

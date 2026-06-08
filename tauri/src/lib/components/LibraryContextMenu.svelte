@@ -265,6 +265,30 @@
     }
   }
 
+  async function removeFromSteam() {
+    onclose();
+    if (!(await confirmSteamRestart('Removing from Steam'))) return;
+    try {
+      const removed = await api.removeFromSteam(game.id);
+      toasts.show({
+        kind: 'ok',
+        label: 'STEAM',
+        title: removed ? 'Removed from Steam' : 'Already removed',
+        sub: removed
+          ? `"${game.game_name}" was removed from your Steam library.`
+          : `No Steam shortcut was found for "${game.game_name}".`,
+        catalog: fmtCatalog(game.catalog_number),
+      });
+    } catch (e) {
+      toasts.show({
+        kind: 'bad',
+        label: 'STEAM · FAILED',
+        title: "Couldn't remove from Steam",
+        sub: String(e),
+      });
+    }
+  }
+
   function openEdit() {
     onclose();
     openView('edit', { id: game.id });
@@ -352,7 +376,11 @@
       openFolder,
       !folderForGame(game),
     )}
-    {@render item('Add to Steam', steamIcon, addToSteam, !game.exe_path || !game.installed)}
+    {#if game.steam_app_id != null}
+      {@render item('Remove from Steam', steamIcon, removeFromSteam, false)}
+    {:else}
+      {@render item('Add to Steam', steamIcon, addToSteam, !game.exe_path || !game.installed)}
+    {/if}
     {#if isWindows}
       {@render item('Generate Armoury Crate launcher', armouryIcon, generateArmouryLauncher, !game.exe_path || !game.installed)}
     {/if}

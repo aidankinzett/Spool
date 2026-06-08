@@ -243,6 +243,12 @@ export type GameEntry = {
   save_last_backer_device: string | null;
   /** ISO timestamp of that newer cloud backup. Pairs with `save_last_backer_device`. */
   save_cloud_revision_at: string | null;
+  /**
+   * Steam non-Steam-shortcut appid last written to `shortcuts.vdf` for this game
+   * (`null` until "Add to Steam" has run). Lets the edit/remove paths reconcile
+   * the exact existing shortcut after a rename instead of orphaning it.
+   */
+  steam_app_id: number | null;
 };
 
 /**

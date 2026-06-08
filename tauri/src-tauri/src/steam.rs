@@ -292,6 +292,42 @@ pub fn place_grid_art(
     Ok(Some(dest))
 }
 
+/// The four Steam grid-art slots, by filename suffix: portrait capsule (`p`),
+/// wide grid (``), hero banner (`_hero`), logo (`_logo`).
+const GRID_SUFFIXES: [&str; 4] = ["p", "", "_hero", "_logo"];
+
+/// Removes every grid-art file for `app_id` (all four slots, any extension).
+/// Best-effort — used when a Spool game is removed from Steam so its tiles
+/// don't linger. See [`remove_stale_grid_art`] for the exact-stem matching.
+fn remove_all_grid_art(grid_dir: &Path, app_id: u32) {
+    for suffix in GRID_SUFFIXES {
+        remove_stale_grid_art(grid_dir, app_id, suffix);
+    }
+}
+
+/// Renames a game's grid art from `old_id` to `new_id` after a rename changes
+/// its appid, so the existing tiles carry over instead of being re-fetched.
+/// Clears any file already occupying a destination slot first, then renames
+/// each source file preserving its extension. Best-effort — a failed rename
+/// leaves Steam to fall back to a blank/refetched tile, never aborts.
+fn migrate_grid_art(grid_dir: &Path, old_id: u32, new_id: u32) {
+    for suffix in GRID_SUFFIXES {
+        remove_stale_grid_art(grid_dir, new_id, suffix);
+        let old_stem = format!("{old_id}{suffix}");
+        let Ok(entries) = std::fs::read_dir(grid_dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.file_stem().and_then(|s| s.to_str()) == Some(old_stem.as_str()) {
+                let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("png");
+                let dest = grid_dir.join(format!("{new_id}{suffix}.{ext}"));
+                let _ = std::fs::rename(&path, &dest);
+            }
+        }
+    }
+}
+
 /// Build the `--run "<name>" "<exe>" --attached` launch-options string. Steam
 /// stores the value verbatim and splits args by shell rules at launch time, so
 /// each token gets its own quoted block. Interior `"` are escaped as `\"`
@@ -308,6 +344,138 @@ pub fn build_launch_options(game_name: &str, exe_path: &str) -> String {
     let name = game_name.replace('"', "\\\"");
     let exe = exe_path.replace('"', "\\\"");
     format!("--run \"{name}\" \"{exe}\" --attached")
+}
+
+// ── Lifecycle reconcile (rename / removal) ───────────────────────────────────
+//
+// The Spool shortcut appid is name-derived, so a rename or removal must
+// reconcile the existing shortcut + grid art + collection rather than leaving
+// the add path as the only writer (see issues #331 / #326). Both helpers below
+// are gated by the caller on a *tracked* appid (`GameEntry.steam_app_id`) — a
+// game that was never added to Steam has none, so we never shut Steam down for
+// it. Each brackets its `shortcuts.vdf` write with a Steam shutdown/relaunch,
+// exactly like the add path (a no-op when Steam isn't running or in Game Mode).
+
+/// Resolves the most-recently-used Steam user, or `None` when Steam isn't
+/// installed / has no users. Removal and rename reconcile treat "no Steam" as
+/// nothing-to-do rather than an error, so the library mutation still succeeds.
+fn first_steam_user() -> Option<SteamUser> {
+    match locate_steam_users() {
+        Ok(users) => users.into_iter().next(),
+        Err(e) => {
+            tracing::debug!(%e, "no Steam user for reconcile — skipping");
+            None
+        }
+    }
+}
+
+/// Removes a Spool-managed game's Steam shortcut + grid art and re-syncs the
+/// Spool collection (which tombstones the now-absent appid). Matches the
+/// shortcut by the tracked `app_id`, with a tagged-name fallback. Returns
+/// whether a shortcut was actually removed. No-op (`Ok(false)`) when Steam
+/// isn't installed or no matching shortcut exists.
+///
+/// Errors only when Steam was running but wouldn't shut down — writing then
+/// would be clobbered by Steam's own exit-write. The caller log-and-continues,
+/// since the library entry has already been (or is about to be) removed.
+pub async fn remove_game_from_steam(app_id: u32, app_name: &str) -> AppResult<bool> {
+    let Some(user) = first_steam_user() else {
+        return Ok(false);
+    };
+
+    let restart = crate::steam_process::shut_down_for_write().await;
+    if restart == crate::steam_process::SteamRestart::ShutdownFailed {
+        return Err(AppError::Other(STEAM_SHUTDOWN_FAILED_MSG.into()));
+    }
+
+    let mut shortcuts = read_shortcuts(&user.shortcuts_path)?;
+    let before = shortcuts.len();
+    // Match the tracked appid, or a same-named shortcut still carrying our tag
+    // (a belt-and-suspenders for an appid that drifted from the stored value).
+    shortcuts.retain(|s| {
+        let ours = s.app_id == app_id
+            || (s.app_name == app_name && s.tags.iter().any(|t| t == "Spool"));
+        !ours
+    });
+    let removed = shortcuts.len() != before;
+
+    if removed {
+        write_shortcuts(&user.shortcuts_path, &shortcuts)?;
+        remove_all_grid_art(&user.grid_dir, app_id);
+        if let Err(e) = crate::steam_collections::sync_spool_collection(&user, &shortcuts) {
+            tracing::warn!(%e, "remove_game_from_steam: failed to sync Spool collection");
+        }
+    }
+
+    if restart == crate::steam_process::SteamRestart::ShutDown {
+        crate::steam_process::relaunch().await;
+    }
+    Ok(removed)
+}
+
+/// Reconciles a game's Steam shortcut after an edit changed its name or exe.
+/// Finds the existing shortcut by the previously-written `old_app_id` and
+/// updates it in place — new appid (derived from the new name), name, exe,
+/// start dir, launch options — migrating its grid art to the new appid and
+/// re-syncing the collection. Returns the new appid so the caller can store it.
+///
+/// When no shortcut matches `old_app_id` (the user deleted it in Steam, or it
+/// was never written), nothing is created — the new appid is returned so the
+/// stored value stays consistent, and a later "Add to Steam" creates it fresh.
+pub async fn reconcile_renamed_game(
+    old_app_id: u32,
+    new_name: &str,
+    exe_path: &str,
+) -> AppResult<u32> {
+    let spool_exe = crate::paths::spool_executable()
+        .ok_or_else(|| AppError::Other("can't resolve own exe path".to_string()))?;
+    let spool_exe_str = spool_exe.to_string_lossy().to_string();
+    let spool_start_dir = spool_exe
+        .parent()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|| ".".to_string());
+    let quoted_exe = quote_exe(&spool_exe_str);
+    let new_app_id = calculate_app_id(&quoted_exe, new_name);
+
+    let Some(user) = first_steam_user() else {
+        return Ok(new_app_id);
+    };
+
+    let restart = crate::steam_process::shut_down_for_write().await;
+    if restart == crate::steam_process::SteamRestart::ShutdownFailed {
+        return Err(AppError::Other(STEAM_SHUTDOWN_FAILED_MSG.into()));
+    }
+
+    let mut shortcuts = read_shortcuts(&user.shortcuts_path)?;
+    let updated = if let Some(existing) = shortcuts.iter_mut().find(|s| s.app_id == old_app_id) {
+        existing.app_id = new_app_id;
+        existing.app_name = new_name.to_string();
+        existing.exe = quoted_exe;
+        existing.start_dir = format!("\"{}\"", spool_start_dir.replace('"', "\\\""));
+        existing.icon = spool_exe_str.clone();
+        existing.launch_options = build_launch_options(new_name, exe_path);
+        if !existing.tags.iter().any(|t| t == "Spool") {
+            existing.tags.push("Spool".to_string());
+        }
+        true
+    } else {
+        false
+    };
+
+    if updated {
+        write_shortcuts(&user.shortcuts_path, &shortcuts)?;
+        if old_app_id != new_app_id {
+            migrate_grid_art(&user.grid_dir, old_app_id, new_app_id);
+        }
+        if let Err(e) = crate::steam_collections::sync_spool_collection(&user, &shortcuts) {
+            tracing::warn!(%e, "reconcile_renamed_game: failed to sync Spool collection");
+        }
+    }
+
+    if restart == crate::steam_process::SteamRestart::ShutDown {
+        crate::steam_process::relaunch().await;
+    }
+    Ok(new_app_id)
 }
 
 // ── Tauri commands ──────────────────────────────────────────────────────────
@@ -398,7 +566,7 @@ pub async fn add_to_steam(
     game_id: String,
 ) -> AppResult<AddToSteamResult> {
     // 1. Snapshot the data we need from the library (drop lock fast).
-    let (app_name, exe_path, save_path_str, cover_image_path, steam_id) = {
+    let (app_name, exe_path, save_path_str, cover_image_path, steam_id, prev_app_id) = {
         let entry = library
             .find(&game_id)
             .await?
@@ -409,6 +577,7 @@ pub async fn add_to_steam(
             entry.save_paths.first().cloned().unwrap_or_default(),
             entry.cover_image_path.clone(),
             entry.steam_id,
+            entry.steam_app_id,
         )
     };
     drop(save_path_str); // not used yet — placeholder for future per-game start dir
@@ -456,7 +625,24 @@ pub async fn add_to_steam(
         &spool_start_dir,
         &launch_options,
     );
+    // If this game carried a different appid before (a rename whose reconcile
+    // didn't land, or a pre-tracking duplicate), drop the stale shortcut + its
+    // grid art so re-adding doesn't leave an orphan alongside the new entry.
+    if let Some(prev) = prev_app_id {
+        if prev != app_id {
+            shortcuts.retain(|s| s.app_id != prev);
+            remove_all_grid_art(&user.grid_dir, prev);
+        }
+    }
     write_shortcuts(&user.shortcuts_path, &shortcuts)?;
+
+    // Record the appid so a later rename/removal can find this exact shortcut.
+    if let Err(e) = library
+        .update_fields(&game_id, &[("steam_app_id", serde_json::json!(app_id))])
+        .await
+    {
+        tracing::warn!(%e, "add_to_steam: failed to record steam_app_id");
+    }
 
     tracing::debug!(
         grid_dir = %user.grid_dir.display(),
@@ -570,6 +756,43 @@ pub async fn add_to_steam(
     })
 }
 
+/// Removes a game's Spool-managed Steam shortcut (the inverse of
+/// [`add_to_steam`]). Drops the shortcut + grid art, re-syncs the Spool
+/// collection, and clears the entry's tracked `steam_app_id`. Brackets the
+/// write with a Steam shutdown/relaunch like the add path. Returns whether a
+/// shortcut was actually present to remove. No-op (`Ok(false)`) when the game
+/// was never added to Steam.
+#[tauri::command]
+pub async fn remove_from_steam(
+    app: AppHandle,
+    library: State<'_, SharedLibrary>,
+    game_id: String,
+) -> AppResult<bool> {
+    let snapshot = {
+        let entry = library
+            .find(&game_id)
+            .await?
+            .ok_or_else(|| AppError::Other(format!("game not found: {game_id}")))?;
+        entry.steam_app_id.map(|aid| (aid, entry.game_name.clone()))
+    };
+    let Some((app_id, name)) = snapshot else {
+        return Ok(false);
+    };
+
+    let removed = remove_game_from_steam(app_id, &name).await?;
+
+    // Clear the tracked appid even if no shortcut was found (the user deleted it
+    // in Steam) — the entry should no longer claim to be on Steam either way.
+    if let Err(e) = library
+        .update_fields(&game_id, &[("steam_app_id", serde_json::Value::Null)])
+        .await
+    {
+        tracing::warn!(%e, "remove_from_steam: failed to clear steam_app_id");
+    }
+    let _ = app.emit("library:changed", &game_id);
+    Ok(removed)
+}
+
 #[derive(Debug, serde::Serialize)]
 pub struct AddToSteamResult {
     pub steam_user_id: String,
@@ -668,5 +891,40 @@ mod tests {
         remove_stale_grid_art(g, 12345, "p");
         assert!(!g.join("12345p.png").exists());
         assert!(g.join("99999p.png").exists(), "other app still untouched");
+    }
+
+    #[test]
+    fn remove_all_grid_art_clears_every_slot() {
+        let dir = tempfile::tempdir().unwrap();
+        let g = dir.path();
+        for f in ["55p.png", "55.jpg", "55_hero.png", "55_logo.png", "66p.png"] {
+            std::fs::write(g.join(f), b"x").unwrap();
+        }
+        remove_all_grid_art(g, 55);
+        assert!(!g.join("55p.png").exists());
+        assert!(!g.join("55.jpg").exists());
+        assert!(!g.join("55_hero.png").exists());
+        assert!(!g.join("55_logo.png").exists());
+        assert!(g.join("66p.png").exists(), "other app untouched");
+    }
+
+    #[test]
+    fn migrate_grid_art_renames_all_slots_preserving_extension() {
+        let dir = tempfile::tempdir().unwrap();
+        let g = dir.path();
+        std::fs::write(g.join("100p.png"), b"portrait").unwrap();
+        std::fs::write(g.join("100.jpg"), b"wide").unwrap();
+        std::fs::write(g.join("100_hero.png"), b"hero").unwrap();
+        // A pre-existing file in the destination portrait slot must be replaced.
+        std::fs::write(g.join("200p.png"), b"stale").unwrap();
+
+        migrate_grid_art(g, 100, 200);
+
+        assert!(!g.join("100p.png").exists(), "old portrait gone");
+        assert!(!g.join("100.jpg").exists(), "old wide gone");
+        assert!(!g.join("100_hero.png").exists(), "old hero gone");
+        assert_eq!(std::fs::read(g.join("200p.png")).unwrap(), b"portrait");
+        assert_eq!(std::fs::read(g.join("200.jpg")).unwrap(), b"wide");
+        assert_eq!(std::fs::read(g.join("200_hero.png")).unwrap(), b"hero");
     }
 }

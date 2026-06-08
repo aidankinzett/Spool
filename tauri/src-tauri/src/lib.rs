@@ -299,6 +299,7 @@ pub fn run() {
             // steam shortcut
             steam::add_spool_to_steam,
             steam::add_to_steam,
+            steam::remove_from_steam,
             steam_process::steam_game_running,
             steam_collections::sync_spool_steam_collection,
             // armoury crate launcher

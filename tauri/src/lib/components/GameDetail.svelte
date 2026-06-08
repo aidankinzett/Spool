@@ -442,6 +442,33 @@
     }
   }
 
+  let removingFromSteam = $state(false);
+  async function removeFromSteam() {
+    if (!(await confirmSteamRestart('Removing from Steam'))) return;
+    removingFromSteam = true;
+    try {
+      const removed = await api.removeFromSteam(game.id);
+      toasts.show({
+        kind: 'ok',
+        label: 'STEAM',
+        title: removed ? 'Removed from Steam' : 'Already removed',
+        sub: removed
+          ? `"${game.game_name}" was removed from your Steam library.`
+          : `No Steam shortcut was found for "${game.game_name}".`,
+        catalog: fmtCatalog(game.catalog_number),
+      });
+    } catch (e) {
+      toasts.show({
+        kind: 'bad',
+        label: 'STEAM · FAILED',
+        title: "Couldn't remove from Steam",
+        sub: String(e),
+      });
+    } finally {
+      removingFromSteam = false;
+    }
+  }
+
 </script>
 
 <div class="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-bg-0">
@@ -711,14 +738,25 @@
         {generatingArmoury ? 'Generating…' : 'Armoury Crate'}
       </Btn>
     {/if}
-    <Btn
-      variant="ghost"
-      onclick={addToSteam}
-      disabled={!game.exe_path || addingToSteam}
-    >
-      {#snippet icon()}<Play size={14} />{/snippet}
-      {addingToSteam ? 'Adding…' : 'Add to Steam'}
-    </Btn>
+    {#if game.steam_app_id != null}
+      <Btn
+        variant="ghost"
+        onclick={removeFromSteam}
+        disabled={removingFromSteam}
+      >
+        {#snippet icon()}<Play size={14} />{/snippet}
+        {removingFromSteam ? 'Removing…' : 'Remove from Steam'}
+      </Btn>
+    {:else}
+      <Btn
+        variant="ghost"
+        onclick={addToSteam}
+        disabled={!game.exe_path || addingToSteam}
+      >
+        {#snippet icon()}<Play size={14} />{/snippet}
+        {addingToSteam ? 'Adding…' : 'Add to Steam'}
+      </Btn>
+    {/if}
     {#if cloudConfigured}
       <!-- Pull the latest cloud saves down to this device without launching. -->
       <Btn variant="ghost" onclick={pullSaves} disabled={pulling || isRunning}>
