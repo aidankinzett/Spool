@@ -1259,6 +1259,62 @@ async fn fetch_and_save_peer_image(
 /// manifest once the install completes — the GUI path uses this to spawn
 /// a post-install artwork fetch.
 ///
+/// Emits the terminal "canceled" state for an install cancelled during
+/// the manifest fetch (before the transfer task is spawned), then returns
+/// the matching `cancel_error()`. Mirrors exactly what the spawned
+/// transfer task publishes on cancel — `status: "canceled"`, zeroed
+/// progress, no message/new_game_id — so the UI doesn't stay stuck on the
+/// "Fetching manifest…" placeholder. Identity fields are taken from the
+/// slot snapshot (the placeholder set in `try_start`) since the manifest
+/// hasn't landed yet. The held `DownloadGuard` releases the slot as the
+/// caller returns.
+fn emit_terminal_cancel(
+    download_state: &Arc<LanDownloadState>,
+    on_progress: &Arc<dyn Fn(&DownloadProgress) + Send + Sync>,
+    peer_addr: &str,
+    game_id: &str,
+) -> AppResult<String> {
+    let err = download_state.cancel_error();
+    tracing::info!(
+        by_host = matches!(err, AppError::HostCanceled),
+        "LAN install cancelled during manifest fetch",
+    );
+    let snap = download_state.snapshot();
+    let terminal = DownloadProgress {
+        install_token: snap
+            .as_ref()
+            .map(|p| p.install_token.clone())
+            .unwrap_or_default(),
+        source_device_id: snap
+            .as_ref()
+            .map(|p| p.source_device_id.clone())
+            .unwrap_or_default(),
+        source_device_name: snap
+            .as_ref()
+            .map(|p| p.source_device_name.clone())
+            .unwrap_or_else(|| peer_addr.to_string()),
+        source_game_id: snap
+            .as_ref()
+            .map(|p| p.source_game_id.clone())
+            .unwrap_or_else(|| game_id.to_string()),
+        game_name: snap
+            .as_ref()
+            .map(|p| p.game_name.clone())
+            .unwrap_or_default(),
+        bytes_done: 0,
+        bytes_total: snap.as_ref().map(|p| p.bytes_total).unwrap_or(0),
+        current_file: String::new(),
+        status: "canceled".into(),
+        message: None,
+        new_game_id: None,
+        bytes_per_second: 0.0,
+        cover_image_path: snap.and_then(|p| p.cover_image_path),
+    };
+    download_state.set(Some(terminal.clone()));
+    on_progress(&terminal);
+    Err(err)
+}
+
 /// Returns the `install_token` (UUID) once the transfer has been queued.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn begin_install(
@@ -1318,7 +1374,7 @@ pub(crate) async fn begin_install(
         "http://{peer_addr}:{peer_port}/games/{game_id}/manifest?session={}",
         urlencoding::encode(&install_token),
     );
-    let manifest_result: AppResult<PeerGameManifest> = async {
+    let manifest_fetch = async {
         let resp = http
             .get(&manifest_url)
             .timeout(MANIFEST_FETCH_TIMEOUT)
@@ -1336,11 +1392,42 @@ pub(crate) async fn begin_install(
         resp.json::<PeerGameManifest>()
             .await
             .map_err(|e| AppError::Other(format!("parse manifest: {e}")))
-    }
-    .await;
+    };
+
+    // Race the manifest fetch (bounded by MANIFEST_FETCH_TIMEOUT, up to
+    // ~5 minutes on a multi-GB game the host has to hash) against a
+    // short cancel-poll. The fetch's HTTP request itself isn't
+    // cancellable, so without this a user who taps Cancel on a wedged
+    // "Fetching manifest…" would wait the full timeout. Since the slot
+    // is held by *this* install and `try_start` cleared the cancel flag,
+    // an observed `is_canceled()` means our own token was cancelled via
+    // `request_cancel`. `tokio::select!` drops the losing branch's
+    // future when one resolves, so a cancel drops the in-flight request.
+    let manifest_result: AppResult<PeerGameManifest> = tokio::select! {
+        biased;
+        () = async {
+            let mut tick = tokio::time::interval(Duration::from_millis(250));
+            loop {
+                tick.tick().await;
+                if download_state.is_canceled() {
+                    return;
+                }
+            }
+        } => Err(download_state.cancel_error()),
+        m = manifest_fetch => m,
+    };
 
     let manifest = match manifest_result {
-        Ok(m) => m,
+        // A cancel can also land in the gap between the fetch resolving
+        // and the spawn below — re-check here so it surfaces as a
+        // cancellation rather than proceeding into the transfer.
+        Ok(m) if !download_state.is_canceled() => m,
+        Ok(_) => {
+            return emit_terminal_cancel(&download_state, &on_progress, &peer_addr, &game_id);
+        }
+        Err(e) if e.is_canceled() => {
+            return emit_terminal_cancel(&download_state, &on_progress, &peer_addr, &game_id);
+        }
         Err(e) => {
             // The slot is still held, so `update` finds the placeholder
             // and the UI gets a terminal "error" event instead of
