@@ -692,11 +692,31 @@ impl Library {
     }
 
     /// The id of the first game with an exact `game_name` match.
-    pub async fn find_id_by_name(&self, name: &str) -> AppResult<Option<String>> {
-        let row = sqlx::query("SELECT id FROM games WHERE game_name = ?1 LIMIT 1")
+    pub async fn find_id_by_name(&self, name: &str, exe_path: Option<&str>) -> AppResult<Option<String>> {
+        let row = if let Some(exe) = exe_path {
+            sqlx::query(
+                "SELECT id FROM games
+                 WHERE game_name = ?1
+                 ORDER BY
+                   CASE WHEN json_extract(data, '$.exe_path') = ?2 THEN 0 ELSE 1 END,
+                   catalog_number
+                 LIMIT 1",
+            )
+            .bind(name)
+            .bind(exe)
+            .fetch_optional(&self.pool)
+            .await?
+        } else {
+            sqlx::query(
+                "SELECT id FROM games
+                 WHERE game_name = ?1
+                 ORDER BY catalog_number
+                 LIMIT 1",
+            )
             .bind(name)
             .fetch_optional(&self.pool)
-            .await?;
+            .await?
+        };
         Ok(row.map(|r| r.get::<String, _>("id")))
     }
 
@@ -1898,7 +1918,7 @@ mod tests {
         assert_eq!(all.len(), 2);
         let found = lib.find("a").await.unwrap().unwrap();
         assert_eq!(found.game_name, "Hades");
-        assert_eq!(lib.find_id_by_name("Celeste").await.unwrap().as_deref(), Some("b"));
+        assert_eq!(lib.find_id_by_name("Celeste", None).await.unwrap().as_deref(), Some("b"));
     }
 
     #[tokio::test]
@@ -1965,7 +1985,40 @@ mod tests {
         let e = lib.find("a").await.unwrap().unwrap();
         assert_eq!(e.game_name, "Hades Renamed"); // editor change applied
         assert_eq!(e.playtime_minutes, 45); // runtime field preserved
-        assert_eq!(lib.find_id_by_name("Hades Renamed").await.unwrap().as_deref(), Some("a"));
+        assert_eq!(lib.find_id_by_name("Hades Renamed", None).await.unwrap().as_deref(), Some("a"));
+    }
+
+    #[tokio::test]
+    async fn find_id_by_name_disambiguates_by_exe_path() {
+        let lib = Library::open_in_memory().await.unwrap();
+        let mut g1 = sample("a", "Hades");
+        g1.exe_path = "/games/Hades_Steam/hades.exe".to_string();
+        lib.insert(g1).await.unwrap();
+
+        let mut g2 = sample("b", "Hades");
+        g2.exe_path = "/games/Hades_Epic/hades.exe".to_string();
+        lib.insert(g2).await.unwrap();
+
+        // Exact match for the second one:
+        assert_eq!(
+            lib.find_id_by_name("Hades", Some("/games/Hades_Epic/hades.exe")).await.unwrap().as_deref(),
+            Some("b")
+        );
+        // Exact match for the first one:
+        assert_eq!(
+            lib.find_id_by_name("Hades", Some("/games/Hades_Steam/hades.exe")).await.unwrap().as_deref(),
+            Some("a")
+        );
+        // No exe_path provided: falls back to catalog_number (oldest first, i.e., "a")
+        assert_eq!(
+            lib.find_id_by_name("Hades", None).await.unwrap().as_deref(),
+            Some("a")
+        );
+        // Mismatched exe_path: still falls back to catalog_number (oldest first, i.e., "a")
+        assert_eq!(
+            lib.find_id_by_name("Hades", Some("/other/hades.exe")).await.unwrap().as_deref(),
+            Some("a")
+        );
     }
 
     #[tokio::test]
