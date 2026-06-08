@@ -612,9 +612,17 @@ impl LudusaviClient {
         // reduced path set for the active overrides) don't leak into the raw
         // manifest lookup. The global manifest.yaml is found relative to the
         // executable regardless of the config location.
+        let mut guard = self.manifest.write().await;
+        // Double-checked locking: another caller may have populated the cache
+        // between us dropping the read guard and acquiring the write guard, so
+        // re-check before running the ~9 MB load+parse a second time. Holding
+        // the write guard across the load (a tokio lock, safe across `.await`)
+        // also serialises concurrent cold callers onto a single parse.
+        if let Some(m) = guard.as_ref() {
+            return Ok(Arc::clone(m));
+        }
         let manifest = load_manifest(ludusavi_exe).await?;
         let arc = Arc::new(manifest);
-        let mut guard = self.manifest.write().await;
         *guard = Some(Arc::clone(&arc));
         Ok(arc)
     }
