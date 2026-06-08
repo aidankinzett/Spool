@@ -39,6 +39,12 @@ export const Focusable = React.forwardRef<HTMLDivElement, AnyProps>(
 // DialogButton — the standard Game-Mode "Secondary" action button. Metrics
 // read from live Game Mode via the CEF debugger: bg #23262e, padding 10px 24px,
 // 2px radius, 160px min-width, white text at 16px, 0.4 opacity when disabled.
+//
+// `width: 100%` is part of SteamUI's real `_DialogLayout` class, so a bare
+// DialogButton fills its container on-device. Reproduce it here (before
+// `...style`, so a caller's `width` still wins) — otherwise the mock renders a
+// content-sized button that Storybook makes look fine while it overflows its
+// row on the Deck. Callers that want it content-sized must set `width: "auto"`.
 export function DialogButton({ children, style, disabled, ...rest }: AnyProps) {
   return (
     <button
@@ -49,6 +55,7 @@ export function DialogButton({ children, style, disabled, ...rest }: AnyProps) {
         border: "none",
         borderRadius: "2px",
         padding: "10px 24px",
+        width: "100%",
         minWidth: "160px",
         fontSize: "16px",
         cursor: disabled ? "default" : "pointer",
@@ -127,7 +134,7 @@ export function ButtonItem({
         <DialogButton
           onClick={onClick}
           disabled={disabled}
-          style={{ flex: "0 0 auto", display: "inline-flex", alignItems: "center", justifyContent: "center" }}
+          style={{ width: "auto", flex: "0 0 auto", display: "inline-flex", alignItems: "center", justifyContent: "center" }}
         >
           {children}
         </DialogButton>
