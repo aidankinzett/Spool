@@ -1270,6 +1270,11 @@ pub async fn fetch_custom_save(app: &AppHandle, game_name: &str) -> Option<crate
     Some(crate::library::CustomSave { files: blob.files, registry: blob.registry })
 }
 
+/// Max concurrent `rclone cat` subprocesses when reading a control-plane
+/// namespace. Small: the blobs are few (one per device / game) and tiny, so
+/// this collapses the per-blob round-trips without spawning a process storm.
+const BLOB_FETCH_CONCURRENCY: usize = 8;
+
 /// List a control-plane subdir and read+parse every `*.json` blob in it as
 /// `(file-stem, T)` pairs — the stem is the device id under `_spool/devices/`,
 /// the name hash under `_spool/custom-saves/`. Empty on a missing/unreadable
@@ -1279,23 +1284,32 @@ async fn read_json_blobs<T: serde::de::DeserializeOwned>(
     remote: &RcloneRemote,
     dir: &str,
 ) -> Vec<(String, T)> {
+    use futures_util::StreamExt as _;
+
     let Some(entries) = lsjson(&remote.exe, dir).await else {
         return Vec::new();
     };
-    let mut out = Vec::new();
-    for e in entries {
-        if e.is_dir || !e.name.ends_with(".json") {
-            continue;
-        }
-        let stem = e.name.trim_end_matches(".json").to_string();
+    // Each blob is its own `rclone cat` subprocess (up to ~8s on a slow remote).
+    // Fan the cats out with a bounded concurrency rather than one-at-a-time, so a
+    // device / history fold over several files costs ~one round-trip, not N.
+    let fetched: Vec<Option<(String, T)>> = futures_util::stream::iter(
+        entries
+            .into_iter()
+            .filter(|e| !e.is_dir && e.name.ends_with(".json")),
+    )
+    .map(|e| {
         let target = format!("{dir}/{}", e.name);
-        if let Some(body) = cat(&remote.exe, &target).await {
-            if let Ok(blob) = serde_json::from_str::<T>(&body) {
-                out.push((stem, blob));
-            }
+        let stem = e.name.trim_end_matches(".json").to_string();
+        async move {
+            let body = cat(&remote.exe, &target).await?;
+            let blob = serde_json::from_str::<T>(&body).ok()?;
+            Some((stem, blob))
         }
-    }
-    out
+    })
+    .buffer_unordered(BLOB_FETCH_CONCURRENCY)
+    .collect()
+    .await;
+    fetched.into_iter().flatten().collect()
 }
 
 /// Adopt published custom-save definitions into local library entries that don't
@@ -1511,16 +1525,21 @@ pub async fn fold_devices_from_config() -> bool {
         Err(_) => return false,
     };
 
-    // Fold peer play-session history first, independent of the device-blob fold.
-    let new_sessions = fold_history(&remote, &library).await;
+    // The history fold and the device-blob read hit independent remote files, so
+    // run them concurrently — their (now fanned-out) round-trips don't stack on a
+    // slow remote.
+    let device_store = remote.store("devices", 1);
+    let (new_sessions, blobs) = tokio::join!(
+        fold_history(&remote, &library),
+        device_store.read_all::<DeviceBlob>(),
+    );
     if new_sessions > 0 {
         tracing::info!(new_sessions, "headless fold: imported peer play sessions");
     }
     // Re-derive playtime/last-played from the timeline (replaces the device-blob
-    // playtime fold).
+    // playtime fold). Runs after the join so the just-folded sessions are present.
     let recomputed = library.recompute_all_playtime().await.unwrap_or(0);
 
-    let blobs: Vec<(String, DeviceBlob)> = remote.store("devices", 1).read_all().await;
     if blobs.is_empty() {
         return new_sessions > 0 || recomputed > 0;
     }
@@ -1583,17 +1602,21 @@ async fn run_startup_fold(app: &AppHandle) {
     // the device-blob fold below, so a peer with sessions but no device blob
     // (or vice versa) is still picked up.
     let library = app.state::<SharedLibrary>().inner().clone();
-    let new_sessions = fold_history(&remote, &library).await;
+    // The history fold and the device-blob read hit independent remote files, so
+    // run them concurrently — their (now fanned-out) round-trips don't stack on a
+    // slow remote, cutting the delay before the first `library:changed`.
+    let device_store = remote.store("devices", 1);
+    let (new_sessions, blobs) = tokio::join!(
+        fold_history(&remote, &library),
+        device_store.read_all::<DeviceBlob>(),
+    );
     if new_sessions > 0 {
         tracing::info!(new_sessions, "startup fold: imported peer play sessions");
     }
     // Re-derive playtime/last-played from the timeline (now including any peer
     // sessions just folded in) — this is what replaces the device-blob playtime
-    // fold below.
+    // fold below. Runs after the join so the just-folded sessions are present.
     let recomputed = library.recompute_all_playtime().await.unwrap_or(0);
-
-    // List device files, then cat each — only the backup-badge fields remain.
-    let blobs: Vec<(String, DeviceBlob)> = remote.store("devices", 1).read_all().await;
     if blobs.is_empty() {
         if recomputed > 0 || new_sessions > 0 {
             let _ = app.emit("library:changed", &());

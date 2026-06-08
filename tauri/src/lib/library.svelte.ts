@@ -105,6 +105,40 @@ export function dedupKey(pg: Matchable): string {
   return pg.steam_id != null ? `sid:${pg.steam_id}` : `name:${pg.game_name.toLowerCase()}`;
 }
 
+/** The shape the source helpers below read — satisfied by `DisplayGame` and by
+ *  any `{ peer_source?, peer_sources? }` literal. */
+type Sourced = { peer_source?: PeerSource; peer_sources?: PeerSource[] };
+
+/** Every device a row can be fetched from. Normalises `peer_sources` (the source
+ *  of truth) with a fallback to the lone `peer_source`, so callers don't each
+ *  re-spell the `?? [peer_source]` dance. Includes non-shareable sources — use
+ *  `shareableSources` when you need the devices that can actually serve a copy. */
+export function sourcesOf(game: Sourced): PeerSource[] {
+  return game.peer_sources ?? (game.peer_source ? [game.peer_source] : []);
+}
+
+/** The sources a row can actually be installed from — `shareable` only. A peer
+ *  that lists the game but has no folder to stream (`shareable: false`) is kept
+ *  in `peer_sources` for context (it explains a disabled Download button) but is
+ *  never a real download candidate. */
+export function shareableSources(game: Sourced): PeerSource[] {
+  return sourcesOf(game).filter((s) => s.shareable);
+}
+
+/** True when an in-flight download belongs to one of the devices a row can be
+ *  fetched from. Matched against *every* source (not just the primary) so the
+ *  detail page's inline progress still binds to the row when the user picked a
+ *  non-primary device in the source chooser. */
+export function downloadMatchesGame(
+  download: Pick<DownloadProgress, 'source_game_id' | 'source_device_id'> | null | undefined,
+  game: Sourced,
+): boolean {
+  if (!download) return false;
+  return sourcesOf(game).some(
+    (s) => s.source_game_id === download.source_game_id && s.device_id === download.source_device_id,
+  );
+}
+
 function toPeerSource(peer: PeerMeta, pg: PeerGame): PeerSource {
   return {
     device_id: peer.device_id,
@@ -123,6 +157,7 @@ function toPeerSource(peer: PeerMeta, pg: PeerGame): PeerSource {
  * uninstalled + no-exe code paths already render those gracefully.
  */
 function syntheticPeerEntry(peer: PeerMeta, pg: PeerGame): DisplayGame {
+  const source = toPeerSource(peer, pg);
   return {
     id: `${PEER_ID_PREFIX}${dedupKey(pg)}`,
     catalog_number: 0,
@@ -169,8 +204,19 @@ function syntheticPeerEntry(peer: PeerMeta, pg: PeerGame): DisplayGame {
     save_last_backer_device: null,
     save_cloud_revision_at: null,
     steam_app_id: null,
-    peer_source: toPeerSource(peer, pg),
+    peer_source: source,
+    peer_sources: [source],
   };
+}
+
+/** Append a source to a row's `peer_sources`, skipping a device already listed
+ *  (a peer can't sensibly offer the same game twice; guards against a double
+ *  announce). Initialises the array on first use. */
+function addPeerSource(row: DisplayGame, ps: PeerSource) {
+  row.peer_sources ??= [];
+  if (!row.peer_sources.some((s) => s.device_id === ps.device_id)) {
+    row.peer_sources.push(ps);
+  }
 }
 
 /**
@@ -179,6 +225,12 @@ function syntheticPeerEntry(peer: PeerMeta, pg: PeerGame): DisplayGame {
  *   - uninstalled locally → annotate that existing row as downloadable
  *   - no local entry → a synthetic "available on LAN" row (deduped across peers)
  * Pure (takes plain data) so it's unit-testable; the store wraps it in a derived.
+ *
+ * Every device that offers a game is collected into the row's `peer_sources`;
+ * `peer_source` is then the primary (first after a stable sort by device name),
+ * so the source no longer depends on the non-deterministic order peers were
+ * discovered in. The Download action reads `peer_sources` to offer a chooser
+ * when more than one device has the game.
  *
  * Depends only on the catalogues (each carrying its peer's stable metadata), not
  * on the live `lanPeers` array — so a discovery heartbeat that only bumps a
@@ -191,32 +243,58 @@ export function mergeDisplayGames(
   const installed = games.filter((g) => g.installed);
   const uninstalled = games.filter((g) => !g.installed);
   const out: DisplayGame[] = games.map((g) => ({ ...g }));
-  // Dedup keys for synthetic rows already added (plain object, not a Set — this
+  // Synthetic rows already created, keyed by dedupKey, so later peers append to
+  // the same row instead of spawning a duplicate (plain object, not a Set — this
   // is a pure helper, nothing reactive).
-  const claimed: Record<string, boolean> = {};
+  const synthByKey: Record<string, DisplayGame> = {};
 
   for (const { peer, games: catalog } of Object.values(peerCatalogs)) {
     for (const pg of catalog) {
       // (1) already installed here → no duplicate.
       if (matchLocal(installed, pg)) continue;
-      // (2) uninstalled here → make that row downloadable (first peer wins).
+      const source = toPeerSource(peer, pg);
+      // (2) uninstalled here → make that row downloadable, collecting every
+      // device that can supply it.
       const local = matchLocal(uninstalled, pg);
       if (local) {
         const row = out.find((r) => r.id === local.id);
-        if (row && !row.peer_source) {
-          row.peer_source = toPeerSource(peer, pg);
+        if (row) {
+          addPeerSource(row, source);
           // The entry is uninstalled here, so its own recorded install size is
-          // stale/zero. Show the peer's size — the bytes that will download.
+          // meaningless (0 after a Spool uninstall, or a stale value if the
+          // folder vanished out-of-band). Show a peer's size — the bytes that
+          // will download (any peer's is close enough; they share the game).
           if (pg.install_size_mb > 0) row.install_size_mb = pg.install_size_mb;
         }
         continue;
       }
-      // (3) no local entry → synthetic row, one per game across all peers.
+      // (3) no local entry → one synthetic row per game, accumulating sources.
       const key = dedupKey(pg);
-      if (claimed[key]) continue;
-      claimed[key] = true;
-      out.push(syntheticPeerEntry(peer, pg));
+      const existing = synthByKey[key];
+      if (existing) {
+        addPeerSource(existing, source);
+      } else {
+        synthByKey[key] = syntheticPeerEntry(peer, pg);
+        out.push(synthByKey[key]);
+      }
     }
+  }
+
+  // Resolve the primary source per row. Rank shareable sources first so the
+  // primary is one the user can actually download from whenever any device can
+  // serve it — otherwise a non-shareable copy (peer opted in but has no folder)
+  // could sort ahead and disable the Download button while a working copy
+  // exists elsewhere. Within each group, a stable sort by device name (then id)
+  // keeps the label and chooser default from shuffling between sessions.
+  for (const row of out) {
+    if (!row.peer_sources || row.peer_sources.length === 0) continue;
+    row.peer_sources.sort(
+      (a, b) =>
+        Number(b.shareable) - Number(a.shareable) ||
+        a.device_name.localeCompare(b.device_name) ||
+        a.device_id.localeCompare(b.device_id),
+    );
+    row.peer_source = row.peer_sources[0];
   }
   return out;
 }
@@ -255,6 +333,9 @@ export function createLibrary() {
   let peerGamesError = $state<string | null>(null);
   let activeDownload = $state<DownloadProgress | null>(null);
   let startingGameId = $state<string | null>(null);
+  // Set when a Download targets a game offered by more than one device — drives
+  // the source-chooser modal (issue #321). Null whenever the chooser is closed.
+  let peerChoice = $state<{ game: DisplayGame; sources: PeerSource[] } | null>(null);
   // Per-device peer catalogues aggregated for the merged sidebar (keyed by
   // device_id; each value carries the peer's stable metadata + its games).
   // Populated lazily in the background; never blocks first paint. Mutated in
@@ -501,26 +582,35 @@ export function createLibrary() {
   }
 
   /**
-   * Start a download for a merged sidebar row backed by a `PeerSource` (the
-   * detail page's Download button). Looks up the live peer by device_id so it
-   * uses the current endpoint, then reuses `installFromPeer`. Toasts if the
-   * source device has dropped off the network since the row was rendered.
+   * The sources for a row that are usable *right now* — a device must be able to
+   * serve the game (`shareable`) and still be announcing a file server
+   * (`file_server_port > 0`). Drives the single-vs-chooser branch below, so a
+   * non-shareable or dropped-off peer never becomes a download target.
    */
-  async function downloadGame(g: DisplayGame) {
-    const ps = g.peer_source;
-    if (!ps) return;
+  function liveSourcesFor(g: DisplayGame): PeerSource[] {
+    return shareableSources(g).filter((ps) => {
+      const peer = lanPeers.find((p) => p.device_id === ps.device_id);
+      return peer != null && peer.file_server_port > 0;
+    });
+  }
+
+  /**
+   * Resolve a `PeerSource` to its live peer and start the install. Shared by the
+   * single-source fast path and the chooser's pick handler. `installFromPeer`
+   * only reads id/game_name plus the display fields below; the rest of PeerGame
+   * is reconstructed from the merged row.
+   */
+  async function installFromSource(g: DisplayGame, ps: PeerSource) {
     const peer = lanPeers.find((p) => p.device_id === ps.device_id);
     if (!peer || peer.file_server_port === 0) {
       toasts.show({
         kind: 'warn',
         label: 'LAN',
         title: 'Source device offline',
-        sub: `${g.game_name} is no longer shared on the network.`,
+        sub: `${ps.device_name} is no longer sharing ${g.game_name} on the network.`,
       });
       return;
     }
-    // installFromPeer only reads id/game_name plus the display fields below; the
-    // rest of PeerGame is reconstructed from the merged row.
     await installFromPeer(peer, {
       id: ps.source_game_id,
       catalog_number: g.catalog_number,
@@ -535,6 +625,47 @@ export function createLibrary() {
       lutris_slug: g.lutris_slug,
       shareable: ps.shareable,
     });
+  }
+
+  /**
+   * Start a download for a merged sidebar row (the detail page's Download
+   * button). With one live source it installs straight away; with several it
+   * opens the source chooser so the user picks which device to pull from
+   * (issue #321) rather than getting an arbitrary one. Toasts if every source
+   * has dropped off the network since the row was rendered.
+   */
+  async function downloadGame(g: DisplayGame) {
+    const sources = liveSourcesFor(g);
+    if (sources.length === 0) {
+      // No usable source: only nag if the row claimed one (else it's a plain
+      // uninstalled game and Download shouldn't have been offered at all).
+      if (sourcesOf(g).length > 0) {
+        toasts.show({
+          kind: 'warn',
+          label: 'LAN',
+          title: 'Source device offline',
+          sub: `${g.game_name} is no longer shared on the network.`,
+        });
+      }
+      return;
+    }
+    if (sources.length === 1) {
+      await installFromSource(g, sources[0]);
+      return;
+    }
+    peerChoice = { game: g, sources };
+  }
+
+  /**
+   * Pick handler for the source chooser: dismiss the modal, then install from
+   * the chosen device. Clears `peerChoice` first so a slow install start can't
+   * leave the modal hanging open.
+   */
+  async function chooseDownloadSource(ps: PeerSource) {
+    const choice = peerChoice;
+    peerChoice = null;
+    if (!choice) return;
+    await installFromSource(choice.game, ps);
   }
 
   function showRunErrorToast(gameId: string, message: string) {
@@ -874,6 +1005,8 @@ export function createLibrary() {
     set filter(v: 'all' | 'recent' | 'played') { filter = v; },
     get conflictGameId() { return conflictGameId; },
     set conflictGameId(v: string | null) { conflictGameId = v; },
+    get peerChoice() { return peerChoice; },
+    set peerChoice(v: { game: DisplayGame; sources: PeerSource[] } | null) { peerChoice = v; },
     get suspendedConflict() { return suspendedConflict; },
     set suspendedConflict(v: { gameId: string; deviceName: string } | null) { suspendedConflict = v; },
     // Derived (read-only)
@@ -902,6 +1035,7 @@ export function createLibrary() {
     cancelActiveInstall,
     installFromPeer,
     downloadGame,
+    chooseDownloadSource,
   };
 }
 
