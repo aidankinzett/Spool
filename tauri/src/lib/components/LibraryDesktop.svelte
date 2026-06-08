@@ -563,7 +563,10 @@
                   </span>
                   <span>·</span>
                   {#if peer}
-                    <span class="truncate">from {peer.device_name}</span>
+                    {@const sourceCount = g.peer_sources?.length ?? 1}
+                    <span class="truncate">
+                      {sourceCount > 1 ? `${sourceCount} devices` : `from ${peer.device_name}`}
+                    </span>
                   {:else}
                     <span>{g.last_played_at ? relDate(g.last_played_at) : 'unplayed'}</span>
                   {/if}

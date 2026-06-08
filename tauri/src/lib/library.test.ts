@@ -5,8 +5,9 @@ import {
   dedupKey,
   mergeDisplayGames,
   isSyntheticPeerId,
+  downloadMatchesGame,
 } from '$lib/library.svelte';
-import type { GameEntry, LanPeer, PeerGame } from '$lib/types';
+import type { GameEntry, LanPeer, PeerGame, PeerSource } from '$lib/types';
 
 function g(over: Partial<GameEntry> & { id: string; game_name: string }): GameEntry {
   return {
@@ -207,9 +208,26 @@ describe('mergeDisplayGames', () => {
     expect(out[0].id).toBe('local');
     expect(out[0].peer_source?.device_id).toBe('dev-a');
     expect(out[0].peer_source?.source_game_id).toBe('p1');
+    expect(out[0].peer_sources?.map((s) => s.device_id)).toEqual(['dev-a']);
     // The uninstalled local row adopts the peer's size (the download size), not
     // its own stale/zero recorded value.
     expect(out[0].install_size_mb).toBe(100);
+  });
+
+  it('lists every device that offers an uninstalled local game', () => {
+    const games = [g({ id: 'local', game_name: 'Hollow Knight', installed: false })];
+    // Discovered Desktop-then-Deck; the merge must still order + pick by name.
+    const out = mergeDisplayGames(
+      games,
+      catalogs(
+        [PEER_B, [pg({ id: 'p2', game_name: 'Hollow Knight' })]],
+        [PEER_A, [pg({ id: 'p1', game_name: 'Hollow Knight' })]],
+      ),
+    );
+    expect(out).toHaveLength(1);
+    expect(out[0].id).toBe('local');
+    expect(out[0].peer_sources?.map((s) => s.device_id)).toEqual(['dev-a', 'dev-b']);
+    expect(out[0].peer_source?.device_id).toBe('dev-a');
   });
 
   it('adds a synthetic row for a peer game with no local entry', () => {
@@ -218,21 +236,68 @@ describe('mergeDisplayGames', () => {
     expect(out[0].id).toBe('peer:sid:504230');
     expect(out[0].installed).toBe(false);
     expect(out[0].peer_source?.device_id).toBe('dev-a');
+    expect(out[0].peer_sources).toHaveLength(1);
   });
 
-  it('collapses the same game shared by two peers to one synthetic row', () => {
+  it('collapses the same game shared by two peers to one synthetic row, listing both sources', () => {
     const out = mergeDisplayGames(
       [],
       catalogs([PEER_A, [pg({ id: 'p1', game_name: 'Celeste' })]], [PEER_B, [pg({ id: 'p2', game_name: 'Celeste' })]]),
     );
     expect(out).toHaveLength(1);
-    // First peer wins as the source.
+    // Both devices are offered, each keeping its own source_game_id.
+    expect(out[0].peer_sources?.map((s) => s.device_id)).toEqual(['dev-a', 'dev-b']);
+    expect(out[0].peer_sources?.find((s) => s.device_id === 'dev-b')?.source_game_id).toBe('p2');
+  });
+
+  it('picks the primary source by device name regardless of discovery order', () => {
+    // Desktop ('dev-b') announced before Deck ('dev-a'); the name-sort still
+    // makes 'Deck' the primary, so the default source is deterministic.
+    const out = mergeDisplayGames(
+      [],
+      catalogs([PEER_B, [pg({ id: 'p2', game_name: 'Celeste' })]], [PEER_A, [pg({ id: 'p1', game_name: 'Celeste' })]]),
+    );
     expect(out[0].peer_source?.device_id).toBe('dev-a');
+    expect(out[0].peer_sources?.map((s) => s.device_name)).toEqual(['Deck', 'Desktop']);
   });
 
   it('ignores an empty catalogue set', () => {
     const out = mergeDisplayGames([g({ id: 'local', game_name: 'A' })], {});
     expect(out).toHaveLength(1);
     expect(out[0].id).toBe('local');
+  });
+});
+
+describe('downloadMatchesGame', () => {
+  function ps(device_id: string, source_game_id: string): PeerSource {
+    return { device_id, device_name: device_id, addr: '', file_server_port: 1, source_game_id, shareable: true };
+  }
+  const sources = [ps('dev-a', 'p1'), ps('dev-b', 'p2')];
+
+  it('matches the primary source', () => {
+    expect(
+      downloadMatchesGame({ source_game_id: 'p1', source_device_id: 'dev-a' }, { peer_source: sources[0], peer_sources: sources }),
+    ).toBe(true);
+  });
+
+  it('matches a non-primary source (a chooser pick)', () => {
+    expect(
+      downloadMatchesGame({ source_game_id: 'p2', source_device_id: 'dev-b' }, { peer_source: sources[0], peer_sources: sources }),
+    ).toBe(true);
+  });
+
+  it('requires both the game id and device id to match', () => {
+    // Right game, wrong device (and the converse) must not match — two peers
+    // share a game name but each carries its own source_game_id + device_id.
+    expect(downloadMatchesGame({ source_game_id: 'p1', source_device_id: 'dev-b' }, { peer_sources: sources })).toBe(false);
+    expect(downloadMatchesGame({ source_game_id: 'pX', source_device_id: 'dev-a' }, { peer_sources: sources })).toBe(false);
+  });
+
+  it('is false for a null download', () => {
+    expect(downloadMatchesGame(null, { peer_sources: sources })).toBe(false);
+  });
+
+  it('falls back to the lone peer_source when peer_sources is absent', () => {
+    expect(downloadMatchesGame({ source_game_id: 'p1', source_device_id: 'dev-a' }, { peer_source: ps('dev-a', 'p1') })).toBe(true);
   });
 });

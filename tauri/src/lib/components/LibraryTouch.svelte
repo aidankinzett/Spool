@@ -6,7 +6,7 @@
   import { openView } from '$lib/nav';
   import { toasts } from '$lib/toasts.svelte';
   import type { DisplayGame } from '$lib/types';
-  import { isSyntheticPeerId, type Library } from '$lib/library.svelte';
+  import { isSyntheticPeerId, downloadMatchesGame, type Library } from '$lib/library.svelte';
   import AppChrome from '$lib/components/AppChrome.svelte';
   import GameDetail from '$lib/components/GameDetail.svelte';
   import LibraryContextMenu from '$lib/components/LibraryContextMenu.svelte';
@@ -98,19 +98,11 @@
   const selectedIsPeer = $derived(
     selectedGame != null && !selectedGame.installed && selectedGame.peer_source != null,
   );
-  // The in-flight LAN install, only when it's the selected peer game.
+  // The in-flight LAN install, only when it's the selected peer game — matched
+  // against any of its sources so a non-primary chooser pick still shows here.
   const selectedDownload = $derived.by(() => {
-    const ps = selectedGame?.peer_source;
     const dl = lib.activeDownload;
-    if (
-      ps &&
-      dl &&
-      dl.source_game_id === ps.source_game_id &&
-      dl.source_device_id === ps.device_id
-    ) {
-      return dl;
-    }
-    return null;
+    return selectedGame && downloadMatchesGame(dl, selectedGame) ? dl : null;
   });
   const selectedDownloadActive = $derived(
     selectedDownload != null &&
@@ -556,7 +548,8 @@
                 </div>
                 <div class="mt-px font-mono text-ink-3" style:font-size="9.5px">
                   {#if !game.installed && game.peer_source}
-                    from {game.peer_source.device_name}
+                    {@const sourceCount = game.peer_sources?.length ?? 1}
+                    {sourceCount > 1 ? `${sourceCount} devices` : `from ${game.peer_source.device_name}`}
                   {:else}
                     {game.last_played_at ? relDate(game.last_played_at) : 'unplayed'}
                   {/if}

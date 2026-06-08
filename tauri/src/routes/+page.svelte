@@ -6,7 +6,8 @@
   import CloudConflictModal from '$lib/components/CloudConflictModal.svelte';
   import SuspendedLockModal from '$lib/components/SuspendedLockModal.svelte';
   import OnboardingModal from '$lib/components/OnboardingModal.svelte';
-  import { api, assetUrl } from '$lib/api';
+  import PeerSourceModal from '$lib/components/PeerSourceModal.svelte';
+  import { api, assetUrl, peerAssetUrl } from '$lib/api';
   import { openView } from '$lib/nav';
   import { toasts } from '$lib/toasts.svelte';
   import { absDateTime, relDate, fmtSize, isNewerVersion } from '$lib/format';
@@ -230,6 +231,25 @@
       }}
     />
   {/if}
+{/if}
+
+{#if lib.peerChoice}
+  {@const pc = lib.peerChoice}
+  <PeerSourceModal
+    gameName={pc.game.game_name}
+    accent={pc.game.accent_color}
+    coverUrl={assetUrl(pc.game.cover_image_path) ??
+      (pc.game.peer_source ? peerAssetUrl(pc.game.peer_source, 'cover') : null)}
+    sources={pc.sources}
+    peers={lib.lanPeers}
+    context={uiMode.resolved === 'touch' ? 'gamemode' : 'desktop'}
+    onPick={(source) => {
+      void lib.chooseDownloadSource(source);
+    }}
+    onClose={() => {
+      lib.peerChoice = null;
+    }}
+  />
 {/if}
 
 {#if lib.suspendedConflict}
