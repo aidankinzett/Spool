@@ -788,21 +788,50 @@ pub fn start_heartbeat(app: AppHandle, game_name: String, started_at: String) ->
     })
 }
 
-/// Clean session end: flip our marker to `PendingBackup` so peers keep warning
-/// until the saves actually reach the cloud. Best-effort.
-pub async fn mark_session_pending_backup(app: &AppHandle, game_name: &str) {
-    let Some(remote) = resolve_remote(app) else {
-        return;
-    };
-    let (device_id, device_name) = device_identity(app);
-    if device_id.is_empty() {
-        return;
+/// Identity for a control-plane op: the resolved remote plus this device's id
+/// and name. Built either from the Tauri `AppHandle` (the GUI) or a plain
+/// `ConfigData` (the headless plugin server, which has no Tauri state), so each
+/// op body below is written once and shared by both entry points. The `from_*`
+/// constructors return `None` when cloud isn't configured or the device id is
+/// blank — callers treat that as "skip the op".
+struct RemoteIdentity {
+    remote: RcloneRemote,
+    device_id: String,
+    device_name: String,
+}
+
+impl RemoteIdentity {
+    fn from_app(app: &AppHandle) -> Option<Self> {
+        let remote = resolve_remote(app)?;
+        let (device_id, device_name) = device_identity(app);
+        if device_id.is_empty() {
+            return None;
+        }
+        Some(Self { remote, device_id, device_name })
     }
-    // If a peer took over during our session, the marker is now theirs — don't
-    // clobber their live record with our PendingBackup. Our own post-session
-    // backup still runs; we just don't reclaim the cross-device marker.
-    if let Some(m) = read_session_marker(&remote, game_name).await {
-        if m.device_id != device_id {
+
+    #[cfg_attr(windows, allow(dead_code))] // only built via the unix-gated plugin server
+    fn from_config(cfg: &ConfigData) -> Option<Self> {
+        let remote = resolve_remote_from_config(cfg)?;
+        let device_id = cfg.device_id.trim();
+        if device_id.is_empty() {
+            return None;
+        }
+        Some(Self {
+            remote,
+            device_id: device_id.to_string(),
+            device_name: cfg.device_name.trim().to_string(),
+        })
+    }
+}
+
+/// Flip our marker to `PendingBackup`, unless a peer took over during our
+/// session — then the marker is now theirs and clobbering it would erase their
+/// live cross-device record. Our own post-session backup still runs; we just
+/// don't reclaim the marker. Best-effort.
+async fn mark_session_pending_backup_core(id: &RemoteIdentity, game_name: &str) {
+    if let Some(m) = read_session_marker(&id.remote, game_name).await {
+        if m.device_id != id.device_id {
             tracing::info!(
                 game_name,
                 owner = %m.device_id,
@@ -811,80 +840,79 @@ pub async fn mark_session_pending_backup(app: &AppHandle, game_name: &str) {
             return;
         }
     }
-    let marker = build_marker(game_name, &device_id, &device_name, SessionState::PendingBackup, false);
-    write_marker(&remote, &marker).await;
+    let marker = build_marker(
+        game_name,
+        &id.device_id,
+        &id.device_name,
+        SessionState::PendingBackup,
+        false,
+    );
+    write_marker(&id.remote, &marker).await;
+}
+
+/// Clean session end: flip our marker to `PendingBackup` so peers keep warning
+/// until the saves actually reach the cloud. Best-effort.
+pub async fn mark_session_pending_backup(app: &AppHandle, game_name: &str) {
+    let Some(id) = RemoteIdentity::from_app(app) else {
+        return;
+    };
+    mark_session_pending_backup_core(&id, game_name).await;
 }
 
 /// AppHandle-free `PendingBackup` flip for the plugin server's game-stop path
-/// (the Decky forced-close fallback). No-op when cloud isn't configured.
+/// (the Decky forced-close fallback). No-op when cloud isn't configured. Shares
+/// the peer-ownership guard with [`mark_session_pending_backup`] via the core.
 #[cfg_attr(windows, allow(dead_code))] // only called from the unix-gated plugin server
 pub async fn mark_session_pending_backup_from_config(cfg: &ConfigData, game_name: &str) {
-    let Some(remote) = resolve_remote_from_config(cfg) else {
+    let Some(id) = RemoteIdentity::from_config(cfg) else {
         return;
     };
-    let device_id = cfg.device_id.trim();
-    if device_id.is_empty() {
-        return;
-    }
-    let marker = build_marker(game_name, device_id, cfg.device_name.trim(), SessionState::PendingBackup, false);
-    write_marker(&remote, &marker).await;
+    mark_session_pending_backup_core(&id, game_name).await;
+}
+
+/// Delete the session marker (saves are safe in the cloud) and record this
+/// device as the latest backer for the badge. The marker delete and the
+/// device-blob stamp hit independent remote files, and only the blob update
+/// takes the control-plane lock — run them concurrently so their round-trips
+/// don't stack on a high-latency remote.
+async fn complete_session_backup_core(id: &RemoteIdentity, game_name: &str) {
+    let device_name = id.device_name.clone();
+    tokio::join!(
+        delete_marker_if_ours(&id.remote, game_name, &id.device_id),
+        update_device_blob(&id.remote, &id.device_id, |b| {
+            b.device_name = device_name.clone();
+            b.backups.insert(game_name.to_string(), Utc::now().to_rfc3339());
+        }),
+    );
 }
 
 /// Successful cloud upload: delete the session marker (saves are safe in the
 /// cloud) and record this device as the latest backer for the badge.
 pub async fn complete_session_backup(app: &AppHandle, game_name: &str) {
-    let Some(remote) = resolve_remote(app) else {
+    let Some(id) = RemoteIdentity::from_app(app) else {
         return;
     };
-    let (device_id, device_name) = device_identity(app);
-    if device_id.is_empty() {
-        return;
-    }
-    // Marker delete and the device-blob stamp hit independent remote files, and
-    // only the blob update takes the control-plane lock — run them concurrently
-    // so their round-trips don't stack on a high-latency remote.
-    tokio::join!(
-        delete_marker_if_ours(&remote, game_name, &device_id),
-        update_device_blob(&remote, &device_id, |b| {
-            b.device_name = device_name.clone();
-            b.backups.insert(game_name.to_string(), Utc::now().to_rfc3339());
-        }),
-    );
+    complete_session_backup_core(&id, game_name).await;
 }
 
 /// Delete our session marker without recording a backup — used when a game
 /// failed to launch so no actual session occurred. Prevents a stale
 /// `PendingBackup` marker from permanently blocking other devices.
 pub async fn delete_session_marker(app: &AppHandle, game_name: &str) {
-    let Some(remote) = resolve_remote(app) else {
+    let Some(id) = RemoteIdentity::from_app(app) else {
         return;
     };
-    let (device_id, _) = device_identity(app);
-    if device_id.is_empty() {
-        return;
-    }
-    delete_marker_if_ours(&remote, game_name, &device_id).await;
+    delete_marker_if_ours(&id.remote, game_name, &id.device_id).await;
 }
 
 /// AppHandle-free marker deletion for the plugin server's game-stop backup after
 /// a successful cloud upload. No-op when cloud isn't configured.
+#[cfg_attr(windows, allow(dead_code))] // only called from the unix-gated plugin server
 pub async fn complete_session_backup_from_config(cfg: &ConfigData, game_name: &str) {
-    let Some(remote) = resolve_remote_from_config(cfg) else {
+    let Some(id) = RemoteIdentity::from_config(cfg) else {
         return;
     };
-    let device_id = cfg.device_id.trim();
-    if device_id.is_empty() {
-        return;
-    }
-    let device_name = cfg.device_name.trim().to_string();
-    // Independent remote files — run concurrently (mirrors complete_session_backup).
-    tokio::join!(
-        delete_marker_if_ours(&remote, game_name, device_id),
-        update_device_blob(&remote, device_id, |b| {
-            b.device_name = device_name.clone();
-            b.backups.insert(game_name.to_string(), Utc::now().to_rfc3339());
-        }),
-    );
+    complete_session_backup_core(&id, game_name).await;
 }
 
 // ── Suspend integration (Linux logind) ──────────────────────────────────────
@@ -999,18 +1027,17 @@ where
     store.publish(device_id, &blob).await;
 }
 
-/// Record a finished session in this device's blob (playtime delta + last
-/// played). Best-effort; no-op when cloud isn't configured.
-pub async fn record_session(app: &AppHandle, game_name: &str, session_minutes: i32, session_end: &str) {
-    let Some(remote) = resolve_remote(app) else {
-        return;
-    };
-    let (device_id, device_name) = device_identity(app);
-    if device_id.is_empty() {
-        return;
-    }
+/// Add this finished session to the device blob: playtime delta (when > 0) +
+/// last_played. Best-effort.
+async fn record_session_core(
+    id: &RemoteIdentity,
+    game_name: &str,
+    session_minutes: i32,
+    session_end: &str,
+) {
+    let device_name = id.device_name.clone();
     let delta = session_minutes.max(0) as i64;
-    update_device_blob(&remote, &device_id, |b| {
+    update_device_blob(&id.remote, &id.device_id, |b| {
         b.device_name = device_name.clone();
         if delta > 0 {
             *b.playtime.entry(game_name.to_string()).or_default() += delta;
@@ -1018,6 +1045,15 @@ pub async fn record_session(app: &AppHandle, game_name: &str, session_minutes: i
         b.last_played.insert(game_name.to_string(), session_end.to_string());
     })
     .await;
+}
+
+/// Record a finished session in this device's blob (playtime delta + last
+/// played). Best-effort; no-op when cloud isn't configured.
+pub async fn record_session(app: &AppHandle, game_name: &str, session_minutes: i32, session_end: &str) {
+    let Some(id) = RemoteIdentity::from_app(app) else {
+        return;
+    };
+    record_session_core(&id, game_name, session_minutes, session_end).await;
 }
 
 /// AppHandle-free [`record_session`] for the Game-Mode forced-close backup (the
@@ -1032,23 +1068,10 @@ pub async fn record_session_from_config(
     session_minutes: i32,
     session_end: &str,
 ) {
-    let Some(remote) = resolve_remote_from_config(cfg) else {
+    let Some(id) = RemoteIdentity::from_config(cfg) else {
         return;
     };
-    let device_id = cfg.device_id.trim();
-    if device_id.is_empty() {
-        return;
-    }
-    let device_name = cfg.device_name.trim().to_string();
-    let delta = session_minutes.max(0) as i64;
-    update_device_blob(&remote, device_id, |b| {
-        b.device_name = device_name.clone();
-        if delta > 0 {
-            *b.playtime.entry(game_name.to_string()).or_default() += delta;
-        }
-        b.last_played.insert(game_name.to_string(), session_end.to_string());
-    })
-    .await;
+    record_session_core(&id, game_name, session_minutes, session_end).await;
 }
 
 // ── Per-device play-session history (the cross-device timeline) ─────────────
@@ -1074,28 +1097,34 @@ impl HasSchema for HistoryBlob {
     fn stored_schema(&self) -> u32 { self.schema }
 }
 
-/// Push this device's play-session history to the remote: read every local
-/// session for our device id and overwrite our history blob with the full set.
-/// Best-effort and idempotent; no-op when cloud isn't configured. Call after
-/// recording a session locally.
-pub async fn sync_play_history(app: &AppHandle) {
-    let Some(remote) = resolve_remote(app) else {
-        return;
-    };
-    let (device_id, device_name) = device_identity(app);
-    if device_id.is_empty() {
-        return;
-    }
-    let library = app.state::<SharedLibrary>().inner().clone();
-    let sessions = match library.sessions_for_device(&device_id).await {
+/// Overwrite this device's history blob with the full set of its local
+/// play-session rows. Best-effort and idempotent.
+async fn sync_play_history_core(id: &RemoteIdentity, library: &crate::library::Library) {
+    let sessions = match library.sessions_for_device(&id.device_id).await {
         Ok(s) => s,
         Err(e) => {
             tracing::warn!(error = %e, "sync_play_history: failed to read local sessions");
             return;
         }
     };
-    let blob = HistoryBlob { device_name, sessions, schema: 1 };
-    remote.store("history", 1).publish(&device_id, &blob).await;
+    let blob = HistoryBlob {
+        device_name: id.device_name.clone(),
+        sessions,
+        schema: 1,
+    };
+    id.remote.store("history", 1).publish(&id.device_id, &blob).await;
+}
+
+/// Push this device's play-session history to the remote: read every local
+/// session for our device id and overwrite our history blob with the full set.
+/// Best-effort and idempotent; no-op when cloud isn't configured. Call after
+/// recording a session locally.
+pub async fn sync_play_history(app: &AppHandle) {
+    let Some(id) = RemoteIdentity::from_app(app) else {
+        return;
+    };
+    let library = app.state::<SharedLibrary>().inner().clone();
+    sync_play_history_core(&id, &library).await;
 }
 
 /// AppHandle-free [`sync_play_history`] for the Game-Mode forced-close fallback:
@@ -1103,23 +1132,10 @@ pub async fn sync_play_history(app: &AppHandle) {
 /// Best-effort and idempotent; no-op when cloud isn't configured.
 #[cfg_attr(windows, allow(dead_code))] // only reached via the unix-gated plugin server
 pub async fn sync_play_history_from_config(cfg: &ConfigData, library: &crate::library::Library) {
-    let Some(remote) = resolve_remote_from_config(cfg) else {
+    let Some(id) = RemoteIdentity::from_config(cfg) else {
         return;
     };
-    let device_id = cfg.device_id.trim();
-    if device_id.is_empty() {
-        return;
-    }
-    let device_name = cfg.device_name.trim().to_string();
-    let sessions = match library.sessions_for_device(device_id).await {
-        Ok(s) => s,
-        Err(e) => {
-            tracing::warn!(error = %e, "sync_play_history_from_config: failed to read local sessions");
-            return;
-        }
-    };
-    let blob = HistoryBlob { device_name, sessions, schema: 1 };
-    remote.store("history", 1).publish(device_id, &blob).await;
+    sync_play_history_core(&id, library).await;
 }
 
 /// Fold every peer's history blob into the local `play_sessions` table. Lists
