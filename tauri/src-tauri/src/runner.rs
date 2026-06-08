@@ -2575,6 +2575,39 @@ async fn phase_backup(ctx: &WorkflowCtx<'_>, no_saves: bool, timing: &SessionTim
                     }
                 }
 
+                // Skip the cloud upload when this session produced no save
+                // changes and the remote already holds the current revision.
+                // ludusavi's scan reports `new + different == 0` when the live
+                // save is byte-identical to the latest backup (no new tip was
+                // written) — the same signal ludusavi-playnite uses to avoid
+                // redundant backups. But "unchanged this session" doesn't on its
+                // own mean "already uploaded": a *prior* upload could have failed
+                // and left the remote behind. So we also require the cloud-sync
+                // baseline (last tip confirmed on the remote) to match the local
+                // tip before skipping — otherwise we still owe the cloud an
+                // upload even though nothing changed this time.
+                let cloud_already_current = {
+                    let backup_dir = ludusavi_config::backup_dir();
+                    let local_tip = redirects::read_local_backup_tip(&backup_dir, ctx.game_name);
+                    let baseline = ctx
+                        .app
+                        .state::<SharedLibrary>()
+                        .find(ctx.game_id)
+                        .await?
+                        .and_then(|e| e.cloud_sync_baseline);
+                    match (local_tip, baseline) {
+                        (Some(tip), Some(base)) => tip.name == base,
+                        _ => false,
+                    }
+                };
+                let skip_upload = !out.saves_changed() && cloud_already_current;
+                if skip_upload {
+                    tracing::info!(
+                        game_name = ctx.game_name,
+                        "saves unchanged and already on the cloud — skipping upload"
+                    );
+                }
+
                 // The local revision is written. Now mirror it to the cloud as
                 // a separate, observable step so the splash can show a live
                 // "uploading" spinner instead of jumping straight from the local
@@ -2584,7 +2617,7 @@ async fn phase_backup(ctx: &WorkflowCtx<'_>, no_saves: bool, timing: &SessionTim
                 // forced `cloud upload` overwrites the remote (the same
                 // resolution the old combined path applied on a cloud conflict),
                 // so a remote that advanced under us still fast-forwards cleanly.
-                if ctx.cloud_configured {
+                if ctx.cloud_configured && !skip_upload {
                     emit_phase(
                         ctx.app,
                         ctx.game_id,

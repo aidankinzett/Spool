@@ -76,6 +76,23 @@ pub struct ApiOutput {
     pub overall: Option<ApiOverall>,
 }
 
+impl ApiOutput {
+    /// Whether a backup scan found any save content that differs from the last
+    /// revision. ludusavi reports per-game/per-file `ScanChange` and rolls the
+    /// counts up into `overall.changedGames` (`new`/`different`/`same`). A scan
+    /// where everything is `same` (`new + different == 0`) means the live save
+    /// is byte-identical to the latest backup, so there's nothing to upload.
+    ///
+    /// Defaults to `true` (assume changed) when ludusavi omits the counts, so a
+    /// missing/old field can never cause us to skip a real backup.
+    pub fn saves_changed(&self) -> bool {
+        match self.overall.as_ref().and_then(|o| o.changed_games.as_ref()) {
+            Some(c) => c.new + c.different > 0,
+            None => true,
+        }
+    }
+}
+
 #[derive(Debug, Deserialize, Default)]
 #[serde(default)]
 pub struct ApiErrors {
@@ -96,6 +113,18 @@ pub struct ApiOverall {
     pub total_bytes: u64,
     #[serde(rename = "processedGames")]
     pub processed_games: i32,
+    #[serde(rename = "changedGames")]
+    pub changed_games: Option<ChangedGames>,
+}
+
+/// ludusavi's `ScanChangeCount`: how many of the scanned games are new vs.
+/// changed vs. unchanged relative to the latest backup.
+#[derive(Debug, Deserialize, Default)]
+#[serde(default)]
+pub struct ChangedGames {
+    pub new: i32,
+    pub different: i32,
+    pub same: i32,
 }
 
 // ── DTOs: `ludusavi find --api` output ──────────────────────────────────────
@@ -1479,6 +1508,45 @@ mod tests {
                 .map(|os| ManifestWhen { os: os.map(|s| s.to_string()), store: None })
                 .collect(),
         }
+    }
+
+    #[test]
+    fn saves_changed_true_when_new_or_different() {
+        // A scan that wrote a new revision: changedGames reports new/different.
+        let json = r#"{
+            "overall": { "totalGames": 1, "totalBytes": 2048, "processedGames": 1,
+                         "changedGames": { "new": 0, "different": 1, "same": 0 } }
+        }"#;
+        let out: ApiOutput = serde_json::from_str(json).unwrap();
+        assert!(out.saves_changed());
+
+        let json_new = r#"{
+            "overall": { "changedGames": { "new": 1, "different": 0, "same": 0 } }
+        }"#;
+        let out: ApiOutput = serde_json::from_str(json_new).unwrap();
+        assert!(out.saves_changed());
+    }
+
+    #[test]
+    fn saves_changed_false_when_all_same() {
+        let json = r#"{
+            "overall": { "totalGames": 1, "totalBytes": 2048, "processedGames": 1,
+                         "changedGames": { "new": 0, "different": 0, "same": 1 } }
+        }"#;
+        let out: ApiOutput = serde_json::from_str(json).unwrap();
+        assert!(!out.saves_changed());
+    }
+
+    #[test]
+    fn saves_changed_defaults_true_when_counts_absent() {
+        // Older ludusavi (or a partial response) omits changedGames — assume
+        // changed so we never skip a real backup on a missing signal.
+        let json = r#"{ "overall": { "totalGames": 1, "totalBytes": 0, "processedGames": 1 } }"#;
+        let out: ApiOutput = serde_json::from_str(json).unwrap();
+        assert!(out.saves_changed());
+
+        let empty: ApiOutput = serde_json::from_str("{}").unwrap();
+        assert!(empty.saves_changed());
     }
 
     #[test]
