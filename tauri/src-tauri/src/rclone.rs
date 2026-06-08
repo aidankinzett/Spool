@@ -813,12 +813,16 @@ pub async fn complete_session_backup(app: &AppHandle, game_name: &str) {
     if device_id.is_empty() {
         return;
     }
-    delete_marker_if_ours(&remote, game_name, &device_id).await;
-    update_device_blob(&remote, &device_id, |b| {
-        b.device_name = device_name.clone();
-        b.backups.insert(game_name.to_string(), Utc::now().to_rfc3339());
-    })
-    .await;
+    // Marker delete and the device-blob stamp hit independent remote files, and
+    // only the blob update takes the control-plane lock — run them concurrently
+    // so their round-trips don't stack on a high-latency remote.
+    tokio::join!(
+        delete_marker_if_ours(&remote, game_name, &device_id),
+        update_device_blob(&remote, &device_id, |b| {
+            b.device_name = device_name.clone();
+            b.backups.insert(game_name.to_string(), Utc::now().to_rfc3339());
+        }),
+    );
 }
 
 /// Delete our session marker without recording a backup — used when a game
@@ -845,13 +849,15 @@ pub async fn complete_session_backup_from_config(cfg: &ConfigData, game_name: &s
     if device_id.is_empty() {
         return;
     }
-    delete_marker_if_ours(&remote, game_name, device_id).await;
     let device_name = cfg.device_name.trim().to_string();
-    update_device_blob(&remote, device_id, |b| {
-        b.device_name = device_name.clone();
-        b.backups.insert(game_name.to_string(), Utc::now().to_rfc3339());
-    })
-    .await;
+    // Independent remote files — run concurrently (mirrors complete_session_backup).
+    tokio::join!(
+        delete_marker_if_ours(&remote, game_name, device_id),
+        update_device_blob(&remote, device_id, |b| {
+            b.device_name = device_name.clone();
+            b.backups.insert(game_name.to_string(), Utc::now().to_rfc3339());
+        }),
+    );
 }
 
 // ── Suspend integration (Linux logind) ──────────────────────────────────────
@@ -1854,6 +1860,14 @@ pub async fn connect_cloud_oauth(
         remote_name.into(),
         rclone_type.into(),
         token_arg,
+        // We already obtained a token via `rclone authorize` above. Without
+        // --non-interactive, `config create` runs the backend's OAuth config
+        // process and *takes the default* for each question — and the oauth step
+        // ("Already have a token - refresh?") defaults to yes, so it opens the
+        // browser a SECOND time to re-authorise. --non-interactive makes it
+        // store the params we pass (token/client/scope) and return the pending
+        // question as JSON instead of acting on it, so no browser is launched.
+        "--non-interactive".into(),
     ];
     if let Some((id, secret)) = gdrive {
         create_args.push(format!("client_id={id}"));

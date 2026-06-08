@@ -1806,6 +1806,20 @@ async fn run_workflow(
         WorkflowCtx::new(app, game_id, game_name, launch, ludusavi_exe, ludusavi_client).await?;
     let exe_pathbuf = PathBuf::from(exe_path);
 
+    // Emit the first phase immediately, before preflight. preflight's
+    // `claim_session` makes a cloud round-trip (read + write the session marker)
+    // that can take several seconds on a high-latency remote like Google Drive,
+    // and phase_restore — which emits the first phase otherwise — only runs after
+    // it. Without this the UI (desktop overlay + Game-Mode splash) shows nothing
+    // until that returns, so the Play button looks dead. The splash already
+    // defaults to `restoring`; phase_restore re-emits with its own message.
+    let prep_msg = if ctx.cloud_configured {
+        "Syncing + restoring saves…"
+    } else {
+        "Restoring local saves…"
+    };
+    emit_phase(ctx.app, ctx.game_id, "restoring", Some(prep_msg), ctx.cloud_configured, None, false);
+
     preflight(&ctx, &exe_pathbuf, steal_lock).await?;
     let no_saves = phase_restore(&ctx).await?;
     let timing = phase_launch(&ctx, &exe_pathbuf).await?;
@@ -2286,8 +2300,14 @@ async fn record_play_session(
         }
     }
     let minutes = (duration_secs / 60) as i32;
-    rclone::record_session(ctx.app, ctx.game_name, minutes, &ended_at.to_rfc3339()).await;
-    rclone::sync_play_history(ctx.app).await;
+    // These write independent remote files (the device blob vs the history blob)
+    // and only the first takes the control-plane lock, so run them concurrently —
+    // on a high-latency remote their round-trips would otherwise stack.
+    let ended = ended_at.to_rfc3339();
+    tokio::join!(
+        rclone::record_session(ctx.app, ctx.game_name, minutes, &ended),
+        rclone::sync_play_history(ctx.app),
+    );
     true
 }
 
@@ -2365,9 +2385,13 @@ pub async fn record_session_headless(
     }
     // Push cross-device playtime now, gated on the row insert above — same
     // contract as the in-process path. The caller only does the backup-completion
-    // side effects (marker delete + backup stamp).
-    rclone::record_session_from_config(cfg, game_name, minutes, &ended_at.to_rfc3339()).await;
-    rclone::sync_play_history_from_config(cfg, library).await;
+    // side effects (marker delete + backup stamp). Independent remote files, so
+    // run concurrently (mirrors record_play_session).
+    let ended = ended_at.to_rfc3339();
+    tokio::join!(
+        rclone::record_session_from_config(cfg, game_name, minutes, &ended),
+        rclone::sync_play_history_from_config(cfg, library),
+    );
     tracing::info!(game = game_name, duration_secs, "forced-close: recorded play session");
     Some(minutes)
 }
