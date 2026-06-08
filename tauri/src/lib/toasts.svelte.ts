@@ -23,7 +23,7 @@ export type ToastKind = 'ok' | 'info' | 'warn' | 'bad';
 
 /** Prefilled content for a "Report issue" action that opens a GitHub new-issue
  *  page. `body` is the human-written part; environment details (app version,
- *  user agent) are appended at click time by {@link buildIssueUrl}. */
+ *  OS platform/version/arch) are appended at click time by {@link buildIssueUrl}. */
 export type ReportInfo = { title: string; body: string };
 
 export type Toast = {
