@@ -775,6 +775,18 @@
                         {/snippet}
                       </SettingsRow>
 
+                      <p class="px-3 pt-1 pb-2 text-[11px] leading-relaxed text-ink-2">
+                        Syncing large saves over the internet can be slow. For
+                        faster transfers on your home network, you can sync to a
+                        self-hosted remote (e.g. a Raspberry Pi or NAS) —
+                        <a
+                          href="https://spool.kinzett.io/guides/sftp-remote/"
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          class="text-ink-1 underline underline-offset-2 hover:text-ink-0"
+                        >learn how</a>.
+                      </p>
+
                     </div>
                   {/if}
                 </div>
