@@ -16,7 +16,15 @@
  * Mounted globally by `+layout.svelte` via `<ToastStack />`.
  */
 
+import { getVersion } from '@tauri-apps/api/app';
+import { platform, version as osVersion, arch } from '@tauri-apps/plugin-os';
+
 export type ToastKind = 'ok' | 'info' | 'warn' | 'bad';
+
+/** Prefilled content for a "Report issue" action that opens a GitHub new-issue
+ *  page. `body` is the human-written part; environment details (app version,
+ *  user agent) are appended at click time by {@link buildIssueUrl}. */
+export type ReportInfo = { title: string; body: string };
 
 export type Toast = {
   id: string;
@@ -29,6 +37,11 @@ export type Toast = {
   catalog?: string;
   /** Optional inline action button. */
   cta?: { label: string; onClick: () => void };
+  /** "Report issue" action that opens a prefilled GitHub issue. For `kind:
+   *  'bad'` toasts this is auto-derived from `title`/`sub` unless set here —
+   *  pass `false` to suppress it, or an object to override the prefill.
+   *  Resolved to a `ReportInfo | undefined` by `show()` before storage. */
+  report?: ReportInfo | false;
   /** Milliseconds before auto-dismiss. 0 (default for warn/bad) = sticky. */
   duration?: number;
   /** Optional determinate progress bar, 0–1. Undefined = no bar. A value
@@ -66,7 +79,8 @@ class ToastStore {
     if (!this.#tickerStarted) this.#startTicker();
     const id = `t${++this.#nextId}`;
     const duration = input.duration ?? this.#defaultDuration(input.kind);
-    this.items.push({ ...input, id, createdAt: Date.now() });
+    const report = this.#resolveReport(input);
+    this.items.push({ ...input, id, createdAt: Date.now(), report });
     if (duration > 0) {
       setTimeout(() => this.dismiss(id), duration);
     }
@@ -89,6 +103,19 @@ class ToastStore {
     if (idx >= 0) this.items.splice(idx, 1);
   }
 
+  /**
+   * Decides the resolved "Report issue" action for a toast. Explicit `false`
+   * opts out; an explicit object is used verbatim; otherwise error toasts
+   * (`kind: 'bad'`) get an auto-derived report from their title + sub so every
+   * failure surfaces a one-click way to file it. Non-error toasts get none.
+   */
+  #resolveReport(input: Omit<Toast, 'id' | 'createdAt'>): ReportInfo | undefined {
+    if (input.report === false) return undefined;
+    if (input.report) return input.report;
+    if (input.kind !== 'bad') return undefined;
+    return { title: input.title, body: input.sub };
+  }
+
   #startTicker(): void {
     if (typeof window === 'undefined') return; // SSR-safe — no ticker on the server
     this.#tickerStarted = true;
@@ -99,6 +126,42 @@ class ToastStore {
 }
 
 export const toasts = new ToastStore();
+
+/** GitHub new-issue endpoint for this repo. GitHub prefills the form from the
+ *  `title` / `body` query params. */
+const ISSUE_URL = 'https://github.com/aidankinzett/Spool/issues/new';
+
+/**
+ * Builds a GitHub new-issue URL from a {@link ReportInfo}, appending the app
+ * version and OS details (platform / version / arch) so reports arrive with
+ * environment context. Both are best-effort — if the lookups fail (e.g. outside
+ * Tauri, in Storybook) they're omitted rather than blocking the report.
+ */
+export async function buildIssueUrl(report: ReportInfo): Promise<string> {
+  let appVersion = '';
+  try {
+    appVersion = await getVersion();
+  } catch {
+    // best-effort — a missing version shouldn't block filing the issue
+  }
+  let os = '';
+  try {
+    os = `${platform()} ${osVersion()} (${arch()})`;
+  } catch {
+    // best-effort — OS info is unavailable outside a Tauri webview
+  }
+  const body = [
+    report.body,
+    '',
+    '---',
+    appVersion ? `Spool version: ${appVersion}` : null,
+    os ? `OS: ${os}` : null,
+  ]
+    .filter((line) => line !== null)
+    .join('\n');
+  const query = `title=${encodeURIComponent(report.title)}&body=${encodeURIComponent(body)}`;
+  return `${ISSUE_URL}?${query}`;
+}
 
 /**
  * Renders a wall-clock `createdAt` as the "now" / "12s" / "4m" / "2h"

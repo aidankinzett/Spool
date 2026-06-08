@@ -209,6 +209,10 @@ pub fn run() {
         // relaunches us itself, but on the Linux AppImage the updater
         // only swaps the file in place, so we must restart explicitly.
         .plugin(tauri_plugin_process::init())
+        // OS info (platform / version / arch) — read by the frontend's
+        // "Report issue" toast action to stamp environment details into a
+        // prefilled GitHub issue.
+        .plugin(tauri_plugin_os::init())
         // Persist + restore each window's size/position so Spool reopens
         // where the user last left it. Two deliberate tweaks:
         //   * `VISIBLE` is excluded from the saved flags — `main` is a
