@@ -228,7 +228,10 @@ async fn get_games_handler(
     let walks = pending.into_iter().map(|(idx, id, path)| async move {
         let bytes = tokio::task::spawn_blocking(move || crate::size_backfill::directory_size(&path))
             .await
-            .unwrap_or(0);
+            .unwrap_or_else(|e| {
+                tracing::warn!(game_id = %id, error = %e, "directory size walk task failed");
+                0
+            });
         (idx, id, bytes)
     });
     let results: Vec<(usize, String, u64)> = futures_util::stream::iter(walks)
