@@ -18,6 +18,7 @@
   import { listen } from '@tauri-apps/api/event';
   import { Folder, HardDrive, Loader2, Package, FileWarning } from '@lucide/svelte';
   import { api } from '$lib/api';
+  import { parentDir } from '$lib/format';
   import type { SearchCandidate, GuidedInstallResult, ProtonVersion } from '$lib/types';
   import AppChrome from '$lib/components/AppChrome.svelte';
   import MonoLabel from '$lib/components/MonoLabel.svelte';
@@ -66,10 +67,7 @@
     const parts = path.split(/[\\/]/);
     return parts.at(-1) ?? path;
   }
-  function parentDir(path: string): string | null {
-    const idx = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
-    return idx > 0 ? path.slice(0, idx) : null;
-  }
+
 
   /** Guess a game name from the setup.exe's parent folder, dropping the usual
    *  bracketed tags like "[Deluxe Edition]" or "(v1.2)". */

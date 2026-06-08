@@ -6,6 +6,8 @@ import {
   fmtRate,
   fmtSize,
   relDate,
+  parentDir,
+  folderForGame,
 } from "$lib/format";
 
 describe("relDate", () => {
@@ -102,5 +104,47 @@ describe("absDate", () => {
 
   it("renders a UK-style absolute date", () => {
     expect(absDate("2026-05-26T00:00:00Z")).toBe("26 May 2026");
+  });
+});
+
+describe("parentDir", () => {
+  it("returns null for null/undefined/empty", () => {
+    expect(parentDir(null)).toBeNull();
+    expect(parentDir(undefined)).toBeNull();
+    expect(parentDir("")).toBeNull();
+  });
+
+  it("returns null when no separator is found", () => {
+    expect(parentDir("game.exe")).toBeNull();
+  });
+
+  it("handles Unix path separation", () => {
+    expect(parentDir("/usr/bin/spool")).toBe("/usr/bin");
+    expect(parentDir("/game.exe")).toBe("/");
+    expect(parentDir("foo/bar")).toBe("foo");
+  });
+
+  it("handles Windows path separation", () => {
+    expect(parentDir("C:\\Program Files\\Spool\\game.exe")).toBe("C:\\Program Files\\Spool");
+    expect(parentDir("C:\\game.exe")).toBe("C:\\");
+    expect(parentDir("C:/game.exe")).toBe("C:/");
+    expect(parentDir("\\\\server\\share\\game.exe")).toBe("\\\\server\\share");
+    expect(parentDir(".\\game.exe")).toBe(".");
+  });
+});
+
+describe("folderForGame", () => {
+  it("returns game_folder_path if defined", () => {
+    expect(folderForGame({ game_folder_path: "/override/path", exe_path: "/usr/bin/spool" })).toBe("/override/path");
+  });
+
+  it("returns parent of exe_path if game_folder_path is missing", () => {
+    expect(folderForGame({ game_folder_path: null, exe_path: "/usr/bin/spool" })).toBe("/usr/bin");
+    expect(folderForGame({ game_folder_path: undefined, exe_path: "C:\\game.exe" })).toBe("C:\\");
+  });
+
+  it("returns null if neither is available", () => {
+    expect(folderForGame({ game_folder_path: null, exe_path: null })).toBeNull();
+    expect(folderForGame({})).toBeNull();
   });
 });

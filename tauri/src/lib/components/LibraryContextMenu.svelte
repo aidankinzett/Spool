@@ -17,7 +17,7 @@
   import { ArrowDownToLine, ArrowUpFromLine, Folder, HardDriveDownload, Package, Pencil, Play, Trash2 } from '@lucide/svelte';
   import { openView } from '$lib/nav';
   import { api, assetUrl } from '$lib/api';
-  import { fmtCatalog } from '$lib/format';
+  import { fmtCatalog, folderForGame, parentDir } from '$lib/format';
   import { toasts } from '$lib/toasts.svelte';
   import { confirmDialog } from '$lib/confirm.svelte';
   import { confirmSteamRestart } from '$lib/steamRestart';
@@ -83,13 +83,7 @@
   });
 
   // ── Action handlers — same logic as GameDetail's toolbar buttons ───────
-  function folderForGame(g: GameEntry): string | null {
-    if (g.game_folder_path) return g.game_folder_path;
-    if (!g.exe_path) return null;
-    const sep = g.exe_path.includes('\\') ? '\\' : '/';
-    const idx = g.exe_path.lastIndexOf(sep);
-    return idx > 0 ? g.exe_path.slice(0, idx) : null;
-  }
+
 
   async function play() {
     onclose();
@@ -122,9 +116,7 @@
       // Pull the dir off the end of the path string so the "Open
       // folder" CTA reveals the .exe in Explorer without needing
       // a separate IPC.
-      const sep = path.includes('\\') ? '\\' : '/';
-      const idx = path.lastIndexOf(sep);
-      const dir = idx > 0 ? path.slice(0, idx) : path;
+      const dir = parentDir(path) ?? path;
       toasts.show({
         kind: 'ok',
         label: 'ARMOURY CRATE',

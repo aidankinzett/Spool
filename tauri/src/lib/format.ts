@@ -109,3 +109,20 @@ export function isNewerVersion(a: string, b: string): boolean {
   }
   return false;
 }
+
+/** Returns the parent directory of a file path, handling Unix and Windows separators. */
+export function parentDir(path: string | null | undefined): string | null {
+  if (!path) return null;
+  const idx = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
+  if (idx < 0) return null;
+  if (idx === 0) return path[0]; // "/" or "\" root
+  if (idx === 2 && path[1] === ':') return path.slice(0, 3); // "C:\" or "C:/"
+  return path.slice(0, idx);
+}
+
+/** Try to derive a folder path for the game: its own game_folder_path if set, else parent of exe_path. */
+export function folderForGame(g: { game_folder_path?: string | null; exe_path?: string | null }): string | null {
+  if (g.game_folder_path) return g.game_folder_path;
+  return parentDir(g.exe_path);
+}
+
