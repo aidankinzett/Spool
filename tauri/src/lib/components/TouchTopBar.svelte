@@ -89,7 +89,7 @@
   <MonoLabel size={10.5}>SPOOL</MonoLabel>
   {#if sub}
     <span class="text-[10px] text-ink-3">/</span>
-    <MonoLabel size={10.5} class="text-ink-1">{sub}</MonoLabel>
+    <MonoLabel size={10.5} class="whitespace-nowrap text-ink-1">{sub}</MonoLabel>
   {/if}
 
   <!-- Center slot (search, catalog id, etc.) -->

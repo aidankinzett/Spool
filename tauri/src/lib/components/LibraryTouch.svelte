@@ -178,10 +178,12 @@
     await lib.downloadGame(selectedGame);
   }
 
-  // X / banner action: install a peer-only game, otherwise play.
+  // X / banner action — mirrors the banner buttons: an installed game plays, a
+  // peer-only game installs, an uninstalled local game reinstalls (opens Add).
   function activateSelected() {
-    if (selectedIsPeer) installSelected();
-    else launchSelected();
+    if (selectedGame?.installed) launchSelected();
+    else if (selectedIsPeer) installSelected();
+    else if (selectedGame) openView('add', { reinstall: selectedGame.id });
   }
 
   const cats = $derived<{ id: ShelfCat; label: string }[]>([
@@ -210,7 +212,7 @@
 
   const shelfLegend = $derived<{ button: GpButton; label: string }[]>([
     { button: 'a', label: 'Open' },
-    { button: 'x', label: selectedIsPeer ? 'Install' : 'Play' },
+    { button: 'x', label: selectedGame?.installed ? 'Play' : selectedIsPeer ? 'Install' : 'Reinstall' },
     { button: 'y', label: 'Search' },
     { button: 'lb', label: 'Prev' },
     { button: 'rb', label: 'Next' },
@@ -226,7 +228,7 @@
     style:--gp-focus={accent ?? 'var(--color-spool)'}
   >
     <AppChrome
-      sub={selectedGame.game_name.toUpperCase().slice(0, 18)}
+      sub={selectedGame.game_name}
       accent={accent ?? undefined}
       onback={() => (detailOpen = false)}
     />
@@ -339,8 +341,32 @@
       </div>
     {:else if selectedGame}
       <div class="flex min-h-0 flex-1 items-center gap-6 overflow-hidden px-6 py-5">
-        <!-- Left: metadata + actions -->
-        <div class="flex min-w-0 max-w-[54%] flex-1 flex-col gap-3">
+        <!-- Left: cover art -->
+        <div class="flex shrink-0 items-center justify-center">
+          {#if coverFor(selectedGame)}
+            <img
+              src={coverFor(selectedGame)}
+              alt={selectedGame.game_name}
+              class="rounded-md object-cover shadow-2xl"
+              style:width="calc(var(--control-h) * 4.8)"
+              style:height="calc(var(--control-h) * 6.7)"
+            />
+          {:else}
+            <div
+              class="flex items-center justify-center rounded-md"
+              style:width="calc(var(--control-h) * 4.8)"
+              style:height="calc(var(--control-h) * 6.7)"
+              style:background="linear-gradient(160deg, #2a2622 0%, #0a0807 100%)"
+            >
+              <span class="font-mono text-[11px] uppercase tracking-[0.1em] text-ink-3">
+                {selectedGame.game_name.slice(0, 1)}
+              </span>
+            </div>
+          {/if}
+        </div>
+
+        <!-- Right: metadata + actions -->
+        <div class="flex min-w-0 flex-1 flex-col gap-3">
           <div class="flex flex-wrap items-center gap-2">
             <span class="font-mono text-[10px] tracking-[0.12em] text-ink-3">
               {fmtCatalog(selectedGame.catalog_number)}
@@ -375,7 +401,7 @@
           </div>
 
           {#if selectedGame.description}
-            <p class="m-0 line-clamp-2 leading-[1.5] text-ink-1" style:font-size="var(--text-base)">
+            <p class="m-0 line-clamp-2 max-w-[58ch] leading-[1.5] text-ink-1" style:font-size="var(--text-base)">
               {selectedGame.description}
             </p>
           {/if}
@@ -440,30 +466,6 @@
               <Info size={14} />
             </button>
           </div>
-        </div>
-
-        <!-- Right: cover art -->
-        <div class="flex shrink-0 items-center justify-center">
-          {#if coverFor(selectedGame)}
-            <img
-              src={coverFor(selectedGame)}
-              alt={selectedGame.game_name}
-              class="rounded-md object-cover shadow-2xl"
-              style:width="calc(var(--control-h) * 4.8)"
-              style:height="calc(var(--control-h) * 6.7)"
-            />
-          {:else}
-            <div
-              class="flex items-center justify-center rounded-md"
-              style:width="calc(var(--control-h) * 4.8)"
-              style:height="calc(var(--control-h) * 6.7)"
-              style:background="linear-gradient(160deg, #2a2622 0%, #0a0807 100%)"
-            >
-              <span class="font-mono text-[11px] uppercase tracking-[0.1em] text-ink-3">
-                {selectedGame.game_name.slice(0, 1)}
-              </span>
-            </div>
-          {/if}
         </div>
       </div>
     {/if}
