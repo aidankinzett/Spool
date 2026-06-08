@@ -569,11 +569,23 @@ async fn get_steam_art(
         _ => None,
     };
     if let Some(path_str) = local_path {
-        let path = std::path::Path::new(path_str);
-        if let Ok(bytes) = std::fs::read(path) {
-            let mime = mime_from_path(path);
+        let path = std::path::PathBuf::from(path_str);
+        // Disk read + WebP→PNG decode/re-encode + base64 are blocking/CPU work;
+        // keep them off the async runtime (the Decky UI fetches several art kinds
+        // per game page). Returns None when the file is missing/unreadable so we
+        // fall through to the live resolver below.
+        let encoded = tokio::task::spawn_blocking(move || {
+            let bytes = std::fs::read(&path).ok()?;
+            let mime = mime_from_path(&path);
             let (image_type, bytes) = transcode_webp_to_png(mime, bytes);
-            let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+            Some((
+                image_type,
+                base64::engine::general_purpose::STANDARD.encode(&bytes),
+            ))
+        })
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        if let Some((image_type, b64)) = encoded {
             return Ok(Json(json!({ "imageType": image_type, "base64": b64 })));
         }
     }
@@ -607,8 +619,17 @@ async fn get_steam_art(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         .ok_or(StatusCode::NOT_FOUND)?;
 
-    let (image_type, bytes) = transcode_webp_to_png(&art.mime, art.bytes);
-    let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+    // Transcode + base64 are CPU-bound — run them off the async runtime too.
+    let (image_type, b64) = tokio::task::spawn_blocking(move || {
+        let mime = art.mime;
+        let (image_type, bytes) = transcode_webp_to_png(&mime, art.bytes);
+        (
+            image_type,
+            base64::engine::general_purpose::STANDARD.encode(&bytes),
+        )
+    })
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     Ok(Json(json!({ "imageType": image_type, "base64": b64 })))
 }
