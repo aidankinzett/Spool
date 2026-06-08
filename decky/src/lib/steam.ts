@@ -87,7 +87,7 @@ function appOverview(appid: number): AppOverview | undefined {
         appStore?: { GetAppOverviewByAppID?: (id: number) => AppOverview | undefined };
       }
     ).appStore;
-    return store?.GetAppOverviewByAppID?.(appid) ?? undefined;
+    return store?.GetAppOverviewByAppID?.(appid);
   } catch {
     return undefined;
   }

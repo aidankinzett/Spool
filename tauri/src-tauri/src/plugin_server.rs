@@ -589,18 +589,17 @@ async fn get_steam_art(
     };
     let steam_id = entry.steam_id;
 
-    // Resolve the SteamGridDB id once (for the CDN fallback), only when
-    // SteamGridDB is configured. CDN-only art still resolves with this as None.
+    // SteamGridDB is only the fallback, so resolve its game id lazily — a CDN
+    // hit (the common case for a Steam game) then costs no SteamGridDB lookup.
     let config = crate::config::Config::load().unwrap_or_default();
     let api_key = config.data.steamgriddb_api_key;
     let sgdb = if config.data.steamgriddb_enabled && !api_key.is_empty() {
-        crate::steamgriddb::resolve_game_id(&state.http, &api_key, steam_id, &entry.game_name)
-            .await
-            .ok()
-            .flatten()
-            .map(|id| (id, api_key.as_str()))
+        crate::steamgriddb::SgdbFallback::Lazy {
+            api_key: &api_key,
+            name: &entry.game_name,
+        }
     } else {
-        None
+        crate::steamgriddb::SgdbFallback::None
     };
 
     let art = crate::steamgriddb::resolve_art_bytes(&state.http, steam_id, sgdb, sgdb_kind)

@@ -349,7 +349,12 @@ pub async fn fetch_steam_grid_bundle(
         ("logo", "_logo"),
         ("icon", "_icon"),
     ];
-    let sgdb = sgdb.as_ref().map(|(id, key)| (*id, key.as_str()));
+    // One shared SteamGridDB lookup for the whole bundle (resolved by the
+    // caller), so the per-kind fallback never re-resolves the game id.
+    let sgdb = match sgdb.as_ref() {
+        Some((id, key)) => SgdbFallback::Resolved(*id, key.as_str()),
+        None => SgdbFallback::None,
+    };
 
     for (kind, suffix) in kinds {
         // Drop any prior-run file for this slot (any extension) so a changed
@@ -409,6 +414,23 @@ fn cdn_mime(asset: crate::steam_cdn::Asset) -> &'static str {
     }
 }
 
+/// How [`resolve_art_bytes`] reaches SteamGridDB for the fallback it only needs
+/// when the CDN misses. Lets each caller pick the cheaper lookup strategy.
+#[derive(Clone, Copy)]
+pub enum SgdbFallback<'a> {
+    /// SteamGridDB unavailable (disabled / no key) — CDN only.
+    None,
+    /// An already-resolved `(sgdb_id, api_key)`. Use when one lookup is shared
+    /// across several calls (the Add-to-Steam bundle resolves once for 4 kinds).
+    Resolved(u64, &'a str),
+    /// Resolve the game id on demand, and only if the CDN misses. Use for
+    /// one-off fetches (the plugin server, one kind per request) so a CDN hit
+    /// costs no SteamGridDB lookup at all. Only constructed by the `#[cfg(unix)]`
+    /// plugin server, so it reads as dead code on the Windows build.
+    #[cfg_attr(not(unix), allow(dead_code))]
+    Lazy { api_key: &'a str, name: &'a str },
+}
+
 /// Resolves a single art `kind` ("hero" / "grid" / "logo" / "icon") to bytes,
 /// preferring the official Steam CDN (when `steam_id` is known and the kind has
 /// a CDN asset) and falling back to SteamGridDB. This is the one place the
@@ -417,16 +439,12 @@ fn cdn_mime(asset: crate::steam_cdn::Asset) -> &'static str {
 /// the Decky plugin server (`get_steam_art`, which hands them to the UI for
 /// `SetCustomArtworkForApp`) can't diverge on which art a game gets.
 ///
-/// `sgdb` is the already-resolved `(sgdb_id, api_key)` — callers resolve it once
-/// (Add-to-Steam shares one lookup across the whole bundle) and pass `None` when
-/// SteamGridDB is unavailable.
-///
 /// `Ok(None)` means neither source had this kind (CDN 404 + no/empty
 /// SteamGridDB) — a non-error the caller treats as "skip this asset".
 pub async fn resolve_art_bytes(
     http: &reqwest::Client,
     steam_id: Option<u64>,
-    sgdb: Option<(u64, &str)>,
+    sgdb: SgdbFallback<'_>,
     kind: &str,
 ) -> AppResult<Option<ArtBytes>> {
     // Official Steam CDN first — the destination is a Steam tile, so the
@@ -444,9 +462,17 @@ pub async fn resolve_art_bytes(
         }
     }
 
-    // SteamGridDB fallback (also the only source for the icon).
-    let Some((sgdb_id, api_key)) = sgdb else {
-        return Ok(None);
+    // SteamGridDB fallback (also the only source for the icon). For `Lazy` the
+    // game-id lookup happens here, so a CDN hit above costs no SteamGridDB call.
+    let (sgdb_id, api_key) = match sgdb {
+        SgdbFallback::None => return Ok(None),
+        SgdbFallback::Resolved(id, key) => (id, key),
+        SgdbFallback::Lazy { api_key, name } => {
+            let Some(id) = resolve_game_id(http, api_key, steam_id, name).await? else {
+                return Ok(None);
+            };
+            (id, api_key)
+        }
     };
     let Some(asset) = fetch_first_art(http, api_key, sgdb_id, kind).await? else {
         return Ok(None);
@@ -646,7 +672,7 @@ pub async fn fetch_hero(app: AppHandle, game_id: String) -> AppResult<Option<Str
 
 /// Returns a SteamGridDB game id. Tries Steam ID first; falls back to
 /// name autocomplete. None when nothing matches at all.
-pub(crate) async fn resolve_game_id(
+async fn resolve_game_id(
     http: &reqwest::Client,
     api_key: &str,
     steam_id: Option<u64>,
