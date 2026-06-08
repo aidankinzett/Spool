@@ -658,10 +658,12 @@ fn transcode_webp_to_png(mime: &str, bytes: Vec<u8>) -> Option<(&'static str, Ve
         match image::load_from_memory(&bytes) {
             Ok(img) => {
                 let mut out = std::io::Cursor::new(Vec::new());
-                if img.write_to(&mut out, image::ImageFormat::Png).is_ok() {
-                    Some(("png", out.into_inner()))
-                } else {
-                    None
+                match img.write_to(&mut out, image::ImageFormat::Png) {
+                    Ok(()) => Some(("png", out.into_inner())),
+                    Err(e) => {
+                        tracing::warn!(error = %e, "steam-art: png encoding failed");
+                        None
+                    }
                 }
             }
             Err(e) => {
