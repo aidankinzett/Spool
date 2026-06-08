@@ -543,10 +543,12 @@ async fn get_steam_launch_info(
 /// Returns `{ imageType: "png"|"jpeg", base64: "<data>" }` for the requested
 /// art kind (`capsule`, `hero`, `logo`, `header`). Portrait and hero are served
 /// from Spool's on-disk art (downloaded at add time, so they work with
-/// SteamGridDB disabled); logo and the wide `header` capsule are fetched live
-/// from SteamGridDB since Spool keeps no local copy of those. WebP images are
-/// transcoded to PNG because `SetCustomArtworkForApp` rejects them. Returns 404
-/// if there is no art or SteamGridDB is not configured.
+/// SteamGridDB disabled); logo and the wide `header` capsule (and a hero with no
+/// local copy) are resolved live through `steamgriddb::resolve_art_bytes` — the
+/// official Steam CDN first, then SteamGridDB — so they still appear when no
+/// SteamGridDB key is configured, matching the desktop "Add to Steam" bundle.
+/// WebP images are transcoded to PNG because `SetCustomArtworkForApp` rejects
+/// them. Returns 404 when neither source has the art.
 async fn get_steam_art(
     AxState(state): AxState<PluginState>,
     AxPath((id, kind)): AxPath<(String, String)>,
@@ -577,29 +579,34 @@ async fn get_steam_art(
     }
 
     // Anything without a local copy (logo, wide `header`, or a hero we never
-    // downloaded) comes from SteamGridDB. Map the plugin's Steam-assetType
-    // vocabulary onto SteamGridDB's endpoints: the wide capsule is a landscape
-    // "grid" there.
-    let config = crate::config::Config::load().unwrap_or_default();
-    if !config.data.steamgriddb_enabled || config.data.steamgriddb_api_key.is_empty() {
-        return Err(StatusCode::NOT_FOUND);
-    }
-
+    // downloaded) is resolved live: the official Steam CDN first (works with no
+    // SteamGridDB key, which is the common case on a Deck), then SteamGridDB.
+    // Map the plugin's Steam-assetType vocabulary onto the shared resolver's
+    // kinds: the wide capsule is a landscape "grid".
     let sgdb_kind = match kind.as_str() {
         "header" => "grid",
         other => other,
     };
     let steam_id = entry.steam_id;
-    let art = crate::steamgriddb::fetch_art_bytes(
-        &state.http,
-        &config.data.steamgriddb_api_key,
-        steam_id,
-        &entry.game_name,
-        sgdb_kind,
-    )
-    .await
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-    .ok_or(StatusCode::NOT_FOUND)?;
+
+    // Resolve the SteamGridDB id once (for the CDN fallback), only when
+    // SteamGridDB is configured. CDN-only art still resolves with this as None.
+    let config = crate::config::Config::load().unwrap_or_default();
+    let api_key = config.data.steamgriddb_api_key;
+    let sgdb = if config.data.steamgriddb_enabled && !api_key.is_empty() {
+        crate::steamgriddb::resolve_game_id(&state.http, &api_key, steam_id, &entry.game_name)
+            .await
+            .ok()
+            .flatten()
+            .map(|id| (id, api_key.as_str()))
+    } else {
+        None
+    };
+
+    let art = crate::steamgriddb::resolve_art_bytes(&state.http, steam_id, sgdb, sgdb_kind)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .ok_or(StatusCode::NOT_FOUND)?;
 
     let (image_type, bytes) = transcode_webp_to_png(&art.mime, art.bytes);
     let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);

@@ -341,67 +341,34 @@ pub async fn fetch_steam_grid_bundle(
     std::fs::create_dir_all(grid_dir)?;
     let mut placed = Vec::new();
 
-    // (SteamGridDB endpoint, Steam grid-filename suffix, official CDN asset).
-    // The icon has no predictable CDN URL, so it's SteamGridDB-only.
-    let kinds: [(&str, &str, Option<crate::steam_cdn::Asset>); 4] = [
-        ("hero", "_hero", Some(crate::steam_cdn::Asset::Hero)),
-        ("grid", "", Some(crate::steam_cdn::Asset::WideGrid)),
-        ("logo", "_logo", Some(crate::steam_cdn::Asset::Logo)),
-        ("icon", "_icon", None),
+    // SteamGridDB endpoint kind ↔ Steam grid-filename suffix. Source ordering
+    // (official CDN first, then SteamGridDB) lives in `resolve_art_bytes`.
+    let kinds: [(&str, &str); 4] = [
+        ("hero", "_hero"),
+        ("grid", ""),
+        ("logo", "_logo"),
+        ("icon", "_icon"),
     ];
+    let sgdb = sgdb.as_ref().map(|(id, key)| (*id, key.as_str()));
 
-    for (kind, suffix, official) in kinds {
+    for (kind, suffix) in kinds {
         // Drop any prior-run file for this slot (any extension) so a changed
         // extension this run can't leave two files for Steam to pick between. (#284)
         crate::steam::remove_stale_grid_art(grid_dir, app_id, suffix);
-        // Official Steam CDN first.
-        if let (Some(sid), Some(asset)) = (steam_id, official) {
-            match crate::steam_cdn::fetch(&client.http, sid, asset).await {
-                Ok(Some(bytes)) => {
-                    let dest = grid_dir.join(format!("{app_id}{suffix}.{}", asset.ext()));
-                    match std::fs::write(&dest, &bytes) {
-                        Ok(()) => {
-                            tracing::debug!(kind, dest = %dest.display(), "bundle: official {kind} placed");
-                            placed.push(kind.to_string());
-                            continue;
-                        }
-                        Err(e) => {
-                            tracing::warn!(kind, dest = %dest.display(), %e, "bundle: {kind} write failed");
-                        }
-                    }
-                }
-                Ok(None) => {} // no official asset — fall through to SteamGridDB
-                Err(e) => {
-                    tracing::warn!(kind, %e, "bundle: official {kind} fetch failed");
-                }
-            }
-        }
-
-        // SteamGridDB fallback.
-        let Some((sgdb_id, api_key)) = sgdb.as_ref() else {
-            continue;
-        };
-        let asset = match fetch_first_art(&client.http, api_key, *sgdb_id, kind).await {
+        let art = match resolve_art_bytes(&client.http, steam_id, sgdb, kind).await {
             Ok(Some(a)) => a,
             Ok(None) => {
-                tracing::debug!(kind, "bundle: no {kind} art on SteamGridDB");
+                tracing::debug!(kind, "bundle: no {kind} art from CDN or SteamGridDB");
                 continue;
             }
             Err(e) => {
-                tracing::warn!(kind, %e, "bundle: {kind} API request failed");
+                tracing::warn!(kind, %e, "bundle: {kind} fetch failed");
                 continue;
             }
         };
-        let ext = mime_to_ext(&asset.mime).unwrap_or_else(|| url_ext(&asset.url).unwrap_or("png"));
+        let ext = mime_to_ext(&art.mime).unwrap_or("png");
         let dest = grid_dir.join(format!("{app_id}{suffix}.{ext}"));
-        let bytes = match download_bytes(&client.http, &asset.url).await {
-            Ok(b) => b,
-            Err(e) => {
-                tracing::warn!(kind, %e, "bundle: {kind} download failed");
-                continue;
-            }
-        };
-        match std::fs::write(&dest, &bytes) {
+        match std::fs::write(&dest, &art.bytes) {
             Ok(()) => {
                 tracing::debug!(kind, dest = %dest.display(), "bundle: {kind} placed");
                 placed.push(kind.to_string());
@@ -416,35 +383,69 @@ pub async fn fetch_steam_grid_bundle(
 }
 
 /// One downloaded art asset: raw bytes plus its mime (for the caller to set a
-/// content-type / pick a Steam image type).
-#[cfg(unix)]
+/// content-type / pick a Steam image type / choose a file extension).
 pub struct ArtBytes {
     pub bytes: Vec<u8>,
     pub mime: String,
 }
 
-/// Tauri-free variant of the wide-art fetch used by the headless plugin
-/// server: resolves the SteamGridDB id then downloads a single `kind`
-/// ("hero" / "grid" / "logo" / "icon") and returns the bytes in memory rather
-/// than writing them into Steam's grid dir. The desktop path
-/// ([`fetch_steam_grid_bundle`]) still writes files; this one hands bytes to
-/// the Decky UI which applies them live via `SetCustomArtworkForApp`.
+/// The official Steam CDN asset for an art `kind`, or `None` for kinds the CDN
+/// doesn't serve by appid (the icon has no predictable URL).
+fn cdn_asset_for(kind: &str) -> Option<crate::steam_cdn::Asset> {
+    match kind {
+        "hero" => Some(crate::steam_cdn::Asset::Hero),
+        "grid" => Some(crate::steam_cdn::Asset::WideGrid),
+        "logo" => Some(crate::steam_cdn::Asset::Logo),
+        "cover" => Some(crate::steam_cdn::Asset::Cover),
+        _ => None,
+    }
+}
+
+/// Mime for a CDN asset, derived from its file extension.
+fn cdn_mime(asset: crate::steam_cdn::Asset) -> &'static str {
+    match asset.ext() {
+        "png" => "image/png",
+        _ => "image/jpeg",
+    }
+}
+
+/// Resolves a single art `kind` ("hero" / "grid" / "logo" / "icon") to bytes,
+/// preferring the official Steam CDN (when `steam_id` is known and the kind has
+/// a CDN asset) and falling back to SteamGridDB. This is the one place the
+/// source ordering lives, so the desktop Add-to-Steam bundle
+/// ([`fetch_steam_grid_bundle`], which writes the bytes to Steam's grid dir) and
+/// the Decky plugin server (`get_steam_art`, which hands them to the UI for
+/// `SetCustomArtworkForApp`) can't diverge on which art a game gets.
 ///
-/// `Ok(None)` means SteamGridDB is disabled/unconfigured, the game didn't
-/// resolve, or that kind has no art — all non-errors the caller treats as
-/// "skip this asset".
-#[cfg(unix)]
-pub async fn fetch_art_bytes(
+/// `sgdb` is the already-resolved `(sgdb_id, api_key)` — callers resolve it once
+/// (Add-to-Steam shares one lookup across the whole bundle) and pass `None` when
+/// SteamGridDB is unavailable.
+///
+/// `Ok(None)` means neither source had this kind (CDN 404 + no/empty
+/// SteamGridDB) — a non-error the caller treats as "skip this asset".
+pub async fn resolve_art_bytes(
     http: &reqwest::Client,
-    api_key: &str,
     steam_id: Option<u64>,
-    game_name: &str,
+    sgdb: Option<(u64, &str)>,
     kind: &str,
 ) -> AppResult<Option<ArtBytes>> {
-    if api_key.is_empty() {
-        return Ok(None);
+    // Official Steam CDN first — the destination is a Steam tile, so the
+    // canonical store art is the best match when we have an appid.
+    if let (Some(sid), Some(asset)) = (steam_id, cdn_asset_for(kind)) {
+        match crate::steam_cdn::fetch(http, sid, asset).await {
+            Ok(Some(bytes)) => {
+                return Ok(Some(ArtBytes {
+                    bytes,
+                    mime: cdn_mime(asset).to_string(),
+                }));
+            }
+            Ok(None) => {} // no official asset — fall through to SteamGridDB
+            Err(e) => tracing::warn!(kind, %e, "resolve_art_bytes: CDN fetch failed"),
+        }
     }
-    let Some(sgdb_id) = resolve_game_id(http, api_key, steam_id, game_name).await? else {
+
+    // SteamGridDB fallback (also the only source for the icon).
+    let Some((sgdb_id, api_key)) = sgdb else {
         return Ok(None);
     };
     let Some(asset) = fetch_first_art(http, api_key, sgdb_id, kind).await? else {
@@ -645,7 +646,7 @@ pub async fn fetch_hero(app: AppHandle, game_id: String) -> AppResult<Option<Str
 
 /// Returns a SteamGridDB game id. Tries Steam ID first; falls back to
 /// name autocomplete. None when nothing matches at all.
-async fn resolve_game_id(
+pub(crate) async fn resolve_game_id(
     http: &reqwest::Client,
     api_key: &str,
     steam_id: Option<u64>,
@@ -765,5 +766,39 @@ mod tests {
             Some("jpg")
         );
         assert_eq!(url_ext("https://cdn.example.com/cover"), None);
+    }
+
+    #[test]
+    fn cdn_asset_maps_known_kinds_only() {
+        // The kinds the CDN serves by appid.
+        assert!(matches!(
+            cdn_asset_for("hero"),
+            Some(crate::steam_cdn::Asset::Hero)
+        ));
+        assert!(matches!(
+            cdn_asset_for("grid"),
+            Some(crate::steam_cdn::Asset::WideGrid)
+        ));
+        assert!(matches!(
+            cdn_asset_for("logo"),
+            Some(crate::steam_cdn::Asset::Logo)
+        ));
+        assert!(matches!(
+            cdn_asset_for("cover"),
+            Some(crate::steam_cdn::Asset::Cover)
+        ));
+        // The icon has no predictable CDN URL — SteamGridDB only.
+        assert!(cdn_asset_for("icon").is_none());
+        // Callers must map Steam's `header` assetType to `grid` before calling;
+        // the raw `header` kind is not a CDN asset here.
+        assert!(cdn_asset_for("header").is_none());
+    }
+
+    #[test]
+    fn cdn_mime_matches_asset_extension() {
+        assert_eq!(cdn_mime(crate::steam_cdn::Asset::Hero), "image/jpeg");
+        assert_eq!(cdn_mime(crate::steam_cdn::Asset::WideGrid), "image/jpeg");
+        assert_eq!(cdn_mime(crate::steam_cdn::Asset::Cover), "image/jpeg");
+        assert_eq!(cdn_mime(crate::steam_cdn::Asset::Logo), "image/png");
     }
 }
