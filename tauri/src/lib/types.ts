@@ -334,15 +334,25 @@ export type PeerSource = {
 };
 
 /**
- * A `GameEntry` as rendered in the sidebar, optionally annotated with a LAN
- * peer it can be downloaded from. `peer_source` is present on:
+ * A `GameEntry` as rendered in the sidebar, optionally annotated with the LAN
+ * peer(s) it can be downloaded from. Present on:
  *   - synthetic peer-only rows (`id` is `peer:<key>`, an otherwise-empty shell), and
  *   - local uninstalled rows a peer can supply (the real entry id is kept).
  * Absent on installed local games and uninstalled games with no peer source.
+ *
+ * `peer_sources` lists *every* device offering the game (deduped by device,
+ * sorted by name); `peer_source` is the primary (`peer_sources[0]`) kept for the
+ * single-source reads — the sidebar label, cover, and button state. When more
+ * than one device has the game the Download action offers a chooser rather than
+ * silently picking the primary.
+ *
  * Because it merely extends `GameEntry`, every existing field access still
- * type-checks; only the Play/Download and artwork branches read `peer_source`.
+ * type-checks; only the Play/Download and artwork branches read the peer fields.
  */
-export type DisplayGame = GameEntry & { peer_source?: PeerSource };
+export type DisplayGame = GameEntry & {
+  peer_source?: PeerSource;
+  peer_sources?: PeerSource[];
+};
 
 /**
  * One in-flight (or just-finished) LAN install. Emitted as `lan:download`
