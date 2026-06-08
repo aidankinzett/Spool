@@ -107,7 +107,16 @@ pub struct LanDownloadState {
 }
 
 impl LanDownloadState {
-    fn try_start(&self, p: DownloadProgress) -> AppResult<DownloadGuard<'_>> {
+    /// Claims the single install slot for `p` and returns an RAII guard
+    /// whose `Drop` releases it. The guard owns an `Arc<Self>` (not a
+    /// borrow) so `begin_install` can move it into the detached transfer
+    /// task — keeping the slot occupied for the *whole* operation,
+    /// including the manifest fetch, rather than just the moment between
+    /// claim and the early `drop`. While the slot is held a second
+    /// `try_start` is rejected, `request_cancel` can find the active
+    /// session, and `update` routes terminal errors to the UI.
+    fn try_start(self: &Arc<Self>, p: DownloadProgress) -> AppResult<DownloadGuard> {
+        let token = p.install_token.clone();
         let mut guard = self.current.lock().map_err(|_| AppError::LockPoisoned)?;
         if guard.is_some() {
             return Err(AppError::Other(
@@ -126,7 +135,10 @@ impl LanDownloadState {
             *g = Some(Instant::now());
         }
         *guard = Some(p);
-        Ok(DownloadGuard { state: self })
+        Ok(DownloadGuard {
+            state: self.clone(),
+            token,
+        })
     }
 
     /// Marks the current install as cancelled iff `token` matches. The
@@ -256,15 +268,22 @@ impl LanDownloadState {
 /// RAII guard — clears the slot when the install task ends, even if it
 /// panics. Mirrors `runner::RunGuard`. Without this a crashed transfer
 /// would jam the slot until restart.
-struct DownloadGuard<'a> {
-    state: &'a LanDownloadState,
+///
+/// Owns an `Arc<LanDownloadState>` (not a borrow) so it can be moved into
+/// the detached transfer task and live for the whole install. The clear
+/// is token-gated for the same reason `clear_if_token` is: the install
+/// task publishes its terminal "done"/"error" state and sleeps a 2 s
+/// grace period before releasing the slot, during which the user may have
+/// started a *new* install. An unconditional clear in `Drop` would wipe
+/// that second install's slot; gating on our own token leaves it alone.
+struct DownloadGuard {
+    state: Arc<LanDownloadState>,
+    token: String,
 }
 
-impl Drop for DownloadGuard<'_> {
+impl Drop for DownloadGuard {
     fn drop(&mut self) {
-        if let Ok(mut g) = self.state.current.lock() {
-            *g = None;
-        }
+        self.state.clear_if_token(&self.token);
     }
 }
 
@@ -1279,11 +1298,15 @@ pub(crate) async fn begin_install(
         bytes_per_second: 0.0,
         cover_image_path: None,
     };
-    // try_start acquires the slot. The returned guard's Drop clears it
-    // on panic, but we drop it manually here since the actual cleanup
-    // happens in the spawned task below.
-    let _check = download_state.try_start(placeholder.clone())?;
-    drop(_check);
+    // Claim the single install slot and hold it for the whole operation.
+    // The guard is moved into the spawned transfer task below, so the
+    // slot stays occupied across the manifest fetch (up to
+    // MANIFEST_FETCH_TIMEOUT): a concurrent `begin_install` is rejected,
+    // `request_cancel` can find this session, and a manifest-fetch
+    // failure routes through `update`/`set` to emit a terminal event.
+    // The guard's token-gated `Drop` releases the slot on every exit
+    // (success, error, cancel, panic, or the early returns below).
+    let slot_guard = download_state.try_start(placeholder.clone())?;
     on_progress(&placeholder);
 
     // Fetch the manifest. Uses MANIFEST_FETCH_TIMEOUT because the host
@@ -1319,13 +1342,16 @@ pub(crate) async fn begin_install(
     let manifest = match manifest_result {
         Ok(m) => m,
         Err(e) => {
+            // The slot is still held, so `update` finds the placeholder
+            // and the UI gets a terminal "error" event instead of
+            // staying stuck on "Fetching manifest…". `slot_guard`'s Drop
+            // releases the slot as we return.
             if let Some(snap) = download_state.update(|p| {
                 p.status = "error".into();
                 p.message = Some(format!("{e}"));
             }) {
                 on_progress(&snap);
             }
-            download_state.clear_if_token(&install_token);
             return Err(e);
         }
     };
@@ -1393,8 +1419,12 @@ pub(crate) async fn begin_install(
         on_progress: on_progress.clone(),
     });
 
-    // Spawn the heavy transfer + library-registration work.
+    // Spawn the heavy transfer + library-registration work. `slot_guard`
+    // moves in here so the slot stays held until this task ends; its Drop
+    // (token-gated) releases it after the terminal-state grace period,
+    // even if `run_install` panics.
     tokio::spawn(async move {
+        let _slot_guard = slot_guard;
         let result = run_install(
             ctx.clone(),
             peer_addr,
@@ -1478,9 +1508,10 @@ pub(crate) async fn begin_install(
         ctx.state.set(Some(final_progress.clone()));
         (ctx.on_progress)(&final_progress);
         // Brief grace period so the UI can pick up the terminal state
-        // before the slot clears.
+        // before the slot clears. `_slot_guard`'s Drop then releases the
+        // slot (token-gated, so a new install started during this window
+        // is left untouched) as the task ends.
         tokio::time::sleep(Duration::from_secs(2)).await;
-        ctx.state.clear_if_token(&install_token);
     });
 
     Ok(return_token)

@@ -694,19 +694,6 @@ fn hidden_command(exe: &Path, config_dir: &Path) -> Command {
     cmd
 }
 
-/// Like [`hidden_command`] but without `--config`. Used for `manifest show`
-/// so Spool's `customGames` entries (which replace manifest entries with a
-/// reduced path set for active overrides) don't affect the raw manifest read.
-fn hidden_command_no_config(exe: &Path) -> Command {
-    #[allow(unused_mut)]
-    let mut cmd = Command::new(exe);
-    #[cfg(windows)]
-    {
-        cmd.creation_flags(0x0800_0000);
-    }
-    cmd
-}
-
 async fn run_find(ludusavi_exe: &Path, config_dir: &Path, query: &str) -> AppResult<FindOutput> {
     let output = hidden_command(ludusavi_exe, config_dir)
         .args(["find", "--api", "--fuzzy", "--multiple", query])
@@ -729,74 +716,25 @@ async fn run_find(ludusavi_exe: &Path, config_dir: &Path, query: &str) -> AppRes
     crate::util::parse_json(stdout.as_bytes(), "ludusavi find output")
 }
 
-/// Runs `ludusavi backups --api <name>` and parses the result. A game with no
-/// backups (or unknown to ludusavi) produces empty/non-zero output, which we
-/// treat as "no backups" rather than an error — the detail card handles a zero
-/// count gracefully.
-async fn run_backups(
-    ludusavi_exe: &Path,
-    config_dir: &Path,
-    game_name: &str,
-) -> AppResult<BackupsOutput> {
-    let output = hidden_command(ludusavi_exe, config_dir)
-        .args(["backups", "--api", game_name])
-        .output()
-        .await
-        .map_err(|e| AppError::Other(format!("failed to spawn ludusavi backups: {e}")))?;
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    if stdout.trim().is_empty() {
-        // ludusavi can exit non-zero with no output for an unknown game.
-        return Ok(BackupsOutput::default());
-    }
-    crate::util::parse_json(stdout.as_bytes(), "ludusavi backups output")
-}
-
-/// Generic runner for ludusavi subcommands that emit the `--api` envelope
-/// shared by `restore` and `backup`. Treats empty stdout as a successful
-/// no-op (ludusavi sometimes exits non-zero with no output when the game
-/// isn't in its manifest, which we surface as "no saves to handle").
-async fn run_api(ludusavi_exe: &Path, config_dir: &Path, args: &[&str]) -> AppResult<ApiOutput> {
-    // The subcommand ("restore" / "backup") for log/error messages — the first
-    // non-flag arg, since global flags like `--no-manifest-update` precede it.
-    let op = args
-        .iter()
-        .find(|a| !a.starts_with('-'))
-        .copied()
-        .unwrap_or("operation");
-    // Run ludusavi as a BLOCKING std::process call on a spawn_blocking thread
-    // rather than via tokio::process.
-    //
-    // tokio::process reaps child exits via the runtime's SIGCHLD/IO driver,
-    // which only makes progress while the runtime is actively driven. In the
-    // standalone SteamOS Game-Mode attached launch the process is near-idle
-    // (just a splash window — no main window, no pollers), so the driver wasn't
-    // ticking: ludusavi had already exited in ~1.5s but `cmd.output().await`
-    // didn't observe it for ~40s, leaving the launch stuck on "Restoring saves".
-    // A synchronous `waitpid` via std::process doesn't depend on the async
-    // runtime at all, so the wait returns the instant ludusavi exits.
-    let exe = ludusavi_exe.to_path_buf();
-    let cfg = config_dir.to_path_buf();
-    let owned_args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+/// Runs an already-built `std::process::Command` for ludusavi on a
+/// `spawn_blocking` thread, bounded by [`RUN_API_TIMEOUT`], and returns its
+/// captured `Output`.
+///
+/// Why blocking std::process rather than `tokio::process`: tokio reaps child
+/// exits via the runtime's SIGCHLD/IO driver, which only makes progress while
+/// the runtime is actively driven. In the standalone SteamOS Game-Mode attached
+/// launch the process is near-idle (just a splash window — no main window, no
+/// pollers), so the driver wasn't ticking: ludusavi had already exited in ~1.5s
+/// but `cmd.output().await` didn't observe it for ~40s, leaving the launch stuck.
+/// A synchronous `waitpid` via std::process doesn't depend on the async runtime
+/// at all, so the wait returns the instant ludusavi exits.
+///
+/// `op` names the operation for log/error messages. The caller is responsible
+/// for building `cmd` (its `--config`, args, PATH, and `capture_stdio!` so the
+/// pipes exist for the drain below). On timeout the child is killed and a clean
+/// error is returned.
+async fn run_blocking(mut cmd: std::process::Command, op: &str) -> AppResult<std::process::Output> {
     let started = std::time::Instant::now();
-
-    let mut cmd = std::process::Command::new(&exe);
-    cmd.arg("--config").arg(&cfg);
-    cmd.args(&owned_args);
-    // Prepend the bundled rclone's directory to PATH so ludusavi resolves
-    // "rclone" to THIS process's binary (never a stale AppImage FUSE path).
-    if let Some(rclone_dir) = crate::paths::resolve_rclone_path()
-        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
-    {
-        let existing = std::env::var_os("PATH").unwrap_or_default();
-        if let Ok(new_path) = std::env::join_paths(
-            std::iter::once(rclone_dir.into_os_string())
-                .chain(std::env::split_paths(&existing).map(|p| p.into_os_string())),
-        ) {
-            cmd.env("PATH", new_path);
-        }
-    }
-    crate::capture_stdio!(cmd);
 
     let mut child = match cmd.spawn() {
         Ok(child) => child,
@@ -837,7 +775,7 @@ async fn run_api(ludusavi_exe: &Path, config_dir: &Path, args: &[&str]) -> AppRe
                 "ludusavi timed out",
             ));
         };
-        
+
         status.map(|status| std::process::Output {
             status,
             stdout: stdout_bytes,
@@ -861,15 +799,86 @@ async fn run_api(ludusavi_exe: &Path, config_dir: &Path, args: &[&str]) -> AppRe
             )));
         }
     };
-    // Record how long the restore/backup subprocess took + its exit code. Cheap
-    // (only fires on the run-workflow path) and makes a slow or failing
-    // cloud-sync visible in debug.log without re-instrumenting.
+    // Record how long the subprocess took + its exit code. Cheap, and makes a
+    // slow or failing cloud-sync visible in debug.log without re-instrumenting.
     tracing::info!(
         op,
         elapsed_ms = started.elapsed().as_millis() as u64,
         exit = output.status.code().unwrap_or(-1),
         "ludusavi {op} finished"
     );
+    Ok(output)
+}
+
+/// Builds a `std::process::Command` for ludusavi pre-loaded with
+/// `--config <config_dir>`, the bundled rclone on PATH, and piped stdio.
+/// The std::process equivalent of [`hidden_command`], for use with
+/// [`run_blocking`] (which needs the synchronous `waitpid` to dodge the
+/// near-idle tokio reaper lag — see its doc comment).
+fn blocking_command(exe: &Path, config_dir: &Path) -> std::process::Command {
+    let mut cmd = std::process::Command::new(exe);
+    cmd.arg("--config").arg(config_dir);
+    // Prepend the bundled rclone's directory to PATH so ludusavi resolves
+    // "rclone" to THIS process's binary (never a stale AppImage FUSE path).
+    if let Some(rclone_dir) =
+        crate::paths::resolve_rclone_path().and_then(|p| p.parent().map(|d| d.to_path_buf()))
+    {
+        let existing = std::env::var_os("PATH").unwrap_or_default();
+        if let Ok(new_path) = std::env::join_paths(
+            std::iter::once(rclone_dir.into_os_string())
+                .chain(std::env::split_paths(&existing).map(|p| p.into_os_string())),
+        ) {
+            cmd.env("PATH", new_path);
+        }
+    }
+    crate::capture_stdio!(cmd);
+    cmd
+}
+
+/// Runs `ludusavi backups --api <name>` and parses the result. A game with no
+/// backups (or unknown to ludusavi) produces empty/non-zero output, which we
+/// treat as "no backups" rather than an error — the detail card handles a zero
+/// count gracefully.
+async fn run_backups(
+    ludusavi_exe: &Path,
+    config_dir: &Path,
+    game_name: &str,
+) -> AppResult<BackupsOutput> {
+    // Blocking std::process (via run_blocking) rather than tokio::process: this
+    // runs post-session (backup-stats query + the headless list_revisions path)
+    // on the same near-idle Game-Mode launch where tokio's child reaper lags
+    // ~40s. See run_blocking / run_api for the full rationale.
+    let mut cmd = blocking_command(ludusavi_exe, config_dir);
+    cmd.args(["backups", "--api", game_name]);
+    let output = run_blocking(cmd, "backups").await?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    if stdout.trim().is_empty() {
+        // ludusavi can exit non-zero with no output for an unknown game.
+        return Ok(BackupsOutput::default());
+    }
+    crate::util::parse_json(stdout.as_bytes(), "ludusavi backups output")
+}
+
+/// Generic runner for ludusavi subcommands that emit the `--api` envelope
+/// shared by `restore` and `backup`. Treats empty stdout as a successful
+/// no-op (ludusavi sometimes exits non-zero with no output when the game
+/// isn't in its manifest, which we surface as "no saves to handle").
+async fn run_api(ludusavi_exe: &Path, config_dir: &Path, args: &[&str]) -> AppResult<ApiOutput> {
+    // The subcommand ("restore" / "backup") for log/error messages — the first
+    // non-flag arg, since global flags like `--no-manifest-update` precede it.
+    let op = args
+        .iter()
+        .find(|a| !a.starts_with('-'))
+        .copied()
+        .unwrap_or("operation");
+    // Run ludusavi as a BLOCKING std::process call (via run_blocking) rather than
+    // via tokio::process — see run_blocking's doc comment for why the near-idle
+    // Game-Mode launch needs the synchronous waitpid.
+    let mut cmd = blocking_command(ludusavi_exe, config_dir);
+    cmd.args(args);
+    let output = run_blocking(cmd, op).await?;
+
     let stdout = String::from_utf8_lossy(&output.stdout);
     if !output.status.success() && stdout.trim().is_empty() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -928,11 +937,16 @@ pub async fn validate_config(ludusavi_exe: &Path, config_dir: &Path) -> Result<(
 }
 
 async fn load_manifest(ludusavi_exe: &Path) -> AppResult<HashMap<String, ManifestEntry>> {
-    let output = hidden_command_no_config(ludusavi_exe)
-        .args(["manifest", "show", "--api"])
-        .output()
-        .await
-        .map_err(|e| AppError::Other(format!("failed to spawn ludusavi manifest: {e}")))?;
+    // `manifest show` (no `--no-manifest-update`) fetches/refreshes the manifest
+    // over the network. On a flaky network that download can hang indefinitely,
+    // freezing the first Add-Game search's spinner forever. Bound it with the
+    // same blocking-spawn + RUN_API_TIMEOUT + kill-on-expiry as run_api, so it
+    // fails cleanly instead. No `--config` (so the raw manifest isn't filtered by
+    // Spool's customGames) — built inline rather than via blocking_command.
+    let mut cmd = std::process::Command::new(ludusavi_exe);
+    cmd.args(["manifest", "show", "--api"]);
+    crate::capture_stdio!(cmd);
+    let output = run_blocking(cmd, "manifest").await?;
     if !output.status.success() {
         return Err(AppError::Other(format!(
             "ludusavi manifest exited {}",

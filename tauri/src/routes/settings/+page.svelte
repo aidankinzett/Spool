@@ -133,35 +133,72 @@
       .catch((e) => console.error('[settings] sync listener failed:', e));
 
     const setup = async () => {
+      // Only the core config is fatal — the whole page is bound to it. Loading
+      // it is the one step that gates the error screen. (#372)
       try {
         config = await api.getConfig();
         seedWebdavFields();
-        // Land controller/keyboard focus on the active settings group once the
-        // sidebar is in the DOM. The nav scope's initial autofocus runs before
-        // config loads (only the chrome Back button exists then), so it would
-        // otherwise settle on Back. Mouse users are left undisturbed.
-        await tick();
-        if (inputMode() === 'gamepad' || inputMode() === 'keyboard') {
-          navEl?.querySelector<HTMLElement>('[data-gp-autofocus]')?.focus();
-        }
-        peers = await api.listLanPeers();
-        appVersion = await getVersion();
-        syncStatus = await api.currentSyncStatus();
-        isLinux = (await api.appPlatform()) === 'linux';
-        if (isLinux) {
-          protonVersions = await api.listProtonVersions();
-          deps = await api.checkDependencies();
-          try {
-            deckyPlugin = await api.deckyPluginStatus();
-          } catch (e) {
-            console.error('[settings] deckyPluginStatus failed:', e);
-          }
-        }
-        if (config && OAUTH_PROVIDERS.includes(config.cloud_provider)) {
-          remoteExists = await api.checkCloudRemoteExists(config.cloud_provider);
-        }
       } catch (e) {
         error = String(e);
+        return;
+      }
+
+      // Land controller/keyboard focus on the active settings group once the
+      // sidebar is in the DOM. The nav scope's initial autofocus runs before
+      // config loads (only the chrome Back button exists then), so it would
+      // otherwise settle on Back. Mouse users are left undisturbed.
+      await tick();
+      if (inputMode() === 'gamepad' || inputMode() === 'keyboard') {
+        navEl?.querySelector<HTMLElement>('[data-gp-autofocus]')?.focus();
+      }
+
+      // Secondary loads degrade gracefully: each failing one leaves a safe
+      // default and the rest of the page usable, so a misconfigured machine
+      // (e.g. an unreachable rclone remote or broken Proton detection) doesn't
+      // lock the user out of the very controls they need to fix it. (#372)
+      try {
+        peers = await api.listLanPeers();
+      } catch (e) {
+        console.error('[settings] listLanPeers failed:', e);
+      }
+      try {
+        appVersion = await getVersion();
+      } catch (e) {
+        console.error('[settings] getVersion failed:', e);
+      }
+      try {
+        syncStatus = await api.currentSyncStatus();
+      } catch (e) {
+        console.error('[settings] currentSyncStatus failed:', e);
+      }
+      try {
+        isLinux = (await api.appPlatform()) === 'linux';
+      } catch (e) {
+        console.error('[settings] appPlatform failed:', e);
+      }
+      if (isLinux) {
+        try {
+          protonVersions = await api.listProtonVersions();
+        } catch (e) {
+          console.error('[settings] listProtonVersions failed:', e);
+        }
+        try {
+          deps = await api.checkDependencies();
+        } catch (e) {
+          console.error('[settings] checkDependencies failed:', e);
+        }
+        try {
+          deckyPlugin = await api.deckyPluginStatus();
+        } catch (e) {
+          console.error('[settings] deckyPluginStatus failed:', e);
+        }
+      }
+      if (config && OAUTH_PROVIDERS.includes(config.cloud_provider)) {
+        try {
+          remoteExists = await api.checkCloudRemoteExists(config.cloud_provider);
+        } catch (e) {
+          console.error('[settings] checkCloudRemoteExists failed:', e);
+        }
       }
     };
 
