@@ -35,7 +35,7 @@ export default definePlugin(() => {
     </SafeArea>
   ), { exact: true });
   routerHook.addRoute(SPOOL_LAN_PEER_ROUTE, () => (
-    <SafeArea>
+    <SafeArea scroll>
       <PeerGamesPage />
     </SafeArea>
   ), { exact: true });

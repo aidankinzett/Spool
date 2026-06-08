@@ -1,6 +1,6 @@
 {
   "name": "spool-backup",
-  "version": "1.5.0",
+  "version": "1.5.1",
   "description": "Forced-close save-backup safety net for Spool-managed games.",
   "type": "module",
   "packageManager": "bun@1.3.13",
