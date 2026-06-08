@@ -136,6 +136,13 @@ pub struct GameEntry {
     pub publisher: String,
     pub genres: Vec<String>,
     pub release_date: Option<DateTime<Utc>>,
+    /// True once a Steam Store metadata fetch has been ATTEMPTED for this entry
+    /// — i.e. Steam responded, even if it returned no developer/publisher/etc.
+    /// Stops the startup backfill from re-requesting forever for titles Steam
+    /// has only partial (or no) data on. A network *failure* leaves it false, so
+    /// the next boot retries. Written out-of-band by the metadata enrich/backfill
+    /// (never the editor save), so it is in [`RUNTIME_FIELDS`].
+    pub metadata_fetched: bool,
     pub install_size_mb: f64,
 
     // Play tracking
@@ -261,6 +268,7 @@ impl Default for GameEntry {
             publisher: String::new(),
             genres: Vec::new(),
             release_date: None,
+            metadata_fetched: false,
             install_size_mb: 0.0,
             playtime_minutes: 0,
             lan_shared: false,
@@ -378,6 +386,10 @@ const RUNTIME_FIELDS: &[&str] = &[
     // before the async resolve landed) from clobbering the resolved id back to
     // null on save — which would lose the Steam-CDN art + Steam-Store metadata.
     "steam_id",
+    // Flipped by the metadata enrich/backfill once Steam has been queried, not
+    // the editor save (which has no such control). Overlaying it stops a stale
+    // editor save from resetting it to false and re-triggering the backfill.
+    "metadata_fetched",
     // Flipped out-of-band by uninstall / reinstall (and the Decky plugin), not
     // the editor save. Overlaying it stops a stale open editor from resurrecting
     // an uninstalled game on save. (`game_folder_path` / `exe_path` are NOT
