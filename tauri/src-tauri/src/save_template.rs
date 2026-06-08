@@ -222,9 +222,12 @@ fn is_windows_drive_path(p: &str) -> bool {
 /// resolve. Returns `None` when a `<base>` token has no install folder to expand
 /// against (the caller skips it rather than handing ludusavi an unresolved token).
 pub fn expand_base(token: &str, game_folder: Option<&str>) -> Option<String> {
-    let rest = match token.strip_prefix("<base>") {
-        Some(r) => r.trim_start_matches('/'),
-        None => return Some(token.to_string()),
+    let rest = if token == "<base>" {
+        ""
+    } else if let Some(r) = token.strip_prefix("<base>/") {
+        r
+    } else {
+        return Some(token.to_string());
     };
     let folder = game_folder.filter(|f| !f.trim().is_empty())?;
     Some(join(&norm(folder), rest))
@@ -491,6 +494,14 @@ mod tests {
         assert_eq!(
             expand_base("/literal/path", None).as_deref(),
             Some("/literal/path")
+        );
+        assert_eq!(
+            expand_base("<base-extra>/X", Some("/whatever")).as_deref(),
+            Some("<base-extra>/X")
+        );
+        assert_eq!(
+            expand_base("<base>", Some("D:/Games/ULTRAKILL")).as_deref(),
+            Some("D:/Games/ULTRAKILL")
         );
     }
 

@@ -37,7 +37,9 @@ fn open_path_impl(path: &str) -> AppResult<()> {
 
 #[cfg(target_os = "macos")]
 fn open_path_impl(path: &str) -> AppResult<()> {
-    std::process::Command::new("open")
+    use tokio::process::Command;
+
+    Command::new("open")
         .arg(path)
         .spawn()
         .map(|_| ())
@@ -46,9 +48,11 @@ fn open_path_impl(path: &str) -> AppResult<()> {
 
 #[cfg(target_os = "windows")]
 fn open_path_impl(path: &str) -> AppResult<()> {
+    use tokio::process::Command;
+
     // explorer.exe opens a folder (or selects/launches a file) with the shell
     // default — matching the previous opener-plugin behaviour on Windows.
-    std::process::Command::new("explorer")
+    Command::new("explorer")
         .arg(path)
         .spawn()
         .map(|_| ())

@@ -423,13 +423,18 @@ async fn get_library(AxState(state): AxState<PluginState>) -> Json<Value> {
         .map(|p| p.to_string_lossy().to_string());
     let entries: Vec<Value> = entries
         .iter()
-        .map(|entry| {
-            let mut v = serde_json::to_value(entry).unwrap_or(Value::Null);
-            if let (Some(map), Some(exe)) = (v.as_object_mut(), &spool_exe) {
-                let app_id = crate::steam::compute_shortcut_app_id(&entry.game_name, exe);
-                map.insert("shortcut_app_id".to_string(), json!(app_id));
+        .filter_map(|entry| match serde_json::to_value(entry) {
+            Ok(mut v) => {
+                if let (Some(map), Some(exe)) = (v.as_object_mut(), &spool_exe) {
+                    let app_id = crate::steam::compute_shortcut_app_id(&entry.game_name, exe);
+                    map.insert("shortcut_app_id".to_string(), json!(app_id));
+                }
+                Some(v)
             }
-            v
+            Err(e) => {
+                tracing::warn!(game_id = %entry.id, game_name = %entry.game_name, error = %e, "get_library: failed to serialize entry");
+                None
+            }
         })
         .collect();
     Json(json!(entries))
@@ -572,9 +577,10 @@ async fn get_steam_art(
         let path = std::path::Path::new(path_str);
         if let Ok(bytes) = std::fs::read(path) {
             let mime = mime_from_path(path);
-            let (image_type, bytes) = transcode_webp_to_png(mime, bytes);
-            let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
-            return Ok(Json(json!({ "imageType": image_type, "base64": b64 })));
+            if let Some((image_type, bytes)) = transcode_webp_to_png(mime, bytes) {
+                let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+                return Ok(Json(json!({ "imageType": image_type, "base64": b64 })));
+            }
         }
     }
 
@@ -607,7 +613,8 @@ async fn get_steam_art(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         .ok_or(StatusCode::NOT_FOUND)?;
 
-    let (image_type, bytes) = transcode_webp_to_png(&art.mime, art.bytes);
+    let (image_type, bytes) = transcode_webp_to_png(&art.mime, art.bytes)
+        .ok_or(StatusCode::NOT_FOUND)?;
     let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
 
     Ok(Json(json!({ "imageType": image_type, "base64": b64 })))
@@ -625,24 +632,30 @@ fn mime_from_path(path: &std::path::Path) -> &'static str {
 /// Transcodes WebP bytes to PNG and returns `("png", transcoded_bytes)`.
 /// For non-WebP MIME types, returns the normalised Steam imageType string
 /// (`"jpeg"` or `"png"`) with the bytes unchanged.
-fn transcode_webp_to_png(mime: &str, bytes: Vec<u8>) -> (&'static str, Vec<u8>) {
+fn transcode_webp_to_png(mime: &str, bytes: Vec<u8>) -> Option<(&'static str, Vec<u8>)> {
     if mime.contains("webp") {
         match image::load_from_memory(&bytes) {
             Ok(img) => {
                 let mut out = std::io::Cursor::new(Vec::new());
                 if img.write_to(&mut out, image::ImageFormat::Png).is_ok() {
-                    return ("png", out.into_inner());
+                    Some(("png", out.into_inner()))
+                } else {
+                    None
                 }
             }
-            Err(e) => tracing::warn!(error = %e, "steam-art: webp→png transcode failed; sending as-is"),
+            Err(e) => {
+                tracing::warn!(error = %e, "steam-art: webp→png transcode failed");
+                None
+            }
         }
-    }
-    let image_type = if mime.contains("jpeg") || mime.contains("jpg") {
-        "jpeg"
     } else {
-        "png"
-    };
-    (image_type, bytes)
+        let image_type = if mime.contains("jpeg") || mime.contains("jpg") {
+            "jpeg"
+        } else {
+            "png"
+        };
+        Some((image_type, bytes))
+    }
 }
 
 #[derive(Deserialize)]

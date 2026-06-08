@@ -355,11 +355,11 @@ fn strip_html(input: &str) -> String {
             _ => {}
         }
     }
-    out.replace("&amp;", "&")
-        .replace("&lt;", "<")
+    out.replace("&lt;", "<")
         .replace("&gt;", ">")
         .replace("&quot;", "\"")
         .replace("&#39;", "'")
+        .replace("&amp;", "&")
         .trim()
         .to_string()
 }
@@ -404,6 +404,7 @@ mod tests {
         assert_eq!(strip_html("<b>Hello</b> &amp; bye"), "Hello & bye");
         assert_eq!(strip_html("plain text"), "plain text");
         assert_eq!(strip_html("a &lt;tag&gt; b"), "a <tag> b");
+        assert_eq!(strip_html("a &amp;lt;tag&amp;gt; b"), "a &lt;tag&gt; b");
     }
 
     #[test]

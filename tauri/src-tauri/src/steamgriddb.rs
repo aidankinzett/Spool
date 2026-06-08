@@ -631,6 +631,9 @@ async fn apply_art(
     hero: Option<&str>,
     accent: Option<&str>,
 ) -> AppResult<()> {
+    if cover.is_none() && hero.is_none() && accent.is_none() {
+        return Ok(());
+    }
     let updated = app
         .state::<SharedLibrary>()
         .set_art(game_entry_id, cover, hero, accent)

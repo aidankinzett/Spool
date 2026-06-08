@@ -629,7 +629,7 @@
               <button
                 type="button"
                 data-testid="reinstall-button"
-                data-gp-autofocus=""
+                data-gp-autofocus={autofocusPlay ? '' : undefined}
                 onclick={() => openView('add', { reinstall: game.id })}
                 class="font-sans inline-flex cursor-pointer items-center gap-2 rounded-md font-semibold transition-colors"
                 style:height="var(--control-h)"

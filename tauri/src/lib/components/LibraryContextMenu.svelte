@@ -400,8 +400,8 @@
   </div>
 
   <div class="border-t border-dashed border-line-1 py-1">
-    {@render item('Back up saves now', backupIcon, manualBackup)}
-    {@render item('Restore saves…', restoreIcon, manualRestore)}
+    {@render item('Back up saves now', backupIcon, manualBackup, !game.installed)}
+    {@render item('Restore saves…', restoreIcon, manualRestore, !game.installed)}
   </div>
 
   {#snippet playIcon()}<Play size={13} fill="currentColor" />{/snippet}
