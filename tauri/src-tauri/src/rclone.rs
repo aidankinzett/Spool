@@ -1579,7 +1579,7 @@ async fn run_startup_fold(app: &AppHandle) {
     // List device files, then cat each — only the backup-badge fields remain.
     let blobs: Vec<(String, DeviceBlob)> = remote.store("devices", 1).read_all().await;
     if blobs.is_empty() {
-        if recomputed > 0 {
+        if recomputed > 0 || new_sessions > 0 {
             let _ = app.emit("library:changed", &());
         }
         return;
@@ -1599,7 +1599,7 @@ async fn run_startup_fold(app: &AppHandle) {
         }
     }
     tracing::info!(applied, devices = blobs.len(), "startup fold: done");
-    if applied > 0 || recomputed > 0 {
+    if applied > 0 || recomputed > 0 || new_sessions > 0 {
         let _ = app.emit("library:changed", &());
     }
 }
