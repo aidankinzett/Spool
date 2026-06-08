@@ -258,9 +258,11 @@ pub fn session_hash(game_name: &str) -> String {
 pub fn remote_name_from_yaml(config: &serde_yaml::Value) -> Option<String> {
     let remote = config.get("cloud")?.get("remote")?;
     match remote {
+        // Legacy bare-string form (pre-0.31 schema); kept for configs not yet
+        // migrated by `ludusavi_config::migrate_bare_remote`.
         serde_yaml::Value::String(s) => Some(s.clone()),
         serde_yaml::Value::Mapping(m) => {
-            for tag in ["Custom", "WebDav"] {
+            for tag in ["Custom", "WebDav", "Box", "Dropbox", "GoogleDrive", "OneDrive", "Ftp", "Smb"] {
                 if let Some(inner) = m.get(serde_yaml::Value::String(tag.into())) {
                     if let Some(id) = inner.get(serde_yaml::Value::String("id".into())) {
                         return id.as_str().map(String::from);
