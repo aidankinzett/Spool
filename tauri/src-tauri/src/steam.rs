@@ -312,6 +312,11 @@ pub fn build_launch_options(game_name: &str, exe_path: &str) -> String {
 
 // ── Tauri commands ──────────────────────────────────────────────────────────
 
+/// Surfaced when Steam was running but didn't shut down in time, so we abort
+/// rather than write a shortcut Steam would clobber on its next exit.
+const STEAM_SHUTDOWN_FAILED_MSG: &str =
+    "Couldn't close Steam to add the shortcut. Close Steam manually, then try again.";
+
 /// Adds Spool itself as a non-Steam shortcut so the user can launch the
 /// library from Steam's Gaming Mode on SteamOS / Steam Deck.
 #[tauri::command]
@@ -334,6 +339,11 @@ pub async fn add_spool_to_steam() -> AppResult<AddToSteamResult> {
     // only reads it at startup. Shut Steam down before writing, then relaunch
     // below so it loads the new shortcut. No-op when Steam isn't running.
     let restart = crate::steam_process::shut_down_for_write().await;
+    // Steam was running but wouldn't close — bail before writing: Steam would
+    // rewrite shortcuts.vdf from memory on its eventual exit and drop our entry.
+    if restart == crate::steam_process::SteamRestart::ShutdownFailed {
+        return Err(AppError::Other(STEAM_SHUTDOWN_FAILED_MSG.into()));
+    }
 
     let mut shortcuts = read_shortcuts(&user.shortcuts_path)?;
     // No --run args — this shortcut opens the Spool library itself.
@@ -430,6 +440,11 @@ pub async fn add_to_steam(
     //     relaunch in step 9 so it picks up the new shortcut. No-op when Steam
     //     isn't running or in Game Mode (Spool is a Steam child there).
     let restart = crate::steam_process::shut_down_for_write().await;
+    // Steam was running but wouldn't close — bail before writing: Steam would
+    // rewrite shortcuts.vdf from memory on its eventual exit and drop our entry.
+    if restart == crate::steam_process::SteamRestart::ShutdownFailed {
+        return Err(AppError::Other(STEAM_SHUTDOWN_FAILED_MSG.into()));
+    }
 
     // 4. Read + upsert + write.
     let mut shortcuts = read_shortcuts(&user.shortcuts_path)?;
