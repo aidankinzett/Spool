@@ -38,7 +38,11 @@ async fn run_backfill(app: AppHandle) {
     };
     let todo: Vec<(String, u64)> = entries
         .iter()
-        .filter(|e| e.description.is_empty() || e.developer.is_empty())
+        // Not yet fetched (Steam never successfully queried) and still missing a
+        // headline field. The `metadata_fetched` marker is what stops this from
+        // re-selecting forever for titles Steam returns no developer/etc. for —
+        // the old `description || developer empty` filter matched those every boot.
+        .filter(|e| !e.metadata_fetched && (e.description.is_empty() || e.developer.is_empty()))
         .filter_map(|e| e.steam_id.map(|sid| (e.id.clone(), sid)))
         .collect();
     if todo.is_empty() {
@@ -47,20 +51,23 @@ async fn run_backfill(app: AppHandle) {
     tracing::info!(count = todo.len(), "metadata backfill: starting");
 
     let client = app.state::<MetadataClient>();
-    let mut results: Vec<(String, GameMetadata)> = Vec::with_capacity(todo.len());
+    // Records every entry Steam *responded* for: Some = it had metadata, None =
+    // it has no data for that appid. Both are marked fetched below so they are
+    // not re-requested next boot; only a network error (logged, not recorded)
+    // is left to retry later.
+    let mut responded: Vec<(String, Option<GameMetadata>)> = Vec::with_capacity(todo.len());
     for (i, (id, steam_id)) in todo.iter().enumerate() {
         // Throttle between requests (but not before the first).
         if i > 0 {
             tokio::time::sleep(THROTTLE).await;
         }
         match fetch_steam_metadata(client.http(), *steam_id).await {
-            Ok(Some(meta)) => results.push((id.clone(), meta)),
-            Ok(None) => {}
+            Ok(meta) => responded.push((id.clone(), meta)),
             Err(e) => tracing::warn!(game_id = %id, error = %e, "metadata backfill: fetch failed"),
         }
     }
-    if results.is_empty() {
-        tracing::info!("metadata backfill: nothing fetched");
+    if responded.is_empty() {
+        tracing::info!("metadata backfill: no Steam responses");
         return;
     }
 
@@ -68,20 +75,28 @@ async fn run_backfill(app: AppHandle) {
     // run) and persist only the metadata fields so concurrent runtime writes
     // aren't clobbered.
     let mut applied = 0;
-    for (id, meta) in &results {
+    for (id, meta) in &responded {
         let Some(mut entry) = library.find(id).await.ok().flatten() else {
             continue;
         };
-        if apply_to_entry(&mut entry, meta) {
-            match library
-                .update_fields(id, &crate::metadata::metadata_fields(&entry))
-                .await
-            {
-                Ok(true) => applied += 1,
-                // The entry vanished between find and update — nothing written.
-                Ok(false) => {}
-                Err(e) => tracing::warn!(error = %e, "metadata backfill: update failed"),
-            }
+        // Apply any returned fields, then always set the fetched marker so this
+        // entry is not re-requested next boot even when Steam had nothing to add.
+        let changed = meta
+            .as_ref()
+            .map(|m| apply_to_entry(&mut entry, m))
+            .unwrap_or(false);
+        entry.metadata_fetched = true;
+        match library
+            .update_fields(id, &crate::metadata::metadata_fields(&entry))
+            .await
+        {
+            // Only count (and later emit for) entries whose visible metadata
+            // actually changed; a marker-only write is silent.
+            Ok(true) if changed => applied += 1,
+            Ok(true) => {}
+            // The entry vanished between find and update — nothing written.
+            Ok(false) => {}
+            Err(e) => tracing::warn!(error = %e, "metadata backfill: update failed"),
         }
     }
     tracing::info!(applied, "metadata backfill: done");

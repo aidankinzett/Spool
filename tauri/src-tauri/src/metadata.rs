@@ -157,21 +157,25 @@ pub async fn fetch_and_save_metadata(app: &AppHandle, game_id: &str) -> AppResul
         return Ok(false);
     };
 
-    let Some(meta) = fetch_steam_metadata(&client.http, steam_id).await? else {
-        return Ok(false);
-    };
+    // Ok here means Steam responded — even Ok(None) (it has no metadata for this
+    // appid). Either way we mark the entry fetched so the startup backfill stops
+    // re-requesting it forever; only a network *error* (the `?`) leaves the
+    // marker unset so the next boot retries.
+    let meta = fetch_steam_metadata(&client.http, steam_id).await?;
 
-    // Re-read the entry (it may have changed during the network call), apply
-    // only the empty fields, and persist just those fields.
+    // Re-read the entry (it may have changed during the network call), apply only
+    // the empty fields, set the fetched marker, and persist just those fields.
     let applied = match library.find(game_id).await? {
         Some(mut entry) => {
-            if apply_to_entry(&mut entry, &meta) {
-                library
-                    .update_fields(game_id, &metadata_fields(&entry))
-                    .await?
-            } else {
-                false
-            }
+            let changed = meta
+                .as_ref()
+                .map(|m| apply_to_entry(&mut entry, m))
+                .unwrap_or(false);
+            entry.metadata_fetched = true;
+            library
+                .update_fields(game_id, &metadata_fields(&entry))
+                .await?;
+            changed
         }
         None => {
             tracing::warn!(game_id, "metadata fetched but library entry gone; skipping");
@@ -338,6 +342,7 @@ pub fn metadata_fields(entry: &GameEntry) -> Vec<(&'static str, serde_json::Valu
             "release_date",
             serde_json::to_value(entry.release_date).unwrap_or(serde_json::Value::Null),
         ),
+        ("metadata_fetched", json!(entry.metadata_fetched)),
     ]
 }
 
