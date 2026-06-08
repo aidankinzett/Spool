@@ -900,12 +900,20 @@ impl Library {
         let minutes = (secs / 60).min(i32::MAX as i64);
         // A bound text becomes a JSON string under json_set; a bound integer a
         // JSON number — matching the GameEntry serde shapes for the two fields.
+        // Only write rows whose cached value actually differs (`IS NOT` is the
+        // null-safe compare): SQLite counts a same-value UPDATE as a change, so
+        // an unguarded write would bump `meta.version` and make the cross-device
+        // fold emit a spurious `library:changed` on every startup. So the
+        // returned `rows_affected` reflects real changes, which the fold relies on.
         let res = sqlx::query(
             "UPDATE games SET data = json_set(
                     data,
                     '$.playtime_minutes', ?2,
                     '$.last_played_at', ?3
-                 ) WHERE game_name = ?1",
+                 )
+             WHERE game_name = ?1
+               AND (json_extract(data, '$.playtime_minutes') IS NOT ?2
+                    OR json_extract(data, '$.last_played_at') IS NOT ?3)",
         )
         .bind(game_name)
         .bind(minutes)
