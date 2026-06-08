@@ -224,6 +224,16 @@ pub struct GameEntry {
     /// Pairs with `save_last_backer_device` to render "Desktop-PC · 2h ago" on
     /// the `cloud-newer` state. `None` when we're the latest backer / no sync.
     pub save_cloud_revision_at: Option<DateTime<Utc>>,
+
+    /// The Steam non-Steam-shortcut appid last written to `shortcuts.vdf` for
+    /// this game (`Some` once "Add to Steam" has run, `None` otherwise). The
+    /// appid is name-derived (`steam::calculate_app_id` over the spool exe +
+    /// game name), so a rename changes it — storing the previously-written value
+    /// lets the edit/remove paths find and reconcile the *exact* old shortcut +
+    /// collection entry instead of orphaning it. Written out-of-band by the
+    /// Steam integration (`add_to_steam` / rename reconcile), not the editor, so
+    /// it's in [`RUNTIME_FIELDS`] and survives a whole-entry editor save.
+    pub steam_app_id: Option<u32>,
 }
 
 impl Default for GameEntry {
@@ -273,6 +283,7 @@ impl Default for GameEntry {
             cloud_sync_baseline: None,
             save_last_backer_device: None,
             save_cloud_revision_at: None,
+            steam_app_id: None,
         }
     }
 }
@@ -373,6 +384,12 @@ const RUNTIME_FIELDS: &[&str] = &[
     // overlaid — the editor legitimately edits those; `installed` being the
     // launch/UI source of truth makes any stale path harmless.)
     "installed",
+    // Written out-of-band by the Steam integration (add_to_steam / the rename
+    // reconcile in update_game), not the editor save, which has no Steam-appid
+    // control. Overlaying it stops a stale open editor from clobbering a freshly
+    // recorded appid back to null on save — which would lose the link the
+    // edit/remove paths use to find and clean up the game's Steam shortcut.
+    "steam_app_id",
 ];
 
 /// Sentinel `device_id` for the synthetic legacy session that
@@ -1479,12 +1496,52 @@ pub async fn update_game(
     app: AppHandle,
     entry: GameEntry,
 ) -> AppResult<GameEntry> {
+    // Snapshot the pre-edit row so we can tell whether the Steam shortcut needs
+    // reconciling (name/exe changed) — `steam_app_id` is a runtime field, so the
+    // replace below preserves it, but we read the *old* name/exe here.
+    let prev = state.find(&entry.id).await?;
     if !state.replace(&entry).await? {
         return Err(AppError::Other(format!(
             "game with id {} not found",
             entry.id
         )));
     }
+
+    // Reconcile the Steam shortcut for a game that was added to Steam (has a
+    // tracked appid) when its name or exe changed — the appid is name-derived,
+    // so a rename would otherwise orphan the old shortcut. Best-effort: a
+    // reconcile failure (e.g. Steam wouldn't shut down) never fails the save.
+    if let Some(prev) = prev {
+        if let Some(old_app_id) = prev.steam_app_id {
+            let changed = prev.game_name != entry.game_name || prev.exe_path != entry.exe_path;
+            if changed {
+                match crate::steam::reconcile_renamed_game(
+                    old_app_id,
+                    &entry.game_name,
+                    &entry.exe_path,
+                )
+                .await
+                {
+                    Ok(new_app_id) if new_app_id != old_app_id => {
+                        if let Err(e) = state
+                            .update_fields(
+                                &entry.id,
+                                &[("steam_app_id", serde_json::json!(new_app_id))],
+                            )
+                            .await
+                        {
+                            tracing::warn!(error = %e, "update_game: failed to record new steam_app_id");
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(e) => {
+                        tracing::warn!(error = %e, "update_game: Steam shortcut reconcile failed");
+                    }
+                }
+            }
+        }
+    }
+
     let updated = entry;
     if let Err(e) = app.emit("library:changed", &updated.id) {
         tracing::warn!(error = %e, "failed to emit library:changed after update_game");
@@ -1500,13 +1557,41 @@ pub async fn remove_game(
     app: AppHandle,
     id: String,
 ) -> AppResult<bool> {
+    // Capture the Steam shortcut identity before deleting the row, so we can
+    // clean it up afterwards (the appid is gone once the entry is removed).
+    let steam = capture_steam_identity(state.inner(), &id).await?;
     let removed = state.remove(&id).await?;
     if removed {
+        reconcile_steam_removal(steam).await;
         if let Err(e) = app.emit("library:changed", &id) {
             tracing::warn!(error = %e, "failed to emit library:changed after remove_game");
         }
     }
     Ok(removed)
+}
+
+/// Snapshots a game's Steam shortcut identity (`(appid, name)`) before its row
+/// is deleted, so [`reconcile_steam_removal`] can clean the shortcut up after.
+/// `None` when the game is absent or was never added to Steam.
+async fn capture_steam_identity(
+    library: &SharedLibrary,
+    id: &str,
+) -> AppResult<Option<(u32, String)>> {
+    Ok(library
+        .find(id)
+        .await?
+        .and_then(|e| e.steam_app_id.map(|aid| (aid, e.game_name))))
+}
+
+/// Removes a forgotten/deleted game's Steam shortcut, given its captured
+/// `(appid, name)` (or `None` when it was never added to Steam). Best-effort:
+/// logs and continues on failure — the library entry is already gone.
+async fn reconcile_steam_removal(steam: Option<(u32, String)>) {
+    if let Some((app_id, name)) = steam {
+        if let Err(e) = crate::steam::remove_game_from_steam(app_id, &name).await {
+            tracing::warn!(error = %e, "failed to remove Steam shortcut for removed game");
+        }
+    }
 }
 
 /// Deletes a game's install folder from disk, then removes its library entry.
@@ -1534,10 +1619,13 @@ pub async fn delete_game_from_disk(
     app: AppHandle,
     id: String,
 ) -> AppResult<()> {
+    // Capture the Steam shortcut identity before the row is deleted below.
+    let steam = capture_steam_identity(state.inner(), &id).await?;
     // Run-vs-wipe exclusion lives in `wipe_install_files` (the shared chokepoint),
     // so it covers this command, the uninstall path, and the Decky plugin server
     // uniformly — and across processes, which the in-process RunState can't.
     delete_game_core(state.inner(), &id).await?;
+    reconcile_steam_removal(steam).await;
     if let Err(e) = app.emit("library:changed", &id) {
         tracing::warn!(error = %e, "failed to emit library:changed after delete_game_from_disk");
     }

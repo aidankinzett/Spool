@@ -110,6 +110,9 @@ export const api = {
   // Steam shortcut
   addSpoolToSteam: (): Promise<AddToSteamResult> => invoke('add_spool_to_steam'),
   addToSteam: (gameId: string): Promise<AddToSteamResult> => invoke('add_to_steam', { gameId }),
+  // Remove a game's Spool-managed Steam shortcut. Resolves true when a shortcut
+  // was present to remove, false when the game wasn't on Steam.
+  removeFromSteam: (gameId: string): Promise<boolean> => invoke('remove_from_steam', { gameId }),
   // True when Steam currently has a game running — Add-to-Steam restarts Steam,
   // so callers warn before closing a running game.
   steamGameRunning: (): Promise<boolean> => invoke('steam_game_running'),

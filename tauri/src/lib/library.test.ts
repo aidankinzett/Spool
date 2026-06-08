@@ -48,6 +48,7 @@ function g(over: Partial<GameEntry> & { id: string; game_name: string }): GameEn
     cloud_sync_baseline: null,
     save_last_backer_device: null,
     save_cloud_revision_at: null,
+    steam_app_id: null,
     use_proton: false,
     proton_version_path: null,
     wine_prefix_path: null,
