@@ -198,6 +198,7 @@ async fn get_games_handler(
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let mut games: Vec<PeerGame> = Vec::new();
+    let mut filled_any = false;
     for g in entries.iter().filter(|g| g.lan_shared) {
         let mut pg = PeerGame::from_entry(g);
         // A peer needs the download size before installing. The recorded
@@ -218,11 +219,18 @@ async fn get_games_handler(
                 if bytes > 0 {
                     let mb = (bytes as f64) / (1024.0 * 1024.0);
                     pg.install_size_mb = mb;
-                    let _ = library.set_install_size_if_empty(&g.id, mb).await;
+                    if matches!(library.set_install_size_if_empty(&g.id, mb).await, Ok(true)) {
+                        filled_any = true;
+                    }
                 }
             }
         }
         games.push(pg);
+    }
+    // A newly-computed size was written to the DB — repaint our own UI so the
+    // size stops showing "—" without waiting for the next unrelated change.
+    if filled_any {
+        let _ = state.app.emit("library:changed", &());
     }
     Ok(Json(games))
 }
