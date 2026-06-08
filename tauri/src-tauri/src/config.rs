@@ -476,9 +476,15 @@ pub fn get_config(state: State<'_, SharedConfig>) -> AppResult<ConfigData> {
 #[tauri::command]
 pub fn update_config(
     state: State<'_, SharedConfig>,
-    data: ConfigData,
+    mut data: ConfigData,
 ) -> AppResult<ConfigData> {
     let mut cfg = state.lock().map_err(|_| AppError::LockPoisoned)?;
+
+    // Normalize the retention knob up front (same range as the clamp in
+    // ludusavi_config::apply_retention) so config.json, the change detection
+    // below, and the set_retention call all agree on one value instead of
+    // trusting the raw frontend number.
+    data.save_retention_full = data.save_retention_full.clamp(3, 10);
 
     // Project the cloud/rclone and retention settings into the Spool-owned
     // ludusavi config.yaml — but only when those specific inputs actually
@@ -523,8 +529,16 @@ pub fn update_config(
         })?;
     }
 
-    cfg.data = data;
-    cfg.save()?;
+    // Commit config.json last. If the disk write fails, roll the in-memory
+    // config back to the previous value so memory and disk stay consistent — the
+    // command reports the failure (Settings toasts it), and config.json keeping
+    // the old values lets the next save's change-detection re-attempt the
+    // projection above.
+    let prev = std::mem::replace(&mut cfg.data, data);
+    if let Err(e) = cfg.save() {
+        cfg.data = prev;
+        return Err(e);
+    }
     Ok(cfg.data.clone())
 }
 
