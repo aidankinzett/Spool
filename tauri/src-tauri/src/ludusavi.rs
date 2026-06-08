@@ -855,6 +855,49 @@ async fn run_api(ludusavi_exe: &Path, config_dir: &Path, args: &[&str]) -> AppRe
     crate::util::parse_json(stdout.as_bytes(), "ludusavi output")
 }
 
+/// Validate the Spool-owned `config.yaml` by round-tripping it through
+/// ludusavi's own loader (`config show`). This is the authoritative check: a
+/// config ludusavi accepts here is one its backup/restore/cloud calls will
+/// accept too, with no schema drift — unlike a validator Spool maintains itself,
+/// which is exactly how the `cloud.remote` shape silently broke when ludusavi
+/// changed it (the bare-string → tagged-struct migration). `--no-manifest-update`
+/// keeps the check offline and fast.
+///
+/// Returns `Ok(())` when valid, or `Err(<ludusavi's own message>)` when ludusavi
+/// rejects the file (e.g. "The config file is invalid. cloud: invalid type …").
+pub async fn validate_config(ludusavi_exe: &Path, config_dir: &Path) -> Result<(), String> {
+    let exe = ludusavi_exe.to_path_buf();
+    let dir = config_dir.to_path_buf();
+    // std::process on a blocking thread rather than tokio::process: the attached
+    // Game-Mode launch is near-idle, where tokio's child reaper can lag badly
+    // (see run_api). `config show` is quick and offline, so a blocking wait is
+    // fine and avoids that hazard.
+    let res = tokio::task::spawn_blocking(move || {
+        let mut cmd = std::process::Command::new(&exe);
+        cmd.arg("--config")
+            .arg(&dir)
+            .arg("--no-manifest-update")
+            .args(["config", "show"]);
+        crate::capture_stdio!(cmd);
+        cmd.output()
+    })
+    .await;
+    match res {
+        Ok(Ok(out)) if out.status.success() => Ok(()),
+        Ok(Ok(out)) => {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            let msg = stderr.trim();
+            Err(if msg.is_empty() {
+                format!("ludusavi config show exited {}", out.status.code().unwrap_or(-1))
+            } else {
+                msg.to_string()
+            })
+        }
+        Ok(Err(e)) => Err(format!("failed to run ludusavi config show: {e}")),
+        Err(e) => Err(format!("ludusavi config validation task failed: {e}")),
+    }
+}
+
 async fn load_manifest(ludusavi_exe: &Path) -> AppResult<HashMap<String, ManifestEntry>> {
     let output = hidden_command_no_config(ludusavi_exe)
         .args(["manifest", "show", "--api"])
