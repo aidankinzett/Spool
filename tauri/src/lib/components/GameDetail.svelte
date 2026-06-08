@@ -38,7 +38,7 @@
   import { toasts } from '$lib/toasts.svelte';
   import { confirmDialog } from '$lib/confirm.svelte';
   import { confirmSteamRestart } from '$lib/steamRestart';
-  import type { DisplayGame, DownloadProgress, GameEntry, RunPhase, SaveRevision } from '$lib/types';
+  import type { DisplayGame, DownloadProgress, RunPhase, SaveRevision } from '$lib/types';
   import {
     absDate,
     absDateTime,
