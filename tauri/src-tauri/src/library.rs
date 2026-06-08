@@ -1435,10 +1435,7 @@ pub async fn remove_game(
 ) -> AppResult<bool> {
     // Capture the Steam shortcut identity before deleting the row, so we can
     // clean it up afterwards (the appid is gone once the entry is removed).
-    let steam = state
-        .find(&id)
-        .await?
-        .and_then(|e| e.steam_app_id.map(|aid| (aid, e.game_name)));
+    let steam = capture_steam_identity(state.inner(), &id).await?;
     let removed = state.remove(&id).await?;
     if removed {
         reconcile_steam_removal(steam).await;
@@ -1447,6 +1444,19 @@ pub async fn remove_game(
         }
     }
     Ok(removed)
+}
+
+/// Snapshots a game's Steam shortcut identity (`(appid, name)`) before its row
+/// is deleted, so [`reconcile_steam_removal`] can clean the shortcut up after.
+/// `None` when the game is absent or was never added to Steam.
+async fn capture_steam_identity(
+    library: &SharedLibrary,
+    id: &str,
+) -> AppResult<Option<(u32, String)>> {
+    Ok(library
+        .find(id)
+        .await?
+        .and_then(|e| e.steam_app_id.map(|aid| (aid, e.game_name))))
 }
 
 /// Removes a forgotten/deleted game's Steam shortcut, given its captured
@@ -1486,10 +1496,7 @@ pub async fn delete_game_from_disk(
     id: String,
 ) -> AppResult<()> {
     // Capture the Steam shortcut identity before the row is deleted below.
-    let steam = state
-        .find(&id)
-        .await?
-        .and_then(|e| e.steam_app_id.map(|aid| (aid, e.game_name)));
+    let steam = capture_steam_identity(state.inner(), &id).await?;
     // Run-vs-wipe exclusion lives in `wipe_install_files` (the shared chokepoint),
     // so it covers this command, the uninstall path, and the Decky plugin server
     // uniformly — and across processes, which the in-process RunState can't.
