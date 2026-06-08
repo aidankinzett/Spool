@@ -2259,9 +2259,12 @@ async fn phase_launch(ctx: &WorkflowCtx<'_>, exe_pathbuf: &Path) -> AppResult<Se
     let newly_recorded =
         record_play_session(ctx, session_start, session_end, played_secs).await;
     if newly_recorded {
+        // Playtime + last-played are derived from the session timeline (the row
+        // just inserted), not accumulated — so a remote switch carries them over
+        // for free via the history blob, and a re-fold can't drop them.
         ctx.app
             .state::<SharedLibrary>()
-            .bump_session(ctx.game_id, session_end, session_minutes)
+            .recompute_playtime(ctx.game_name)
             .await?;
         let _ = ctx.app.emit("library:changed", &ctx.game_id.to_string());
     }
@@ -2409,7 +2412,6 @@ async fn record_play_session(
 pub async fn record_session_headless(
     library: &crate::library::Library,
     cfg: &crate::config::ConfigData,
-    game_id: &str,
     game_name: &str,
     started_at: DateTime<Utc>,
     ended_at: DateTime<Utc>,
@@ -2447,8 +2449,8 @@ pub async fn record_session_headless(
         }
     }
     let minutes = (duration_secs / 60) as i32;
-    if let Err(e) = library.bump_session(game_id, ended_at, minutes).await {
-        tracing::warn!(error = %e, game = game_name, "forced-close: failed to bump playtime");
+    if let Err(e) = library.recompute_playtime(game_name).await {
+        tracing::warn!(error = %e, game = game_name, "forced-close: failed to recompute playtime");
     }
     // Push cross-device playtime now, gated on the row insert above — same
     // contract as the in-process path. The caller only does the backup-completion
@@ -2761,13 +2763,13 @@ mod tests {
             .with_timezone(&Utc);
         let end = start + chrono::Duration::minutes(45);
 
-        record_session_headless(&lib, &cfg, "a", "Hades", start, end, 0).await;
+        record_session_headless(&lib, &cfg, "Hades", start, end, 0).await;
         assert_eq!(lib.list_sessions(Some("Hades")).await.unwrap().len(), 1);
         assert_eq!(lib.find("a").await.unwrap().unwrap().playtime_minutes, 45);
 
         // Same session start ⇒ same session_id ⇒ INSERT OR IGNORE no-op, and
         // playtime is NOT bumped a second time.
-        record_session_headless(&lib, &cfg, "a", "Hades", start, end, 0).await;
+        record_session_headless(&lib, &cfg, "Hades", start, end, 0).await;
         assert_eq!(lib.list_sessions(Some("Hades")).await.unwrap().len(), 1);
         assert_eq!(lib.find("a").await.unwrap().unwrap().playtime_minutes, 45);
     }
@@ -2794,7 +2796,7 @@ mod tests {
             .with_timezone(&Utc);
         let end = start + chrono::Duration::minutes(45);
 
-        record_session_headless(&lib, &cfg, "a", "Hades", start, end, 15 * 60).await;
+        record_session_headless(&lib, &cfg, "Hades", start, end, 15 * 60).await;
         let sessions = lib.list_sessions(Some("Hades")).await.unwrap();
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].duration_secs, 30 * 60);
@@ -2825,7 +2827,7 @@ mod tests {
         let end = start + chrono::Duration::minutes(45);
 
         // Simulate the in-process row already present, keyed on the shared seed
-        // (device_id:started_at_millis), plus its playtime bump.
+        // (device_id:started_at_millis), plus its derived playtime.
         let pre = crate::library::PlaySession {
             session_id: format!("deck:{}", start.timestamp_millis()),
             device_id: "deck".to_string(),
@@ -2836,10 +2838,10 @@ mod tests {
             duration_secs: 45 * 60,
         };
         assert!(lib.insert_session(&pre).await.unwrap());
-        lib.bump_session("a", end, 45).await.unwrap();
+        lib.recompute_playtime("Hades").await.unwrap();
 
         // Forced-close fallback fires for the same session.
-        let res = record_session_headless(&lib, &cfg, "a", "Hades", start, end, 0).await;
+        let res = record_session_headless(&lib, &cfg, "Hades", start, end, 0).await;
         assert_eq!(res, None, "deduped — no new row, caller skips device-blob push");
         assert_eq!(lib.list_sessions(Some("Hades")).await.unwrap().len(), 1);
         assert_eq!(
@@ -2865,7 +2867,7 @@ mod tests {
         let start = chrono::DateTime::parse_from_rfc3339("2026-06-06T10:00:00Z")
             .unwrap()
             .with_timezone(&Utc);
-        record_session_headless(&lib, &cfg, "a", "Hades", start, start + chrono::Duration::minutes(45), 0).await;
+        record_session_headless(&lib, &cfg, "Hades", start, start + chrono::Duration::minutes(45), 0).await;
         assert_eq!(lib.list_sessions(Some("Hades")).await.unwrap().len(), 0);
         assert_eq!(lib.find("a").await.unwrap().unwrap().playtime_minutes, 0);
     }

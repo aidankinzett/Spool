@@ -1428,34 +1428,22 @@ fn backer_for_badge(badge: &str, f: &Folded) -> (Option<String>, Option<DateTime
     (f.latest_backer_name.clone(), rev)
 }
 
-/// Folded cross-device totals for one game.
+/// Folded cross-device backup state for one game (the sync badge). Playtime and
+/// last-played are no longer folded here — they're derived from the local
+/// `play_sessions` timeline once peer history has been folded in.
 #[derive(Default)]
 struct Folded {
-    playtime: i64,
-    last_played: Option<i64>, // unix ts of the max last-played
-    last_played_raw: Option<String>,
     latest_backer: Option<String>,
     latest_backup_ts: Option<i64>, // unix ts backing `latest_backer`
     latest_backer_name: Option<String>, // display name of `latest_backer`
     latest_backup_raw: Option<String>, // rfc3339 of `latest_backup_ts`
 }
 
-/// Fold a set of device blobs into per-game cross-device totals.
+/// Fold a set of device blobs into each game's cross-device backup state (the
+/// latest backer, for the sync badge).
 fn fold_device_totals(blobs: &[(String, DeviceBlob)]) -> BTreeMap<String, Folded> {
     let mut out: BTreeMap<String, Folded> = BTreeMap::new();
     for (device_id, blob) in blobs {
-        for (game, mins) in &blob.playtime {
-            out.entry(game.clone()).or_default().playtime += *mins;
-        }
-        for (game, ts) in &blob.last_played {
-            let e = out.entry(game.clone()).or_default();
-            if let Some(parsed) = parse_ts(ts) {
-                if e.last_played.map(|cur| parsed > cur).unwrap_or(true) {
-                    e.last_played = Some(parsed);
-                    e.last_played_raw = Some(ts.clone());
-                }
-            }
-        }
         for (game, ts) in &blob.backups {
             let e = out.entry(game.clone()).or_default();
             if let Some(parsed) = parse_ts(ts) {
@@ -1512,10 +1500,13 @@ pub async fn fold_devices_from_config() -> bool {
     if new_sessions > 0 {
         tracing::info!(new_sessions, "headless fold: imported peer play sessions");
     }
+    // Re-derive playtime/last-played from the timeline (replaces the device-blob
+    // playtime fold).
+    let recomputed = library.recompute_all_playtime().await.unwrap_or(0);
 
     let blobs: Vec<(String, DeviceBlob)> = remote.store("devices", 1).read_all().await;
     if blobs.is_empty() {
-        return new_sessions > 0;
+        return new_sessions > 0 || recomputed > 0;
     }
 
     let folded = fold_device_totals(&blobs);
@@ -1531,7 +1522,7 @@ pub async fn fold_devices_from_config() -> bool {
         }
     }
     tracing::info!(applied, devices = blobs.len(), "headless fold: done");
-    applied > 0 || new_sessions > 0
+    applied > 0 || new_sessions > 0 || recomputed > 0
 }
 
 /// Computes the JSON field updates the cross-device fold should apply to one
@@ -1544,23 +1535,9 @@ fn fold_fields_for(
 ) -> Vec<(&'static str, serde_json::Value)> {
     use serde_json::{json, to_value, Value};
     let mut fields: Vec<(&'static str, Value)> = Vec::new();
-    // playtime = authoritative sum across devices
-    let total = f.playtime.min(i32::MAX as i64) as i32;
-    if entry.playtime_minutes != total {
-        fields.push(("playtime_minutes", json!(total)));
-    }
-    // last-played = max(local, folded)
-    if let Some(raw) = &f.last_played_raw {
-        if let Ok(parsed) = DateTime::parse_from_rfc3339(raw) {
-            let parsed = parsed.with_timezone(&Utc);
-            if entry.last_played_at.map(|t| parsed > t).unwrap_or(true) {
-                fields.push((
-                    "last_played_at",
-                    to_value(Some(parsed)).unwrap_or(Value::Null),
-                ));
-            }
-        }
-    }
+    // playtime + last-played are no longer folded from device blobs — they're
+    // derived from the play_sessions timeline (see `Library::recompute_playtime`),
+    // which the caller refreshes after folding peer history.
     // badge from the latest backer
     let badge = compute_badge(our_device_id, f.latest_backer.as_deref());
     if entry.sync_badge.as_deref() != Some(badge) {
@@ -1594,10 +1571,17 @@ async fn run_startup_fold(app: &AppHandle) {
     if new_sessions > 0 {
         tracing::info!(new_sessions, "startup fold: imported peer play sessions");
     }
+    // Re-derive playtime/last-played from the timeline (now including any peer
+    // sessions just folded in) — this is what replaces the device-blob playtime
+    // fold below.
+    let recomputed = library.recompute_all_playtime().await.unwrap_or(0);
 
-    // List device files, then cat each.
+    // List device files, then cat each — only the backup-badge fields remain.
     let blobs: Vec<(String, DeviceBlob)> = remote.store("devices", 1).read_all().await;
     if blobs.is_empty() {
+        if recomputed > 0 || new_sessions > 0 {
+            let _ = app.emit("library:changed", &());
+        }
         return;
     }
 
@@ -1615,7 +1599,7 @@ async fn run_startup_fold(app: &AppHandle) {
         }
     }
     tracing::info!(applied, devices = blobs.len(), "startup fold: done");
-    if applied > 0 {
+    if applied > 0 || recomputed > 0 || new_sessions > 0 {
         let _ = app.emit("library:changed", &());
     }
 }
@@ -2138,33 +2122,19 @@ cloud:
     }
 
     #[test]
-    fn fold_sums_playtime_and_takes_max_last_played() {
+    fn fold_takes_newest_backup_as_latest_backer() {
+        // The device-blob fold now carries only backup state (the sync badge):
+        // the newest backup across devices names the latest backer.
         let mut a = DeviceBlob::default();
-        a.playtime.insert("Hades".into(), 10);
-        a.last_played.insert("Hades".into(), "2026-05-01T00:00:00Z".into());
         a.backups.insert("Hades".into(), "2026-05-01T00:00:00Z".into());
-        let mut b = DeviceBlob::default();
-        b.playtime.insert("Hades".into(), 5);
-        b.last_played.insert("Hades".into(), "2026-05-02T00:00:00Z".into());
+        let mut b = DeviceBlob { device_name: "Deck".into(), ..Default::default() };
         b.backups.insert("Hades".into(), "2026-05-03T00:00:00Z".into());
 
         let folded = fold_device_totals(&[("a".into(), a), ("b".into(), b)]);
         let h = folded.get("Hades").unwrap();
-        assert_eq!(h.playtime, 15, "playtime sums across devices");
-        assert_eq!(h.last_played_raw.as_deref(), Some("2026-05-02T00:00:00Z"));
         assert_eq!(h.latest_backer.as_deref(), Some("b"), "newest backup wins");
-    }
-
-    #[test]
-    fn fold_single_device_equals_its_own_counter() {
-        // Guards against double-counting: folding one device's blob 3× (as a
-        // repeated startup would) never inflates the total.
-        let mut a = DeviceBlob::default();
-        a.playtime.insert("Hades".into(), 42);
-        for _ in 0..3 {
-            let folded = fold_device_totals(&[("a".into(), a.clone())]);
-            assert_eq!(folded.get("Hades").unwrap().playtime, 42);
-        }
+        assert_eq!(h.latest_backer_name.as_deref(), Some("Deck"));
+        assert_eq!(h.latest_backup_raw.as_deref(), Some("2026-05-03T00:00:00Z"));
     }
 
     #[test]
