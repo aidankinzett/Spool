@@ -291,6 +291,7 @@ pub async fn backup_game_core(
         game_count,
         bytes_total,
         cloud_synced,
+        game_name,
     })
 }
 
@@ -368,10 +369,7 @@ pub async fn manual_backup(app: AppHandle, game_id: String) -> AppResult<ManualB
         // the cloud. On a failed or conflicted upload the marker must stay so
         // peers keep warning until a real sync happens. Best-effort.
         if result.cloud_synced {
-            let game_name = library.find(&game_id).await?.map(|e| e.game_name);
-            if let Some(name) = game_name {
-                rclone::complete_session_backup(&app, &name).await;
-            }
+            rclone::complete_session_backup(&app, &result.game_name).await;
         }
     }
     Ok(result)
@@ -1436,6 +1434,7 @@ pub struct ManualBackupResult {
     /// False when the local backup succeeded but the cloud upload leg failed.
     /// Callers that clear the unsynced-session marker must check this first.
     pub cloud_synced: bool,
+    pub game_name: String,
 }
 
 #[derive(Debug, Serialize)]
