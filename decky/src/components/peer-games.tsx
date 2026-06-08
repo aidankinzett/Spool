@@ -153,8 +153,18 @@ export function PeerGamesPage() {
   const err = baseError ?? error;
 
   return (
-    <div style={{ padding: "2rem", display: "flex", flexDirection: "column", gap: "1rem" }}>
-      <h2 style={{ margin: 0 }}>{deviceName}</h2>
+    <div
+      style={{
+        flex: 1,
+        minHeight: 0,
+        boxSizing: "border-box",
+        padding: "2rem",
+        display: "flex",
+        flexDirection: "column",
+        gap: "1rem",
+      }}
+    >
+      <h2 style={{ margin: 0, flexShrink: 0 }}>{deviceName}</h2>
 
       {err && <div style={{ opacity: 0.8 }}>{err}</div>}
       {!err && !games && <div style={{ opacity: 0.7 }}>Loading…</div>}
@@ -163,7 +173,16 @@ export function PeerGamesPage() {
       )}
 
       {games && games.length > 0 && (
-        <Focusable style={{ display: "flex", flexDirection: "column", gap: "0.6rem" }}>
+        <Focusable
+          style={{
+            flex: 1,
+            minHeight: 0,
+            overflowY: "scroll",
+            display: "flex",
+            flexDirection: "column",
+            gap: "0.6rem",
+          }}
+        >
           {games.map((g) => (
             <GameRow
               key={g.id}
@@ -214,6 +233,7 @@ function GameRow({
     <div
       style={{
         position: "relative",
+        flexShrink: 0,
         display: "flex",
         alignItems: "center",
         gap: "0.9rem",
@@ -268,13 +288,13 @@ function GameRow({
           <span style={{ fontVariantNumeric: "tabular-nums", fontWeight: 600, minWidth: "3ch", textAlign: "right" }}>
             {pct}%
           </span>
-          <DialogButton style={{ minWidth: "110px" }} onClick={onCancel}>
+          <DialogButton style={{ width: "auto", minWidth: "110px" }} onClick={onCancel}>
             Cancel
           </DialogButton>
         </div>
       ) : (
         <DialogButton
-          style={{ minWidth: "150px", flexShrink: 0 }}
+          style={{ width: "auto", minWidth: "150px", flexShrink: 0 }}
           disabled={disabled || !game.shareable}
           onClick={onDownload}
         >
