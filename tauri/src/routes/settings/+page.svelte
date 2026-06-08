@@ -26,6 +26,7 @@
   import { api, type DeckyPluginInfo } from '$lib/api';
   import { toasts } from '$lib/toasts.svelte';
   import { isNewerVersion } from '$lib/format';
+  import { checkForUpdateInteractive } from '$lib/updater';
   import type { ConfigData, DepStatus, LanPeer, ProtonVersion, SyncStatus } from '$lib/types';
   import AppChrome from '$lib/components/AppChrome.svelte';
   import MonoLabel from '$lib/components/MonoLabel.svelte';
@@ -51,6 +52,26 @@
   let peers = $state<LanPeer[]>([]);
   let appVersion = $state<string | null>(null);
   let syncStatus = $state<SyncStatus | null>(null);
+
+  // "Check for updates" button: 'idle' before a click, 'checking' during the
+  // round-trip, then a terminal result that drives the inline status line.
+  let updateCheck = $state<'idle' | 'checking' | 'available' | 'up-to-date' | 'error'>('idle');
+  let updateCheckMsg = $state<string | null>(null);
+
+  async function onCheckForUpdates() {
+    if (updateCheck === 'checking') return;
+    updateCheck = 'checking';
+    updateCheckMsg = null;
+    const result = await checkForUpdateInteractive();
+    updateCheck = result.status;
+    if (result.status === 'available') {
+      updateCheckMsg = `v${result.version} is available — see the install prompt.`;
+    } else if (result.status === 'up-to-date') {
+      updateCheckMsg = "You're on the latest version.";
+    } else {
+      updateCheckMsg = `Couldn't check for updates: ${result.error}`;
+    }
+  }
 
   // WebDAV URL/username/password are local state, NOT bound to `config`. They
   // reach the backend only via connectWebdav() → setCloudWebdav (which persists
@@ -513,6 +534,37 @@
                         { value: 'touch', label: 'Gamepad' },
                       ]}
                     />
+                  {/snippet}
+                </SettingsRow>
+              </SettingsCard>
+
+              <!-- Updates -->
+              <SettingsCard
+                title="Updates"
+                helper="Spool checks for new versions automatically while it's running. You can also check right now."
+              >
+                {#snippet icon()}<Download size={14} />{/snippet}
+                <SettingsRow
+                  label="App version"
+                  status={updateCheck === 'available'
+                    ? 'warn'
+                    : updateCheck === 'up-to-date'
+                      ? 'ok'
+                      : updateCheck === 'error'
+                        ? 'warn'
+                        : undefined}
+                  helper={updateCheckMsg ??
+                    (appVersion ? `Currently running v${appVersion}.` : 'Currently running Spool.')}
+                >
+                  {#snippet extras()}
+                    <Btn
+                      variant={updateCheck === 'available' ? 'primary' : 'ghost'}
+                      onclick={onCheckForUpdates}
+                      disabled={updateCheck === 'checking'}
+                    >
+                      {#snippet icon()}<RefreshCcw size={14} />{/snippet}
+                      {updateCheck === 'checking' ? 'Checking…' : 'Check for updates'}
+                    </Btn>
                   {/snippet}
                 </SettingsRow>
               </SettingsCard>

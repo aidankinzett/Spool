@@ -4,7 +4,7 @@ import { listen } from '@tauri-apps/api/event';
 import { api } from '$lib/api';
 import { fmtCatalog } from '$lib/format';
 import { toasts } from '$lib/toasts.svelte';
-import { checkForUpdateOnStartup } from '$lib/updater';
+import { startUpdateChecks } from '$lib/updater';
 import type {
   ConfigData,
   DisplayGame,
@@ -567,11 +567,9 @@ export function createLibrary() {
       .getConfig()
       .then((c) => (config = c))
       .catch((e) => console.error('[library] getConfig failed:', e));
-    setTimeout(() => {
-      checkForUpdateOnStartup().catch((e) =>
-        console.error('[updater] startup check failed:', e),
-      );
-    }, 2000);
+    // Spool hides to tray instead of quitting, so this webview can stay
+    // mounted for days — poll for updates on an interval, not just once.
+    const stopUpdateChecks = startUpdateChecks();
 
     let unlistenLibraryChanged: (() => void) | undefined;
     let unlistenRunPhase: (() => void) | undefined;
@@ -829,6 +827,7 @@ export function createLibrary() {
 
     return () => {
       disposed = true;
+      stopUpdateChecks();
       unlistenLibraryChanged?.();
       unlistenRunPhase?.();
       unlistenCloudNotice?.();
