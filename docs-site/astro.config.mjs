@@ -40,6 +40,7 @@ export default defineConfig({
             { label: 'Install Spool', slug: 'guides/installing' },
             { label: 'Installing umu-launcher', slug: 'guides/installing-umu' },
             { label: 'Cloud Save Sync', slug: 'guides/cloud-saves' },
+            { label: 'Self-hosted SFTP Remote', slug: 'guides/sftp-remote' },
             { label: 'LAN Transfers', slug: 'guides/lan-transfers' },
           ],
         },

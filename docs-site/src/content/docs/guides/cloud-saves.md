@@ -50,6 +50,12 @@ backup folder — it can't see the rest of your Drive.
 Choose the type and fill in the connection details (URL, username, and so on).
 These don't need a browser sign-in.
 
+The **Custom** provider points Spool at any rclone remote you've set up
+yourself. One handy use is syncing to a machine on your own network over SFTP —
+a Raspberry Pi, NAS, or home server — which is typically much faster than a
+public cloud provider and keeps your saves at home. See
+[Self-hosted SFTP Remote](/guides/sftp-remote/).
+
 ### Base folder
 
 Saves are stored under a base folder on the remote that you can set in Settings.
