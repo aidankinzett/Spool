@@ -106,6 +106,7 @@ async fn run_impl(
         Some(p) if !p.trim().is_empty() => PathBuf::from(p),
         _ => paths::installed_games_dir().join(make_safe_filename(&game_name)),
     };
+    let install_dir_existed = install_dir.exists();
     std::fs::create_dir_all(&install_dir)
         .map_err(|e| AppError::Other(format!("failed to create install folder: {e}")))?;
 
@@ -113,55 +114,72 @@ async fn run_impl(
     // to give the prefix a stable path we hand back as wine_prefix_path.
     let install_id = uuid::Uuid::new_v4().to_string();
     let prefix_root = proton::game_prefix_path(&install_id);
-    std::fs::create_dir_all(&prefix_root)
-        .map_err(|e| AppError::Other(format!("failed to create prefix dir: {e}")))?;
 
-    // Build the prefix so dosdevices/ exists before we mount a drive into it.
-    init_prefix(&umu_run, &prefix_root, proton_path.as_deref(), &install_id).await?;
+    // Run the remaining setup and installer execution in an async block
+    // to catch any error and perform cleanup of prefix_root and install_dir.
+    let run_steps = async {
+        std::fs::create_dir_all(&prefix_root)
+            .map_err(|e| AppError::Other(format!("failed to create prefix dir: {e}")))?;
 
-    // Mount the install folder as a free drive letter.
-    let dosdevices = prefix_root.join("dosdevices");
-    std::fs::create_dir_all(&dosdevices)
-        .map_err(|e| AppError::Other(format!("failed to create dosdevices dir: {e}")))?;
-    let letter = pick_free_drive_letter(&dosdevices).ok_or_else(|| {
-        AppError::Other("no free Wine drive letter to mount the install folder".into())
-    })?;
-    let link = dosdevices.join(format!("{letter}:"));
-    let _ = std::fs::remove_file(&link); // fresh prefix, but be tolerant
-    std::os::unix::fs::symlink(&install_dir, &link)
-        .map_err(|e| AppError::Other(format!("failed to mount install drive: {e}")))?;
+        // Build the prefix so dosdevices/ exists before we mount a drive into it.
+        init_prefix(&umu_run, &prefix_root, proton_path.as_deref(), &install_id).await?;
 
-    // Tell the frontend the drive letter now, before the installer blocks.
-    let _ = app.emit("install:drive-ready", format!("{}:", letter.to_ascii_uppercase()));
+        // Mount the install folder as a free drive letter.
+        let dosdevices = prefix_root.join("dosdevices");
+        std::fs::create_dir_all(&dosdevices)
+            .map_err(|e| AppError::Other(format!("failed to create dosdevices dir: {e}")))?;
+        let letter = pick_free_drive_letter(&dosdevices).ok_or_else(|| {
+            AppError::Other("no free Wine drive letter to mount the install folder".into())
+        })?;
+        let link = dosdevices.join(format!("{letter}:"));
+        let _ = std::fs::remove_file(&link); // fresh prefix, but be tolerant
+        std::os::unix::fs::symlink(&install_dir, &link)
+            .map_err(|e| AppError::Other(format!("failed to mount install drive: {e}")))?;
 
-    // Run the installer and wait for it to exit. run_game handles strip-appimage
-    // env + cwd; the setup.exe's window staying open blocks here intentionally.
-    //
-    // WINE_LARGE_ADDRESS_AWARE=1: some installers decompress large archives
-    // in-process. Wine's default virtual address space is too small, causing
-    // ISDone.dll / unarc.dll error codes -5/-11/-12 ("not enough memory") even
-    // when the machine has plenty of RAM. This flag widens the 32-bit address
-    // space so the decompressor can allocate the buffers it needs.
-    run_game(
-        &setup_path,
-        LaunchSpec::Proton {
-            umu_run: &umu_run,
-            prefix_root: &prefix_root,
-            proton_path: proton_path.as_deref(),
-            game_id: &install_id,
-            extra_args: &[],
-            extra_env: &[("WINE_LARGE_ADDRESS_AWARE", "1")],
-        },
-    )
-    .await
-    .map(|_| ())?;
+        // Tell the frontend the drive letter now, before the installer blocks.
+        let _ = app.emit("install:drive-ready", format!("{}:", letter.to_ascii_uppercase()));
 
-    Ok(GuidedInstallResult {
-        install_dir: install_dir.to_string_lossy().to_string(),
-        prefix_path: prefix_root.to_string_lossy().to_string(),
-        drive_letter: format!("{}:", letter.to_ascii_uppercase()),
-        proton_path: proton_path.map(|p| p.to_string_lossy().to_string()),
-    })
+        // Run the installer and wait for it to exit. run_game handles strip-appimage
+        // env + cwd; the setup.exe's window staying open blocks here intentionally.
+        //
+        // WINE_LARGE_ADDRESS_AWARE=1: some installers decompress large archives
+        // in-process. Wine's default virtual address space is too small, causing
+        // ISDone.dll / unarc.dll error codes -5/-11/-12 ("not enough memory") even
+        // when the machine has plenty of RAM. This flag widens the 32-bit address
+        // space so the decompressor can allocate the buffers it needs.
+        run_game(
+            &setup_path,
+            LaunchSpec::Proton {
+                umu_run: &umu_run,
+                prefix_root: &prefix_root,
+                proton_path: proton_path.as_deref(),
+                game_id: &install_id,
+                extra_args: &[],
+                extra_env: &[("WINE_LARGE_ADDRESS_AWARE", "1")],
+            },
+        )
+        .await
+        .map(|_| ())?;
+
+        Ok::<_, AppError>(letter)
+    };
+
+    match run_steps.await {
+        Ok(letter) => Ok(GuidedInstallResult {
+            install_dir: install_dir.to_string_lossy().to_string(),
+            prefix_path: prefix_root.to_string_lossy().to_string(),
+            drive_letter: format!("{}:", letter.to_ascii_uppercase()),
+            proton_path: proton_path.map(|p| p.to_string_lossy().to_string()),
+        }),
+        Err(e) => {
+            // Clean up the prefix root and the host install folder (best effort).
+            let _ = std::fs::remove_dir_all(&prefix_root);
+            if !install_dir_existed {
+                let _ = std::fs::remove_dir_all(&install_dir);
+            }
+            Err(e)
+        }
+    }
 }
 
 /// Initialise the Wine prefix so its `dosdevices/` directory exists before we
