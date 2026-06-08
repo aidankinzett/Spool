@@ -1,12 +1,12 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { HardDriveDownload, Info, Package, Play, Search, Settings } from '@lucide/svelte';
-  import { api, assetUrl } from '$lib/api';
+  import { api, assetUrl, peerAssetUrl } from '$lib/api';
   import { fmtCatalog, fmtPlaytime, relDate } from '$lib/format';
   import { openView } from '$lib/nav';
   import { toasts } from '$lib/toasts.svelte';
-  import type { GameEntry } from '$lib/types';
-  import type { Library } from '$lib/library.svelte';
+  import type { DisplayGame } from '$lib/types';
+  import { isSyntheticPeerId, type Library } from '$lib/library.svelte';
   import AppChrome from '$lib/components/AppChrome.svelte';
   import GameDetail from '$lib/components/GameDetail.svelte';
   import LibraryContextMenu from '$lib/components/LibraryContextMenu.svelte';
@@ -27,7 +27,7 @@
   // Local overlay state
   let detailOpen = $state(false);
   let searchOpen = $state(false);
-  let ctxMenu = $state<{ game: GameEntry; x: number; y: number } | null>(null);
+  let ctxMenu = $state<{ game: DisplayGame; x: number; y: number } | null>(null);
 
   // Shelf category
   type ShelfCat = 'continue' | 'all' | 'lan';
@@ -36,7 +36,10 @@
   // Long-press detection
   let pressTimer: ReturnType<typeof setTimeout> | undefined;
 
-  function startLongPress(e: PointerEvent, game: GameEntry) {
+  function startLongPress(e: PointerEvent, game: DisplayGame) {
+    // Synthetic "available on LAN" rows have no real library entry behind them,
+    // so the per-game context menu (Edit, Remove, Steam…) doesn't apply.
+    if (isSyntheticPeerId(game.id)) return;
     pressTimer = setTimeout(() => {
       const menuW = 240;
       const menuH = 280;
@@ -60,9 +63,18 @@
   const allCat = $derived(
     [...lib.games].sort((a, b) => a.catalog_number - b.catalog_number),
   );
-  const lanCat = $derived(lib.games.filter((g) => g.lan_shared));
+  // Games offered by other devices on the LAN — the merged display list carries a
+  // `peer_source` on every row a peer can supply (synthetic "available on LAN"
+  // rows plus local uninstalled entries a peer has). Not this device's own shared
+  // games. Sorted by name for a stable shelf order.
+  const lanCat = $derived(
+    lib.displayGames
+      .filter((g) => g.peer_source != null)
+      .slice()
+      .sort((a, b) => a.game_name.localeCompare(b.game_name)),
+  );
 
-  const shelfGames = $derived(
+  const shelfGames = $derived<DisplayGame[]>(
     shelfCat === 'continue' ? continueCat :
     shelfCat === 'lan' ? lanCat :
     allCat,
@@ -70,6 +82,45 @@
 
   const selectedGame = $derived(lib.selectedGame);
   const accent = $derived(selectedGame?.accent_color ?? null);
+
+  // Cover art for a row: the local file on disk if present (kept even when
+  // uninstalled), else a peer-sourced row's cover served over HTTP, else null
+  // (the caller renders the letter fallback).
+  function coverFor(game: DisplayGame): string | null {
+    return (
+      assetUrl(game.cover_image_path) ??
+      (game.peer_source ? peerAssetUrl(game.peer_source, 'cover') : null)
+    );
+  }
+
+  // A peer-sourced row that isn't installed here yet — the banner/X action is
+  // Install (download from the peer) rather than Play.
+  const selectedIsPeer = $derived(
+    selectedGame != null && !selectedGame.installed && selectedGame.peer_source != null,
+  );
+  // The in-flight LAN install, only when it's the selected peer game.
+  const selectedDownload = $derived.by(() => {
+    const ps = selectedGame?.peer_source;
+    const dl = lib.activeDownload;
+    if (
+      ps &&
+      dl &&
+      dl.source_game_id === ps.source_game_id &&
+      dl.source_device_id === ps.device_id
+    ) {
+      return dl;
+    }
+    return null;
+  });
+  const selectedDownloadActive = $derived(
+    selectedDownload != null &&
+      (selectedDownload.status === 'starting' || selectedDownload.status === 'transferring'),
+  );
+  const selectedDownloadPercent = $derived(
+    selectedDownload && selectedDownload.bytes_total > 0
+      ? Math.round((selectedDownload.bytes_done / selectedDownload.bytes_total) * 100)
+      : 0,
+  );
 
   // Default-select the first visible tile once the shelf loads, so there's an
   // immediate highlight (and the banner is populated) before the first input —
@@ -85,13 +136,13 @@
   // Gamepad/keyboard nav selects the focused tile so the banner previews it
   // live. Gated on modality so a touch tap (which also focuses the button) keeps
   // the two-tap behaviour below instead of selecting + opening in one go.
-  function onTileFocus(game: GameEntry) {
+  function onTileFocus(game: DisplayGame) {
     const mode = inputMode();
     if (mode === 'gamepad' || mode === 'keyboard') lib.selectedId = game.id;
   }
 
   // Tapping a tile: first tap selects (features in banner), second opens detail
-  function onTileTap(game: GameEntry) {
+  function onTileTap(game: DisplayGame) {
     cancelLongPress();
     if (lib.selectedId === game.id) {
       detailOpen = true;
@@ -118,6 +169,21 @@
     }
   }
 
+  // Install a peer-sourced game from the banner Install button. Open the detail
+  // overlay first so its Download button shows live transfer progress, then kick
+  // off the install. `downloadGame` toasts on failure / an offline source.
+  async function installSelected() {
+    if (!selectedGame?.peer_source) return;
+    detailOpen = true;
+    await lib.downloadGame(selectedGame);
+  }
+
+  // X / banner action: install a peer-only game, otherwise play.
+  function activateSelected() {
+    if (selectedIsPeer) installSelected();
+    else launchSelected();
+  }
+
   const cats = $derived<{ id: ShelfCat; label: string }[]>([
     { id: 'continue', label: 'Continue' },
     { id: 'all', label: 'All games' },
@@ -136,20 +202,20 @@
   // the legend advertises. Tiles select on focus, so X plays whatever's focused.
   function shelfButton(btn: string) {
     if (btn === 'North') searchOpen = true; // Y → search
-    else if (btn === 'West') launchSelected(); // X → play selected
+    else if (btn === 'West') activateSelected(); // X → play / install selected
     else if (btn === 'LeftTrigger') cycleShelf(-1); // LB → prev category
     else if (btn === 'RightTrigger') cycleShelf(1); // RB → next category
     else if (btn === 'Start') openView('settings'); // ≡ → settings
   }
 
-  const shelfLegend: { button: GpButton; label: string }[] = [
+  const shelfLegend = $derived<{ button: GpButton; label: string }[]>([
     { button: 'a', label: 'Open' },
-    { button: 'x', label: 'Play' },
+    { button: 'x', label: selectedIsPeer ? 'Install' : 'Play' },
     { button: 'y', label: 'Search' },
     { button: 'lb', label: 'Prev' },
     { button: 'rb', label: 'Next' },
     { button: 'menu', label: 'Settings' },
-  ];
+  ]);
 </script>
 
 {#if detailOpen && selectedGame}
@@ -172,6 +238,10 @@
         autofocusPlay
         cloudConfigured={lib.syncStatus.reachability !== 'unconfigured'}
         onPullConflict={(id) => (lib.conflictGameId = id)}
+        download={lib.activeDownload}
+        startingGameId={lib.startingGameId}
+        onDownload={(g) => lib.downloadGame(g)}
+        onCancelDownload={lib.cancelActiveInstall}
       />
     </div>
     <div class="shrink-0 border-t border-line-1 bg-black/30 py-2" style:backdrop-filter="blur(12px)">
@@ -326,6 +396,21 @@
                 <Play size={15} fill="currentColor" />
                 Play
               </button>
+            {:else if selectedIsPeer}
+              <!-- Available from a LAN peer: download + install it here. -->
+              <button
+                type="button"
+                onclick={installSelected}
+                disabled={selectedGame.peer_source?.shareable === false || selectedDownloadActive}
+                class="inline-flex cursor-pointer items-center gap-2 rounded-sm font-semibold text-bg-0 transition-opacity disabled:cursor-not-allowed disabled:opacity-50"
+                style:background={accent ?? 'var(--color-spool)'}
+                style:height="var(--control-h)"
+                style:padding-inline="calc(var(--space-unit) * 5)"
+                style:font-size="var(--text-base)"
+              >
+                <HardDriveDownload size={15} />
+                {selectedDownloadActive ? `Installing… ${selectedDownloadPercent}%` : 'Install'}
+              </button>
             {:else}
               <!-- Uninstalled: offer Reinstall (opens Add, which reuses this entry). -->
               <button
@@ -359,9 +444,9 @@
 
         <!-- Right: cover art -->
         <div class="flex shrink-0 items-center justify-center">
-          {#if assetUrl(selectedGame.cover_image_path)}
+          {#if coverFor(selectedGame)}
             <img
-              src={assetUrl(selectedGame.cover_image_path)}
+              src={coverFor(selectedGame)}
               alt={selectedGame.game_name}
               class="rounded-md object-cover shadow-2xl"
               style:width="calc(var(--control-h) * 4.8)"
@@ -413,12 +498,12 @@
       >
         {#if shelfGames.length === 0}
           <p class="py-4 text-ink-3" style:font-size="var(--text-sm)">
-            {shelfCat === 'continue' ? 'No recently played games.' : shelfCat === 'lan' ? 'No LAN-shared games.' : 'No games.'}
+            {shelfCat === 'continue' ? 'No recently played games.' : shelfCat === 'lan' ? 'No games shared by other devices on the network.' : 'No games.'}
           </p>
         {:else}
           {#each shelfGames as game, i (game.id)}
             {@const active = lib.selectedId === game.id}
-            {@const cover = assetUrl(game.cover_image_path)}
+            {@const cover = coverFor(game)}
             {@const tileW = 'calc(var(--control-h) * 2.8)'}
             {@const tileH = 'calc(var(--control-h) * 3.9)'}
             <button
@@ -468,7 +553,11 @@
                   {game.game_name}
                 </div>
                 <div class="mt-px font-mono text-ink-3" style:font-size="9.5px">
-                  {game.last_played_at ? relDate(game.last_played_at) : 'unplayed'}
+                  {#if !game.installed && game.peer_source}
+                    from {game.peer_source.device_name}
+                  {:else}
+                    {game.last_played_at ? relDate(game.last_played_at) : 'unplayed'}
+                  {/if}
                 </div>
               </div>
             </button>
