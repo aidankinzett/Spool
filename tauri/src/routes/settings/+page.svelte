@@ -222,7 +222,15 @@
       await api.updateConfig($state.snapshot(config));
       return true;
     } catch (e) {
-      error = String(e);
+      // A save failure is transient (e.g. a config.yaml write error projecting
+      // cloud settings) — toast it rather than setting the fatal `error`, which
+      // would discard the whole Settings UI for a recoverable hiccup.
+      toasts.show({
+        kind: 'bad',
+        label: 'SETTINGS · SAVE',
+        title: "Couldn't save settings",
+        sub: String(e),
+      });
       return false;
     }
   }
