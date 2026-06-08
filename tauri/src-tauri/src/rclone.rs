@@ -1852,6 +1852,14 @@ pub async fn connect_cloud_oauth(
         remote_name.into(),
         rclone_type.into(),
         token_arg,
+        // We already obtained a token via `rclone authorize` above. Without
+        // --non-interactive, `config create` runs the backend's OAuth config
+        // process and *takes the default* for each question — and the oauth step
+        // ("Already have a token - refresh?") defaults to yes, so it opens the
+        // browser a SECOND time to re-authorise. --non-interactive makes it
+        // store the params we pass (token/client/scope) and return the pending
+        // question as JSON instead of acting on it, so no browser is launched.
+        "--non-interactive".into(),
     ];
     if let Some((id, secret)) = gdrive {
         create_args.push(format!("client_id={id}"));
