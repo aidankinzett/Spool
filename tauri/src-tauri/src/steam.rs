@@ -70,6 +70,13 @@ fn find_steam_dir() -> AppResult<PathBuf> {
     Ok(path)
 }
 
+/// Path to the Steam client executable, used to issue `steam.exe -shutdown` and
+/// to relaunch Steam after writing a shortcut (see [`crate::steam_process`]).
+#[cfg(windows)]
+pub(crate) fn steam_executable() -> AppResult<PathBuf> {
+    Ok(find_steam_dir()?.join("steam.exe"))
+}
+
 #[cfg(not(windows))]
 fn find_steam_dir() -> AppResult<PathBuf> {
     steamlocate::SteamDir::locate()
@@ -323,6 +330,11 @@ pub async fn add_spool_to_steam() -> AppResult<AddToSteamResult> {
         .cloned()
         .ok_or_else(|| AppError::Other("No Steam user accounts found".into()))?;
 
+    // Steam rewrites shortcuts.vdf from memory on exit, clobbering our write, and
+    // only reads it at startup. Shut Steam down before writing, then relaunch
+    // below so it loads the new shortcut. No-op when Steam isn't running.
+    let restart = crate::steam_process::shut_down_for_write().await;
+
     let mut shortcuts = read_shortcuts(&user.shortcuts_path)?;
     // No --run args — this shortcut opens the Spool library itself.
     let app_id = upsert_spool_shortcut(
@@ -353,12 +365,19 @@ pub async fn add_spool_to_steam() -> AppResult<AddToSteamResult> {
         }
     }
 
+    // Relaunch Steam if we shut it down, so it reloads the new shortcut.
+    let steam_restarted = restart == crate::steam_process::SteamRestart::ShutDown;
+    if steam_restarted {
+        crate::steam_process::relaunch().await;
+    }
+
     Ok(AddToSteamResult {
         steam_user_id: user.user_id,
         app_id,
         shortcuts_path: user.shortcuts_path.to_string_lossy().to_string(),
         portrait_placed,
         extras_placed,
+        steam_restarted,
     })
 }
 
@@ -405,6 +424,12 @@ pub async fn add_to_steam(
         .first()
         .cloned()
         .ok_or_else(|| AppError::Other("No Steam user accounts found".into()))?;
+
+    // 3b. Steam rewrites shortcuts.vdf from memory on exit (clobbering our write)
+    //     and only reads it at startup. Shut Steam down before writing, then
+    //     relaunch in step 9 so it picks up the new shortcut. No-op when Steam
+    //     isn't running or in Game Mode (Spool is a Steam child there).
+    let restart = crate::steam_process::shut_down_for_write().await;
 
     // 4. Read + upsert + write.
     let mut shortcuts = read_shortcuts(&user.shortcuts_path)?;
@@ -514,12 +539,19 @@ pub async fn add_to_steam(
     // 8. Notify the library so the UI can react if any state changed.
     let _ = app.emit("library:changed", &game_id);
 
+    // 9. Relaunch Steam if we shut it down, so it reloads the new shortcut.
+    let steam_restarted = restart == crate::steam_process::SteamRestart::ShutDown;
+    if steam_restarted {
+        crate::steam_process::relaunch().await;
+    }
+
     Ok(AddToSteamResult {
         steam_user_id: user.user_id,
         app_id,
         shortcuts_path: user.shortcuts_path.to_string_lossy().to_string(),
         portrait_placed: placed_portrait.is_some(),
         extras_placed: extra_arts,
+        steam_restarted,
     })
 }
 
@@ -530,6 +562,10 @@ pub struct AddToSteamResult {
     pub shortcuts_path: String,
     pub portrait_placed: bool,
     pub extras_placed: Vec<String>,
+    /// True when Spool shut Steam down and relaunched it so the new shortcut is
+    /// loaded immediately. False when Steam wasn't running (or couldn't be
+    /// restarted), in which case the user restarts Steam to see the shortcut.
+    pub steam_restarted: bool,
 }
 
 #[cfg(test)]

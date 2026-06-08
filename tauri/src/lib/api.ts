@@ -110,6 +110,9 @@ export const api = {
   // Steam shortcut
   addSpoolToSteam: (): Promise<AddToSteamResult> => invoke('add_spool_to_steam'),
   addToSteam: (gameId: string): Promise<AddToSteamResult> => invoke('add_to_steam', { gameId }),
+  // True when Steam currently has a game running — Add-to-Steam restarts Steam,
+  // so callers warn before closing a running game.
+  steamGameRunning: (): Promise<boolean> => invoke('steam_game_running'),
   // Rebuild the "Spool" Steam library collection from the managed shortcuts.
   syncSpoolSteamCollection: (): Promise<void> => invoke('sync_spool_steam_collection'),
 
