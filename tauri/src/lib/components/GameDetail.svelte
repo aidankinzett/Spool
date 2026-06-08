@@ -674,7 +674,7 @@
     {@render stat(
       'Install size',
       fmtSize(game.install_size_mb),
-      game.exe_path ? 'on disk' : '—',
+      peerSource ? 'to download' : game.exe_path ? 'on disk' : '—',
     )}
     {@render stat(
       'Saves',

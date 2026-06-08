@@ -193,14 +193,37 @@ async fn get_games_handler(
     // wire payload to just those so non-shared games stay private. The
     // user's local library can have hundreds of entries; LAN browsing
     // should only see what was deliberately offered.
-    let games: Vec<PeerGame> = library
+    let entries = library
         .list()
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-        .iter()
-        .filter(|g| g.lan_shared)
-        .map(PeerGame::from_entry)
-        .collect();
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let mut games: Vec<PeerGame> = Vec::new();
+    for g in entries.iter().filter(|g| g.lan_shared) {
+        let mut pg = PeerGame::from_entry(g);
+        // A peer needs the download size before installing. The recorded
+        // install size is filled by the startup backfill, but a game shared
+        // the same session it was added still reads 0 — compute it from the
+        // folder on demand (and persist via `set_install_size_if_empty`, so
+        // later requests and our own UI don't pay for it again) rather than
+        // showing the peer a blank size. `shareable` already guarantees a
+        // real folder on disk to walk.
+        if pg.install_size_mb <= 0.0 && pg.shareable {
+            if let Some(folder) = g.game_folder_path.clone() {
+                let path = std::path::PathBuf::from(folder);
+                let bytes = tokio::task::spawn_blocking(move || {
+                    crate::size_backfill::directory_size(&path)
+                })
+                .await
+                .unwrap_or(0);
+                if bytes > 0 {
+                    let mb = (bytes as f64) / (1024.0 * 1024.0);
+                    pg.install_size_mb = mb;
+                    let _ = library.set_install_size_if_empty(&g.id, mb).await;
+                }
+            }
+        }
+        games.push(pg);
+    }
     Ok(Json(games))
 }
 

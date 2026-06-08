@@ -206,6 +206,9 @@ describe('mergeDisplayGames', () => {
     expect(out[0].id).toBe('local');
     expect(out[0].peer_source?.device_id).toBe('dev-a');
     expect(out[0].peer_source?.source_game_id).toBe('p1');
+    // The uninstalled local row adopts the peer's size (the download size), not
+    // its own stale/zero recorded value.
+    expect(out[0].install_size_mb).toBe(100);
   });
 
   it('adds a synthetic row for a peer game with no local entry', () => {
