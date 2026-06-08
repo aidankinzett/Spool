@@ -927,7 +927,6 @@ async fn run_backup(
         crate::runner::record_session_headless(
             &state.library,
             &config.data,
-            &game_id,
             game_name,
             started,
             ended_at,

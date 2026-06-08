@@ -375,6 +375,20 @@ const RUNTIME_FIELDS: &[&str] = &[
     "installed",
 ];
 
+/// Sentinel `device_id` for the synthetic legacy session that
+/// [`Library::migrate_legacy_playtime`] seeds for pre-sessions playtime. Not a
+/// real device, so `sessions_for_device` never folds it into a history blob.
+const LEGACY_DEVICE_ID: &str = "legacy-import";
+
+/// Timestamp stamped on a legacy session when the game has no recorded
+/// `last_played_at` to anchor it: a fixed early date so it sorts before real
+/// sessions in the timeline rather than landing at the Unix epoch.
+fn legacy_baseline_ts() -> DateTime<Utc> {
+    DateTime::parse_from_rfc3339("2020-01-01T00:00:00Z")
+        .expect("valid literal")
+        .with_timezone(&Utc)
+}
+
 /// One finished play session — an immutable record of a single launch on a
 /// single device. Sessions are append-only facts: each is created exactly once,
 /// by exactly one device, and never edited afterwards. That makes the
@@ -459,6 +473,7 @@ impl Library {
         let lib = Self { pool };
         lib.init_schema().await?;
         lib.import_json_if_needed().await?;
+        lib.migrate_legacy_playtime().await?;
         Ok(lib)
     }
 
@@ -562,6 +577,72 @@ impl Library {
             tracing::warn!(error = %e, "library import: couldn't rename library.json to .migrated");
         }
         tracing::info!(count = entries.len(), "imported library.json into SQLite");
+        Ok(())
+    }
+
+    /// One-time migration run when playtime/last-played became *derived* from the
+    /// `play_sessions` timeline instead of an accumulator. Playtime predates the
+    /// sessions table, so early libraries hold accrued `playtime_minutes` with no
+    /// backing session rows; deriving purely from sessions would drop it. For
+    /// each game whose cached playtime exceeds the sum of its existing sessions,
+    /// this seeds one synthetic "legacy" session covering the gap, so the derived
+    /// total matches the previously-displayed value and stays lossless thereafter.
+    ///
+    /// The legacy row is keyed on the game name (not this device) and attributed
+    /// to a sentinel device id, so [`sessions_for_device`] excludes it from this
+    /// device's history blob — it never propagates to peers. Each device seeds its
+    /// own from its own cached (already cross-device-folded) total, so the
+    /// per-device baselines agree without the rows crossing the wire. Guarded by a
+    /// `meta` flag so it runs exactly once.
+    async fn migrate_legacy_playtime(&self) -> AppResult<()> {
+        let done: i64 = sqlx::query_scalar(
+            "SELECT COALESCE((SELECT v FROM meta WHERE k = 'playtime_migrated'), 0)",
+        )
+        .fetch_one(&self.pool)
+        .await?;
+        if done != 0 {
+            return Ok(());
+        }
+
+        let entries = self.list().await?;
+        let mut seeded = 0usize;
+        for g in &entries {
+            if g.playtime_minutes <= 0 {
+                continue;
+            }
+            let existing: i64 = sqlx::query_scalar(
+                "SELECT COALESCE(SUM(duration_secs), 0) FROM play_sessions WHERE game_name = ?1",
+            )
+            .bind(&g.game_name)
+            .fetch_one(&self.pool)
+            .await?;
+            let gap = g.playtime_minutes as i64 * 60 - existing;
+            if gap <= 0 {
+                continue;
+            }
+            let ts = g.last_played_at.unwrap_or_else(legacy_baseline_ts);
+            let legacy = PlaySession {
+                session_id: format!("legacy:{}", g.game_name),
+                device_id: LEGACY_DEVICE_ID.to_string(),
+                device_name: "Imported history".to_string(),
+                game_name: g.game_name.clone(),
+                started_at: ts,
+                ended_at: ts,
+                duration_secs: gap,
+            };
+            if self.insert_session(&legacy).await? {
+                seeded += 1;
+            }
+        }
+        sqlx::query(
+            "INSERT INTO meta (k, v) VALUES ('playtime_migrated', 1)
+             ON CONFLICT(k) DO UPDATE SET v = 1",
+        )
+        .execute(&self.pool)
+        .await?;
+        if seeded > 0 {
+            tracing::info!(seeded, "seeded legacy play sessions for pre-sessions playtime");
+        }
         Ok(())
     }
 
@@ -794,27 +875,62 @@ impl Library {
         Ok(res.rows_affected() > 0)
     }
 
-    /// Records a finished play session: adds `minutes` to playtime and sets
-    /// `last_played_at`. The increment is done in SQL so two processes can't
-    /// lose each other's minutes.
-    pub async fn bump_session(
-        &self,
-        id: &str,
-        last_played: DateTime<Utc>,
-        minutes: i32,
-    ) -> AppResult<bool> {
-        let sql = "UPDATE games SET data = json_set(
-                data,
-                '$.playtime_minutes', COALESCE(json_extract(data, '$.playtime_minutes'), 0) + ?2,
-                '$.last_played_at', json(?3)
-             ) WHERE id = ?1";
-        let res = sqlx::query(sql)
-            .bind(id)
-            .bind(minutes as i64)
-            .bind(serde_json::to_string(&last_played)?)
-            .execute(&self.pool)
-            .await?;
+    /// Recompute a game's cached `playtime_minutes` + `last_played_at` from the
+    /// `play_sessions` timeline — the source of truth — and write them onto every
+    /// library row sharing that `game_name` (the control-plane match key).
+    /// Playtime is the summed session duration across *all* devices (peer rows
+    /// are folded in by [`crate::rclone::fold_history`]); last-played is the
+    /// latest session end. Done in SQL so it races safely with other processes.
+    ///
+    /// No-op returning `Ok(false)` when the game has no sessions yet, so it never
+    /// blanks an existing cached value with an empty aggregate.
+    pub async fn recompute_playtime(&self, game_name: &str) -> AppResult<bool> {
+        let row = sqlx::query(
+            "SELECT COALESCE(SUM(duration_secs), 0) AS secs, MAX(ended_at) AS last
+             FROM play_sessions WHERE game_name = ?1",
+        )
+        .bind(game_name)
+        .fetch_one(&self.pool)
+        .await?;
+        let secs: i64 = row.get("secs");
+        let last: Option<String> = row.get("last");
+        let Some(last) = last else {
+            return Ok(false); // no sessions for this game; leave the cache as-is
+        };
+        let minutes = (secs / 60).min(i32::MAX as i64);
+        // A bound text becomes a JSON string under json_set; a bound integer a
+        // JSON number — matching the GameEntry serde shapes for the two fields.
+        let res = sqlx::query(
+            "UPDATE games SET data = json_set(
+                    data,
+                    '$.playtime_minutes', ?2,
+                    '$.last_played_at', ?3
+                 ) WHERE game_name = ?1",
+        )
+        .bind(game_name)
+        .bind(minutes)
+        .bind(last)
+        .execute(&self.pool)
+        .await?;
         Ok(res.rows_affected() > 0)
+    }
+
+    /// Bulk [`recompute_playtime`] for the cross-device fold: re-derive every
+    /// game that has sessions. Returns how many rows were updated. Looped per
+    /// game (rather than one `UPDATE … FROM`) to stay portable across SQLite
+    /// builds; the session count is small enough that this is cheap.
+    pub async fn recompute_all_playtime(&self) -> AppResult<usize> {
+        let names: Vec<String> =
+            sqlx::query_scalar("SELECT DISTINCT game_name FROM play_sessions")
+                .fetch_all(&self.pool)
+                .await?;
+        let mut updated = 0usize;
+        for name in names {
+            if self.recompute_playtime(&name).await? {
+                updated += 1;
+            }
+        }
+        Ok(updated)
     }
 
     /// Records a finished play session. `INSERT OR IGNORE` so re-recording the
@@ -1725,7 +1841,7 @@ mod tests {
         let lib = Library::open_in_memory().await.unwrap();
         lib.insert(sample("a", "Hades")).await.unwrap();
 
-        lib.bump_session("a", Utc::now(), 30).await.unwrap();
+        give_playtime(&lib, "Hades", 30).await;
         lib.record_backup_stats("a", 3, Some(Utc::now()), Some(12.5))
             .await
             .unwrap();
@@ -1742,7 +1858,7 @@ mod tests {
         // by the run workflow after the editor loaded its (stale) copy.
         let lib = Library::open_in_memory().await.unwrap();
         lib.insert(sample("a", "Hades")).await.unwrap();
-        lib.bump_session("a", Utc::now(), 45).await.unwrap();
+        give_playtime(&lib, "Hades", 45).await;
 
         // Editor loaded the entry before the session and saves a renamed copy
         // whose playtime is still 0.
@@ -1799,6 +1915,14 @@ mod tests {
         assert_eq!(e.install_size_mb, 500.0);
     }
 
+    /// Give a game `mins` of playtime the way the app now does it: record a
+    /// session, then derive the cached totals from the timeline.
+    async fn give_playtime(lib: &Library, game: &str, mins: i64) {
+        let s = session(&format!("seed:{game}:{mins}"), "seed-device", game, "2026-01-01T00:00:00Z", mins);
+        lib.insert_session(&s).await.unwrap();
+        lib.recompute_playtime(game).await.unwrap();
+    }
+
     fn session(id: &str, device: &str, game: &str, start: &str, mins: i64) -> PlaySession {
         let started = DateTime::parse_from_rfc3339(start).unwrap().with_timezone(&Utc);
         PlaySession {
@@ -1810,6 +1934,67 @@ mod tests {
             ended_at: started + chrono::Duration::minutes(mins),
             duration_secs: mins * 60,
         }
+    }
+
+    #[tokio::test]
+    async fn recompute_playtime_sums_devices_and_takes_max_end() {
+        // Playtime is the summed session duration across every device (peer rows
+        // are folded into the same table); last-played is the latest session end.
+        let lib = Library::open_in_memory().await.unwrap();
+        lib.insert(sample("a", "Hades")).await.unwrap();
+        lib.insert_session(&session("deck:1", "deck", "Hades", "2026-05-01T10:00:00Z", 20)).await.unwrap();
+        lib.insert_session(&session("pc:1", "pc", "Hades", "2026-05-03T10:00:00Z", 25)).await.unwrap();
+
+        assert!(lib.recompute_playtime("Hades").await.unwrap());
+        let e = lib.find("a").await.unwrap().unwrap();
+        assert_eq!(e.playtime_minutes, 45, "summed across devices");
+        assert_eq!(
+            e.last_played_at.unwrap(),
+            DateTime::parse_from_rfc3339("2026-05-03T10:25:00Z").unwrap().with_timezone(&Utc),
+            "latest session end",
+        );
+    }
+
+    #[tokio::test]
+    async fn recompute_playtime_noop_without_sessions() {
+        // No sessions ⇒ leave the cached value untouched rather than zeroing it.
+        let lib = Library::open_in_memory().await.unwrap();
+        lib.insert(sample("a", "Hades")).await.unwrap();
+        assert!(!lib.recompute_playtime("Hades").await.unwrap());
+        assert_eq!(lib.find("a").await.unwrap().unwrap().playtime_minutes, 0);
+    }
+
+    #[tokio::test]
+    async fn legacy_playtime_migration_seeds_the_gap() {
+        // A library upgraded from the accumulator era: cached playtime that
+        // predates the sessions table, partly covered by later real sessions.
+        let lib = Library::open_in_memory().await.unwrap();
+        let mut g = sample("a", "Hades");
+        g.playtime_minutes = 120;
+        g.last_played_at =
+            Some(DateTime::parse_from_rfc3339("2025-01-01T00:00:00Z").unwrap().with_timezone(&Utc));
+        lib.insert(g).await.unwrap();
+        lib.insert_session(&session("deck:1", "deck", "Hades", "2025-06-01T00:00:00Z", 30))
+            .await
+            .unwrap();
+
+        // open() already ran the once-guarded migration on the (empty) DB, so
+        // clear the flag to exercise it against the seeded game.
+        sqlx::query("DELETE FROM meta WHERE k = 'playtime_migrated'")
+            .execute(&lib.pool)
+            .await
+            .unwrap();
+        lib.migrate_legacy_playtime().await.unwrap();
+
+        // The 90-min gap (120 − 30) is seeded as one synthetic session, so the
+        // derived total matches the previously-displayed value.
+        lib.recompute_playtime("Hades").await.unwrap();
+        assert_eq!(lib.find("a").await.unwrap().unwrap().playtime_minutes, 120);
+
+        // Idempotent: the flag is set again, so a second run seeds nothing.
+        lib.migrate_legacy_playtime().await.unwrap();
+        lib.recompute_playtime("Hades").await.unwrap();
+        assert_eq!(lib.find("a").await.unwrap().unwrap().playtime_minutes, 120);
     }
 
     #[tokio::test]
@@ -1947,7 +2132,7 @@ mod tests {
         g.game_folder_path = Some(dir.to_string_lossy().to_string());
         g.install_size_mb = 1234.0;
         lib.insert(g).await.unwrap();
-        lib.bump_session("uninst-keep", Utc::now(), 50).await.unwrap();
+        give_playtime(&lib, "Hades", 50).await;
 
         uninstall_game_core(&lib, "uninst-keep").await.unwrap();
 
