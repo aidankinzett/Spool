@@ -1806,6 +1806,20 @@ async fn run_workflow(
         WorkflowCtx::new(app, game_id, game_name, launch, ludusavi_exe, ludusavi_client).await?;
     let exe_pathbuf = PathBuf::from(exe_path);
 
+    // Emit the first phase immediately, before preflight. preflight's
+    // `claim_session` makes a cloud round-trip (read + write the session marker)
+    // that can take several seconds on a high-latency remote like Google Drive,
+    // and phase_restore — which emits the first phase otherwise — only runs after
+    // it. Without this the UI (desktop overlay + Game-Mode splash) shows nothing
+    // until that returns, so the Play button looks dead. The splash already
+    // defaults to `restoring`; phase_restore re-emits with its own message.
+    let prep_msg = if ctx.cloud_configured {
+        "Syncing + restoring saves…"
+    } else {
+        "Restoring local saves…"
+    };
+    emit_phase(ctx.app, ctx.game_id, "restoring", Some(prep_msg), ctx.cloud_configured, None, false);
+
     preflight(&ctx, &exe_pathbuf, steal_lock).await?;
     let no_saves = phase_restore(&ctx).await?;
     let timing = phase_launch(&ctx, &exe_pathbuf).await?;
