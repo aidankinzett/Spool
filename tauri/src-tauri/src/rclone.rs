@@ -1784,6 +1784,13 @@ pub async fn connect_cloud_oauth(
     cmd.stderr(std::process::Stdio::piped());
     cmd.stdin(std::process::Stdio::null());
     cmd.kill_on_drop(true);
+    // rclone authorize forks xdg-open to launch the browser. Under the AppImage,
+    // a bare spawn leaks $APPDIR's PATH/LD_LIBRARY_PATH/GTK_* into that child, so
+    // xdg-open (and the browser) fail and no auth window ever appears. Strip the
+    // AppImage env so the opener sees the host runtime — same reason system_open
+    // and the Proton runner do this.
+    #[cfg(target_os = "linux")]
+    crate::process::strip_appimage_env(&mut cmd);
 
     let mut child = cmd.spawn()
         .map_err(|e| AppError::Other(format!("failed to start rclone authorize: {e}")))?;
