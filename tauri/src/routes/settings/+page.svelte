@@ -438,8 +438,14 @@
       if (config.library_folders.some((f) => f.path === canonical)) {
         toasts.show({ kind: 'ok', label: 'LIBRARY', title: 'Already a library folder', sub: canonical });
       } else {
-        config.library_folders = [...config.library_folders, { path: canonical, label: null }];
-        await persist();
+        // Restore the prior list if the save fails, so the UI doesn't drift from
+        // what's on disk (persist() toasts the error and returns false).
+        const prev = config.library_folders;
+        config.library_folders = [...prev, { path: canonical, label: null }];
+        if (!(await persist())) {
+          config.library_folders = prev;
+          return;
+        }
         await refreshLibFolderFree();
       }
       addingLibFolder = false;
@@ -451,8 +457,9 @@
 
   async function removeLibFolder(path: string) {
     if (!config) return;
-    config.library_folders = config.library_folders.filter((f) => f.path !== path);
-    await persist();
+    const prev = config.library_folders;
+    config.library_folders = prev.filter((f) => f.path !== path);
+    if (!(await persist())) config.library_folders = prev;
   }
 
   function onLanPortCommit() {

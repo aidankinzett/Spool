@@ -227,8 +227,13 @@ pub async fn move_game_install(
     }
 
     // Reject a destination inside the game's own folder — copying a tree into its
-    // own subtree would recurse and fill the disk.
-    if dest_root.starts_with(&src) {
+    // own subtree would recurse and fill the disk. Canonicalize both sides first
+    // so a symlinked/junctioned library folder that resolves inside the install
+    // dir can't slip past a purely lexical check (falls back to the lexical paths
+    // when a side doesn't resolve yet, e.g. a not-yet-created destination).
+    let src_real = std::fs::canonicalize(&src).unwrap_or_else(|_| src.clone());
+    let dest_root_real = std::fs::canonicalize(&dest_root).unwrap_or_else(|_| dest_root.clone());
+    if dest_root_real.starts_with(&src_real) {
         return Err(AppError::Other(
             "That library folder is inside the game's own install folder. Pick a different drive or folder.".into(),
         ));
@@ -293,7 +298,20 @@ pub async fn move_game_install(
         let install_size_mb = (total_bytes as f64) / (1024.0 * 1024.0);
         fields.push(("install_size_mb", serde_json::json!(install_size_mb)));
     }
-    library.update_fields(&id, &fields).await?;
+    if let Err(e) = library.update_fields(&id, &fields).await {
+        // The same-filesystem fast path already consumed the source (the copy
+        // path hasn't deleted it yet — `source_to_delete` is still `Some`). Roll
+        // the rename back so the entry keeps pointing at a folder that exists.
+        if outcome.source_to_delete.is_none() {
+            if let Err(rb) = tokio::fs::rename(&dest, &src).await {
+                tracing::warn!(
+                    error = %rb,
+                    "move: rollback rename failed after DB repoint error — files are at the new path but the entry still points at the old one",
+                );
+            }
+        }
+        return Err(e);
+    }
 
     // The entry now points at the new location, so it's safe to delete the old
     // copy (cross-device path only — the rename already consumed the source).

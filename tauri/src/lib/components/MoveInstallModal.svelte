@@ -100,6 +100,7 @@
   let errorMsg = $state('');
   let canceled = $state(false);
   let unlisten: (() => void) | null = null;
+  let closeTimer: ReturnType<typeof setTimeout> | null = null;
 
   // Refresh the destination rows only while choosing — never mid-move, so a
   // `library:changed`-triggered folders refresh can't reset the selection or
@@ -128,15 +129,17 @@
     progress = null;
     errorMsg = '';
     canceled = false;
-    unlisten = await listen<MoveProgress>('move:progress', (e) => {
-      if (e.payload.game_id === game.id) progress = e.payload;
-    });
     try {
+      // Registered inside the try so a listen() failure routes through the catch
+      // below rather than leaving the modal stuck on 'moving'.
+      unlisten = await listen<MoveProgress>('move:progress', (e) => {
+        if (e.payload.game_id === game.id) progress = e.payload;
+      });
       await api.moveGameInstall(game.id, selected);
       phase = 'done';
       onDone?.();
       // Brief beat on the "done" state so the bar reads 100% before close.
-      setTimeout(() => onClose(), 700);
+      closeTimer = setTimeout(() => onClose(), 700);
     } catch (e) {
       // A user-requested cancel rejects the move promise too — close cleanly
       // rather than presenting it as a failure (the source is left intact).
@@ -161,7 +164,12 @@
     }
   }
 
-  onDestroy(() => unlisten?.());
+  onDestroy(() => {
+    unlisten?.();
+    // Clear the delayed close so it can't fire after the modal is gone and close
+    // a freshly opened one.
+    if (closeTimer) clearTimeout(closeTimer);
+  });
 
   function rowSubtitle(r: FolderRow): string {
     if (r.isCurrent) return 'Current location';
