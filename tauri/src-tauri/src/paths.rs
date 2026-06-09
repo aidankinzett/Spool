@@ -137,6 +137,22 @@ pub fn run_lock_file(game_id: &str) -> PathBuf {
     run_locks_dir().join(format!("run-{safe}.lock"))
 }
 
+/// Marker file for the machine-wide **per-install LAN lock** — `flock`ed by a
+/// peer install for the whole transfer so two Spool processes (the tray GUI and
+/// the Decky headless server) can't install the *same* game into the same
+/// `<base>.partial` staging directory at once and corrupt it. Keyed by the
+/// install's base folder name (see `install_base_name`), which is the contended
+/// filesystem resource. Same lifecycle as [`backup_lock_file`] — only its lock
+/// state matters, and the OS frees it when the holder exits. `base` is already a
+/// safe filename; sanitised again defensively so it can't escape the locks dir.
+pub fn lan_install_lock_file(base: &str) -> PathBuf {
+    let safe: String = base
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '_' })
+        .collect();
+    run_locks_dir().join(format!("lan-install-{safe}.lock"))
+}
+
 pub fn covers_dir() -> PathBuf {
     app_data_dir().join("covers")
 }

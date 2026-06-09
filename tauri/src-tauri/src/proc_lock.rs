@@ -168,6 +168,19 @@ pub fn remove_run_lock(game_id: &str) {
     }
 }
 
+/// Non-blocking attempt to take the machine-wide **per-install LAN lock** for a
+/// game's install `base` folder name. A peer install holds it across the whole
+/// transfer, so two Spool processes on one machine (the tray GUI and the Decky
+/// headless server) can't stream the *same* game into the same `<base>.partial`
+/// staging dir at once and corrupt it — the in-process single-slot tracker in
+/// `lan/install.rs` only serialises installs *within* one process. `Ok(Some)` =
+/// acquired (free); `Ok(None)` = another Spool process is already installing this
+/// game; `Err` only if the lock file can't be opened. The OS frees it when the
+/// holder exits, so a crash or force-kill can't wedge it.
+pub fn try_acquire_lan_install(base: &str) -> AppResult<Option<FileLock>> {
+    try_acquire_at(paths::lan_install_lock_file(base))
+}
+
 /// Acquire the machine-wide control-plane lock, serialising the brief
 /// read-modify-write of this device's cross-device blob
 /// (`_spool/devices/<id>.json`) against other Spool processes on the machine.
@@ -206,6 +219,29 @@ mod tests {
         drop(held);
         assert!(
             try_acquire_run(id).unwrap().is_some(),
+            "re-acquire after release succeeds"
+        );
+    }
+
+    #[test]
+    fn lan_install_lock_is_mutually_exclusive_per_base() {
+        let base = "test-lan-install-lock-4e1d";
+        let held = try_acquire_lan_install(base).unwrap();
+        assert!(held.is_some(), "first acquire of a free LAN install lock succeeds");
+        assert!(
+            try_acquire_lan_install(base).unwrap().is_none(),
+            "second acquire of the same base while held returns None"
+        );
+        // A different game's base is a different lock file → independent.
+        assert!(
+            try_acquire_lan_install("test-lan-install-lock-other-4e1d")
+                .unwrap()
+                .is_some(),
+            "different install bases don't block each other"
+        );
+        drop(held);
+        assert!(
+            try_acquire_lan_install(base).unwrap().is_some(),
             "re-acquire after release succeeds"
         );
     }

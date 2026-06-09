@@ -315,14 +315,23 @@ fn install_root_from(config: &ConfigData) -> AppResult<PathBuf> {
     }
 }
 
-/// Picks an install directory inside the LAN root that doesn't collide
-/// with an existing install. Adds `" (2)"`, `" (3)"` etc. as needed.
-fn allocate_install_dir(root: &Path, safe_name: &str) -> PathBuf {
-    let base = if safe_name.is_empty() {
+/// The on-disk folder name a game's install lands at, before any
+/// collision suffix. The single source of truth for both directory
+/// allocation and the per-install cross-process lock key, so the lock
+/// guards exactly the `<base>.partial` directory a second installer
+/// would otherwise pick.
+fn install_base_name(safe_name: &str) -> String {
+    if safe_name.is_empty() {
         "Game".to_string()
     } else {
         make_safe_filename(safe_name)
-    };
+    }
+}
+
+/// Picks an install directory inside the LAN root that doesn't collide
+/// with an existing install. Adds `" (2)"`, `" (3)"` etc. as needed.
+fn allocate_install_dir(root: &Path, safe_name: &str) -> PathBuf {
+    let base = install_base_name(safe_name);
     let first = root.join(&base);
     if !first.exists() {
         return first;
@@ -348,11 +357,7 @@ fn allocate_install_dir(root: &Path, safe_name: &str) -> PathBuf {
 /// simple means a user who genuinely wants a fresh install can get
 /// one by deleting the leftover `.partial` folder.
 fn resolve_install_dirs(root: &Path, safe_name: &str) -> (PathBuf, PathBuf, bool) {
-    let base = if safe_name.is_empty() {
-        "Game".to_string()
-    } else {
-        make_safe_filename(safe_name)
-    };
+    let base = install_base_name(safe_name);
     let preferred_final = root.join(&base);
     let preferred_partial = root.join(format!("{base}.partial"));
     if preferred_partial.is_dir() && !preferred_final.exists() {
@@ -943,6 +948,24 @@ async fn run_install(
     tokio::fs::create_dir_all(&install_root)
         .await
         .map_err(|e| AppError::Other(format!("create install root: {e}")))?;
+
+    // Cross-process guard against two Spool processes (tray GUI + Decky headless
+    // server) installing the *same* game at once. The in-process slot in
+    // `LanDownloadState` only serialises installs within one process, but both
+    // would resolve to the same `<base>.partial` dir and interleave writes into
+    // it. Hold the lock for the whole transfer — through the rename to the final
+    // dir — so a second installer either waits behind a finished install (and
+    // then allocates `<base> (2)`) or fails fast here.
+    let base_name = install_base_name(&manifest.safe_name);
+    let _install_lock = match crate::proc_lock::try_acquire_lan_install(&base_name)? {
+        Some(lock) => lock,
+        None => {
+            return Err(AppError::Other(format!(
+                "Another Spool process is already installing {}",
+                manifest.game_name
+            )));
+        }
+    };
 
     // Resume detection: if a `.partial` exists at the preferred name
     // we pick up where we left off rather than allocating a fresh

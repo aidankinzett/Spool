@@ -3,6 +3,7 @@ import { SvelteSet } from 'svelte/reactivity';
 import { listen } from '@tauri-apps/api/event';
 import { api } from '$lib/api';
 import { fmtCatalog } from '$lib/format';
+import { downloadIsActive, downloadPercent, liveUploads } from '$lib/transfers';
 import { toasts } from '$lib/toasts.svelte';
 import { startUpdateChecks } from '$lib/updater';
 import type {
@@ -388,22 +389,15 @@ export function createLibrary() {
         ? 'Cloud remote reachable'
         : `Cloud remote unreachable${syncStatus.error ? ` · ${syncStatus.error}` : ''}`,
   );
-  const downloadActive = $derived(
-    activeDownload != null &&
-      (activeDownload.status === 'starting' || activeDownload.status === 'transferring'),
-  );
+  const downloadActive = $derived(downloadIsActive(activeDownload));
   const downloadCount = $derived(downloadActive ? 1 : 0);
-  const downloadPercent = $derived(
-    activeDownload && activeDownload.bytes_total > 0
-      ? Math.round((activeDownload.bytes_done / activeDownload.bytes_total) * 100)
-      : 0,
-  );
-  const liveUploads = $derived(activeUploads.filter((u) => !u.cancelled));
-  const uploadCount = $derived(liveUploads.length);
+  const downloadPct = $derived(downloadPercent(activeDownload));
+  const liveUploadList = $derived(liveUploads(activeUploads));
+  const uploadCount = $derived(liveUploadList.length);
   const uploadPercent = $derived.by(() => {
     if (uploadCount === 0) return 0;
-    const total = liveUploads.reduce((s, u) => s + u.bytes_total, 0);
-    const sent = liveUploads.reduce((s, u) => s + u.bytes_sent, 0);
+    const total = liveUploadList.reduce((s, u) => s + u.bytes_total, 0);
+    const sent = liveUploadList.reduce((s, u) => s + u.bytes_sent, 0);
     return total > 0 ? Math.round((sent / total) * 100) : 0;
   });
 
@@ -1019,8 +1013,8 @@ export function createLibrary() {
     get syncTitle() { return syncTitle; },
     get downloadActive() { return downloadActive; },
     get downloadCount() { return downloadCount; },
-    get downloadPercent() { return downloadPercent; },
-    get liveUploads() { return liveUploads; },
+    get downloadPercent() { return downloadPct; },
+    get liveUploads() { return liveUploadList; },
     get uploadCount() { return uploadCount; },
     get uploadPercent() { return uploadPercent; },
     // Methods
