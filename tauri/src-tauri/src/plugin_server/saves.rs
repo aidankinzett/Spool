@@ -13,13 +13,10 @@ use serde_json::{json, Value};
 /// "Pulled latest saves" / "Already up to date" / "Local saves are newer", or a
 /// conflict the user must resolve in the desktop app.
 pub(super) async fn post_pull_cloud_saves(AxPath(id): AxPath<String>, AxState(state): AxState<PluginState>) -> Json<Value> {
-    let Some(ludusavi_exe) = crate::paths::resolve_ludusavi_path() else {
-        return Json(json!({ "ok": false, "reason": "ludusavi sidecar not found" }));
+    let (ludusavi_exe, config_dir) = match super::ludusavi_prep("plugin pull") {
+        Ok(pair) => pair,
+        Err(reason) => return Json(json!({ "ok": false, "reason": reason })),
     };
-    if let Err(e) = crate::ludusavi_config::ensure_config() {
-        tracing::warn!(error = %e, "plugin pull: ensure_config warning");
-    }
-    let config_dir = crate::paths::ludusavi_config_dir();
 
     match crate::runner::pull_cloud_saves_core(
         state.ludusavi.as_ref(),
@@ -52,13 +49,10 @@ pub(super) async fn get_revisions(
     AxPath(id): AxPath<String>,
     AxState(state): AxState<PluginState>,
 ) -> Json<Value> {
-    let Some(ludusavi_exe) = crate::paths::resolve_ludusavi_path() else {
-        return Json(json!({ "ok": false, "reason": "ludusavi sidecar not found" }));
+    let (ludusavi_exe, config_dir) = match super::ludusavi_prep("plugin revisions") {
+        Ok(pair) => pair,
+        Err(reason) => return Json(json!({ "ok": false, "reason": reason })),
     };
-    if let Err(e) = crate::ludusavi_config::ensure_config() {
-        tracing::warn!(error = %e, "plugin revisions: ensure_config warning");
-    }
-    let config_dir = crate::paths::ludusavi_config_dir();
     let Some(entry) = state.library.find(&id).await.ok().flatten() else {
         return Json(json!({ "ok": false, "reason": "game not in library" }));
     };
@@ -93,14 +87,11 @@ pub(super) async fn post_restore(
     AxState(state): AxState<PluginState>,
     Json(req): Json<RestoreRequest>,
 ) -> Json<Value> {
-    let Some(ludusavi_exe) = crate::paths::resolve_ludusavi_path() else {
-        return Json(json!({ "ok": false, "reason": "ludusavi sidecar not found" }));
+    let (ludusavi_exe, config_dir) = match super::ludusavi_prep("plugin restore") {
+        Ok(pair) => pair,
+        Err(reason) => return Json(json!({ "ok": false, "reason": reason })),
     };
-    if let Err(e) = crate::ludusavi_config::ensure_config() {
-        tracing::warn!(error = %e, "plugin restore: ensure_config warning");
-    }
     let config = crate::config::Config::load().unwrap_or_default();
-    let config_dir = crate::paths::ludusavi_config_dir();
 
     match crate::runner::restore_save_revision_core(
         state.ludusavi.as_ref(),

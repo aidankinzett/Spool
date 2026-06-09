@@ -208,3 +208,20 @@ pub async fn serve() -> AppResult<()> {
 async fn get_status() -> Json<Value> {
     Json(json!({ "ok": true }))
 }
+
+/// Resolves the ludusavi executable and ensures the config file is valid —
+/// the three-step preamble shared by [`saves::post_pull_cloud_saves`],
+/// [`saves::get_revisions`], [`saves::post_restore`], and
+/// [`library::post_uninstall_game`].
+/// Returns `Err("ludusavi sidecar not found")` when the executable is absent;
+/// an `ensure_config` warning is logged and the call proceeds (a bad config
+/// surfaces as a downstream backup or restore error).
+fn ludusavi_prep(log_tag: &str) -> Result<(std::path::PathBuf, std::path::PathBuf), &'static str> {
+    let Some(ludusavi_exe) = crate::paths::resolve_ludusavi_path() else {
+        return Err("ludusavi sidecar not found");
+    };
+    if let Err(e) = crate::ludusavi_config::ensure_config() {
+        tracing::warn!(error = %e, "{log_tag}: ensure_config warning");
+    }
+    Ok((ludusavi_exe, crate::paths::ludusavi_config_dir()))
+}

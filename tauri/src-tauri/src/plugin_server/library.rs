@@ -56,17 +56,10 @@ pub(super) async fn post_uninstall_game(
     AxState(state): AxState<PluginState>,
     AxPath(id): AxPath<String>,
 ) -> Result<Json<Value>, StatusCode> {
-    let Some(ludusavi_exe) = crate::paths::resolve_ludusavi_path() else {
-        return Ok(Json(json!({ "ok": false, "reason": "ludusavi sidecar not found" })));
+    let (ludusavi_exe, config_dir) = match super::ludusavi_prep("plugin uninstall") {
+        Ok(pair) => pair,
+        Err(reason) => return Ok(Json(json!({ "ok": false, "reason": reason }))),
     };
-    // Ensure Spool owns a valid ludusavi config before the pre-wipe backup runs
-    // (the headless server may be the first process to touch it). Warn + proceed
-    // like the sibling handlers — a broken config surfaces as a backup error,
-    // which aborts the uninstall below.
-    if let Err(e) = crate::ludusavi_config::ensure_config() {
-        tracing::warn!(error = %e, "plugin uninstall: ensure_config warning");
-    }
-    let config_dir = crate::paths::ludusavi_config_dir();
     match crate::runner::uninstall_game_with_backup(
         &state.ludusavi,
         &ludusavi_exe,
