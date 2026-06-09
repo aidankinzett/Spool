@@ -699,6 +699,7 @@ fn hidden_command(exe: &Path, config_dir: &Path) -> Command {
         // CREATE_NO_WINDOW — winbase.h. Avoids a winapi dep for one constant.
         cmd.creation_flags(0x0800_0000);
     }
+    crate::process::strip_appimage_env(&mut cmd);
     cmd
 }
 
@@ -749,6 +750,12 @@ async fn run_blocking(mut cmd: std::process::Command, op: &str) -> AppResult<std
         Err(e) => return Err(AppError::Other(format!("failed to spawn ludusavi: {e}"))),
     };
 
+    // Capture the PID before moving the child into the Arc. On Unix,
+    // process_group(0) was set at spawn so PGID == child PID — used by the
+    // timeout branch to kill the whole tree (ludusavi + any rclone descendant).
+    #[cfg(unix)]
+    let child_pgid = child.id();
+
     let mut stdout_pipe = child.stdout.take().unwrap();
     let mut stderr_pipe = child.stderr.take().unwrap();
 
@@ -798,7 +805,16 @@ async fn run_blocking(mut cmd: std::process::Command, op: &str) -> AppResult<std
         Err(_) => {
             let mut lock = child_arc.lock().unwrap();
             if let Some(mut c) = lock.take() {
-                let _ = c.kill();
+                // On Unix, kill the entire process group so any rclone subprocess
+                // shelled out by ludusavi is also terminated. PGID equals child_pgid
+                // because process_group(0) was set at spawn. On other platforms,
+                // fall back to killing only the direct child; rclone's own
+                // connection/retry timeouts bound how long it stays alive.
+                #[cfg(unix)]
+                // SAFETY: killpg is async-signal-safe; PGID was recorded at spawn.
+                unsafe { libc::killpg(child_pgid as libc::pid_t, libc::SIGKILL); }
+                #[cfg(not(unix))]
+                { let _ = c.kill(); }
                 let _ = c.wait();
             }
             return Err(AppError::Other(format!(
@@ -826,18 +842,30 @@ async fn run_blocking(mut cmd: std::process::Command, op: &str) -> AppResult<std
 fn blocking_command(exe: &Path, config_dir: &Path) -> std::process::Command {
     let mut cmd = std::process::Command::new(exe);
     cmd.arg("--config").arg(config_dir);
+    crate::process::strip_appimage_env_blocking(&mut cmd);
     // Prepend the bundled rclone's directory to PATH so ludusavi resolves
     // "rclone" to THIS process's binary (never a stale AppImage FUSE path).
     if let Some(rclone_dir) =
         crate::paths::resolve_rclone_path().and_then(|p| p.parent().map(|d| d.to_path_buf()))
     {
-        let existing = std::env::var_os("PATH").unwrap_or_default();
+        let existing = cmd
+            .get_envs()
+            .find(|(k, _)| *k == "PATH")
+            .and_then(|(_, v)| v.map(|s| s.to_os_string()))
+            .unwrap_or_else(|| std::env::var_os("PATH").unwrap_or_default());
         if let Ok(new_path) = std::env::join_paths(
             std::iter::once(rclone_dir.into_os_string())
                 .chain(std::env::split_paths(&existing).map(|p| p.into_os_string())),
         ) {
             cmd.env("PATH", new_path);
         }
+    }
+    // Place ludusavi in its own process group so a timeout kill reaches the
+    // whole tree (including any rclone subprocess it shells out to).
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt as _;
+        cmd.process_group(0);
     }
     crate::capture_stdio!(cmd);
     cmd
@@ -953,6 +981,12 @@ async fn load_manifest(ludusavi_exe: &Path) -> AppResult<HashMap<String, Manifes
     // Spool's customGames) — built inline rather than via blocking_command.
     let mut cmd = std::process::Command::new(ludusavi_exe);
     cmd.args(["manifest", "show", "--api"]);
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt as _;
+        cmd.process_group(0);
+    }
+    crate::process::strip_appimage_env_blocking(&mut cmd);
     crate::capture_stdio!(cmd);
     let output = run_blocking(cmd, "manifest").await?;
     if !output.status.success() {

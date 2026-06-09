@@ -4437,6 +4437,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "image",
+ "libc",
  "pelite",
  "reqwest",
  "serde",
