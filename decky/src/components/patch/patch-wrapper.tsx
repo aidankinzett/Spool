@@ -32,6 +32,7 @@ const ACTIVE_ATTR = "data-spool-bar-active";
 // Steam; injecting into the plugin's document would put the rule in a document
 // that doesn't contain the logo, so it would never apply.
 function ensureTitleShiftStyle(doc: Document | null | undefined) {
+  if (!appDetailsHeaderClasses || !appDetailsHeaderClasses.BoxSizerContainer) return;
   const id = "spool-title-shift";
   if (!doc || doc.getElementById(id)) return;
   const el = doc.createElement("style");
@@ -50,23 +51,26 @@ function ensureTitleShiftStyle(doc: Document | null | undefined) {
 // child. Mirrors MoonDeck's `findTopCapsuleParent`. The anchor is spliced as the
 // first child of the InnerContainer so it shares the capsule's top edge.
 function findTopCapsule(anchor: HTMLElement | null): HTMLElement | null {
+  if (!appDetailsClasses || !appDetailsHeaderClasses) return null;
   const siblings = anchor?.parentElement?.children;
   if (!siblings) return null;
   let header: Element | undefined;
   for (const child of siblings) {
-    if (child.className?.includes?.(appDetailsClasses.Header)) {
+    if (appDetailsClasses.Header && child.className?.includes?.(appDetailsClasses.Header)) {
       header = child;
       break;
     }
   }
   if (!header) return null;
   for (const child of header.children) {
-    if (child.className?.includes?.(appDetailsHeaderClasses.TopCapsule)) {
+    if (appDetailsHeaderClasses.TopCapsule && child.className?.includes?.(appDetailsHeaderClasses.TopCapsule)) {
       return child as HTMLElement;
     }
   }
   return null;
 }
+
+let hasWarnedWrapper = false;
 
 // Badge wrapper injected into the game detail page's InnerContainer via
 // afterPatch. Uses useParams to read appid from Steam's internal router —
@@ -96,6 +100,7 @@ export function PatchWrapper() {
   // bar swaps the spinning reel for the fresh "Synced · Nm ago" line.
   const wasBackingUp = useRef(backingUp);
   useEffect(() => {
+    if (!appDetailsClasses || !appDetailsHeaderClasses) return;
     if (wasBackingUp.current && !backingUp) void refresh();
     wasBackingUp.current = backingUp;
   }, [backingUp, refresh]);
@@ -103,6 +108,7 @@ export function PatchWrapper() {
   // Locate the hero capsule, keep the bar pinned to its bottom edge across
   // resizes, and hide it while the fullscreen banner animation runs.
   useEffect(() => {
+    if (!appDetailsClasses || !appDetailsHeaderClasses) return;
     const capsule = findTopCapsule(anchorRef.current);
     if (!capsule) return;
     capsuleRef.current = capsule;
@@ -122,13 +128,13 @@ export function PatchWrapper() {
     const mo = new MutationObserver(() => {
       const cn = capsule.className;
       const fullscreen =
-        cn.includes(appDetailsHeaderClasses.FullscreenEnterStart) ||
-        cn.includes(appDetailsHeaderClasses.FullscreenEnterActive) ||
-        cn.includes(appDetailsHeaderClasses.FullscreenEnterDone) ||
-        cn.includes(appDetailsHeaderClasses.FullscreenExitStart) ||
-        cn.includes(appDetailsHeaderClasses.FullscreenExitActive);
-      const aborted = cn.includes(appDetailsHeaderClasses.FullscreenExitDone);
-      setHidden(fullscreen && !aborted);
+        (appDetailsHeaderClasses.FullscreenEnterStart && cn.includes(appDetailsHeaderClasses.FullscreenEnterStart)) ||
+        (appDetailsHeaderClasses.FullscreenEnterActive && cn.includes(appDetailsHeaderClasses.FullscreenEnterActive)) ||
+        (appDetailsHeaderClasses.FullscreenEnterDone && cn.includes(appDetailsHeaderClasses.FullscreenEnterDone)) ||
+        (appDetailsHeaderClasses.FullscreenExitStart && cn.includes(appDetailsHeaderClasses.FullscreenExitStart)) ||
+        (appDetailsHeaderClasses.FullscreenExitActive && cn.includes(appDetailsHeaderClasses.FullscreenExitActive));
+      const aborted = appDetailsHeaderClasses.FullscreenExitDone && cn.includes(appDetailsHeaderClasses.FullscreenExitDone);
+      setHidden(!!(fullscreen && !aborted));
       measure();
     });
     mo.observe(capsule, { attributes: true, attributeFilter: ["class"] });
@@ -145,6 +151,7 @@ export function PatchWrapper() {
   // screen, so the logo only shifts while something covers it.
   const barVisible = !!game && top !== null && !hidden;
   useEffect(() => {
+    if (!appDetailsClasses || !appDetailsHeaderClasses) return;
     const capsule = capsuleRef.current;
     if (!capsule) return;
     if (barVisible) capsule.setAttribute(ACTIVE_ATTR, "");
@@ -154,6 +161,14 @@ export function PatchWrapper() {
   // Keep mounting the anchor while a backup runs even before the first fetch
   // resolves, so the bar isn't gated behind `loading`/`game` — but the bar
   // itself only renders once we have a game to describe.
+  if (!appDetailsClasses || !appDetailsHeaderClasses) {
+    if (!hasWarnedWrapper) {
+      console.warn("[Spool] Steam CSS classes (appDetailsClasses or appDetailsHeaderClasses) are undefined; playtime badge disabled.");
+      hasWarnedWrapper = true;
+    }
+    return null;
+  }
+
   if (!appid || (!backingUp && (loading || !game))) return null;
 
   return (
