@@ -150,7 +150,9 @@ pub fn lan_install_lock_file(base: &str) -> PathBuf {
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '_' })
         .collect();
-    run_locks_dir().join(format!("lan-install-{safe}.lock"))
+    let hash = blake3::hash(base.as_bytes()).to_hex().to_string();
+    let hash_prefix = &hash[..16];
+    run_locks_dir().join(format!("lan-install-{safe}-{hash_prefix}.lock"))
 }
 
 pub fn covers_dir() -> PathBuf {
@@ -442,5 +444,17 @@ mod tests {
         // Resolution is relative to the test runner's exe dir; a made-up name
         // must never resolve there.
         assert!(resolve_sidecar_path("definitely-not-a-real-sidecar").is_none());
+    }
+
+    #[test]
+    fn lan_install_lock_file_avoids_collisions() {
+        let path_a = lan_install_lock_file("A B");
+        let path_b = lan_install_lock_file("A_B");
+        assert_ne!(path_a, path_b, "paths with spaces vs underscores should not collide");
+
+        let file_name_a = path_a.file_name().unwrap().to_str().unwrap();
+        assert!(file_name_a.starts_with("lan-install-A_B-"));
+        assert!(file_name_a.ends_with(".lock"));
+        assert_eq!(file_name_a.len(), 37);
     }
 }
