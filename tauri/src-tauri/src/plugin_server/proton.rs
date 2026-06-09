@@ -22,6 +22,9 @@ pub(super) async fn post_install_deps(
     AxPath(id): AxPath<String>,
     Json(body): Json<InstallDepsRequest>,
 ) -> Json<Value> {
+    if !state.library_available {
+        return Json(json!({ "ok": false, "reason": "library unavailable" }));
+    }
     let Some(entry) = state.library.find(&id).await.ok().flatten() else {
         return Json(json!({ "ok": false, "reason": "game not in library" }));
     };
@@ -81,6 +84,9 @@ pub(super) async fn post_set_proton(
     AxPath(id): AxPath<String>,
     Json(body): Json<SetProtonRequest>,
 ) -> Json<Value> {
+    if !state.library_available {
+        return Json(json!({ "ok": false, "reason": "library unavailable" }));
+    }
     let trimmed = body
         .proton_version_path
         .as_deref()

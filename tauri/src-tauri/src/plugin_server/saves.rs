@@ -13,6 +13,10 @@ use serde_json::{json, Value};
 /// "Pulled latest saves" / "Already up to date" / "Local saves are newer", or a
 /// conflict the user must resolve in the desktop app.
 pub(super) async fn post_pull_cloud_saves(AxPath(id): AxPath<String>, AxState(state): AxState<PluginState>) -> Json<Value> {
+    if !state.library_available {
+        return Json(json!({ "ok": false, "reason": "library unavailable" }));
+    }
+
     let (ludusavi_exe, config_dir) = match super::ludusavi_prep("plugin pull") {
         Ok(pair) => pair,
         Err(reason) => return Json(json!({ "ok": false, "reason": reason })),
@@ -49,6 +53,10 @@ pub(super) async fn get_revisions(
     AxPath(id): AxPath<String>,
     AxState(state): AxState<PluginState>,
 ) -> Json<Value> {
+    if !state.library_available {
+        return Json(json!({ "ok": false, "reason": "library unavailable" }));
+    }
+
     let (ludusavi_exe, config_dir) = match super::ludusavi_prep("plugin revisions") {
         Ok(pair) => pair,
         Err(reason) => return Json(json!({ "ok": false, "reason": reason })),
@@ -87,6 +95,10 @@ pub(super) async fn post_restore(
     AxState(state): AxState<PluginState>,
     Json(req): Json<RestoreRequest>,
 ) -> Json<Value> {
+    if !state.library_available {
+        return Json(json!({ "ok": false, "reason": "library unavailable" }));
+    }
+
     let (ludusavi_exe, config_dir) = match super::ludusavi_prep("plugin restore") {
         Ok(pair) => pair,
         Err(reason) => return Json(json!({ "ok": false, "reason": reason })),
