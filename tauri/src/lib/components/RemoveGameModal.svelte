@@ -24,8 +24,7 @@
   import { BookMarked, HardDrive, Trash2, X } from '@lucide/svelte';
   import type { Component } from 'svelte';
   import { shadeHex } from '$lib/tokens';
-  import SpoolMark from '$lib/components/SpoolMark.svelte';
-  import { gamepadScope } from '$lib/gamepad';
+  import ModalShell from '$lib/components/ModalShell.svelte';
 
   const BRAND_SPOOL = '#d7c9a0';
 
@@ -85,10 +84,6 @@
       errorMsg = String(e);
       phase = 'error';
     }
-  }
-
-  function handleKey(e: KeyboardEvent) {
-    if (e.key === 'Escape' && !locked) onClose();
   }
 
   interface CardModel {
@@ -152,8 +147,6 @@
     }
   });
 </script>
-
-<svelte:window onkeydown={handleKey} />
 
 {#snippet choiceCard(card: CardModel)}
   {@const active = selected === card.key}
@@ -242,218 +235,145 @@
   </button>
 {/snippet}
 
-<div
-  class="rg-scrim fixed inset-0 z-50 flex items-center justify-center"
-  style:padding="24px"
-  style:background="rgba(4,5,7,0.62)"
-  style:backdrop-filter="blur(2px)"
-  style:-webkit-backdrop-filter="blur(2px)"
-  onclick={(e) => {
-    if (e.target === e.currentTarget && !locked) onClose();
-  }}
-  role="presentation"
+<ModalShell
+  breadcrumb="REMOVE · GAME"
+  breadcrumbColor="var(--color-ink-2)"
+  {accent}
+  width="540px"
+  closeDisabled={locked}
+  onClose={onClose}
+  ariaLabelledBy="rg-modal-title"
 >
+  <!-- hero -->
   <div
-    class="rg-modal flex flex-col overflow-hidden text-ink-0"
-    role="dialog"
-    aria-modal="true"
-    aria-labelledby="rg-modal-title"
-    use:gamepadScope={{ onBack: () => { if (!locked) onClose(); } }}
-    style:--gp-focus={acc}
-    style:width="540px"
-    style:max-width="calc(100vw - 48px)"
-    style:background="var(--color-bg-0)"
-    style:border-radius="8px"
-    style:box-shadow="0 32px 80px rgba(0,0,0,0.6), 0 0 0 1px rgba(255,255,255,0.07)"
+    class="flex items-start gap-[18px]"
+    style:padding="20px 24px 18px"
+    style:border-bottom="1px solid var(--color-line-1)"
   >
-    <!-- chrome -->
-    <div
-      class="flex items-center gap-3"
-      style:height="32px"
-      style:padding="0 8px 0 14px"
-      style:background="rgba(0,0,0,0.32)"
-      style:border-bottom="1px solid var(--color-line-1)"
-    >
-      <SpoolMark size={18} color="var(--color-ink-1)" tape={acc} />
-      <span class="font-mono uppercase text-ink-2" style:font-size="10.5px" style:letter-spacing="0.12em">SPOOL</span>
-      <span class="text-ink-3" style:font-size="10px">/</span>
-      <span
-        class="font-mono whitespace-nowrap uppercase text-ink-2"
-        style:font-size="10.5px"
-        style:letter-spacing="0.12em">REMOVE · GAME</span
+    <div class="min-w-0 flex-1">
+      <h1
+        id="rg-modal-title"
+        class="font-display"
+        style:margin="0"
+        style:font-size="24px"
+        style:font-weight="700"
+        style:letter-spacing="-0.02em"
+        style:line-height="1.05"
       >
+        Remove game
+      </h1>
+      <div style:margin-top="6px" style:font-size="13.5px" style:color="var(--color-ink-1)" style:font-weight="500">
+        {gameName}
+      </div>
+      <p
+        style:margin="9px 0 0"
+        style:font-size="13px"
+        style:color="var(--color-ink-2)"
+        style:line-height="1.5"
+        style:max-width="380px"
+      >
+        Choose what happens to this game.
+      </p>
+    </div>
+    <div
+      class="shrink-0 overflow-hidden rounded-sm border border-line-1 bg-bg-2"
+      style:width="56px"
+      style:height="80px"
+    >
+      {#if coverUrl}
+        <img src={coverUrl} alt={gameName} class="h-full w-full object-cover" />
+      {:else}
+        <div class="h-full w-full" style:background="linear-gradient(160deg, #2a2622 0%, #0a0807 100%)"></div>
+      {/if}
+    </div>
+  </div>
+
+  <!-- choice cards -->
+  <div class="flex flex-col" style:padding="18px 24px 16px" style:gap="12px">
+    {#each cards as card (card.key)}
+      {@render choiceCard(card)}
+    {/each}
+  </div>
+
+  <!-- footer -->
+  <div style:padding="16px 24px 22px" style:border-top="1px solid var(--color-line-1)" style:background="rgba(0,0,0,0.18)">
+    {#if phase === 'error'}
+      <div
+        class="mb-3 flex items-start gap-2 rounded-sm"
+        style:padding="9px 12px"
+        style:border="1px solid color-mix(in srgb, var(--color-bad) 28%, transparent)"
+        style:background="color-mix(in srgb, var(--color-bad) 8%, transparent)"
+      >
+        <X size={14} class="mt-px shrink-0 text-bad" />
+        <span class="flex-1" style:font-size="12px" style:color="var(--color-ink-1)" style:line-height="1.4">
+          <strong class="font-semibold text-bad">Couldn’t remove.</strong>
+          {errorMsg}
+        </span>
+      </div>
+    {:else if selected === 'both'}
+      <div
+        class="mb-3 flex items-center gap-2 rounded-sm"
+        style:padding="9px 12px"
+        style:border="1px solid color-mix(in srgb, var(--color-bad) 22%, transparent)"
+        style:background="linear-gradient(90deg, color-mix(in srgb, var(--color-bad) 9%, transparent), transparent 70%)"
+      >
+        <span class="shrink-0 rounded-full" style:width="6px" style:height="6px" style:background="var(--color-bad)"></span>
+        <span class="flex-1" style:font-size="12px" style:color="var(--color-ink-1)">
+          The install folder will be <strong class="font-semibold" style:color="var(--color-bad)">permanently deleted</strong>.
+        </span>
+      </div>
+    {:else if selected === 'disk'}
+      <div
+        class="mb-3 flex items-center gap-2 rounded-sm"
+        style:padding="9px 12px"
+        style:border="1px solid {acc}3d"
+        style:background="linear-gradient(90deg, {acc}14, transparent 70%)"
+      >
+        <span class="shrink-0 rounded-full" style:width="6px" style:height="6px" style:background={acc}></span>
+        <span class="flex-1" style:font-size="12px" style:color="var(--color-ink-1)">
+          Your saves are <strong class="font-semibold">backed up first</strong>, then the installed files are deleted — the library entry stays.
+        </span>
+      </div>
+    {/if}
+
+    <div class="flex items-center gap-2.5">
       <div class="flex-1"></div>
       <button
         type="button"
-        onclick={() => !locked && onClose()}
+        onclick={onClose}
         disabled={locked}
-        aria-label="Close"
-        class="inline-flex items-center justify-center rounded-sm border-none bg-transparent text-ink-2 transition-colors hover:bg-bad/20 hover:text-[#ff9b9b] disabled:pointer-events-none disabled:opacity-50"
-        style:width="28px"
-        style:height="22px"
+        class="inline-flex items-center justify-center whitespace-nowrap rounded-sm font-medium transition-colors duration-100 disabled:opacity-50"
+        style:height="34px"
+        style:padding-inline="14px"
+        style:font-size="13px"
+        style:color="var(--color-ink-2)"
+        style:border="1px solid var(--color-line-1)"
+        style:cursor={locked ? 'default' : 'pointer'}
+        style:background={hover['cancel'] && !locked ? 'rgb(255 255 255 / 0.06)' : 'transparent'}
+        onmouseenter={() => (hover['cancel'] = true)}
+        onmouseleave={() => (hover['cancel'] = false)}
       >
-        <X size={11} />
+        Cancel
+      </button>
+      <button
+        type="button"
+        onclick={confirm}
+        disabled={locked}
+        class="inline-flex items-center justify-center gap-1.5 whitespace-nowrap rounded-sm font-medium transition-colors duration-100 disabled:opacity-70"
+        style:height="34px"
+        style:min-width="200px"
+        style:padding-inline="14px"
+        style:font-size="13px"
+        style:color={danger ? '#fff' : '#0b0c0e'}
+        style:border="1px solid transparent"
+        style:cursor={locked ? 'default' : 'pointer'}
+        style:background={hover['confirm'] && !locked ? shadeHex(ctaCol, -10) : ctaCol}
+        onmouseenter={() => (hover['confirm'] = true)}
+        onmouseleave={() => (hover['confirm'] = false)}
+      >
+        {#if !locked}<CtaIcon size={14} />{/if}
+        {confirmLabel}
       </button>
     </div>
-
-    <!-- hero -->
-    <div
-      class="flex items-start gap-[18px]"
-      style:padding="20px 24px 18px"
-      style:border-bottom="1px solid var(--color-line-1)"
-    >
-      <div class="min-w-0 flex-1">
-        <h1
-          id="rg-modal-title"
-          class="font-display"
-          style:margin="0"
-          style:font-size="24px"
-          style:font-weight="700"
-          style:letter-spacing="-0.02em"
-          style:line-height="1.05"
-        >
-          Remove game
-        </h1>
-        <div style:margin-top="6px" style:font-size="13.5px" style:color="var(--color-ink-1)" style:font-weight="500">
-          {gameName}
-        </div>
-        <p
-          style:margin="9px 0 0"
-          style:font-size="13px"
-          style:color="var(--color-ink-2)"
-          style:line-height="1.5"
-          style:max-width="380px"
-        >
-          Choose what happens to this game.
-        </p>
-      </div>
-      <div
-        class="shrink-0 overflow-hidden rounded-sm border border-line-1 bg-bg-2"
-        style:width="56px"
-        style:height="80px"
-      >
-        {#if coverUrl}
-          <img src={coverUrl} alt={gameName} class="h-full w-full object-cover" />
-        {:else}
-          <div class="h-full w-full" style:background="linear-gradient(160deg, #2a2622 0%, #0a0807 100%)"></div>
-        {/if}
-      </div>
-    </div>
-
-    <!-- choice cards -->
-    <div class="flex flex-col" style:padding="18px 24px 16px" style:gap="12px">
-      {#each cards as card (card.key)}
-        {@render choiceCard(card)}
-      {/each}
-    </div>
-
-    <!-- footer -->
-    <div style:padding="16px 24px 22px" style:border-top="1px solid var(--color-line-1)" style:background="rgba(0,0,0,0.18)">
-      {#if phase === 'error'}
-        <div
-          class="mb-3 flex items-start gap-2 rounded-sm"
-          style:padding="9px 12px"
-          style:border="1px solid color-mix(in srgb, var(--color-bad) 28%, transparent)"
-          style:background="color-mix(in srgb, var(--color-bad) 8%, transparent)"
-        >
-          <X size={14} class="mt-px shrink-0 text-bad" />
-          <span class="flex-1" style:font-size="12px" style:color="var(--color-ink-1)" style:line-height="1.4">
-            <strong class="font-semibold text-bad">Couldn’t remove.</strong>
-            {errorMsg}
-          </span>
-        </div>
-      {:else if selected === 'both'}
-        <div
-          class="mb-3 flex items-center gap-2 rounded-sm"
-          style:padding="9px 12px"
-          style:border="1px solid color-mix(in srgb, var(--color-bad) 22%, transparent)"
-          style:background="linear-gradient(90deg, color-mix(in srgb, var(--color-bad) 9%, transparent), transparent 70%)"
-        >
-          <span class="shrink-0 rounded-full" style:width="6px" style:height="6px" style:background="var(--color-bad)"></span>
-          <span class="flex-1" style:font-size="12px" style:color="var(--color-ink-1)">
-            The install folder will be <strong class="font-semibold" style:color="var(--color-bad)">permanently deleted</strong>.
-          </span>
-        </div>
-      {:else if selected === 'disk'}
-        <div
-          class="mb-3 flex items-center gap-2 rounded-sm"
-          style:padding="9px 12px"
-          style:border="1px solid {acc}3d"
-          style:background="linear-gradient(90deg, {acc}14, transparent 70%)"
-        >
-          <span class="shrink-0 rounded-full" style:width="6px" style:height="6px" style:background={acc}></span>
-          <span class="flex-1" style:font-size="12px" style:color="var(--color-ink-1)">
-            Your saves are <strong class="font-semibold">backed up first</strong>, then the installed files are deleted — the library entry stays.
-          </span>
-        </div>
-      {/if}
-
-      <div class="flex items-center gap-2.5">
-        <div class="flex-1"></div>
-        <button
-          type="button"
-          onclick={() => !locked && onClose()}
-          disabled={locked}
-          class="inline-flex items-center justify-center whitespace-nowrap rounded-sm font-medium transition-colors duration-100 disabled:opacity-50"
-          style:height="34px"
-          style:padding-inline="14px"
-          style:font-size="13px"
-          style:color="var(--color-ink-2)"
-          style:border="1px solid var(--color-line-1)"
-          style:cursor={locked ? 'default' : 'pointer'}
-          style:background={hover['cancel'] && !locked ? 'rgb(255 255 255 / 0.06)' : 'transparent'}
-          onmouseenter={() => (hover['cancel'] = true)}
-          onmouseleave={() => (hover['cancel'] = false)}
-        >
-          Cancel
-        </button>
-        <button
-          type="button"
-          onclick={confirm}
-          disabled={locked}
-          class="inline-flex items-center justify-center gap-1.5 whitespace-nowrap rounded-sm font-medium transition-colors duration-100 disabled:opacity-70"
-          style:height="34px"
-          style:min-width="200px"
-          style:padding-inline="14px"
-          style:font-size="13px"
-          style:color={danger ? '#fff' : '#0b0c0e'}
-          style:border="1px solid transparent"
-          style:cursor={locked ? 'default' : 'pointer'}
-          style:background={hover['confirm'] && !locked ? shadeHex(ctaCol, -10) : ctaCol}
-          onmouseenter={() => (hover['confirm'] = true)}
-          onmouseleave={() => (hover['confirm'] = false)}
-        >
-          {#if !locked}<CtaIcon size={14} />{/if}
-          {confirmLabel}
-        </button>
-      </div>
-    </div>
   </div>
-</div>
-
-<style>
-  .rg-scrim {
-    animation: rg-fade 160ms ease;
-  }
-  .rg-modal {
-    animation: rg-pop 200ms ease;
-  }
-  @keyframes rg-fade {
-    from {
-      opacity: 0;
-    }
-    to {
-      opacity: 1;
-    }
-  }
-  @keyframes rg-pop {
-    from {
-      opacity: 0;
-      transform: translateY(10px) scale(0.985);
-    }
-    to {
-      opacity: 1;
-      transform: none;
-    }
-  }
-</style>
+</ModalShell>

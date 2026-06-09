@@ -20,6 +20,7 @@
    * Mono, graphite surface, brand spool accent).
    */
   import { onMount } from 'svelte';
+  import { registerModal, unregisterModal, modalZIndex } from '$lib/modalStack.svelte';
   import {
     Check,
     ChevronLeft,
@@ -47,6 +48,9 @@
   const ACCENT = '#d7c9a0'; // brand spool — onboarding has no per-game cover
 
   let { onfinish }: { onfinish: () => void } = $props();
+
+  const _modalId = Symbol();
+  const zIndex = $derived(modalZIndex(_modalId));
 
   // ── Loaded state ────────────────────────────────────────────────────────
   let config = $state<ConfigData | null>(null);
@@ -97,6 +101,11 @@
   // ── Decky step ──────────────────────────────────────────────────────────
   let deckyInstalling = $state(false);
   const deckyInstalled = $derived(!!deckyPlugin?.installed);
+
+  onMount(() => {
+    registerModal(_modalId);
+    return () => unregisterModal(_modalId);
+  });
 
   onMount(async () => {
     try {
@@ -271,7 +280,8 @@
 {/snippet}
 
 <div
-  class="ob-scrim fixed inset-0 z-50 flex items-center justify-center"
+  class="ob-scrim fixed inset-0 flex items-center justify-center"
+  style:z-index={zIndex}
   style:padding="24px"
   style:background="rgba(8,8,10,0.5)"
   style:backdrop-filter="blur(6px) saturate(0.9) brightness(0.72)"

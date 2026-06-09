@@ -48,8 +48,7 @@
    */
   import { Check, Clock, Cloud, ExternalLink, HardDrive, LoaderCircle, RotateCw, X } from '@lucide/svelte';
   import { shadeHex } from '$lib/tokens';
-  import SpoolMark from '$lib/components/SpoolMark.svelte';
-  import { gamepadScope } from '$lib/gamepad';
+  import ModalShell from '$lib/components/ModalShell.svelte';
 
   const BRAND_SPOOL = '#d7c9a0';
 
@@ -109,7 +108,7 @@
       key: 'local' as const,
       label: 'This device',
       sub: 'Keep local — push up to the cloud',
-      confirm: "this device’s",
+      confirm: "this device's",
       recent: !cloudNewer,
       meta: localMeta,
     },
@@ -164,24 +163,13 @@
     onCancel();
   }
 
-  function handleKey(e: KeyboardEvent) {
-    if (e.key === 'Escape' && phase !== 'applying') {
-      if (phase === 'error') onCancel();
-      else onClose?.();
-    }
-  }
-
-  // Controller B / Escape via the gamepad-nav scope — same intent as the
-  // Escape key above (no-op mid-apply so a transfer can't be abandoned).
-  function navBack() {
-    if (phase === 'applying') return;
+  // Unified close handler for the chrome X, Escape, and gamepad back.
+  // During error, cancels the launch; during choose, dismisses.
+  function handleClose() {
     if (phase === 'error') onCancel();
     else onClose?.();
   }
-
 </script>
-
-<svelte:window onkeydown={handleKey} />
 
 <!-- ── One choice card ─────────────────────────────────────────────────── -->
 {#snippet choiceCard(side: SideModel)}
@@ -395,244 +383,175 @@
   </button>
 {/snippet}
 
-<div
-  class="cc-scrim fixed inset-0 z-50 flex items-center justify-center"
-  style:padding="24px"
-  style:background={context === 'desktop' ? 'rgba(4,5,7,0.62)' : 'rgba(4,5,7,0.5)'}
-  style:backdrop-filter="blur(2px)"
-  style:-webkit-backdrop-filter="blur(2px)"
+<ModalShell
+  breadcrumb="SYNC · CONFLICT"
+  {accent}
+  {context}
+  width="640px"
+  closeDisabled={phase === 'applying'}
+  onClose={handleClose}
+  ariaLabelledBy="cc-modal-title"
 >
+  <!-- hero -->
   <div
-    class="cc-modal flex flex-col overflow-hidden text-ink-0"
-    role="dialog"
-    aria-modal="true"
-    aria-labelledby="cc-modal-title"
-    use:gamepadScope={{ onBack: navBack }}
-    style:width="640px"
-    style:max-width="calc(100vw - 48px)"
-    style:background="var(--color-bg-0)"
-    style:border-radius="8px"
-    style:box-shadow="0 32px 80px rgba(0,0,0,0.6), 0 0 0 1px rgba(255,255,255,0.07)"
-    style:--gp-focus={acc}
+    class="flex items-start gap-[18px]"
+    style:padding="20px 24px 18px"
+    style:border-bottom="1px solid var(--color-line-1)"
   >
-    <!-- chrome -->
-    <div
-      class="flex items-center gap-3"
-      style:height="32px"
-      style:padding="0 8px 0 14px"
-      style:background="rgba(0,0,0,0.32)"
-      style:border-bottom="1px solid var(--color-line-1)"
-    >
-      <SpoolMark size={18} color="var(--color-ink-1)" tape={acc} />
-      <span class="font-mono uppercase text-ink-2" style:font-size="10.5px" style:letter-spacing="0.12em">SPOOL</span>
-      <span class="text-ink-3" style:font-size="10px">/</span>
-      <span
-        class="font-mono whitespace-nowrap uppercase"
-        style:font-size="10.5px"
-        style:letter-spacing="0.12em"
-        style:color="var(--color-warn)">SYNC · CONFLICT</span
+    <div class="min-w-0 flex-1">
+      <h1
+        id="cc-modal-title"
+        class="font-display"
+        style:margin="0"
+        style:font-size="26px"
+        style:font-weight="700"
+        style:letter-spacing="-0.02em"
+        style:line-height="1.05"
       >
-      <div class="flex-1"></div>
-      <button
-        type="button"
-        onclick={() => {
-          if (phase === 'choose' || phase === 'error') onClose?.();
-        }}
-        disabled={phase === 'applying'}
-        aria-label="Close"
-        class="inline-flex items-center justify-center rounded-sm border-none bg-transparent text-ink-2 transition-colors hover:bg-bad/20 hover:text-[#ff9b9b] disabled:pointer-events-none disabled:opacity-50"
-        style:width="28px"
-        style:height="22px"
-      >
-        <X size={11} />
-      </button>
-    </div>
-
-    <!-- hero -->
-    <div
-      class="flex items-start gap-[18px]"
-      style:padding="20px 24px 18px"
-      style:border-bottom="1px solid var(--color-line-1)"
-    >
-      <div class="min-w-0 flex-1">
-        <h1
-          id="cc-modal-title"
-          class="font-display"
-          style:margin="0"
-          style:font-size="26px"
-          style:font-weight="700"
-          style:letter-spacing="-0.02em"
-          style:line-height="1.05"
-        >
-          Cloud save conflict
-        </h1>
-        <div style:margin-top="6px" style:font-size="13.5px" style:color="var(--color-ink-1)" style:font-weight="500">
-          {gameName}
-        </div>
-        <p
-          style:margin="9px 0 0"
-          style:font-size="13px"
-          style:color="var(--color-ink-2)"
-          style:line-height="1.5"
-          style:max-width="440px"
-        >
-          Your saves here and in the cloud have both changed since the last sync. Keep one — the
-          other will be overwritten.
-        </p>
+        Cloud save conflict
+      </h1>
+      <div style:margin-top="6px" style:font-size="13.5px" style:color="var(--color-ink-1)" style:font-weight="500">
+        {gameName}
       </div>
-      <div
-        class="shrink-0 overflow-hidden rounded-sm border border-line-1 bg-bg-2"
-        style:width="62px"
-        style:height="88px"
+      <p
+        style:margin="9px 0 0"
+        style:font-size="13px"
+        style:color="var(--color-ink-2)"
+        style:line-height="1.5"
+        style:max-width="440px"
       >
-        {#if coverUrl}
-          <img src={coverUrl} alt={gameName} class="h-full w-full object-cover" />
-        {:else}
-          <div class="h-full w-full" style:background="linear-gradient(160deg, #2a2622 0%, #0a0807 100%)"></div>
-        {/if}
-      </div>
+        Your saves here and in the cloud have both changed since the last sync. Keep one — the
+        other will be overwritten.
+      </p>
     </div>
-
-    <!-- choice cards -->
-    <div class="grid" style:padding="18px 24px 16px" style:grid-template-columns="1fr 1fr" style:gap="14px">
-      {@render choiceCard(sides.local)}
-      {@render choiceCard(sides.cloud)}
-    </div>
-
-    <!-- footer / status -->
-    <div style:padding="16px 24px 22px" style:border-top="1px solid var(--color-line-1)" style:background="rgba(0,0,0,0.18)">
-      {#if phase === 'error'}
-        {@const local = selected === 'local'}
-        <div class="flex flex-col" style:gap="14px">
-          <div class="flex items-start gap-3">
-            <span
-              class="inline-flex shrink-0 items-center justify-center rounded-full"
-              style:width="30px"
-              style:height="30px"
-              style:background="color-mix(in srgb, var(--color-bad) 11%, transparent)"
-              style:color="var(--color-bad)"
-            >
-              <X size={15} />
-            </span>
-            <div class="min-w-0 flex-1">
-              <div class="font-mono" style:font-size="10px" style:letter-spacing="0.16em" style:color="var(--color-bad)">
-                {local ? 'UPLOAD FAILED' : 'DOWNLOAD FAILED'}
-              </div>
-              <div style:margin-top="3px" style:font-size="13px" style:color="var(--color-ink-1)" style:line-height="1.45">
-                Couldn’t {local ? 'reach your cloud remote' : 'download from your cloud remote'}.
-                <strong class="font-semibold text-ink-0">Nothing was overwritten</strong> — your
-                {local ? 'saves on this device' : 'local saves'} are untouched.
-              </div>
-            </div>
-          </div>
-          <div class="flex items-center" style:gap="10px">
-            {@render linkBtn('err-ludusavi', 'Open Ludusavi instead', onLudusavi, 'var(--color-ink-2)')}
-            <div class="flex-1"></div>
-            {@render ghostBtn('err-cancel', 'Cancel launch', cancel)}
-            <button
-              type="button"
-              onclick={() => void runResolve()}
-              class="inline-flex cursor-pointer items-center justify-center gap-1.5 whitespace-nowrap rounded-sm font-medium transition-colors duration-100"
-              style:height="34px"
-              style:min-width="110px"
-              style:padding-inline="12px"
-              style:font-size="13px"
-              style:color="#0b0c0e"
-              style:border="1px solid transparent"
-              style:background={hover['err-retry'] ? shadeHex(acc, -10) : acc}
-              onmouseenter={() => (hover['err-retry'] = true)}
-              onmouseleave={() => (hover['err-retry'] = false)}
-            >
-              <RotateCw size={13} />
-              Try again
-            </button>
-          </div>
-        </div>
+    <div
+      class="shrink-0 overflow-hidden rounded-sm border border-line-1 bg-bg-2"
+      style:width="62px"
+      style:height="88px"
+    >
+      {#if coverUrl}
+        <img src={coverUrl} alt={gameName} class="h-full w-full object-cover" />
       {:else}
-        <!-- choose / applying -->
-        {@const sel = selected ? sides[selected] : null}
-        {@const applying = phase === 'applying'}
-        <div class="flex flex-col" style:gap="12px">
-          <div
-            class="flex items-center gap-2 rounded-sm"
-            style:padding="9px 12px"
-            style:border="1px solid color-mix(in srgb, var(--color-warn) 20%, transparent)"
-            style:background="linear-gradient(90deg, color-mix(in srgb, var(--color-warn) 8%, transparent), color-mix(in srgb, var(--color-warn) 2%, transparent) 50%, transparent)"
-          >
-            <span class="shrink-0 rounded-full" style:width="6px" style:height="6px" style:background="var(--color-warn)"></span>
-            <span class="flex-1" style:font-size="12px" style:color="var(--color-ink-1)">
-              The other copy will be <strong class="font-semibold" style:color="var(--color-warn)">permanently replaced</strong>.
-            </span>
-          </div>
-          <div class="flex items-center" style:gap="10px">
-            {#if showLudusavi && !applying}
-              {@render linkBtn('choose-ludusavi', 'Resolve in Ludusavi', onLudusavi)}
-            {/if}
-            <div class="flex-1"></div>
-            {@render ghostBtn('choose-cancel', 'Cancel', cancel, applying)}
-            <button
-              type="button"
-              onclick={confirm}
-              disabled={!sel || applying}
-              class="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-sm font-medium transition-colors duration-100"
-              style:height="34px"
-              style:min-width="196px"
-              style:padding-inline="12px"
-              style:font-size="13px"
-              style:cursor={applying ? 'default' : sel ? 'pointer' : 'not-allowed'}
-              style:opacity={sel ? 1 : 0.7}
-              style:color={sel ? '#0b0c0e' : 'var(--color-ink-3)'}
-              style:border={sel ? '1px solid transparent' : '1px solid var(--color-line-2)'}
-              style:background={sel
-                ? hover['choose-confirm'] && !applying
-                  ? shadeHex(acc, -10)
-                  : acc
-                : 'var(--color-bg-2)'}
-              onmouseenter={() => (hover['choose-confirm'] = true)}
-              onmouseleave={() => (hover['choose-confirm'] = false)}
-            >
-              {#if applying}
-                <span class="cc-reel inline-flex"><LoaderCircle size={14} /></span>
-                Keeping {sel?.confirm} saves…
-              {:else}
-                {sel ? `Keep ${sel.confirm} saves` : 'Select a copy to keep'}
-              {/if}
-            </button>
-          </div>
-        </div>
+        <div class="h-full w-full" style:background="linear-gradient(160deg, #2a2622 0%, #0a0807 100%)"></div>
       {/if}
     </div>
   </div>
-</div>
+
+  <!-- choice cards -->
+  <div class="grid" style:padding="18px 24px 16px" style:grid-template-columns="1fr 1fr" style:gap="14px">
+    {@render choiceCard(sides.local)}
+    {@render choiceCard(sides.cloud)}
+  </div>
+
+  <!-- footer / status -->
+  <div style:padding="16px 24px 22px" style:border-top="1px solid var(--color-line-1)" style:background="rgba(0,0,0,0.18)">
+    {#if phase === 'error'}
+      {@const local = selected === 'local'}
+      <div class="flex flex-col" style:gap="14px">
+        <div class="flex items-start gap-3">
+          <span
+            class="inline-flex shrink-0 items-center justify-center rounded-full"
+            style:width="30px"
+            style:height="30px"
+            style:background="color-mix(in srgb, var(--color-bad) 11%, transparent)"
+            style:color="var(--color-bad)"
+          >
+            <X size={15} />
+          </span>
+          <div class="min-w-0 flex-1">
+            <div class="font-mono" style:font-size="10px" style:letter-spacing="0.16em" style:color="var(--color-bad)">
+              {local ? 'UPLOAD FAILED' : 'DOWNLOAD FAILED'}
+            </div>
+            <div style:margin-top="3px" style:font-size="13px" style:color="var(--color-ink-1)" style:line-height="1.45">
+              Couldn't {local ? 'reach your cloud remote' : 'download from your cloud remote'}.
+              <strong class="font-semibold text-ink-0">Nothing was overwritten</strong> — your
+              {local ? 'saves on this device' : 'local saves'} are untouched.
+            </div>
+          </div>
+        </div>
+        <div class="flex items-center" style:gap="10px">
+          {@render linkBtn('err-ludusavi', 'Open Ludusavi instead', onLudusavi, 'var(--color-ink-2)')}
+          <div class="flex-1"></div>
+          {@render ghostBtn('err-cancel', 'Cancel launch', cancel)}
+          <button
+            type="button"
+            onclick={() => void runResolve()}
+            class="inline-flex cursor-pointer items-center justify-center gap-1.5 whitespace-nowrap rounded-sm font-medium transition-colors duration-100"
+            style:height="34px"
+            style:min-width="110px"
+            style:padding-inline="12px"
+            style:font-size="13px"
+            style:color="#0b0c0e"
+            style:border="1px solid transparent"
+            style:background={hover['err-retry'] ? shadeHex(acc, -10) : acc}
+            onmouseenter={() => (hover['err-retry'] = true)}
+            onmouseleave={() => (hover['err-retry'] = false)}
+          >
+            <RotateCw size={13} />
+            Try again
+          </button>
+        </div>
+      </div>
+    {:else}
+      <!-- choose / applying -->
+      {@const sel = selected ? sides[selected] : null}
+      {@const applying = phase === 'applying'}
+      <div class="flex flex-col" style:gap="12px">
+        <div
+          class="flex items-center gap-2 rounded-sm"
+          style:padding="9px 12px"
+          style:border="1px solid color-mix(in srgb, var(--color-warn) 20%, transparent)"
+          style:background="linear-gradient(90deg, color-mix(in srgb, var(--color-warn) 8%, transparent), color-mix(in srgb, var(--color-warn) 2%, transparent) 50%, transparent)"
+        >
+          <span class="shrink-0 rounded-full" style:width="6px" style:height="6px" style:background="var(--color-warn)"></span>
+          <span class="flex-1" style:font-size="12px" style:color="var(--color-ink-1)">
+            The other copy will be <strong class="font-semibold" style:color="var(--color-warn)">permanently replaced</strong>.
+          </span>
+        </div>
+        <div class="flex items-center" style:gap="10px">
+          {#if showLudusavi && !applying}
+            {@render linkBtn('choose-ludusavi', 'Resolve in Ludusavi', onLudusavi)}
+          {/if}
+          <div class="flex-1"></div>
+          {@render ghostBtn('choose-cancel', 'Cancel', cancel, applying)}
+          <button
+            type="button"
+            onclick={confirm}
+            disabled={!sel || applying}
+            class="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-sm font-medium transition-colors duration-100"
+            style:height="34px"
+            style:min-width="196px"
+            style:padding-inline="12px"
+            style:font-size="13px"
+            style:cursor={applying ? 'default' : sel ? 'pointer' : 'not-allowed'}
+            style:opacity={sel ? 1 : 0.7}
+            style:color={sel ? '#0b0c0e' : 'var(--color-ink-3)'}
+            style:border={sel ? '1px solid transparent' : '1px solid var(--color-line-2)'}
+            style:background={sel
+              ? hover['choose-confirm'] && !applying
+                ? shadeHex(acc, -10)
+                : acc
+              : 'var(--color-bg-2)'}
+            onmouseenter={() => (hover['choose-confirm'] = true)}
+            onmouseleave={() => (hover['choose-confirm'] = false)}
+          >
+            {#if applying}
+              <span class="cc-reel inline-flex"><LoaderCircle size={14} /></span>
+              Keeping {sel?.confirm} saves…
+            {:else}
+              {sel ? `Keep ${sel.confirm} saves` : 'Select a copy to keep'}
+            {/if}
+          </button>
+        </div>
+      </div>
+    {/if}
+  </div>
+</ModalShell>
 
 <style>
-  .cc-scrim {
-    animation: cc-fade 160ms ease;
-  }
-  .cc-modal {
-    animation: cc-pop 200ms ease;
-  }
   .cc-reel {
     animation: cc-spin 2.2s linear infinite;
     transform-origin: center;
-  }
-  @keyframes cc-fade {
-    from {
-      opacity: 0;
-    }
-    to {
-      opacity: 1;
-    }
-  }
-  @keyframes cc-pop {
-    from {
-      opacity: 0;
-      transform: translateY(10px) scale(0.985);
-    }
-    to {
-      opacity: 1;
-      transform: none;
-    }
   }
   @keyframes cc-spin {
     to {
