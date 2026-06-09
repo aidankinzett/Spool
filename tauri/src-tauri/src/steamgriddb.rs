@@ -495,6 +495,7 @@ async fn fetch_first_art(
         // Wide grid — filter to landscape dimensions only so we don't grab
         // the portrait (600x900). Both common sizes are accepted.
         "grid" => format!("{BASE}/grids/game/{sgdb_id}?dimensions=920x430,460x215"),
+        "cover" => format!("{BASE}/grids/game/{sgdb_id}?dimensions=600x900,342x482,660x930"),
         "logo" => format!("{BASE}/logos/game/{sgdb_id}"),
         "icon" => format!("{BASE}/icons/game/{sgdb_id}"),
         _ => return Ok(None),
