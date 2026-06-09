@@ -31,7 +31,7 @@ This review covers the Spool Decky plugin and the headless plugin server that ba
 
 ### High
 
-**Decky restore/pull endpoints bypass the cross-process per-game run lock**
+**~~Decky restore/pull endpoints bypass the cross-process per-game run lock~~ ✓ Done — PR #417**
 `tauri/src-tauri/src/plugin_server.rs:375-409, 299-330`
 `post_restore` (→ `runner::restore_save_revision_core`) and `post_pull_cloud_saves` (→ `runner::pull_cloud_saves_core`) acquire no machine-wide per-game run lock. Their desktop-command equivalents wrap the same cores in `RunState.try_acquire`, but `RunState` is an in-process `Mutex` that does not coordinate across the several Spool processes the system intentionally runs (tray GUI, attached `spool --run`, headless `spool --headless-server`). The play workflow holds the genuinely cross-process lock (`proc_lock::try_acquire_run`) for the whole session, and the wipe path takes it too — but restore/pull do not. So in Game Mode, "restore an earlier save" or "Sync now" from the Decky page while the same game is still running as an attached `--run` will run `ludusavi restore`/`restore_with_redirects` straight into the live save location with zero exclusion against the live session. The code comment at `plugin_server.rs:368-374` acknowledges the dropped lock and assumes "racing a live session is unlikely" — but Game Mode is precisely where attached `--run` and the headless server coexist.
 *Fix:* Push run-lock acquisition into `restore_save_revision_core`/`pull_cloud_saves_core` so every caller (desktop command and plugin server) is covered uniformly, returning a busy error on `None`, replacing the per-process `RunState` guard with the cross-process lock.
@@ -49,7 +49,7 @@ The Decky forced-close fallback calls `mark_session_pending_backup_from_config` 
 
 ### Medium
 
-**`POST /games/{id}/install-deps` bypasses the per-game run lock**
+**~~`POST /games/{id}/install-deps` bypasses the per-game run lock~~ ✓ Done — PR #417**
 `tauri/src-tauri/src/plugin_server.rs:659-693` (caller) → `tauri/src-tauri/src/proton.rs:422-512` (core)
 Same defect class as the confirmed High "restore/pull bypass the run lock," but for Wine-prefix writes. `post_install_deps` runs `umu-run winetricks` against `WINEPREFIX=prefixes/<game_id>/` without taking the `proc_lock::try_acquire_run` lock. Triggering "Install dependencies" from the QAM while the same game is running as an attached `--run` starts a second wineserver/Proton session writing into the live prefix. winetricks assumes exclusive prefix access, so concurrent use can corrupt the prefix. Severity **Medium** — real prefix-corruption risk, but the trigger requires a deliberate long-running action from the QAM mid-play.
 *Fix:* Push run-lock acquisition into `install_proton_deps_core` inside `proton.rs`:
