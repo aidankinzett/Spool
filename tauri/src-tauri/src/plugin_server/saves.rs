@@ -85,11 +85,9 @@ pub(super) struct RestoreRequest {
 
 /// Rolls a game back to an earlier save revision and pins it as the new tip.
 /// Mirrors the desktop `restore_save_revision` command (via the shared
-/// `restore_save_revision_core`). Note: unlike the command, this isn't behind
-/// the single-launch run-lock — the plugin server is a separate process, so its
-/// lock wouldn't coordinate with the GUI or an attached `spool --run`. In Game
-/// Mode the user triggers this from the game's page while it isn't running, so
-/// racing a live session is unlikely.
+/// `restore_save_revision_core`). The core takes the cross-process per-game run
+/// lock, so a restore can't race a live session in another process (the GUI or
+/// an attached `spool --run`) — if the game is running, it returns a busy error.
 pub(super) async fn post_restore(
     AxPath(id): AxPath<String>,
     AxState(state): AxState<PluginState>,
