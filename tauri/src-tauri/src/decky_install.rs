@@ -39,6 +39,17 @@ pub struct DeckyPluginInfo {
     pub decky_present: bool,
 }
 
+/// Outcome of a plugin install, so the UI can tell "fully live" apart from
+/// "files copied but the loader didn't restart" (the latter needs a reboot or
+/// manual Decky restart before the plugin loads).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeckyInstallOutcome {
+    /// Whether `systemctl restart plugin_loader` succeeded. When false the
+    /// plugin is in place but won't load until the loader restarts.
+    pub loader_restarted: bool,
+}
+
 /// The plugin's directory name under `~/homebrew/plugins/`.
 #[allow(dead_code)] // only read by the Linux install path
 const PLUGIN_DIR_NAME: &str = "spool-backup";
@@ -121,7 +132,7 @@ mod imp {
     /// Stage the embedded payload into a private dir, then run one privileged
     /// `pkexec` action to copy it into Decky's (root-owned) plugin dir and
     /// restart the loader so the plugin shows up.
-    pub fn install() -> AppResult<()> {
+    pub fn install() -> AppResult<DeckyInstallOutcome> {
         let plugins = plugins_dir()
             .ok_or_else(|| AppError::Other("could not resolve your home directory".into()))?;
 
@@ -146,35 +157,45 @@ mod imp {
             ));
         }
 
-        // 3. One elevated step: replace the plugin dir, fix ownership, restart
-        //    the loader. Args are passed positionally so paths with spaces are
-        //    safe ($1 = plugins dir, $2 = staging source).
+        // 3. One elevated step. Stage the new copy alongside the old one and
+        //    atomically `mv` it into place, so a failed `cp` (disk full, a bad
+        //    file) aborts under `set -e` *before* the existing plugin is
+        //    removed — no destroy-then-fail-with-nothing-left window. The loader
+        //    restart is the last, non-fatal step: a failure there leaves the
+        //    files correctly in place (they just won't load until the next
+        //    restart/reboot), so it's reported via a `SPOOL_RESTART_FAILED`
+        //    stdout sentinel rather than failing the whole install. Args are
+        //    passed positionally so paths with spaces are safe ($1 = plugins
+        //    dir, $2 = staging source).
         let script = r#"
 set -e
 PLUGINS="$1"
 SRC="$2"
 mkdir -p "$PLUGINS"
+NEW="$PLUGINS/.spool-backup.new"
+rm -rf "$NEW"
+cp -r "$SRC" "$NEW"
+chown -R root:root "$NEW" 2>/dev/null || true
 rm -rf "$PLUGINS/spool-backup"
-cp -r "$SRC" "$PLUGINS/spool-backup"
-chown -R root:root "$PLUGINS/spool-backup" 2>/dev/null || true
-systemctl restart plugin_loader 2>/dev/null || true
+mv "$NEW" "$PLUGINS/spool-backup"
+if ! systemctl restart plugin_loader 2>/dev/null; then echo SPOOL_RESTART_FAILED; fi
 "#;
 
-        let status = std::process::Command::new("pkexec")
+        let output = std::process::Command::new("pkexec")
             .arg("sh")
             .arg("-c")
             .arg(script)
             .arg("sh") // $0
             .arg(plugins.as_os_str())
             .arg(staging.as_os_str())
-            .status()
+            .output()
             .map_err(|e| AppError::Other(format!("failed to launch pkexec: {e}")))?;
 
-        if !status.success() {
+        if !output.status.success() {
             // pkexec exits 126 when the user dismisses/declines the auth dialog,
             // 127 when authorization can't be obtained (e.g. no agent in Game
             // Mode). Give a useful hint either way.
-            let code = status.code().unwrap_or(-1);
+            let code = output.status.code().unwrap_or(-1);
             let hint = match code {
                 126 => " (authorization dialog was dismissed)",
                 127 => " (no polkit agent — run this from Desktop Mode)",
@@ -185,7 +206,18 @@ systemctl restart plugin_loader 2>/dev/null || true
             )));
         }
 
-        Ok(())
+        // The copy/swap succeeded (script exited 0). The loader restart is
+        // separate: the sentinel tells us whether it actually came back up.
+        let loader_restarted =
+            !String::from_utf8_lossy(&output.stdout).contains("SPOOL_RESTART_FAILED");
+        if !loader_restarted {
+            tracing::warn!(
+                "Decky plugin copied but `systemctl restart plugin_loader` failed; \
+                 a reboot or manual Decky restart is needed before it loads"
+            );
+        }
+
+        Ok(DeckyInstallOutcome { loader_restarted })
     }
 }
 
@@ -210,7 +242,7 @@ pub fn decky_plugin_status() -> AppResult<DeckyPluginInfo> {
 }
 
 #[tauri::command]
-pub async fn install_decky_plugin() -> AppResult<()> {
+pub async fn install_decky_plugin() -> AppResult<DeckyInstallOutcome> {
     #[cfg(target_os = "linux")]
     {
         // The pkexec call blocks on a GUI prompt — keep it off the async runtime

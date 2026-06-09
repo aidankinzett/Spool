@@ -42,6 +42,13 @@ export interface DeckyPluginInfo {
   deckyPresent: boolean;
 }
 
+/** Outcome of an install attempt (mirrors the Rust `DeckyInstallOutcome`). The
+ *  files always landed when this resolves; `loaderRestarted` distinguishes
+ *  "fully live now" from "copied but needs a reboot/Decky restart to load". */
+export interface DeckyInstallOutcome {
+  loaderRestarted: boolean;
+}
+
 export const api = {
   // Library
   listGames: (): Promise<GameEntry[]> => invoke('list_games'),
@@ -70,7 +77,7 @@ export const api = {
 
   // Decky plugin installer (SteamOS / Linux)
   deckyPluginStatus: (): Promise<DeckyPluginInfo> => invoke('decky_plugin_status'),
-  installDeckyPlugin: (): Promise<void> => invoke('install_decky_plugin'),
+  installDeckyPlugin: (): Promise<DeckyInstallOutcome> => invoke('install_decky_plugin'),
 
   // Proton / Linux launch
   listProtonVersions: (): Promise<ProtonVersion[]> => invoke('list_proton_versions'),

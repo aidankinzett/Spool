@@ -75,12 +75,12 @@ This also ensures uniform coverage for the desktop command wrapper.
 For `kind="capsule"`, `get_steam_art` first tries the local file; when there is no local cover on disk it falls through to the live resolver, where `sgdb_kind` only remaps `"header" => "grid"` and `"capsule"` passes through unchanged. Neither `cdn_asset_for` nor `fetch_first_art` knows `"capsule"`, so `resolve_art_bytes` returns `Ok(None)` → 404 every time. The portrait the CDN exposes as `Asset::Cover` (`library_600x900_2x.jpg`) is never fetched, so a Steam game lacking a locally-cached cover never gets its portrait tile in Game Mode; the JS silently skips the 404. `hero`/`logo`/`header` all map correctly; only `capsule` is broken. **Verifier correction (severity → low):** cosmetic, best-effort, narrow precondition. Also the one-line fix restores only the CDN portrait path; to also restore the SteamGridDB portrait fallback, `fetch_first_art` (`steamgriddb.rs:493-501`) needs a matching `"cover"` arm.
 *Fix:* `let sgdb_kind = match kind.as_str() { "header" => "grid", "capsule" => "cover", other => other };` plus a `"cover"` arm in `fetch_first_art`.
 
-**Destructive-first, non-atomic Decky install with no rollback** *(both reviewers refined to low)*
+**~~Destructive-first, non-atomic Decky install with no rollback~~ ✓ Done — Group 1** *(both reviewers refined to low)*
 `tauri/src-tauri/src/decky_install.rs:152-189`
 The elevated script does `rm -rf "$PLUGINS/spool-backup"` *then* `cp -r "$SRC" ...` under `set -e`, so any `cp` failure (disk full, EACCES on an odd file, partial copy) leaves no plugin at all with no restore. **Verifier correction (severity → low):** the destroyed artifact is a 4-file payload embedded in the binary, fully recoverable by re-running the installer; no user data (saves/library/config) is at risk; the realistic trigger (disk full on a tiny copy) is uncommon. Retained in the Medium group as filed but flagged low by both verifiers — treat as low-priority hardening.
 *Fix:* Copy to a sibling temp dir then atomic-`mv`: `cp -r "$SRC" "$PLUGINS/.spool-backup.new" && chown -R root:root ... && rm -rf "$PLUGINS/spool-backup" && mv "$PLUGINS/.spool-backup.new" "$PLUGINS/spool-backup"`.
 
-**`systemctl restart plugin_loader` failure is swallowed by `|| true`**
+**~~`systemctl restart plugin_loader` failure is swallowed by `|| true`~~ ✓ Done — Group 1**
 `tauri/src-tauri/src/decky_install.rs:160, 173-188`
 The privileged script ends with `systemctl restart plugin_loader 2>/dev/null || true`; under `set -e` a restart failure becomes a no-op, the script exits 0, `status.success()` is true, and `install()` returns `Ok(())`. The UI flips to "Installed," but if the loader did not restart (service masked, transient systemd error, wrong unit name on this distro) the freshly-copied plugin won't load until reboot — defeating the one-click-and-live promise, especially for the forced-close backup it enables. Both verifiers held Medium.
 *Fix:* Keep copy/chown as the must-succeed core, then run the restart capturing its exit into a stdout sentinel (`if ! systemctl restart plugin_loader 2>/dev/null; then echo SPOOL_RESTART_FAILED; fi`); read child stdout in Rust and surface a non-fatal warning ("plugin copied but the loader did not restart — reboot or restart Decky"), distinct from a hard failure.
@@ -147,6 +147,11 @@ The `poll()` catch sets `peers` to `[]` on any fetch/parse failure, and the rend
 The `RoutePatch` callback constructs a new `createReactTreePatcher` (fresh empty `caches`) and re-wraps a fresh `renderFunc` on every route render, re-running the uncached tree walk each time instead of hitting the intended de-dup cache. Functionally correct, just more work per render. **Verifier notes:** the substantive fix is hoisting `createReactTreePatcher` out of the per-render callback (restores `caches`); the symbol-tagging of `routeProps` is optional since `afterPatch` doesn't accumulate stacked patches today. (The MoonDeck/SteamGridDB precedent cited in the original fix is imprecise — those use different patching mechanisms — but the hoist remedy stands.)
 *Fix:* Hoist `createReactTreePatcher` to plugin/module init so a single `patchHandler` and its caches persist across renders.
 
+**`POST /fold` has no server-side in-flight guard (overlapping rclone folds)** *(accepted from coverage-gap investigation, 2026-06-09)*
+`tauri/src-tauri/src/plugin_server/saves.rs:131-134` → `tauri/src-tauri/src/rclone.rs:1513-1561`
+`post_fold` is a bare `rclone::fold_devices_from_config().await` with no in-flight guard, dedup, or rate-limit. The Decky UI calls it on game-page navigation, so rapid page-flips fire concurrent, fully-overlapping folds — each running live `rclone cat`/`lsd` round-trips against the quota-limited remote plus redundant playtime re-derivation and DB writes. A grep found no `static`/`AtomicBool`/`Mutex`/`Semaphore`/`last_fold` guard on the path. Independent of the separately-flagged TS per-page-view trigger: even a well-behaved client benefits from server-side coalescing across multiple Decky webview instances.
+*Fix:* Wrap the fold in a module-level `tokio::sync::Mutex<()>` (or an `AtomicBool` in-flight flag); on `try_lock` failure return early (`changed:false`) instead of launching a second concurrent fold. Optionally coalesce bursts with a short min-interval since the last completion.
+
 ### Nit
 
 **`BAR_HEIGHT` duplicated from `SpoolBar`'s literal height with no shared source** *(both reviewers → nit)*
@@ -163,7 +168,14 @@ Typed `{ acted: boolean; game?: string }` but Python returns the full `{acted, o
 
 ## Disputed findings
 
-These have conflicting verdicts; the maintainer should adjudicate.
+**Adjudicated 2026-06-09 (read-only code investigation): all five DISMISS.** None warrant a code change.
+1. *Suspend marker may not land before freeze* — DISMISS (cosmetic). A missed suspend-write leaves the marker to age out to *stale*; stale-Active and suspended both classify to `UnsyncedElsewhere`. Only divergence is ≤180s of warning-wording.
+2. *Final asleep span lost on abort* — DISMISS (unreachable). `record_suspended_secs` is synchronous and runs before any await; the only losing window is an abort at `signal.next().await` mid-suspend, which doesn't occur on real hardware.
+3. *`_stop_server` deletes the port file* — DISMISS (nit). Gated by the `_server_proc is None` early-return; the removed file belongs to the just-stopped server; the client treats presence as advisory and self-heals.
+4. *`useServerBase` no retry* — DISMISS (masked). Backend `_ensure_server` starts the server and waits up to 12s; every consumer is a transient mount that re-resolves on next open.
+5. *`spool_backup_finished` 5 args, 1 consumed* — DISMISS (non-issue). Extra args idiomatically ignored; the spinner needs only `appid`, success/failure routes via the separate `spool_backup_toast`.
+
+The original conflicting write-ups are retained below for reference.
 
 - **[RESOLVED - NOT A BUG TODAY] `post_game_stopped` appid mismatch silently no-ops the fallback with no game-name fallback** (`plugin_server.rs:248-258`) — One verifier: real latent fragility (three quoting/CRC paths must agree; silent no-op on drift), severity low. Other verifier: not a real bug — all three appids reduce to a single source of truth (`spool_executable()` + name, identically quoted), and the appid check is a deliberate disambiguator because `RegisterForAppLifetimeNotifications` fires for *every* game stop. **Adjudication:** Verified post-review that the silent no-op is not reachable in the normal flow. `session::compute_steam_appid` and `steam::compute_shortcut_app_id` are byte-identical. The TS side forwards Steam's assigned appid verbatim, so it can only mismatch if Steam's stored shortcut appid ≠ the stamped one (which reduces to the Rust equality just proven equal).
 
@@ -231,11 +243,11 @@ These have conflicting verdicts; the maintainer should adjudicate.
 Folding in the completeness critic honestly — several handlers and files were not reviewed, and a few findings need deeper verification:
 
 **Unreviewed routes / handlers (`plugin_server.rs`):**
-- `GET /covers/*` (`ServeDir`, line 161) — the only filesystem-serving route; never examined for `..`/symlink containment to `covers_dir()`. Relies entirely on tower-http path normalization.
+- `GET /covers/*` (`ServeDir`, line 161) — **[Resolved 2026-06-09: safe.]** tower-http 0.6.11's `ServeDir` rejects `..` traversal lexically (returns 404 for `Prefix`/`RootDir`/`ParentDir` components); the only residual is symlinks (no canonicalization), which isn't reachable given the loopback-only bind and that `covers/` holds app-downloaded art, not attacker-controlled content. No change needed (an explicit symlink guard would be defense-in-depth only).
 - `GET /games/{id}/steam-launch-info` — no check that `entry.exe_path` still exists; returns a launch contract for a possibly-deleted exe. *(Resolved: Verified post-review that `build_launch_options` and `session::compute_steam_appid` produce identical quoted strings.)*
 - `POST /games/{id}/install-deps` and `POST /games/{id}/proton` — *[Gap Closed]*: Verified post-review. `POST /games/{id}/install-deps` was confirmed to bypass the per-game run lock and has been added as a confirmed Medium finding. `POST /games/{id}/proton` was verified as benign (only writes the `proton_version_path` DB field, which is SQLite-WAL-safe).
-- `POST /games/{id}/uninstall` and `DELETE /games/{id}` — whether the headless call sites take the per-game wipe lock was not verified.
-- `POST /fold` — fires a synchronous cross-device rclone fold with no rate-limit/dedup; concurrent calls can overlap on a quota-limited backend. (The TS side's per-page-view fold was flagged; the server handler was not.)
+- `POST /games/{id}/uninstall` and `DELETE /games/{id}` — **[Resolved 2026-06-09: safe.]** Both headless handlers funnel through `library::wipe_install_files`, which acquires `proc_lock::try_acquire_run(id)` and errors "This game is busy" before any delete. The cross-process wipe lock is held; no gap.
+- `POST /fold` — **[Resolved 2026-06-09: real, promoted to a confirmed Low above.]** No server-side in-flight guard; concurrent calls overlap on the quota-limited backend. Now tracked as Group 2 work.
 
 **Unreviewed frontend/contract files:**
 - `decky/src/api/callables.ts` — only `onAppStop`'s return-type drift was confirmed; the full sweep across all callables (`backupNow`, `pullCloudSaves` outcome enum, `restoreSaveRevision` `game_count`) vs `main.py`/server JSON is incomplete.
