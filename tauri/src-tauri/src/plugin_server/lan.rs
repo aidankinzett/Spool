@@ -212,3 +212,125 @@ pub(super) async fn delete_lan_download(
     let cancelled = state.download.request_cancel(&body.install_token);
     Json(json!({ "cancelled": cancelled }))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::lan::LanState;
+    use crate::lan::discovery::{LanPeer, PeerEntry};
+    use crate::lan::install::LanDownloadState;
+    use crate::library::Library;
+    use crate::ludusavi::LudusaviClient;
+    use std::time::Instant;
+
+    async fn make_test_state() -> PluginState {
+        let library = Arc::new(Library::open_in_memory().await.unwrap());
+        let lan = Arc::new(LanState::new());
+        PluginState {
+            ludusavi: Arc::new(LudusaviClient::new()),
+            library,
+            lan,
+            http: reqwest::Client::new(),
+            download: Arc::new(LanDownloadState::default()),
+        }
+    }
+
+    fn add_test_peer(state: &PluginState, device_id: &str, addr: &str, port: u16) {
+        let mut peers = state.lan.peers.lock().unwrap();
+        peers.insert(
+            device_id.to_string(),
+            PeerEntry {
+                peer: LanPeer {
+                    device_id: device_id.to_string(),
+                    device_name: "test-device".to_string(),
+                    addr: addr.to_string(),
+                    game_count: 0,
+                    version: 1,
+                    file_server_port: port,
+                    last_seen_ago_secs: 0,
+                },
+                last_seen: Instant::now(),
+            },
+        );
+    }
+
+    #[tokio::test]
+    async fn test_validate_peer_success_cases() {
+        let state = make_test_state().await;
+
+        // RFC 1918 Private ranges
+        let cases = vec![
+            ("192.168.1.100", 47632),
+            ("10.0.0.1", 47632),
+            ("172.16.0.1", 47632),
+            ("172.31.255.255", 47632),
+            // CGNAT range
+            ("100.64.0.1", 47632),
+            ("100.127.255.255", 47632),
+            // ULA IPv6 range
+            ("fd00::1", 47632),
+            ("fc00::1234", 47632),
+        ];
+
+        for (ip, port) in cases {
+            add_test_peer(&state, ip, ip, port);
+            assert_eq!(
+                validate_peer(&state, ip, port),
+                Ok(()),
+                "Failed validating IP {} on port {}",
+                ip,
+                port
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_validate_peer_failure_cases() {
+        let state = make_test_state().await;
+
+        // 1. Not in discovered list
+        assert_eq!(
+            validate_peer(&state, "192.168.1.100", 47632),
+            Err(StatusCode::FORBIDDEN)
+        );
+
+        // 2. Invalid IP format
+        // First add to peer list so it passes the list check
+        add_test_peer(&state, "invalid-ip", "invalid-ip", 47632);
+        assert_eq!(
+            validate_peer(&state, "invalid-ip", 47632),
+            Err(StatusCode::BAD_REQUEST)
+        );
+
+        // Helper to register and test a failing IP address
+        let assert_fails = |ip: &str, expected_code: StatusCode| {
+            add_test_peer(&state, ip, ip, 47632);
+            assert_eq!(
+                validate_peer(&state, ip, 47632),
+                Err(expected_code),
+                "Expected failure for IP {}",
+                ip
+            );
+        };
+
+        // 3. Loopback
+        assert_fails("127.0.0.1", StatusCode::FORBIDDEN);
+        assert_fails("::1", StatusCode::FORBIDDEN);
+
+        // 4. Link-local
+        assert_fails("169.254.1.1", StatusCode::FORBIDDEN);
+        assert_fails("fe80::1", StatusCode::FORBIDDEN);
+
+        // 5. Unspecified
+        assert_fails("0.0.0.0", StatusCode::FORBIDDEN);
+        assert_fails("::", StatusCode::FORBIDDEN);
+
+        // 6. Multicast
+        assert_fails("224.0.0.1", StatusCode::FORBIDDEN);
+        assert_fails("ff02::1", StatusCode::FORBIDDEN);
+
+        // 7. Public IPs (SSRF protection)
+        assert_fails("8.8.8.8", StatusCode::FORBIDDEN);
+        assert_fails("2001:db8::1", StatusCode::FORBIDDEN);
+    }
+}
