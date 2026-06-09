@@ -44,6 +44,11 @@ def _http_port_path() -> str:
     return os.path.join(home, ".local", "share", "Spool", "plugin-http-port")
 
 
+def _active_session_path() -> str:
+    home = os.environ.get("HOME") or getattr(decky, "HOME", "") or os.path.expanduser("~")
+    return os.path.join(home, ".local", "share", "Spool", "active-session.json")
+
+
 def _read_port() -> Optional[int]:
     """Read the loopback port the headless server published, or None if the
     server isn't running (file absent or unreadable)."""
@@ -330,6 +335,17 @@ class Plugin:
         appid matches the active session and that the session hasn't already
         been backed up, then releases the play lock and runs the backup.
         """
+        # Fast local file check: only proceed if the stopped app matches the active,
+        # un-backed-up Spool session. This prevents server startup and UI event churn
+        # for unrelated games.
+        try:
+            with open(_active_session_path(), "r", encoding="utf-8") as f:
+                rec = json.load(f)
+            if rec.get("backed_up") or rec.get("steam_appid") != appid:
+                return {"acted": False}
+        except Exception:
+            return {"acted": False}
+
         # Tell the UI a backup may be starting so the game-page badge can show a
         # spinner. The frontend debounces this: the common no-op game-stop
         # (Spool's own runner already backed up) resolves fast enough that the

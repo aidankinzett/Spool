@@ -90,7 +90,10 @@ export default definePlugin(() => {
         // *signed* int32 (e.g. -105595925 instead of 4189371371), which would
         // never match the unsigned `steam_appid` in active-session.json. `>>> 0`
         // coerces it back to the unsigned 32-bit value the backend compares.
-        void onAppStop(n.unAppID >>> 0);
+        const appid = n.unAppID >>> 0;
+        if (appid !== 0) {
+          void onAppStop(appid);
+        }
       }
     },
   );
