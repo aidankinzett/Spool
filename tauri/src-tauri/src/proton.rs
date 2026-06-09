@@ -34,6 +34,22 @@ use tokio::process::Command;
 /// comes would otherwise hang the Tauri command future forever — so bound it.
 const WINETRICKS_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
+/// umu's per-request HTTP timeout (seconds) and retry cap applied whenever we
+/// invoke umu-run. Keeps an offline launch from stalling a Game-Mode boot.
+const UMU_HTTP_TIMEOUT_SECS: &str = "4";
+const UMU_HTTP_RETRIES_MAX: &str = "1";
+
+/// Pushes umu HTTP-limit vars into a `Vec`-style env list, deferring to any
+/// existing user override in the process environment.
+fn push_umu_http_limits(env: &mut Vec<(String, String)>) {
+    if std::env::var_os("UMU_HTTP_TIMEOUT").is_none() {
+        env.push(("UMU_HTTP_TIMEOUT".to_string(), UMU_HTTP_TIMEOUT_SECS.to_string()));
+    }
+    if std::env::var_os("UMU_HTTP_RETRIES").is_none() {
+        env.push(("UMU_HTTP_RETRIES".to_string(), UMU_HTTP_RETRIES_MAX.to_string()));
+    }
+}
+
 /// A discovered Proton install. Mirrored to `types.ts` as `ProtonVersion`.
 #[derive(Debug, Clone, Serialize)]
 pub struct ProtonVersion {
@@ -351,12 +367,7 @@ pub fn build_umu_launch(
     // can't conjure a runtime that was never fetched.) Mirrors the rclone
     // fail-fast timeouts in `ludusavi_config::ensure_rclone_timeouts`. Both keys
     // defer to an explicit user override if one is already set in the env.
-    if std::env::var_os("UMU_HTTP_TIMEOUT").is_none() {
-        env.push(("UMU_HTTP_TIMEOUT".to_string(), "4".to_string()));
-    }
-    if std::env::var_os("UMU_HTTP_RETRIES").is_none() {
-        env.push(("UMU_HTTP_RETRIES".to_string(), "1".to_string()));
-    }
+    push_umu_http_limits(&mut env);
 
     UmuLaunch {
         program: umu_run.to_path_buf(),
@@ -469,10 +480,10 @@ pub async fn install_proton_deps_core(
     // network stall mid-download fails fast instead of hanging the whole install.
     // Defer to an explicit user override if one is already set. (#281)
     if std::env::var_os("UMU_HTTP_TIMEOUT").is_none() {
-        cmd.env("UMU_HTTP_TIMEOUT", "4");
+        cmd.env("UMU_HTTP_TIMEOUT", UMU_HTTP_TIMEOUT_SECS);
     }
     if std::env::var_os("UMU_HTTP_RETRIES").is_none() {
-        cmd.env("UMU_HTTP_RETRIES", "1");
+        cmd.env("UMU_HTTP_RETRIES", UMU_HTTP_RETRIES_MAX);
     }
     // kill_on_drop so the child is reaped when the timeout below drops its future,
     // rather than being left running detached. (#281)

@@ -183,35 +183,23 @@
   }
 
   // ── Add to library ─────────────────────────────────────────────────────
-  async function addWithCandidate() {
-    if (!exePath || !picked || !install) return;
-    try {
-      await api.addGame({
-        game_name: picked.name,
-        exe_path: exePath,
-        steam_id: picked.steam_id,
-        gog_id: picked.gog_id,
-        lutris_slug: picked.lutris_slug,
-        manifest_install_dir: picked.manifest_install_dir,
-        save_paths: picked.save_paths,
-        game_folder_path: gameFolder,
-        wine_prefix_path: install.prefix_path,
-        proton_version_path: install.proton_path ?? undefined,
-      });
-      await getCurrentWindow().close();
-    } catch (e) {
-      error = String(e);
-    }
-  }
-
-  async function addWithoutTracking() {
+  async function add({ trackSaves }: { trackSaves: boolean }) {
     if (!exePath || !install) return;
+    if (trackSaves && !picked) return;
     try {
       const fallback = baseName(exePath).replace(/\.[^.]+$/, '') || gameName.trim() || 'Untitled Game';
       await api.addGame({
         game_name: picked?.name ?? fallback,
         exe_path: exePath,
-        save_paths: [],
+        ...(trackSaves && picked
+          ? {
+              steam_id: picked.steam_id,
+              gog_id: picked.gog_id,
+              lutris_slug: picked.lutris_slug,
+              manifest_install_dir: picked.manifest_install_dir,
+              save_paths: picked.save_paths,
+            }
+          : { save_paths: [] }),
         game_folder_path: gameFolder,
         wine_prefix_path: install.prefix_path,
         proton_version_path: install.proton_path ?? undefined,
@@ -392,10 +380,10 @@
           Run installer
         </Btn>
       {:else if stage === 'detect'}
-        <Btn variant="ghost" onclick={addWithoutTracking} disabled={!exePath || identifying}>
+        <Btn variant="ghost" onclick={() => add({ trackSaves: false })} disabled={!exePath || identifying}>
           Add without save tracking
         </Btn>
-        <Btn variant="primary" onclick={addWithCandidate} disabled={!picked || identifying} class="min-w-[180px] justify-center">
+        <Btn variant="primary" onclick={() => add({ trackSaves: true })} disabled={!picked || identifying} class="min-w-[180px] justify-center">
           {picked ? `Add "${picked.name}"` : 'Pick a candidate'}
         </Btn>
       {/if}

@@ -151,10 +151,12 @@ pub fn run() {
     install_panic_hook();
     tracing::info!("spool starting up");
 
-    // Headless subcommands — no GUI, no tray, no single-instance. Parse once
-    // here so we can exit early before any Tauri setup.
+    // Parse argv once — used for early-exit checks and threaded into setup.
     let initial_args: Vec<String> = std::env::args().collect();
-    if let CliMode::HeadlessServer = cli::parse_args(&initial_args) {
+    let cli_mode = cli::parse_args(&initial_args);
+
+    // Headless subcommands — no GUI, no tray, no single-instance.
+    if let CliMode::HeadlessServer = cli_mode {
         std::process::exit(headless::run_headless_server());
     }
 
@@ -186,7 +188,6 @@ pub fn run() {
     // streaming host). If so, we skip the tray, single-instance plugin, and
     // background pollers, run the game, then exit — so the host sees the game
     // stop when Spool does.
-    let cli_mode = cli::parse_args(&initial_args);
     let attached = matches!(cli_mode, CliMode::Run { attached: true, .. })
         || (matches!(cli_mode, CliMode::Run { .. }) && gamemode::is_steam_game_mode());
     if attached {
@@ -352,9 +353,9 @@ pub fn run() {
         ])
         .setup(move |app| {
             if attached {
-                run_attached_launch(app, &initial_args)
+                run_attached_launch(app, cli_mode)
             } else {
-                run_normal_setup(app, &initial_args)
+                run_normal_setup(app, cli_mode)
             }
         })
         .build(tauri::generate_context!())
@@ -530,9 +531,9 @@ fn handle_forwarded_launch(app: &AppHandle, argv: &[String]) {
 /// host (SteamOS gamescope / Apollo / Sunshine) sees the game stop with Spool.
 fn run_attached_launch(
     app: &tauri::App,
-    initial_args: &[String],
+    cli_mode: CliMode,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let CliMode::Run { game_name, exe_path, .. } = cli::parse_args(initial_args) else {
+    let CliMode::Run { game_name, exe_path, .. } = cli_mode else {
         app.handle().exit(1);
         return Ok(());
     };
@@ -628,7 +629,7 @@ fn run_attached_launch(
 /// queue any startup `--run` for the frontend to pick up.
 fn run_normal_setup(
     app: &tauri::App,
-    initial_args: &[String],
+    cli_mode: CliMode,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Mount tray icon + menu.
     tray::mount_tray(app.handle())?;
@@ -691,7 +692,7 @@ fn run_normal_setup(
 
     // Startup --run dispatch: queue the game id so the frontend can pick it up
     // once its listeners are ready.
-    if let CliMode::Run { ref game_name, ref exe_path, .. } = cli::parse_args(initial_args) {
+    if let CliMode::Run { ref game_name, ref exe_path, .. } = cli_mode {
         let library = app.state::<SharedLibrary>();
         let pending = app.state::<PendingRun>();
         if let Some(id) = find_game_id_by_name(&library, game_name, Some(exe_path)) {
