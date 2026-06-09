@@ -842,12 +842,17 @@ async fn run_blocking(mut cmd: std::process::Command, op: &str) -> AppResult<std
 fn blocking_command(exe: &Path, config_dir: &Path) -> std::process::Command {
     let mut cmd = std::process::Command::new(exe);
     cmd.arg("--config").arg(config_dir);
+    crate::process::strip_appimage_env_blocking(&mut cmd);
     // Prepend the bundled rclone's directory to PATH so ludusavi resolves
     // "rclone" to THIS process's binary (never a stale AppImage FUSE path).
     if let Some(rclone_dir) =
         crate::paths::resolve_rclone_path().and_then(|p| p.parent().map(|d| d.to_path_buf()))
     {
-        let existing = std::env::var_os("PATH").unwrap_or_default();
+        let existing = cmd
+            .get_envs()
+            .find(|(k, _)| *k == "PATH")
+            .and_then(|(_, v)| v.map(|s| s.to_os_string()))
+            .unwrap_or_else(|| std::env::var_os("PATH").unwrap_or_default());
         if let Ok(new_path) = std::env::join_paths(
             std::iter::once(rclone_dir.into_os_string())
                 .chain(std::env::split_paths(&existing).map(|p| p.into_os_string())),
@@ -862,7 +867,6 @@ fn blocking_command(exe: &Path, config_dir: &Path) -> std::process::Command {
         use std::os::unix::process::CommandExt as _;
         cmd.process_group(0);
     }
-    crate::process::strip_appimage_env_blocking(&mut cmd);
     crate::capture_stdio!(cmd);
     cmd
 }
