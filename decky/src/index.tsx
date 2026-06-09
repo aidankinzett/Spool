@@ -72,6 +72,7 @@ export default definePlugin(() => {
               ret,
               (x: any) =>
                 Array.isArray(x?.props?.children) &&
+                appDetailsClasses.InnerContainer &&
                 x?.props?.className?.includes(appDetailsClasses.InnerContainer),
             );
 
