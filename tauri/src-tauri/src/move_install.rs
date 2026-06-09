@@ -226,30 +226,24 @@ pub async fn move_game_install(
         )));
     }
 
-    // Free-space check (skip when the destination is on the same filesystem as
-    // the source — a rename moves the data without consuming extra space).
-    let total_bytes = {
-        let src = src.clone();
-        tokio::task::spawn_blocking(move || crate::size_backfill::directory_size(&src))
-            .await
-            .map_err(|e| AppError::Other(format!("size walk join failed: {e}")))?
-    };
-    let free = crate::drives::folder_free_space(dest_root.to_string_lossy().to_string());
-    if free > 0 && free < total_bytes {
-        return Err(AppError::Other(format!(
-            "Not enough free space at the destination ({} free, {} needed).",
-            human_bytes(free),
-            human_bytes(total_bytes)
-        )));
+    // Reject a destination inside the game's own folder — copying a tree into its
+    // own subtree would recurse and fill the disk.
+    if dest_root.starts_with(&src) {
+        return Err(AppError::Other(
+            "That library folder is inside the game's own install folder. Pick a different drive or folder.".into(),
+        ));
     }
 
     // Claim the single move slot + the per-game run lock for the whole move, so
-    // the game can't launch or be wiped while its files are in flight.
+    // the game can't launch or be wiped while its files are in flight. The total
+    // size is unknown until we know this is a cross-drive copy — the same-
+    // filesystem fast path needs neither a size walk nor a free-space check, so
+    // both are deferred into `run_move`'s copy branch.
     let _slot = move_state.try_start(MoveProgress {
         game_id: id.clone(),
         game_name: game_name.clone(),
         copied_bytes: 0,
-        total_bytes,
+        total_bytes: 0,
         status: "preparing".into(),
         message: None,
         dest_folder: Some(dest.to_string_lossy().to_string()),
@@ -263,12 +257,13 @@ pub async fn move_game_install(
 
     emit(&app, &move_state, |p| p.status = "copying".into());
 
-    // Move the bytes. Fast path: a same-filesystem rename. Fallback: copy into a
-    // `.partial` dir, verify, swap into place, delete the source.
-    let copied_in_place = run_move(&app, &move_state, src.clone(), dest.clone()).await;
-
-    let copied_in_place = match copied_in_place {
-        Ok(v) => v,
+    // Move the bytes. Fast path: a same-filesystem rename (instant). Fallback:
+    // size + free-space check, then copy into a `.partial` dir, verify, and swap
+    // into place. The source is NOT deleted by `run_move` — we delete it only
+    // after the entry is repointed below, so a failure between the copy and the
+    // DB write can never leave the entry pointing at a deleted folder.
+    let outcome = match run_move(&app, &move_state, &src, &dest).await {
+        Ok(o) => o,
         Err(e) => {
             let msg = e.to_string();
             let status = if e.is_canceled() { "canceled" } else { "error" };
@@ -279,28 +274,37 @@ pub async fn move_game_install(
             return Err(e);
         }
     };
-    let _ = copied_in_place; // both paths land the files at `dest`
 
     emit(&app, &move_state, |p| p.status = "finalizing".into());
 
-    // Repoint the entry: new folder, new exe (joined under the new folder), and
-    // refreshed install size.
+    // Repoint the entry: new folder, new exe (joined under the new folder), and —
+    // for the copy path, where we walked the tree — a refreshed install size. The
+    // fast-path rename leaves the size untouched (a move doesn't change it).
     let dest_str = dest.to_string_lossy().to_string();
     let new_exe = match &rel_exe {
         Some(rel) => dest.join(rel).to_string_lossy().to_string(),
         None => String::new(),
     };
-    let install_size_mb = (total_bytes as f64) / (1024.0 * 1024.0);
-    library
-        .update_fields(
-            &id,
-            &[
-                ("game_folder_path", serde_json::json!(dest_str)),
-                ("exe_path", serde_json::json!(new_exe)),
-                ("install_size_mb", serde_json::json!(install_size_mb)),
-            ],
-        )
-        .await?;
+    let mut fields = vec![
+        ("game_folder_path", serde_json::json!(dest_str)),
+        ("exe_path", serde_json::json!(new_exe)),
+    ];
+    if let Some(total_bytes) = outcome.total_bytes {
+        let install_size_mb = (total_bytes as f64) / (1024.0 * 1024.0);
+        fields.push(("install_size_mb", serde_json::json!(install_size_mb)));
+    }
+    library.update_fields(&id, &fields).await?;
+
+    // The entry now points at the new location, so it's safe to delete the old
+    // copy (cross-device path only — the rename already consumed the source).
+    // Best-effort: a failed delete only leaves reclaimable disk, not a broken game.
+    if let Some(old_src) = outcome.source_to_delete {
+        match tokio::task::spawn_blocking(move || std::fs::remove_dir_all(&old_src)).await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => tracing::warn!(error = %e, "move: couldn't delete source after copy"),
+            Err(e) => tracing::warn!(error = %e, "move: source delete task join failed"),
+        }
+    }
 
     // Regenerate anything that baked in the old absolute exe path. Best-effort —
     // the move itself succeeded and the entry is already correct, so a failure
@@ -321,15 +325,24 @@ pub async fn move_game_install(
         .ok_or_else(|| AppError::Other("game vanished after move".into()))
 }
 
-/// Performs the actual relocation. Returns `true` when the fast-path rename moved
-/// the folder in place (no source delete needed), `false` when the copy+verify
-/// path was used (source already deleted here). Errors leave the source intact.
+/// Outcome of [`run_move`].
+struct MoveOutcome {
+    /// `Some(bytes)` when the cross-device copy path ran (the tree was walked);
+    /// `None` for the same-filesystem rename fast path.
+    total_bytes: Option<u64>,
+    /// The source folder to delete once the entry is repointed — `Some` only for
+    /// the copy path (the rename already consumed the source).
+    source_to_delete: Option<PathBuf>,
+}
+
+/// Performs the actual relocation, leaving the source in place for the caller to
+/// delete after the library entry is repointed. Errors leave the source intact.
 async fn run_move(
     app: &AppHandle,
     state: &Arc<MoveState>,
-    src: PathBuf,
-    dest: PathBuf,
-) -> AppResult<bool> {
+    src: &Path,
+    dest: &Path,
+) -> AppResult<MoveOutcome> {
     // Ensure the destination's parent exists for both the rename and the copy.
     if let Some(parent) = dest.parent() {
         tokio::fs::create_dir_all(parent)
@@ -337,12 +350,13 @@ async fn run_move(
             .map_err(|e| AppError::Other(format!("create dest root {parent:?}: {e}")))?;
     }
 
-    // Fast path: atomic rename. Succeeds instantly within one filesystem; fails
-    // with a cross-device errno when src and dest are on different drives.
-    match std::fs::rename(&src, &dest) {
+    // Fast path: atomic rename. Succeeds instantly within one filesystem (no size
+    // walk or free-space check needed); fails with a cross-device errno when src
+    // and dest are on different drives.
+    match std::fs::rename(src, dest) {
         Ok(()) => {
             emit(app, state, |p| p.copied_bytes = p.total_bytes);
-            return Ok(true);
+            return Ok(MoveOutcome { total_bytes: None, source_to_delete: None });
         }
         Err(e) if e.raw_os_error() == Some(CROSS_DEVICE_ERRNO) => {
             tracing::info!("move: cross-device, falling back to copy + delete");
@@ -350,9 +364,38 @@ async fn run_move(
         Err(e) => return Err(AppError::Other(format!("move (rename): {e}"))),
     }
 
-    // Cross-device copy into a `.partial` staging dir (sibling of dest). Build
-    // the name by appending the suffix to the full folder name rather than
-    // `with_extension`, which would mangle a folder name that contains a dot.
+    // Cross-device: size the source, then confirm the destination has room before
+    // copying a single byte. Both run off the async runtime (sysinfo's disk
+    // refresh and the recursive stat-walk can block).
+    let total_bytes = {
+        let src = src.to_path_buf();
+        tokio::task::spawn_blocking(move || crate::size_backfill::directory_size(&src))
+            .await
+            .map_err(|e| AppError::Other(format!("size walk join failed: {e}")))?
+    };
+    let dest_root = dest
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| dest.to_path_buf());
+    let free = {
+        let dest_root = dest_root.to_string_lossy().to_string();
+        tokio::task::spawn_blocking(move || crate::drives::folder_free_space(dest_root))
+            .await
+            .map_err(|e| AppError::Other(format!("free-space probe join failed: {e}")))?
+    };
+    if free > 0 && free < total_bytes {
+        return Err(AppError::Other(format!(
+            "Not enough free space at the destination ({} free, {} needed).",
+            human_bytes(free),
+            human_bytes(total_bytes)
+        )));
+    }
+    // Publish the now-known total so the progress bar has a denominator.
+    emit(app, state, |p| p.total_bytes = total_bytes);
+
+    // Copy into a `.partial` staging dir (sibling of dest). Build the name by
+    // appending the suffix to the full folder name rather than `with_extension`,
+    // which would mangle a folder name that contains a dot.
     let partial = {
         let mut name = dest.file_name().unwrap_or_default().to_os_string();
         name.push(".partial");
@@ -366,13 +409,12 @@ async fn run_move(
 
     let app_for_copy = app.clone();
     let state_for_copy = state.clone();
-    let src_copy = src.clone();
+    let src_copy = src.to_path_buf();
     let partial_copy = partial.clone();
     let copy_result: AppResult<()> = tokio::task::spawn_blocking(move || {
-        let cancel = CancelView { state: &state_for_copy };
         let last_emit = Mutex::new(Instant::now() - PROGRESS_EMIT_INTERVAL);
         let mut copied: u64 = 0;
-        copy_dir_recursive(&src_copy, &partial_copy, &mut copied, &cancel, &|done| {
+        copy_dir_recursive(&src_copy, &partial_copy, &mut copied, &state_for_copy, &|done| {
             // Throttled progress emit from the blocking copy thread.
             let should = match last_emit.lock() {
                 Ok(mut le) if le.elapsed() >= PROGRESS_EMIT_INTERVAL => {
@@ -395,8 +437,9 @@ async fn run_move(
         return Err(e);
     }
 
-    // Verify the copy before deleting the source: equal file count + total size.
-    let (src_for_verify, partial_for_verify) = (src.clone(), partial.clone());
+    // Verify the copy before the caller deletes the source: equal file count +
+    // total size.
+    let (src_for_verify, partial_for_verify) = (src.to_path_buf(), partial.clone());
     let verified = tokio::task::spawn_blocking(move || {
         let a = dir_stats(&src_for_verify);
         let b = dir_stats(&partial_for_verify);
@@ -411,33 +454,21 @@ async fn run_move(
         ));
     }
 
-    // Swap the staging dir into place, then delete the now-copied source.
-    // Deletion is best-effort: the entry already points at the new location, so
-    // a failed delete only leaves reclaimable disk behind, not a broken game.
-    tokio::fs::rename(&partial, &dest)
-        .await
-        .map_err(|e| AppError::Other(format!("finalise move dir: {e}")))?;
-    match tokio::task::spawn_blocking(move || std::fs::remove_dir_all(&src)).await {
-        Ok(Ok(())) => {}
-        Ok(Err(e)) => tracing::warn!(error = %e, "move: couldn't delete source after copy"),
-        Err(e) => tracing::warn!(error = %e, "move: source delete task join failed"),
+    // Swap the staging dir into place. On failure, clean up the partial so a
+    // retry starts fresh; the source is still intact.
+    if let Err(e) = tokio::fs::rename(&partial, dest).await {
+        let _ = tokio::fs::remove_dir_all(&partial).await;
+        return Err(AppError::Other(format!("finalise move dir: {e}")));
     }
-    Ok(false)
-}
-
-/// Borrowed view of the move's cancel flag, passed into the blocking copy.
-struct CancelView<'a> {
-    state: &'a Arc<MoveState>,
-}
-impl CancelView<'_> {
-    fn is_canceled(&self) -> bool {
-        self.state.is_canceled()
-    }
+    Ok(MoveOutcome {
+        total_bytes: Some(total_bytes),
+        source_to_delete: Some(src.to_path_buf()),
+    })
 }
 
 /// Recursively copies `src` into `dst`, summing copied bytes into `copied` and
-/// reporting the running total via `on_progress`. Polls `cancel` between entries
-/// so a cancel aborts promptly. Symlinks and regular files both go through
+/// reporting the running total via `on_progress`. Polls `cancel`'s flag between
+/// entries so a cancel aborts promptly. Symlinks and regular files both go through
 /// `std::fs::copy` (which follows file symlinks, matching the `follow_links`
 /// directory-size walk); a symlink to a directory will error, aborting the move
 /// with the source intact.
@@ -445,7 +476,7 @@ fn copy_dir_recursive(
     src: &Path,
     dst: &Path,
     copied: &mut u64,
-    cancel: &CancelView,
+    cancel: &MoveState,
     on_progress: &dyn Fn(u64),
 ) -> AppResult<()> {
     std::fs::create_dir_all(dst)
@@ -533,23 +564,50 @@ async fn regenerate_shortcuts(
 
 /// Returns `exe` as a relative `PathBuf` under `folder`, or `None` if `exe` is
 /// not inside `folder`. Keeps only normal path components.
+///
+/// On Windows, where the filesystem is case-insensitive, a plain `strip_prefix`
+/// (which matches components case-sensitively) would wrongly reject an exe whose
+/// stored casing differs from the folder's — e.g. `C:\Games\Foo` vs
+/// `c:\games\foo\game.exe`, common when one path came from a file dialog and the
+/// other from manifest detection. So on a case-sensitivity mismatch we retry on
+/// ASCII-lowercased copies and slice the matching tail off the *original* exe
+/// (ASCII-lowercasing never changes byte length, so the offsets line up) to keep
+/// the real on-disk casing in the result.
 fn relative_inside(exe: &Path, folder: &Path) -> Option<PathBuf> {
-    let rel = exe.strip_prefix(folder).ok()?;
-    let parts: Vec<&std::ffi::OsStr> = rel
-        .components()
-        .filter_map(|c| match c {
-            Component::Normal(s) => Some(s),
-            _ => None,
-        })
-        .collect();
-    if parts.is_empty() {
-        return None;
+    if let Ok(rel) = exe.strip_prefix(folder) {
+        return collect_normal(rel);
     }
+    #[cfg(windows)]
+    {
+        let exe_s = exe.to_str()?;
+        let folder_l = folder.to_str()?.to_ascii_lowercase();
+        let folder_l = folder_l.trim_end_matches(['\\', '/']);
+        let rest = exe_s
+            .to_ascii_lowercase()
+            .strip_prefix(folder_l)
+            .map(str::to_string)?;
+        let rest = rest.trim_start_matches(['\\', '/']);
+        if rest.is_empty() {
+            return None;
+        }
+        // Same byte length as the lowercased tail → safe to slice the original.
+        let tail = &exe_s[exe_s.len() - rest.len()..];
+        return collect_normal(Path::new(tail));
+    }
+    #[cfg(not(windows))]
+    None
+}
+
+/// Collects the `Normal` components of `rel` into a `PathBuf`, or `None` when
+/// there are none (so the folder-itself case yields `None`).
+fn collect_normal(rel: &Path) -> Option<PathBuf> {
     let mut out = PathBuf::new();
-    for p in parts {
-        out.push(p);
+    for c in rel.components() {
+        if let Component::Normal(s) = c {
+            out.push(s);
+        }
     }
-    Some(out)
+    (!out.as_os_str().is_empty()).then_some(out)
 }
 
 /// True when two paths refer to the same location, comparing canonical forms
@@ -621,10 +679,9 @@ mod tests {
 
         let dst = tempfile::tempdir().unwrap();
         let target = dst.path().join("copy");
-        let state = Arc::new(MoveState::default());
-        let cancel = CancelView { state: &state };
+        let state = MoveState::default();
         let mut copied = 0u64;
-        copy_dir_recursive(src.path(), &target, &mut copied, &cancel, &|_| {}).unwrap();
+        copy_dir_recursive(src.path(), &target, &mut copied, &state, &|_| {}).unwrap();
 
         assert_eq!(copied, 11);
         assert_eq!(dir_stats(src.path()), dir_stats(&target));
@@ -636,12 +693,22 @@ mod tests {
         let src = tempfile::tempdir().unwrap();
         std::fs::write(src.path().join("a.txt"), b"hello").unwrap();
         let dst = tempfile::tempdir().unwrap();
-        let state = Arc::new(MoveState::default());
+        let state = MoveState::default();
         state.cancel_flag.store(true, Ordering::Relaxed);
-        let cancel = CancelView { state: &state };
         let mut copied = 0u64;
-        let err = copy_dir_recursive(src.path(), &dst.path().join("c"), &mut copied, &cancel, &|_| {})
+        let err = copy_dir_recursive(src.path(), &dst.path().join("c"), &mut copied, &state, &|_| {})
             .unwrap_err();
         assert!(err.is_canceled());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn relative_inside_is_case_insensitive_on_windows() {
+        // Stored exe casing differs from the install folder's — still inside.
+        let folder = Path::new(r"C:\Games\MyGame");
+        let exe = Path::new(r"c:\games\mygame\bin\game.exe");
+        assert_eq!(relative_inside(exe, folder), Some(PathBuf::from(r"bin\game.exe")));
+        // A genuinely different folder is still rejected.
+        assert_eq!(relative_inside(Path::new(r"C:\Other\game.exe"), folder), None);
     }
 }

@@ -67,36 +67,46 @@
   }
 
   async function loadRows() {
-    const out: FolderRow[] = [];
-    for (const f of folders) {
-      let free: number;
-      try {
-        free = await api.folderFreeSpace(f.path);
-      } catch {
-        free = 0;
-      }
-      out.push({
-        path: f.path,
-        label: f.label,
-        free,
-        tooSmall: free > 0 && free < sizeBytes,
-        isCurrent: isCurrentRoot(f.path),
-      });
-    }
+    // Probe every folder's free space in parallel rather than one await at a time.
+    const out = await Promise.all(
+      folders.map(async (f): Promise<FolderRow> => {
+        let free: number;
+        try {
+          free = await api.folderFreeSpace(f.path);
+        } catch {
+          free = 0;
+        }
+        return {
+          path: f.path,
+          label: f.label,
+          free,
+          tooSmall: free > 0 && free < sizeBytes,
+          isCurrent: isCurrentRoot(f.path),
+        };
+      }),
+    );
     rows = out;
-    // Pre-select the first usable destination.
-    selected = out.find((r) => !r.isCurrent && !r.tooSmall)?.path ?? null;
+    // Keep the user's selection if it's still usable; otherwise pre-select the
+    // first usable destination.
+    const stillValid = out.some((r) => r.path === selected && !r.isCurrent && !r.tooSmall);
+    if (!stillValid) {
+      selected = out.find((r) => !r.isCurrent && !r.tooSmall)?.path ?? null;
+    }
   }
-
-  $effect(() => {
-    void loadRows();
-  });
 
   type Phase = 'choose' | 'moving' | 'done' | 'error';
   let phase = $state<Phase>('choose');
   let progress = $state<MoveProgress | null>(null);
   let errorMsg = $state('');
+  let canceled = $state(false);
   let unlisten: (() => void) | null = null;
+
+  // Refresh the destination rows only while choosing — never mid-move, so a
+  // `library:changed`-triggered folders refresh can't reset the selection or
+  // rows out from under an in-flight transfer.
+  $effect(() => {
+    if (phase === 'choose') void loadRows();
+  });
 
   const locked = $derived(phase === 'moving');
   const pct = $derived(
@@ -117,6 +127,7 @@
     phase = 'moving';
     progress = null;
     errorMsg = '';
+    canceled = false;
     unlisten = await listen<MoveProgress>('move:progress', (e) => {
       if (e.payload.game_id === game.id) progress = e.payload;
     });
@@ -127,8 +138,14 @@
       // Brief beat on the "done" state so the bar reads 100% before close.
       setTimeout(() => onClose(), 700);
     } catch (e) {
-      errorMsg = String(e);
-      phase = 'error';
+      // A user-requested cancel rejects the move promise too — close cleanly
+      // rather than presenting it as a failure (the source is left intact).
+      if (canceled) {
+        onClose();
+      } else {
+        errorMsg = String(e);
+        phase = 'error';
+      }
     } finally {
       unlisten?.();
       unlisten = null;
@@ -137,6 +154,7 @@
 
   async function cancelOrClose() {
     if (phase === 'moving') {
+      canceled = true;
       await api.cancelMove(game.id);
     } else {
       onClose();

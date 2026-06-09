@@ -10,19 +10,20 @@
    * backend emits `library:changed`, refreshing every open window.
    */
   import MoveInstallModal from '$lib/components/MoveInstallModal.svelte';
-  import { moveInstallDialog } from '$lib/moveInstall.svelte';
+  import { moveInstallDialog, type MoveRequest } from '$lib/moveInstall.svelte';
   import { api } from '$lib/api';
   import type { LibraryFolder } from '$lib/types';
 
   const req = $derived(moveInstallDialog.current);
   let folders = $state<LibraryFolder[]>([]);
-  // Re-fetch the configured folders each time a new game's dialog opens.
-  let loadedFor = $state<string | null>(null);
+  // Re-fetch the configured folders each time the dialog opens. Keyed on the
+  // request object (a fresh one per `.request()` call), so reopening — even for
+  // the same game after editing library folders in Settings — refreshes the list.
+  let loadedReq = $state<MoveRequest | null>(null);
 
   $effect(() => {
-    const id = req?.game.id ?? null;
-    if (id && id !== loadedFor) {
-      loadedFor = id;
+    if (req && req !== loadedReq) {
+      loadedReq = req;
       void (async () => {
         try {
           const c = await api.getConfig();

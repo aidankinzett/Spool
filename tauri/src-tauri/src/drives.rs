@@ -87,11 +87,30 @@ fn nearest_existing_ancestor(path: &Path) -> PathBuf {
     let mut cur = Some(path);
     while let Some(p) = cur {
         if let Ok(canon) = std::fs::canonicalize(p) {
-            return canon;
+            return strip_verbatim(canon);
         }
         cur = p.parent();
     }
     path.to_path_buf()
+}
+
+/// Strips Windows' extended-length `\\?\` (and `\\?\UNC\`) verbatim prefix that
+/// `std::fs::canonicalize` adds. sysinfo reports mount points in the plain form
+/// (`C:\`), so a verbatim `\\?\C:\…` path never `starts_with` them; and the
+/// prefix is ugly when shown in the UI / stored in config. No-op off Windows.
+fn strip_verbatim(p: PathBuf) -> PathBuf {
+    #[cfg(windows)]
+    {
+        if let Some(s) = p.to_str() {
+            if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+                return PathBuf::from(format!(r"\\{rest}"));
+            }
+            if let Some(rest) = s.strip_prefix(r"\\?\") {
+                return PathBuf::from(rest);
+            }
+        }
+    }
+    p
 }
 
 /// Ensures the chosen library folder exists on disk and returns its canonical
@@ -107,6 +126,8 @@ pub fn prepare_library_folder(path: String) -> AppResult<String> {
     let p = PathBuf::from(trimmed);
     std::fs::create_dir_all(&p)
         .map_err(|e| AppError::Other(format!("couldn't create {}: {e}", p.display())))?;
-    let canonical = std::fs::canonicalize(&p).unwrap_or(p);
+    // Strip the Windows `\\?\` verbatim prefix canonicalize adds, so the stored
+    // path is the plain form the UI shows and the modal's path matching expects.
+    let canonical = std::fs::canonicalize(&p).map(strip_verbatim).unwrap_or(p);
     Ok(canonical.to_string_lossy().to_string())
 }
