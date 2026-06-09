@@ -106,6 +106,16 @@ pub fn ludusavi_config_lock_file() -> PathBuf {
     app_data_dir().join("ludusavi-config.lock")
 }
 
+/// Marker file for the machine-wide lock serialising read-modify-write updates
+/// to the active-session record (`active-session.json`). The attached `--run`
+/// suspend watcher and the headless game-stop backup live in different processes
+/// and both mutate the record, so an in-process mutex alone can't order them.
+/// Same lifecycle as [`backup_lock_file`] — only its lock state matters, never
+/// its contents.
+pub fn session_lock_file() -> PathBuf {
+    app_data_dir().join("active-session.lock")
+}
+
 /// Marker file for the machine-wide lock serialising the brief read-modify-write
 /// of this device's cross-device blob (`_spool/devices/<id>.json`) across
 /// processes. Several Spool processes share one `device_id`, and the blob's

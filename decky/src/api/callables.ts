@@ -10,8 +10,12 @@ import type { ProtonVersion, SaveRevision, Settings } from "../types";
 export const onAppStop = callable<[appid: number], { acted: boolean; game?: string }>(
   "on_app_stop",
 );
+// Backs up the active session's saves. The per-game badge menu passes the
+// game's shortcut `appid` so the server rejects a "Back up now" that doesn't
+// match the active session's game (no-op with `acted: false`); the QAM panel
+// passes nothing to back up the last session regardless.
 export const backupNow = callable<
-  [],
+  [appid?: number],
   { acted: boolean; ok: boolean; game?: string; reason?: string }
 >("backup_now");
 export const getStatus = callable<

@@ -125,10 +125,24 @@ pub(super) async fn post_restore(
     }
 }
 
+/// Coalesces concurrent `/fold` calls. A fold runs live `rclone cat`/`lsd`
+/// round-trips against the quota-limited remote, and the Decky UI fires one on
+/// every game-page navigation — with several webview instances each able to do
+/// so. When a fold is already in flight, a second caller skips rather than
+/// stacking another set of round-trips. `try_lock` (not `lock`) so the second
+/// caller returns immediately instead of queuing behind the first.
+static FOLD_IN_FLIGHT: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 /// Triggers a cross-device rclone fold and waits for it to complete. The
 /// Decky UI calls this on game-page navigation so playtime and last-played
-/// are fresh without requiring the full Spool GUI to be running.
+/// are fresh without requiring the full Spool GUI to be running. Concurrent
+/// calls are coalesced (see [`FOLD_IN_FLIGHT`]) — the second returns
+/// immediately with `skipped: true` instead of launching a second fold.
 pub(super) async fn post_fold() -> Json<Value> {
+    let Ok(_guard) = FOLD_IN_FLIGHT.try_lock() else {
+        tracing::debug!("plugin fold: already in flight — skipping");
+        return Json(json!({ "changed": false, "skipped": true }));
+    };
     let changed = crate::rclone::fold_devices_from_config().await;
     Json(json!({ "changed": changed }))
 }

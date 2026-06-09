@@ -380,9 +380,12 @@ class Plugin:
 
     # ── QAM panel ─────────────────────────────────────────────────────────────
 
-    async def backup_now(self) -> dict:
+    async def backup_now(self, appid: Optional[int] = None) -> dict:
+        # `appid` is sent by the per-game badge menu so the server can reject a
+        # "Back up now" that doesn't match the active session's game; the QAM
+        # panel passes None to back up the last session regardless. (#7)
         # Also waits on the server's backup lock — match game-stopped's timeout. (#8)
-        result = await _spool("POST", "/session/backup-now", timeout=240.0)
+        result = await _spool("POST", "/session/backup-now", {"appid": appid}, timeout=240.0)
         if result is None:
             return {"acted": False, "ok": False, "reason": "server unavailable"}
         return result

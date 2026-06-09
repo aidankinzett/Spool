@@ -54,7 +54,9 @@ export function BadgeMenuButton({
       // finishes.
       backupStarted(appid);
       try {
-        const res = await backupNow();
+        // Pass this game's appid so the server backs up *this* game's session,
+        // not whatever the active-session record happens to name. (#7)
+        const res = await backupNow(appid);
         if (res.ok) {
           toaster.toast({ title: "Spool", body: `Backed up ${res.game ?? game.game_name} ✓` });
         } else if (!res.acted) {
