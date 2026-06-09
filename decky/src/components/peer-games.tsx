@@ -5,6 +5,13 @@ import type { DownloadProgress, LanPeer, PeerGame } from "../types";
 import { fmtBytes } from "../lib/format";
 import { useServerBase } from "../hooks/use-server-base";
 import { useParams } from "../lib/steam";
+import {
+  getLanPeers,
+  getPeerGames,
+  getLanDownload,
+  startLanInstall,
+  cancelLanDownload,
+} from "../lib/server";
 
 // A single peer's shared games, as a list. Each row is the game's cover, name
 // and install size with a Download button; activating it installs the game in
@@ -29,8 +36,7 @@ export function PeerGamesPage() {
   useEffect(() => {
     if (!base) return;
     let cancelled = false;
-    void fetch(`${base}/lan/peers`)
-      .then((r) => r.json() as Promise<LanPeer[]>)
+    void getLanPeers(base)
       .then((peers) => {
         const found =
           peers.find(
@@ -45,26 +51,23 @@ export function PeerGamesPage() {
 
   // Fetch the game list.
   useEffect(() => {
-    if (!peerBase) return;
+    if (!base) return;
     let cancelled = false;
     void (async () => {
       try {
-        const res = await fetch(`${peerBase}/games`);
-        if (!res.ok) throw new Error();
-        const data = (await res.json()) as PeerGame[];
+        const data = await getPeerGames(base, peerAddr, peerPort);
         if (!cancelled) setGames(data);
       } catch {
         if (!cancelled) setError("Couldn't reach this device.");
       }
     })();
     return () => { cancelled = true; };
-  }, [peerBase]);
+  }, [base, peerAddr, peerPort]);
 
   // Pick up any in-flight download on mount (e.g. returned via B button).
   useEffect(() => {
     if (!base) return;
-    void fetch(`${base}/lan/download`)
-      .then((r) => r.json() as Promise<DownloadProgress | null>)
+    void getLanDownload(base)
       .then((p) => {
         if (p && p.status !== "done" && p.status !== "error" && p.status !== "canceled") {
           setDownload(p);
@@ -84,8 +87,7 @@ export function PeerGamesPage() {
   function startPolling() {
     if (!base || pollRef.current) return;
     pollRef.current = setInterval(() => {
-      void fetch(`${base}/lan/download`)
-        .then((r) => r.json() as Promise<DownloadProgress | null>)
+      void getLanDownload(base)
         .then((p) => {
           setDownload(p);
           if (!p || p.status === "done" || p.status === "error" || p.status === "canceled") {
@@ -119,16 +121,7 @@ export function PeerGamesPage() {
       bytes_per_second: 0,
     });
     try {
-      const res = await fetch(`${base}/lan/install`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          peer_addr: peerAddr,
-          peer_port: Number(peerPort),
-          game_id: game.id,
-        }),
-      });
-      if (!res.ok) throw new Error();
+      await startLanInstall(base, peerAddr, Number(peerPort), game.id);
     } catch {
       setDownload(null);
       return;
@@ -138,11 +131,7 @@ export function PeerGamesPage() {
 
   async function cancelDownload() {
     if (!base || !download) return;
-    await fetch(`${base}/lan/download`, {
-      method: "DELETE",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ install_token: download.install_token }),
-    }).catch(() => undefined);
+    await cancelLanDownload(base, download.install_token).catch(() => undefined);
   }
 
   // A download occupies the single install slot while it's starting/transferring.

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import type { LibraryGame } from "../types";
 import { findSpoolGame } from "../lib/launch";
+import { getLibrary, triggerFold } from "../lib/server";
 
 // Hook: fetch the library once and return the Spool game for the given Steam
 // appid. `refresh` re-fetches /library on demand (e.g. after a backup finishes)
@@ -13,9 +14,8 @@ export function useSpoolPlaytime(
   const [loading, setLoading] = useState(true);
 
   const fetchGame = useCallback(async (): Promise<LibraryGame | null> => {
-    const res = await fetch(`${base}/library`);
-    if (!res.ok) throw new Error(`bad status ${res.status}`);
-    const games = (await res.json()) as LibraryGame[];
+    if (!base) return null;
+    const games = await getLibrary(base);
     return findSpoolGame(games, appid);
   }, [appid, base]);
 
@@ -40,7 +40,7 @@ export function useSpoolPlaytime(
         if (!cancelled) setGame(await fetchGame());
 
         // Trigger a cross-device fold in the background, then refresh.
-        await fetch(`${base}/fold`, { method: "POST" }).catch(() => undefined);
+        await triggerFold(base).catch(() => undefined);
         if (cancelled) return;
 
         if (!cancelled) {
@@ -58,3 +58,4 @@ export function useSpoolPlaytime(
 
   return { game, loading, refresh };
 }
+

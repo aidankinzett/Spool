@@ -1,6 +1,7 @@
 import { Navigation, ReactRouter } from "@decky/ui";
 import type { SteamApps } from "../types";
 import { sleep } from "./format";
+import { getSteamArt } from "./server";
 
 // Extracts params from Steam's internal React Router (memory-based, not
 // window.location). Same pattern as OMGDuke/protondb-decky.
@@ -28,12 +29,9 @@ export async function applyArtwork(base: string, gameId: string, appid: number, 
   if (!apps.SetCustomArtworkForApp) return;
   for (const [kind, assetType] of Object.entries(STEAM_ASSET)) {
     try {
-      const res = await fetch(`${base}/games/${gameId}/steam-art/${kind}`);
-      if (!res.ok) continue;
-      const { imageType, base64 } = (await res.json()) as {
-        imageType: string;
-        base64: string;
-      };
+      const art = await getSteamArt(base, gameId, kind);
+      if (!art) continue;
+      const { imageType, base64 } = art;
       await apps.SetCustomArtworkForApp(appid, base64, imageType, assetType);
     } catch {
       /* best-effort per asset */
