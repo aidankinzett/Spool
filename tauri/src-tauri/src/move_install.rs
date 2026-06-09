@@ -441,8 +441,8 @@ async fn run_move(
     // total size.
     let (src_for_verify, partial_for_verify) = (src.to_path_buf(), partial.clone());
     let verified = tokio::task::spawn_blocking(move || {
-        let a = dir_stats(&src_for_verify);
-        let b = dir_stats(&partial_for_verify);
+        let a = crate::size_backfill::directory_stats(&src_for_verify);
+        let b = crate::size_backfill::directory_stats(&partial_for_verify);
         a == b
     })
     .await
@@ -501,26 +501,6 @@ fn copy_dir_recursive(
         }
     }
     Ok(())
-}
-
-/// (file count, total bytes) for a directory tree — the verification fingerprint
-/// compared between source and the copied `.partial` before the source is
-/// deleted. Uses the same follow-symlinks walk as the size estimate so the two
-/// numbers are computed identically.
-fn dir_stats(path: &Path) -> (u64, u64) {
-    let mut count = 0u64;
-    let mut bytes = 0u64;
-    for entry in walkdir::WalkDir::new(path).follow_links(true) {
-        let Ok(entry) = entry else { continue };
-        if !entry.file_type().is_file() {
-            continue;
-        }
-        if let Ok(meta) = entry.metadata() {
-            count += 1;
-            bytes += meta.len();
-        }
-    }
-    (count, bytes)
 }
 
 /// Regenerates launcher stubs / Steam shortcuts that embed the absolute exe path.
@@ -662,16 +642,8 @@ mod tests {
     }
 
     #[test]
-    fn dir_stats_counts_files_and_bytes() {
-        let tmp = tempfile::tempdir().unwrap();
-        std::fs::write(tmp.path().join("a.txt"), b"hello").unwrap();
-        std::fs::create_dir(tmp.path().join("sub")).unwrap();
-        std::fs::write(tmp.path().join("sub/b.bin"), b"world!").unwrap();
-        assert_eq!(dir_stats(tmp.path()), (2, 11));
-    }
-
-    #[test]
     fn copy_dir_recursive_replicates_tree() {
+        use crate::size_backfill::directory_stats;
         let src = tempfile::tempdir().unwrap();
         std::fs::write(src.path().join("a.txt"), b"hello").unwrap();
         std::fs::create_dir(src.path().join("sub")).unwrap();
@@ -684,7 +656,7 @@ mod tests {
         copy_dir_recursive(src.path(), &target, &mut copied, &state, &|_| {}).unwrap();
 
         assert_eq!(copied, 11);
-        assert_eq!(dir_stats(src.path()), dir_stats(&target));
+        assert_eq!(directory_stats(src.path()), directory_stats(&target));
         assert_eq!(std::fs::read(target.join("sub/b.bin")).unwrap(), b"world!");
     }
 
