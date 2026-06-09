@@ -29,11 +29,15 @@ pub(super) async fn post_game_stopped(
     AxState(state): AxState<PluginState>,
     Json(body): Json<GameStoppedRequest>,
 ) -> Json<Value> {
+    if !state.library_available {
+        return Json(json!({ "acted": true, "ok": false, "reason": "library unavailable" }));
+    }
+
     // Stamp the session end at the moment the game-stop event arrives, BEFORE
     // the (network) marker write and backup, so the recorded duration reflects
     // the real game-stop instant rather than the plugin/rclone latency. (#5)
     let ended_at = chrono::Utc::now();
-
+    
     let Some(rec) = crate::session::read() else {
         return Json(json!({ "acted": false }));
     };
@@ -98,6 +102,10 @@ pub(super) async fn post_game_stopped(
 /// Manual backup from the QAM "Back up now" button. No appid check; no lock
 /// release — just backs up whatever game the current session record points to.
 pub(super) async fn post_backup_now(AxState(state): AxState<PluginState>) -> Json<Value> {
+    if !state.library_available {
+        return Json(json!({ "acted": true, "ok": false, "reason": "library unavailable" }));
+    }
+
     let Some(rec) = crate::session::read() else {
         return Json(json!({ "acted": false, "ok": false, "reason": "no active session" }));
     };

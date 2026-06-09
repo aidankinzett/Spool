@@ -19,6 +19,9 @@ pub(super) async fn get_steam_launch_info(
     AxState(state): AxState<PluginState>,
     AxPath(id): AxPath<String>,
 ) -> Result<Json<Value>, StatusCode> {
+    if !state.library_available {
+        return Err(StatusCode::SERVICE_UNAVAILABLE);
+    }
     let entry = state
         .library
         .find(&id)
@@ -53,6 +56,9 @@ pub(super) async fn get_steam_art(
     AxState(state): AxState<PluginState>,
     AxPath((id, kind)): AxPath<(String, String)>,
 ) -> Result<Json<Value>, StatusCode> {
+    if !state.library_available {
+        return Err(StatusCode::SERVICE_UNAVAILABLE);
+    }
     let entry = state
         .library
         .find(&id)

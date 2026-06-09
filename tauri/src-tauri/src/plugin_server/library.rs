@@ -38,6 +38,9 @@ pub(super) async fn delete_game(
     AxState(state): AxState<PluginState>,
     AxPath(id): AxPath<String>,
 ) -> Result<Json<Value>, StatusCode> {
+    if !state.library_available {
+        return Err(StatusCode::SERVICE_UNAVAILABLE);
+    }
     match crate::library::delete_game_core(&state.library, &id).await {
         Ok(()) => Ok(Json(json!({ "ok": true }))),
         Err(e) => {
@@ -56,6 +59,9 @@ pub(super) async fn post_uninstall_game(
     AxState(state): AxState<PluginState>,
     AxPath(id): AxPath<String>,
 ) -> Result<Json<Value>, StatusCode> {
+    if !state.library_available {
+        return Ok(Json(json!({ "ok": false, "reason": "library unavailable" })));
+    }
     let (ludusavi_exe, config_dir) = match super::ludusavi_prep("plugin uninstall") {
         Ok(pair) => pair,
         Err(reason) => return Ok(Json(json!({ "ok": false, "reason": reason }))),
@@ -85,6 +91,9 @@ pub(super) async fn post_forget_game(
     AxState(state): AxState<PluginState>,
     AxPath(id): AxPath<String>,
 ) -> Result<Json<Value>, StatusCode> {
+    if !state.library_available {
+        return Err(StatusCode::SERVICE_UNAVAILABLE);
+    }
     match state.library.remove(&id).await {
         Ok(true) => Ok(Json(json!({ "ok": true }))),
         Ok(false) => Ok(Json(json!({ "ok": false, "reason": "game not in library" }))),

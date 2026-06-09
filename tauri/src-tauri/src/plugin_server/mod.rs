@@ -57,6 +57,10 @@ struct PluginState {
     /// request without a reload, which is what the old per-request
     /// `Library::load()` was emulating.
     library: crate::library::SharedLibrary,
+    /// Whether the database was successfully opened. If false, we fell back
+    /// to an empty in-memory database to keep the server responsive, but write/modify
+    /// and backup operations must be rejected.
+    library_available: bool,
     /// Discovered LAN peers, kept fresh by a background listener spawned in
     /// `serve`. The Decky UI reads it via `GET /lan/peers`.
     lan: Arc<LanState>,
@@ -72,22 +76,22 @@ struct PluginState {
 /// Start the plugin loopback HTTP server and run until killed.
 /// Called from `lib.rs::run_headless_server`.
 pub async fn serve() -> AppResult<()> {
-    let library = match Library::open().await {
-        Ok(l) => Arc::new(l),
+    let (library, library_available) = match Library::open().await {
+        Ok(l) => (Arc::new(l), true),
         Err(e) => {
             // An empty in-memory library keeps the server responsive rather
             // than refusing to start; library reads just come back empty.
             tracing::error!(error = %e, "plugin server: failed to open library DB; using empty in-memory library");
-            Arc::new(
-                Library::open_in_memory()
-                    .await
-                    .expect("in-memory library must open"),
-            )
+            let in_mem = Library::open_in_memory()
+                .await
+                .expect("in-memory library must open");
+            (Arc::new(in_mem), false)
         }
     };
     let state = PluginState {
         ludusavi: Arc::new(LudusaviClient::new()),
         library,
+        library_available,
         lan: Arc::new(LanState::new()),
         http: reqwest::Client::new(),
         download: Arc::new(LanDownloadState::default()),
