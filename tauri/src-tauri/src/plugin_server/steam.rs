@@ -103,6 +103,7 @@ pub(super) async fn get_steam_art(
     // kinds: the wide capsule is a landscape "grid".
     let sgdb_kind = match kind.as_str() {
         "header" => "grid",
+        "capsule" => "cover",
         other => other,
     };
     let steam_id = entry.steam_id;
