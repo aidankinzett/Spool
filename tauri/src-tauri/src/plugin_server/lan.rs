@@ -229,6 +229,7 @@ mod tests {
         PluginState {
             ludusavi: Arc::new(LudusaviClient::new()),
             library,
+            library_available: true,
             lan,
             http: reqwest::Client::new(),
             download: Arc::new(LanDownloadState::default()),
