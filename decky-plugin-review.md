@@ -124,17 +124,17 @@ The doc comment claims cross-process writers are serialized "by the attached pro
 `_save_settings` opens in `'w'` (truncating) then `json.dump`s; a crash/kill/disk-full between truncate and flush leaves partial JSON, and `_load_settings` catches `ValueError` → `{}`, silently discarding `spool_command` and `notify`. Diverges from the Rust atomic tmp→rename convention. Settings are re-derivable, so low.
 *Fix:* Write to a temp file in the same directory then `os.replace()`; optionally log a warning on `ValueError` so corruption is visible.
 
-**LAN download Cancel during the optimistic "starting" window sends an empty `install_token`** *(filed three times — see Coverage; one root cause)*
+**~~LAN download Cancel during the optimistic "starting" window sends an empty `install_token`~~ ✓ Done — Group 4** *(filed three times — see Coverage; one root cause)*
 `decky/src/components/peer-games.tsx:106-146`
 `startDownload` optimistically sets `install_token = ""`, awaits `POST /lan/install`, but never reads the response body (which carries the real `{install_token}`) and only starts polling afterward. The GameRow renders Cancel as soon as `active` is non-null, so a Cancel in that window sends `{install_token: ""}`; the backend's `request_cancel` only matches the exact active token, so it returns `false` and the install keeps running — Cancel silently no-ops until the next poll updates the token. **Verifier corrections:** the empty-token window is larger than "until first poll" because `begin_install` awaits the manifest fetch (host blake3-hashes the whole game folder, up to a 300s timeout) before the POST returns, so for a large game the window is seconds-to-minutes and reliably hittable; but the transfer is *not* left permanently uncancellable — once polling supplies the real token a second Cancel works, and the poll only clears local state on terminal status. Net impact: the *first* Cancel during the starting phase is silently dropped (low). (Originally filed once as High by the ts-components lane; verifiers there held High, but the three other filings and their verifiers converge on low given the transient, self-correcting nature — adjudicate as low.)
 *Fix:* Read the token from the POST response and store it before showing Cancel (`const { install_token } = await res.json(); setDownload(d => d ? {...d, install_token} : d)`), or disable Cancel while `download.install_token === ""`.
 
-**`PeerGamesPage` terminal-state `setTimeout(setDownload(null))` never cleared on unmount** *(reviewers split low/nit)*
+**~~`PeerGamesPage` terminal-state `setTimeout(setDownload(null))` never cleared on unmount~~ ✓ Done — Group 4** *(reviewers split low/nit)*
 `decky/src/components/peer-games.tsx:84-104`
 A terminal poll schedules `setTimeout(() => setDownload(null), 3000)` that the mount-effect cleanup never clears (it only clears `pollRef`). Navigating away within 3s fires `setDownload` on an unmounted component. React 18 silently no-ops this, the timer self-clears within 3s, and there's no persistent leak — so the substantive point is consistency with the file's careful `cancelled`/`pollRef` discipline.
 *Fix:* Store the timer in a ref and clear it in the effect cleanup, or guard with a `cancelled` flag.
 
-**`LanPage` shows "No Spool devices found" identically for an empty network and a server-fetch failure**
+**~~`LanPage` shows "No Spool devices found" identically for an empty network and a server-fetch failure~~ ✓ Done — Group 4**
 `decky/src/components/lan-view.tsx:15-39`
 The `poll()` catch sets `peers` to `[]` on any fetch/parse failure, and the render treats `peers.length === 0` as the empty state. If the loopback server becomes unreachable after `base` resolved, the user sees a confident "no devices" rather than a connection error. `baseError` only covers the initial `getServerBase()` resolution.
 *Fix:* Track a separate fetch-error state for `/lan/peers` (mirroring `peer-games.tsx`) and only show "No Spool devices found" when the fetch succeeded with an empty array.
@@ -161,7 +161,7 @@ The `RoutePatch` callback constructs a new `createReactTreePatcher` (fresh empty
 `patch-wrapper` hardcodes `BAR_HEIGHT = 44` (driving the bar's `top` offset and `TITLE_SHIFT`) while `SpoolBar` independently sets `height: 44`, coupled only by a comment. No current malfunction (both are 44); future drift would cause cosmetic mispositioning. Preventative DRY cleanup.
 *Fix:* Export one `BAR_HEIGHT` constant consumed by both.
 
-**`onAppStop` TS callable return type omits `ok`/`reason` actually returned by the backend** *(both reviewers → nit)*
+**~~`onAppStop` TS callable return type omits `ok`/`reason` actually returned by the backend~~ ✓ Done — Group 4** *(both reviewers → nit)*
 `decky/src/api/callables.ts:10-12`
 Typed `{ acted: boolean; game?: string }` but Python returns the full `{acted, ok, game, reason}`. Harmless today (the only caller is fire-and-forget) but a latent contract-drift hazard. **Verifier note:** the real payload also includes `cloud_synced`, so a widened type should include it too.
 *Fix:* Widen to `{ acted: boolean; ok?: boolean; game?: string; reason?: string; cloud_synced?: boolean }`.

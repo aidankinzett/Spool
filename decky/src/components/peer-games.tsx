@@ -29,6 +29,10 @@ export function PeerGamesPage() {
   const [error, setError] = useState<string | null>(null);
   const [download, setDownload] = useState<DownloadProgress | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // The terminal "clear the row after 3s" timer, kept in a ref so the unmount
+  // cleanup can cancel it (otherwise navigating away within 3s fires setDownload
+  // on an unmounted component).
+  const doneTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const peerBase = base ? `${base}/lan/peers/${peerAddr}/${peerPort}` : null;
 
@@ -80,6 +84,10 @@ export function PeerGamesPage() {
         clearInterval(pollRef.current);
         pollRef.current = null;
       }
+      if (doneTimerRef.current) {
+        clearTimeout(doneTimerRef.current);
+        doneTimerRef.current = null;
+      }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [base]);
@@ -98,7 +106,7 @@ export function PeerGamesPage() {
             } else if (p?.status === "error") {
               toaster.toast({ title: "Install failed", body: p.message ?? p.game_name });
             }
-            setTimeout(() => setDownload(null), 3000);
+            doneTimerRef.current = setTimeout(() => setDownload(null), 3000);
           }
         })
         .catch(() => undefined);
@@ -121,7 +129,12 @@ export function PeerGamesPage() {
       bytes_per_second: 0,
     });
     try {
-      await startLanInstall(base, peerAddr, Number(peerPort), game.id);
+      // The POST returns the real install token (after the host hashes the game
+      // folder, which can take a while for a big game). Store it so Cancel
+      // targets the right install — without it Cancel would send an empty token
+      // the backend can't match, and silently no-op. (#cancel-empty-token)
+      const { install_token } = await startLanInstall(base, peerAddr, Number(peerPort), game.id);
+      setDownload((d) => (d ? { ...d, install_token } : d));
     } catch {
       setDownload(null);
       return;
@@ -277,7 +290,13 @@ function GameRow({
           <span style={{ fontVariantNumeric: "tabular-nums", fontWeight: 600, minWidth: "3ch", textAlign: "right" }}>
             {pct}%
           </span>
-          <DialogButton style={{ width: "auto", minWidth: "110px" }} onClick={onCancel}>
+          <DialogButton
+            style={{ width: "auto", minWidth: "110px" }}
+            // No token yet means the backend hasn't created the install session
+            // to cancel — disable rather than fire a no-op cancel. (#cancel-empty-token)
+            disabled={!active.install_token}
+            onClick={onCancel}
+          >
             Cancel
           </DialogButton>
         </div>
