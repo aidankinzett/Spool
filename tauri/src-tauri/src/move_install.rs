@@ -575,24 +575,22 @@ fn relative_inside(exe: &Path, folder: &Path) -> Option<PathBuf> {
     if let Ok(rel) = exe.strip_prefix(folder) {
         return collect_normal(rel);
     }
-    #[cfg(windows)]
-    {
+    // Windows only (case-insensitive FS): retry on ASCII-lowercased copies. Pure
+    // string work — no Windows-only APIs — so it's gated with `cfg!(windows)`
+    // rather than `#[cfg]`, keeping it compiled and lint-checked on every OS.
+    if cfg!(windows) {
         let exe_s = exe.to_str()?;
         let folder_l = folder.to_str()?.to_ascii_lowercase();
         let folder_l = folder_l.trim_end_matches(['\\', '/']);
-        let rest = exe_s
-            .to_ascii_lowercase()
-            .strip_prefix(folder_l)
-            .map(str::to_string)?;
-        let rest = rest.trim_start_matches(['\\', '/']);
-        if rest.is_empty() {
-            return None;
+        if let Some(rest) = exe_s.to_ascii_lowercase().strip_prefix(folder_l) {
+            let rest = rest.trim_start_matches(['\\', '/']);
+            if !rest.is_empty() {
+                // Same byte length as the lowercased tail → slice the original.
+                let tail = &exe_s[exe_s.len() - rest.len()..];
+                return collect_normal(Path::new(tail));
+            }
         }
-        // Same byte length as the lowercased tail → safe to slice the original.
-        let tail = &exe_s[exe_s.len() - rest.len()..];
-        return collect_normal(Path::new(tail));
     }
-    #[cfg(not(windows))]
     None
 }
 
