@@ -4,25 +4,26 @@
 
 This review covers the Spool Decky plugin and the headless plugin server that backs it — the Rust loopback HTTP server (`plugin_server.rs`), the supporting Rust subsystems it drives (`session.rs`, `suspend.rs`, `rclone.rs`, `decky_install.rs`), the Python backend (`decky/main.py`), and the TypeScript frontend (callables, components, the Steam-UI patch).
 
-**Counts by severity** (after verifier refinement):
+**Counts by severity** (after verifier refinement and post-review resolutions):
 
 | Severity | Count |
 |---|---|
 | High | 3 |
-| Medium | 5 |
+| Medium | 6 |
 | Low | 11 |
 | Nit | 2 |
-| Disputed (unadjudicated) | 8 |
+| Disputed (unadjudicated) | 5 |
+| Resolved/Dismissed | 3 |
 
 **Headline risks:**
 
 1. **Restore/pull from the Decky game page can overwrite the live saves of a session running in another process.** The headless server's restore and cloud-pull paths never take the cross-process per-game run lock; their only guard is an in-process `RunState` that does not coordinate across the tray GUI, the attached `--run`, and the headless server — exactly the three processes that coexist in Game Mode. (High)
 2. **A force-killed session on one device can silently revert a peer's "play here instead" takeover.** The forced-close fallback's `mark_session_pending_backup_from_config` is missing the ownership guard its in-process sibling has, so it blindly overwrites a peer's live Active marker and then force-uploads stale saves over the peer's. (High)
 3. **The Steam-UI patch can throw into Steam's render instead of degrading to "no badge."** Unguarded property access on `findClassModule` results means a future Steam class-marker rename throws a `TypeError` with no surrounding try/catch — the failure mode the architecture intends to be a no-op is actually a crash. (High, refined down from the reviewers' split — see note)
-4. **The forced-close safety net is gated on a fragile cross-language appid equality with no fallback or diagnostic.** This is the one check standing between a Steam force-kill and a captured save; three independently-maintained quoting/CRC paths must agree byte-for-byte, and on mismatch the backup silently no-ops. (Disputed — confirmed-fragile by one reviewer, refuted as non-reachable-today by another.)
+4. **The forced-close safety net is gated on a fragile cross-language appid equality with no fallback or diagnostic.** This is the one check standing between a Steam force-kill and a captured save; three independently-maintained quoting/CRC paths must agree byte-for-byte. (Resolved post-review: The Rust helpers were verified to be byte-identical on calculation, and the TS side forwards Steam's assigned appid verbatim, making the silent no-op unreachable today, though the fragile coupling remains a target for deduplication/hardening.)
 5. **Several non-idempotent POSTs can double-fire or spuriously fail under timeout/decode edge cases**, and the LAN-download Cancel button silently no-ops during the install-start window.
 
-**Overall health read:** The subsystem is well-architected for its hostile environment (force-kills, suspend, multi-process, cross-device). Most findings are edge cases the design already half-anticipates, and the verifiers downgraded many from medium to low on realistic-impact grounds (loopback-only bind, single-user handheld, idempotent-in-outcome operations, embedded-recoverable payloads). The two genuinely sharp issues are the **run-lock bypass on restore/pull** (live-save corruption across processes) and the **missing peer-ownership guard in the forced-close marker write** (silent takeover reversion + stale force-upload). The appid coupling is a latent single-point-of-failure worth hardening even though it is not reachable in current code. The Python HTTP retry/timeout handling is the recurring source of low-severity correctness drift and would benefit from one disciplined fix.
+**Overall health read:** The subsystem is well-architected for its hostile environment (force-kills, suspend, multi-process, cross-device). Most findings are edge cases the design already half-anticipates, and the verifiers downgraded many from medium to low on realistic-impact grounds (loopback-only bind, single-user handheld, idempotent-in-outcome operations, embedded-recoverable payloads). The three genuinely sharp issues are the **run-lock bypass on restore/pull/install-deps** (live-save/prefix corruption across processes) and the **missing peer-ownership guard in the forced-close marker write** (silent takeover reversion + stale force-upload). The appid coupling is a latent single-point-of-failure worth hardening even though it is not reachable in current code. The Python HTTP retry/timeout handling is the recurring source of low-severity correctness drift and would benefit from one disciplined fix.
 
 ---
 
@@ -47,6 +48,17 @@ The Decky forced-close fallback calls `mark_session_pending_backup_from_config` 
 *Fix:* Bail early in the patch handler and the patch-wrapper effects if `!appDetailsClasses || !appDetailsHeaderClasses`; wrap the splice handler body in try/catch returning `ret` unchanged so a structural mismatch degrades to "no badge." Log once via `console.warn`.
 
 ### Medium
+
+**`POST /games/{id}/install-deps` bypasses the per-game run lock**
+`tauri/src-tauri/src/plugin_server.rs:659-693` (caller) → `tauri/src-tauri/src/proton.rs:422-512` (core)
+Same defect class as the confirmed High "restore/pull bypass the run lock," but for Wine-prefix writes. `post_install_deps` runs `umu-run winetricks` against `WINEPREFIX=prefixes/<game_id>/` without taking the `proc_lock::try_acquire_run` lock. Triggering "Install dependencies" from the QAM while the same game is running as an attached `--run` starts a second wineserver/Proton session writing into the live prefix. winetricks assumes exclusive prefix access, so concurrent use can corrupt the prefix. Severity **Medium** — real prefix-corruption risk, but the trigger requires a deliberate long-running action from the QAM mid-play.
+*Fix:* Push run-lock acquisition into `install_proton_deps_core` inside `proton.rs`:
+```rust
+let _run_lock = crate::proc_lock::try_acquire_run(game_id)?.ok_or_else(|| {
+    AppError::Other("This game is busy right now (running, or being removed) — close it and try again.".into())
+})?;
+```
+This also ensures uniform coverage for the desktop command wrapper.
 
 **LAN peer-proxy endpoints issue outbound HTTP to an arbitrary caller-supplied host:port with no allow-list** *(reviewers split medium/low; medium retained — see note)*
 `tauri/src-tauri/src/plugin_server.rs:757-810, 824-864`
@@ -153,7 +165,7 @@ Typed `{ acted: boolean; game?: string }` but Python returns the full `{acted, o
 
 These have conflicting verdicts; the maintainer should adjudicate.
 
-- **`post_game_stopped` appid mismatch silently no-ops the fallback with no game-name fallback** (`plugin_server.rs:248-258`) — One verifier: real latent fragility (three quoting/CRC paths must agree; silent no-op on drift), severity low. Other verifier: not a real bug — all three appids reduce to a single source of truth (`spool_executable()` + name, identically quoted), and the appid check is a deliberate disambiguator because `RegisterForAppLifetimeNotifications` fires for *every* game stop. **Adjudication hinge:** is the appid check a fragile single point of failure, or a correctly-load-bearing guard that a name fallback would weaken?
+- **[RESOLVED - NOT A BUG TODAY] `post_game_stopped` appid mismatch silently no-ops the fallback with no game-name fallback** (`plugin_server.rs:248-258`) — One verifier: real latent fragility (three quoting/CRC paths must agree; silent no-op on drift), severity low. Other verifier: not a real bug — all three appids reduce to a single source of truth (`spool_executable()` + name, identically quoted), and the appid check is a deliberate disambiguator because `RegisterForAppLifetimeNotifications` fires for *every* game stop. **Adjudication:** Verified post-review that the silent no-op is not reachable in the normal flow. `session::compute_steam_appid` and `steam::compute_shortcut_app_id` are byte-identical. The TS side forwards Steam's assigned appid verbatim, so it can only mismatch if Steam's stored shortcut appid ≠ the stamped one (which reduces to the Rust equality just proven equal).
 
 - **Suspend marker may not land before freeze if the delay inhibitor can't be acquired** (`suspend.rs:87-91, 118-120, 137-143, 166`) — One verifier: real mechanism, but severity low because a stale Active marker and a suspended marker both classify to `UnsyncedElsewhere` (proven by existing tests); the only divergence is ≤180s of harder "Already playing" warning wording, then they converge. Other verifier: not a real bug for the same reason — the staleness fallback lands on the intended state, no marker is ever silently reclaimed. **Hinge:** cosmetic transient warning-wording difference vs. a meaningful loss of suspend semantics.
 
@@ -167,9 +179,9 @@ These have conflicting verdicts; the maintainer should adjudicate.
 
 - **QAM "Back up now" vs game-page badge backup are divergent UX paths** (`decky/src/components/content.tsx:73-100`) — One verifier: real low — the QAM path has no appid to drive the spinner store, so a multi-minute op shows only a toast + disabled button. Other verifier: not a real bug — the divergence is structural (no appid in QAM, no game-page context), the disabled button *is* persistent feedback, and the suggested "use status.appid" fix isn't actionable. **Hinge:** worth aligning the two surfaces vs. an intentional, non-actionable difference.
 
-- **Decode error on first HTTP attempt retried, firing a duplicate non-idempotent POST** (`decky/main.py:184-204`) — Note this overlaps the *confirmed* "malformed/partial response" finding above. One verifier: real but severity low and the proposed fix is incomplete (the realistic truncation trigger is `IncompleteRead`/`HTTPException`, which the one-liner leaves in the retry branch). Other verifier: not a real bug as framed — axum `Json` always sets Content-Length, so truncation surfaces as `IncompleteRead` (an `HTTPException`, not a decode error) and the pure-`JSONDecodeError` path is unreachable against this server; the proposed fix wouldn't prevent any double-POST. **Hinge:** the confirmed version captures the actionable core (handle post-response failures as no-retry); this duplicate-framing dispute is mainly about whether `JSONDecodeError` specifically is reachable. Resolve together with the confirmed finding, and ensure any fix covers `IncompleteRead`/`HTTPException`, not just decode errors.
+- **[RESOLVED - NOT A BUG TODAY (DUPLICATE)] Decode error on first HTTP attempt retried, firing a duplicate non-idempotent POST** (`decky/main.py:184-204`) — Note this overlaps the *confirmed* "malformed/partial response" finding above. One verifier: real but severity low and the proposed fix is incomplete. Other verifier: not a real bug as framed — axum `Json` always sets Content-Length, so truncation surfaces as `IncompleteRead` (an `HTTPException`, not a decode error) and the pure-`JSONDecodeError` path is unreachable against this server. **Adjudication:** Resolved together with the confirmed finding. The confirmed version captures the actionable core (handle post-response failures as no-retry).
 
-- **Forced-close fallback appid match is a fragile cross-language coupling with no name fallback** (`plugin_server.rs:248-258`) — Same code as the first disputed item, filed from the contract-drift lane. One verifier: real, refined to low (latent hazard: three duplicated appid computations, no cross-module test) and recommends a shared helper + a test asserting `compute_steam_appid == compute_shortcut_app_id`. Other verifier: not a real bug — the two Rust helpers are byte-identical and already formula-tested, a name path already exists for the badge use case (`findSpoolGame`), and the appid check is intentional. **Hinge (shared with item 1):** dedupe-and-test the appid computation vs. leave as-is.
+- **[RESOLVED - LATENT-BUT-SAFE, NOT A BUG TODAY] Forced-close fallback appid match is a fragile cross-language coupling with no name fallback** (`plugin_server.rs:248-258`) — Same code as the first disputed item. One verifier: real, refined to low and recommends a shared helper + a test. Other verifier: not a real bug — the two Rust helpers are byte-identical. **Adjudication:** Resolved as latent-but-safe (not a bug today) because the helpers are byte-identical. Deduplication and adding a cross-helper equality test remain recommended to mitigate future drift.
 
 ---
 
@@ -220,8 +232,8 @@ Folding in the completeness critic honestly — several handlers and files were 
 
 **Unreviewed routes / handlers (`plugin_server.rs`):**
 - `GET /covers/*` (`ServeDir`, line 161) — the only filesystem-serving route; never examined for `..`/symlink containment to `covers_dir()`. Relies entirely on tower-http path normalization.
-- `GET /games/{id}/steam-launch-info` — no check that `entry.exe_path` still exists; returns a launch contract for a possibly-deleted exe. Critically, **no finding directly verified that `build_launch_options` and `session::compute_steam_appid` produce identical quoted strings** — this is the actual root of the entire disputed appid cluster and was never directly checked. A direct string-equality test between `steam::compute_shortcut_app_id` and `session::compute_steam_appid` would settle items 1, 8, and 9 in the Disputed section.
-- `POST /games/{id}/install-deps` and `POST /games/{id}/proton` — long-running, prefix-mutating, and take **neither** the per-game run lock **nor** the backup lock (grep confirms zero `proc_lock`/`acquire_backup` in `plugin_server.rs`). Setting Proton version or running winetricks on a game playing in another process can corrupt the live Wine prefix — the **same class as the confirmed restore/pull run-lock bypass, but for prefix writes, and not flagged as a finding.** This is the most significant coverage gap.
+- `GET /games/{id}/steam-launch-info` — no check that `entry.exe_path` still exists; returns a launch contract for a possibly-deleted exe. *(Resolved: Verified post-review that `build_launch_options` and `session::compute_steam_appid` produce identical quoted strings.)*
+- `POST /games/{id}/install-deps` and `POST /games/{id}/proton` — *[Gap Closed]*: Verified post-review. `POST /games/{id}/install-deps` was confirmed to bypass the per-game run lock and has been added as a confirmed Medium finding. `POST /games/{id}/proton` was verified as benign (only writes the `proton_version_path` DB field, which is SQLite-WAL-safe).
 - `POST /games/{id}/uninstall` and `DELETE /games/{id}` — whether the headless call sites take the per-game wipe lock was not verified.
 - `POST /fold` — fires a synchronous cross-device rclone fold with no rate-limit/dedup; concurrent calls can overlap on a quota-limited backend. (The TS side's per-page-view fold was flagged; the server handler was not.)
 
@@ -237,44 +249,8 @@ Folding in the completeness critic honestly — several handlers and files were 
 - **Missing `umu-run` in Game Mode:** install-deps/proton routes call `proton::` cores; no dependency doctor runs on the headless path.
 
 **Findings needing deeper verification:**
-- The appid-equality coupling (one confirmed-adjacent + two disputed filings) is the single point of failure for the plugin's reason to exist — resolve with a direct string-equality test rather than leaving disputed.
+- **[Resolved]** The appid-equality coupling (one confirmed-adjacent + two disputed filings) was verified post-review. `session::compute_steam_appid` and `steam::compute_shortcut_app_id` are indeed byte-identical, settling the disputed appid items.
 - "Forced-close fallback skipped on DB-open failure" was filed twice (confirmed list) — these are the same finding; dedupe.
 - The LAN empty-token cancel was filed three times across lanes — same root cause; confirm the queued cancel re-fires correctly once the real token lands on both ends.
 
-**What this means:** the highest-value unreviewed item is the **install-deps/proton run-lock gap** (a likely fourth concurrency finding in the same family as the confirmed restore/pull bypass), and the most important unresolved question is the **`compute_steam_appid` ↔ `compute_shortcut_app_id` byte-equality**, which would convert the disputed appid cluster into a single confirmed-or-dismissed verdict.
-
----
-
-## Addendum — coverage gaps closed (post-review)
-
-The two highest-value items the completeness critic flagged were verified with dedicated tracing agents after the main review.
-
-### NEW confirmed finding — `POST /games/{id}/install-deps` bypasses the per-game run lock (Medium)
-
-Same defect class as the confirmed High "restore/pull bypass the run lock," but for Wine-prefix writes — and it was **not** in the original finding set.
-
-`post_install_deps` (`tauri/src-tauri/src/plugin_server.rs:659-693`) → `install_proton_deps_core` (`tauri/src-tauri/src/proton.rs:422-512`) runs `umu-run winetricks -q <verbs>` against `WINEPREFIX=prefixes/<game_id>/` (prefix write at `proton.rs:451-476`) with no `proc_lock::try_acquire_run`. The play workflow holds that machine-wide lock across the entire session (`runner.rs:1502-1513`; `run_workflow` is awaited inside the `_run_lock` scope), so triggering "Install dependencies" from the QAM while the same game runs as an attached `--run` starts a second wineserver/Proton session writing into the live prefix. winetricks (DLL overrides, registry edits, `wineboot`) assumes exclusive prefix access, so concurrent use can corrupt the prefix. Severity **Medium** — real prefix-corruption risk, but the trigger requires a deliberate long-running action from the QAM mid-play.
-
-*Fix:* push the run lock into `install_proton_deps_core` (the desktop command wrapper at `proton.rs:381-416` does not take it today, so the core is the single clean point — this also improves the desktop path):
-
-```rust
-let _run_lock = crate::proc_lock::try_acquire_run(game_id)?.ok_or_else(|| {
-    AppError::Other("This game is busy right now (running, or being removed) — close it and try again.".into())
-})?;
-```
-
-`POST /games/{id}/proton` (`post_set_proton`, `plugin_server.rs:716-745`) is **benign** — it only writes the `proton_version_path` DB field (SQLite-WAL-safe), never touches the prefix, and applies on the next launch. No fix needed.
-
-So the run-lock-bypass family is **three** confirmed handlers — restore, pull, and install-deps — all fixed the same way: acquire the cross-process lock inside the shared core so every caller (desktop command + headless server) is covered uniformly.
-
-### Resolved — the disputed appid cluster is latent-but-safe, not a bug today (downgrades Disputed items 1, 8, 9)
-
-The three disputed findings about the forced-close appid-equality gate all hinge on one fact, now settled: **`session::compute_steam_appid` and `steam::compute_shortcut_app_id` are byte-identical.** Both call `steam_shortcuts_util::calculate_app_id` with identical exe-quoting (`format!("\"{}\"", path.replace('"', "\\\""))`) and the same `(exe, name)`, producing `crc32_ieee("\"<exe>\"" ++ name) | 0x80000000`. The only difference is cosmetic parameter order in the signatures. (`session.rs:59-62`; `steam.rs:143-145, 202-204`; library algorithm confirmed in `steam_shortcuts_util`.)
-
-The TS side does **not** recompute the appid — `decky/src/index.tsx:85-94` reads Steam's assigned `n.unAppID >>> 0` and forwards it verbatim (`decky/main.py:343`), so it can only mismatch if Steam's stored shortcut appid ≠ the stamped one, which reduces to the Rust equality just proven equal.
-
-*Verdict:* the silent no-op is **not reachable in the normal flow** — Disputed items 1, 8, and 9 are correctly "not a bug today." It remains a fragile coupling: three independently-edited spots must keep agreeing, and the lone test (`session.rs:281`) reimplements the formula inline rather than calling the other helper, so cross-helper agreement is untested. Edge cases (a stale pre-rename shortcut, or `$APPIMAGE` path instability changing `spool_executable()` between stamp-time and launch-time) could still drift. The "Harden the appid coupling" refactor (dedupe to one hashing site + a cross-helper equality test + a name-based fallback/tie-breaker in `post_game_stopped` rather than a hard gate) remains the right low-cost insurance.
-
-### Still-open coverage gaps (not chased here)
-
-For full closure, these from the critic's list remain unverified: `GET /covers/*` path-traversal containment (relies on tower-http normalization), `POST /games/{id}/uninstall` + `DELETE /games/{id}` wipe-lock verification on the headless path, `POST /fold` server-handler rate-limiting, `appid=0`/non-Spool-game stops firing the global lifetime listener with no client guard, and a correctness pass over the unreviewed modals (`install-deps-modal`, `proton-version-modal`, `revision-picker-modal`, `add-to-steam-list`, `lan-view`) and hooks (`use-backing-up`, `use-now`).
+**What this means:** The two highest-value unreviewed items (the install-deps/proton run-lock gap and the `compute_steam_appid` ↔ `compute_shortcut_app_id` byte-equality) have been resolved post-review. Remaining open gaps include path-traversal containment on `GET /covers/*`, wipe-lock verification on the headless uninstall path, server-side rate-limiting on `/fold`, and a detailed correctness review of unreviewed modals and hooks.
