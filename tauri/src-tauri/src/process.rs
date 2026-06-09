@@ -57,17 +57,32 @@ pub struct GameExitResult {
 /// No-op when not running from an AppImage (`APPDIR` unset) — so native
 /// installs (AUR, deb/rpm) and Windows are unaffected.
 ///
+/// Two variants cover the two command types used in the codebase:
+/// - [`strip_appimage_env`] for `tokio::process::Command` (game launch, `hidden_command`)
+/// - [`strip_appimage_env_blocking`] for `std::process::Command` (`blocking_command`, `load_manifest`)
+///
+/// Both delegate to [`appimage_env_ops`] so the stripping logic lives in one place.
+///
 /// Shared with `system_open.rs`, which spawns the host file manager via
 /// `xdg-open` and must hand it the host environment for the same reason
 /// game launches do.
-pub(crate) fn strip_appimage_env(cmd: &mut Command) {
+enum EnvOp {
+    Remove(&'static str),
+    Set(&'static str, String),
+}
+
+/// Computes the set of environment mutations needed to strip AppImage pollution.
+/// Returns an empty Vec when not running inside an AppImage (`APPDIR` unset).
+fn appimage_env_ops() -> Vec<EnvOp> {
     let Some(appdir) = std::env::var_os("APPDIR") else {
-        return;
+        return vec![];
     };
     let appdir = appdir.to_string_lossy().to_string();
     if appdir.is_empty() {
-        return;
+        return vec![];
     }
+
+    let mut ops = Vec::new();
 
     // Vars the AppImage sets wholesale (no host original preserved) → drop.
     for var in [
@@ -83,7 +98,7 @@ pub(crate) fn strip_appimage_env(cmd: &mut Command) {
         "GDK_PIXBUF_MODULE_FILE",
         "GIO_EXTRA_MODULES",
     ] {
-        cmd.env_remove(var);
+        ops.push(EnvOp::Remove(var));
     }
 
     // Colon-separated path vars: the AppImage prepends `$APPDIR/...` entries and
@@ -106,10 +121,32 @@ pub(crate) fn strip_appimage_env(cmd: &mut Command) {
                 .filter(|p| !p.is_empty() && !p.starts_with(&appdir))
                 .collect();
             if cleaned.is_empty() {
-                cmd.env_remove(var);
+                ops.push(EnvOp::Remove(var));
             } else {
-                cmd.env(var, cleaned.join(":"));
+                ops.push(EnvOp::Set(var, cleaned.join(":")));
             }
+        }
+    }
+
+    ops
+}
+
+/// Strips AppImage env pollution from a `tokio::process::Command`.
+pub(crate) fn strip_appimage_env(cmd: &mut Command) {
+    for op in appimage_env_ops() {
+        match op {
+            EnvOp::Remove(v) => { cmd.env_remove(v); }
+            EnvOp::Set(v, s) => { cmd.env(v, s); }
+        }
+    }
+}
+
+/// Strips AppImage env pollution from a `std::process::Command`.
+pub(crate) fn strip_appimage_env_blocking(cmd: &mut std::process::Command) {
+    for op in appimage_env_ops() {
+        match op {
+            EnvOp::Remove(v) => { cmd.env_remove(v); }
+            EnvOp::Set(v, s) => { cmd.env(v, s); }
         }
     }
 }
