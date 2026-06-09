@@ -17,6 +17,7 @@
   import type { DownloadProgress, UploadSnapshot } from '$lib/types';
   import { assetUrl } from '$lib/api';
   import { fmtRate } from '$lib/format';
+  import { downloadIsActive, downloadPercent, liveUploads } from '$lib/transfers';
   import MonoLabel from './MonoLabel.svelte';
   import CassetteProgress from './CassetteProgress.svelte';
 
@@ -48,17 +49,13 @@
   }: Props = $props();
 
   // ── Derived totals ──────────────────────────────────────────────────────
-  const downloadActive = $derived(
-    download != null && (download.status === 'starting' || download.status === 'transferring'),
-  );
-  const dlCount = $derived(downloadActive ? 1 : 0);
-  const dlPercent = $derived(
-    download && download.bytes_total > 0
-      ? Math.round((download.bytes_done / download.bytes_total) * 100)
-      : 0,
-  );
+  // Shared with the library store (which feeds `TransferPill`) so the header
+  // counts can't disagree with the rendered rows — notably, a cancelled
+  // upload is excluded from `ulCount` here just as it is in the pill.
+  const dlCount = $derived(downloadIsActive(download) ? 1 : 0);
+  const dlPercent = $derived(downloadPercent(download));
 
-  const ulCount = $derived(uploads.length);
+  const ulCount = $derived(liveUploads(uploads).length);
 
   const totalSpeed = $derived(download?.bytes_per_second ?? 0);
 

@@ -137,6 +137,24 @@ pub fn run_lock_file(game_id: &str) -> PathBuf {
     run_locks_dir().join(format!("run-{safe}.lock"))
 }
 
+/// Marker file for the machine-wide **per-install LAN lock** — `flock`ed by a
+/// peer install for the whole transfer so two Spool processes (the tray GUI and
+/// the Decky headless server) can't install the *same* game into the same
+/// `<base>.partial` staging directory at once and corrupt it. Keyed by the
+/// install's base folder name (see `install_base_name`), which is the contended
+/// filesystem resource. Same lifecycle as [`backup_lock_file`] — only its lock
+/// state matters, and the OS frees it when the holder exits. `base` is already a
+/// safe filename; sanitised again defensively so it can't escape the locks dir.
+pub fn lan_install_lock_file(base: &str) -> PathBuf {
+    let safe: String = base
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '_' })
+        .collect();
+    let hash = blake3::hash(base.as_bytes()).to_hex().to_string();
+    let hash_prefix = &hash[..16];
+    run_locks_dir().join(format!("lan-install-{safe}-{hash_prefix}.lock"))
+}
+
 pub fn covers_dir() -> PathBuf {
     app_data_dir().join("covers")
 }
@@ -426,5 +444,17 @@ mod tests {
         // Resolution is relative to the test runner's exe dir; a made-up name
         // must never resolve there.
         assert!(resolve_sidecar_path("definitely-not-a-real-sidecar").is_none());
+    }
+
+    #[test]
+    fn lan_install_lock_file_avoids_collisions() {
+        let path_a = lan_install_lock_file("A B");
+        let path_b = lan_install_lock_file("A_B");
+        assert_ne!(path_a, path_b, "paths with spaces vs underscores should not collide");
+
+        let file_name_a = path_a.file_name().unwrap().to_str().unwrap();
+        assert!(file_name_a.starts_with("lan-install-A_B-"));
+        assert!(file_name_a.ends_with(".lock"));
+        assert_eq!(file_name_a.len(), 37);
     }
 }
