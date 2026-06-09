@@ -139,12 +139,13 @@ A terminal poll schedules `setTimeout(() => setDownload(null), 3000)` that the m
 The `poll()` catch sets `peers` to `[]` on any fetch/parse failure, and the render treats `peers.length === 0` as the empty state. If the loopback server becomes unreachable after `base` resolved, the user sees a confident "no devices" rather than a connection error. `baseError` only covers the initial `getServerBase()` resolution.
 *Fix:* Track a separate fetch-error state for `/lan/peers` (mirroring `peer-games.tsx`) and only show "No Spool devices found" when the fetch succeeded with an empty array.
 
-**Injected `<style>` elements never removed from the Big Picture document**
+**~~Injected `<style>` elements never removed from the Big Picture document~~ ✓ Done — Group 5**
 `decky/src/components/patch/patch-wrapper.tsx:34-46, 112-113, 136-141; decky/src/components/patch/reel.tsx:16-22`
+Fixed the stale-content half (the only real bug): `ensureTitleShiftStyle` now overwrites an existing node's `textContent` instead of short-circuiting on presence, so a Steam class-name change after a hot-reload/reinstall refreshes the baked-in selector. The reel keyframes node is a fully static string, so its short-circuit is a benign duplicate-prevention and left as-is.
 `ensureTitleShiftStyle`/`ensureReelKeyframes` append id-guarded `<style>` nodes to the Big Picture document head; the effect cleanup and plugin `onDismount` never remove them. After a hot-reload/reinstall, `getElementById(id)` short-circuits `ensure*`, so a stale class name baked into the title-shift node's `textContent` persists and can't be refreshed. **Verifier correction:** only the title-shift node interpolates a class name (`appDetailsHeaderClasses.BoxSizerContainer`); the reel keyframes node is a fully static string, so its leak is a benign duplicate-prevention concern, not a stale-content one.
 *Fix:* Remove the injected `<style>` nodes by id in `onDismount`, or make `ensure*` idempotently overwrite an existing node's `textContent` instead of short-circuiting on presence.
 
-**`createReactTreePatcher` reconstructed per route render, defeating its patched-component cache**
+**~~`createReactTreePatcher` reconstructed per route render, defeating its patched-component cache~~ ✓ Done — Group 5**
 `decky/src/index.tsx:46-80`
 The `RoutePatch` callback constructs a new `createReactTreePatcher` (fresh empty `caches`) and re-wraps a fresh `renderFunc` on every route render, re-running the uncached tree walk each time instead of hitting the intended de-dup cache. Functionally correct, just more work per render. **Verifier notes:** the substantive fix is hoisting `createReactTreePatcher` out of the per-render callback (restores `caches`); the symbol-tagging of `routeProps` is optional since `afterPatch` doesn't accumulate stacked patches today. (The MoonDeck/SteamGridDB precedent cited in the original fix is imprecise — those use different patching mechanisms — but the hoist remedy stands.)
 *Fix:* Hoist `createReactTreePatcher` to plugin/module init so a single `patchHandler` and its caches persist across renders.
@@ -156,7 +157,7 @@ The `RoutePatch` callback constructs a new `createReactTreePatcher` (fresh empty
 
 ### Nit
 
-**`BAR_HEIGHT` duplicated from `SpoolBar`'s literal height with no shared source** *(both reviewers → nit)*
+**~~`BAR_HEIGHT` duplicated from `SpoolBar`'s literal height with no shared source~~ ✓ Done — Group 5** *(both reviewers → nit)*
 `decky/src/components/patch/patch-wrapper.tsx:12, 116, 19; decky/src/components/patch/spool-bar.tsx:107`
 `patch-wrapper` hardcodes `BAR_HEIGHT = 44` (driving the bar's `top` offset and `TITLE_SHIFT`) while `SpoolBar` independently sets `height: 44`, coupled only by a comment. No current malfunction (both are 44); future drift would cause cosmetic mispositioning. Preventative DRY cleanup.
 *Fix:* Export one `BAR_HEIGHT` constant consumed by both.

@@ -11,6 +11,10 @@ import { BadgeMenuButton } from "./badge-menu";
 // Per-game accent comes from game.accent_color (the cover-art accent the
 // desktop app extracts); falls back to Spool's tape oxide.
 
+// The bar's height. Exported so patch-wrapper can offset the bar and lift the
+// title logo by the same amount — single source of truth so the two can't drift.
+export const BAR_HEIGHT = 44;
+
 const C = {
   surface: "rgba(21,24,29,0.92)", // graphite, slightly translucent over the page
   surfaceHover: "rgba(28,32,39,0.95)",
@@ -104,7 +108,7 @@ export function SpoolBar({
         display: "flex",
         alignItems: "center",
         gap: 14,
-        height: 44,
+        height: BAR_HEIGHT,
         padding: "0 8px 0 14px",
         // Keep the same solid surface while backing up — the spinning reel and
         // tape meter carry the activity cue, so the background shouldn't change

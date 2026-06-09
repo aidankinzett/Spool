@@ -27,6 +27,44 @@ import { SafeArea } from "./components/safe-area";
 export default definePlugin(() => {
   let hasWarnedPatch = false;
 
+  // Built ONCE at plugin init, not inside the addPatch callback. The callback
+  // runs on every route render; reconstructing the patcher there gave each
+  // render a fresh `createReactTreePatcher` with empty caches, re-running the
+  // tree walk every time. Hoisting it lets those caches persist across renders.
+  // It only dereferences appDetailsClasses at call time (inside the patch fn),
+  // so building it before the classes are populated is fine.
+  const patchHandler = createReactTreePatcher(
+    [
+      (t: any) =>
+        findInReactTree(t, (x: any) => x?.props?.children?.props?.overview)
+          ?.props?.children,
+    ],
+    (_: Array<Record<string, unknown>>, ret?: ReactElement) => {
+      try {
+        const container = findInReactTree(
+          ret,
+          (x: any) =>
+            Array.isArray(x?.props?.children) &&
+            appDetailsClasses.InnerContainer &&
+            x?.props?.className?.includes(appDetailsClasses.InnerContainer),
+        );
+
+        if (typeof container !== "object" || !container?.props?.children) return ret;
+        // Insert as the first child so the zero-height anchor shares the
+        // InnerContainer's top edge — PatchWrapper walks from there to the
+        // hero capsule and floats the bar over it (see patch-wrapper.tsx).
+        container.props.children.splice(0, 0, createElement(PatchWrapper, null));
+      } catch (err) {
+        if (!hasWarnedPatch) {
+          console.warn("[Spool] Failed to apply playtime patch to React tree:", err);
+          hasWarnedPatch = true;
+        }
+      }
+
+      return ret;
+    },
+  );
+
   // Register the full-screen LAN browse routes. The QAM "Browse LAN games"
   // button navigates to them; we remove them on dismount to avoid duplicate
   // patches across hot-reloads.
@@ -59,38 +97,6 @@ export default definePlugin(() => {
 
       const routeProps = findInReactTree(tree, (x: any) => x?.renderFunc);
       if (!routeProps) return tree;
-
-      const patchHandler = createReactTreePatcher(
-        [
-          (t: any) =>
-            findInReactTree(t, (x: any) => x?.props?.children?.props?.overview)
-              ?.props?.children,
-        ],
-        (_: Array<Record<string, unknown>>, ret?: ReactElement) => {
-          try {
-            const container = findInReactTree(
-              ret,
-              (x: any) =>
-                Array.isArray(x?.props?.children) &&
-                appDetailsClasses.InnerContainer &&
-                x?.props?.className?.includes(appDetailsClasses.InnerContainer),
-            );
-
-            if (typeof container !== "object" || !container?.props?.children) return ret;
-            // Insert as the first child so the zero-height anchor shares the
-            // InnerContainer's top edge — PatchWrapper walks from there to the
-            // hero capsule and floats the bar over it (see patch-wrapper.tsx).
-            container.props.children.splice(0, 0, createElement(PatchWrapper, null));
-          } catch (err) {
-            if (!hasWarnedPatch) {
-              console.warn("[Spool] Failed to apply playtime patch to React tree:", err);
-              hasWarnedPatch = true;
-            }
-          }
-
-          return ret;
-        },
-      );
 
       afterPatch(routeProps, "renderFunc", patchHandler);
 

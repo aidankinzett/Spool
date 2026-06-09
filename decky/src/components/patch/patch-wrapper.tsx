@@ -4,12 +4,11 @@ import { useServerBase } from "../../hooks/use-server-base";
 import { useSpoolPlaytime } from "../../hooks/use-spool-playtime";
 import { useBackingUp } from "../../hooks/use-backing-up";
 import { useParams } from "../../lib/steam";
-import { SpoolBar } from "./spool-bar";
+import { SpoolBar, BAR_HEIGHT } from "./spool-bar";
 import { ensureReelKeyframes } from "./reel";
 
-// Height of the SpoolBar (kept in sync with the bar's own `height`), used to
-// offset it up from the bottom edge of the hero capsule.
-const BAR_HEIGHT = 44;
+// BAR_HEIGHT is imported from spool-bar (its single source of truth) and used
+// to offset the bar up from the bottom edge of the hero capsule.
 // Inset from the capsule's left/right edges, and the gap above its bottom edge.
 const SIDE_INSET = "2.8vw";
 const BOTTOM_GAP = 14;
@@ -32,18 +31,24 @@ const ACTIVE_ATTR = "data-spool-bar-active";
 // Steam; injecting into the plugin's document would put the rule in a document
 // that doesn't contain the logo, so it would never apply.
 function ensureTitleShiftStyle(doc: Document | null | undefined) {
-  if (!appDetailsHeaderClasses || !appDetailsHeaderClasses.BoxSizerContainer) return;
+  if (!doc || !appDetailsHeaderClasses || !appDetailsHeaderClasses.BoxSizerContainer) return;
   const id = "spool-title-shift";
-  if (!doc || doc.getElementById(id)) return;
-  const el = doc.createElement("style");
-  el.id = id;
   // `!important` is required: Steam's own stylesheet sets the box-sizer
   // container's `transform` with `!important` (its base box positioning, an
   // identity translate by default), which would otherwise win over ours.
-  el.textContent =
+  const css =
     `[${ACTIVE_ATTR}] .${appDetailsHeaderClasses.BoxSizerContainer}{` +
     `transform:translateY(-${TITLE_SHIFT}px)!important;transition:transform .12s ease;}`;
-  doc.head.appendChild(el);
+  // Overwrite an existing node's textContent rather than short-circuiting on
+  // presence: this rule bakes in a Steam class name, so after a hot-reload /
+  // reinstall a stale node would otherwise keep a now-wrong selector forever.
+  let el = doc.getElementById(id);
+  if (!el) {
+    el = doc.createElement("style");
+    el.id = id;
+    doc.head.appendChild(el);
+  }
+  if (el.textContent !== css) el.textContent = css;
 }
 
 // Walk from our injected anchor to the page's hero banner element ("TopCapsule"):
