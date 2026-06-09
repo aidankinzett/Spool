@@ -64,22 +64,22 @@ class ToastStore {
    */
   tick = $state(0);
 
-  #nextId = 0;
-  #tickerStarted = false;
+  private nextId = 0;
+  private intervalId: ReturnType<typeof setInterval> | null = null;
 
   /**
    * Default auto-dismiss: success/info fade after 5s; warn/bad stick until
    * the user dismisses them (you don't want a cloud conflict to vanish).
    */
-  #defaultDuration(kind: ToastKind): number {
+  private defaultDuration(kind: ToastKind): number {
     return kind === 'ok' || kind === 'info' ? 5000 : 0;
   }
 
   show(input: Omit<Toast, 'id' | 'createdAt'>): string {
-    if (!this.#tickerStarted) this.#startTicker();
-    const id = `t${++this.#nextId}`;
-    const duration = input.duration ?? this.#defaultDuration(input.kind);
-    const report = this.#resolveReport(input);
+    if (this.intervalId === null) this.startTicker();
+    const id = `t${++this.nextId}`;
+    const duration = input.duration ?? this.defaultDuration(input.kind);
+    const report = this.resolveReport(input);
     this.items.push({ ...input, id, createdAt: Date.now(), report });
     if (duration > 0) {
       setTimeout(() => this.dismiss(id), duration);
@@ -100,7 +100,10 @@ class ToastStore {
 
   dismiss(id: string) {
     const idx = this.items.findIndex((t) => t.id === id);
-    if (idx >= 0) this.items.splice(idx, 1);
+    if (idx >= 0) {
+      this.items.splice(idx, 1);
+      if (this.items.length === 0) this.stopTicker();
+    }
   }
 
   /**
@@ -109,19 +112,25 @@ class ToastStore {
    * (`kind: 'bad'`) get an auto-derived report from their title + sub so every
    * failure surfaces a one-click way to file it. Non-error toasts get none.
    */
-  #resolveReport(input: Omit<Toast, 'id' | 'createdAt'>): ReportInfo | undefined {
+  private resolveReport(input: Omit<Toast, 'id' | 'createdAt'>): ReportInfo | undefined {
     if (input.report === false) return undefined;
     if (input.report) return input.report;
     if (input.kind !== 'bad') return undefined;
     return { title: input.title, body: input.sub };
   }
 
-  #startTicker(): void {
+  private startTicker(): void {
     if (typeof window === 'undefined') return; // SSR-safe — no ticker on the server
-    this.#tickerStarted = true;
-    setInterval(() => {
+    this.intervalId = setInterval(() => {
       this.tick++;
     }, 1000);
+  }
+
+  private stopTicker(): void {
+    if (this.intervalId !== null) {
+      clearInterval(this.intervalId);
+      this.intervalId = null;
+    }
   }
 }
 

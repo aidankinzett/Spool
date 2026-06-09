@@ -70,7 +70,7 @@
     }
     return !localTime;
   });
-  let progressRaf = $state<number | null>(null);
+  let progressRaf: number | null = null;
 
   let windowHeight = $state(800);
   // The splash's own layout already scales to whatever resolution gamescope

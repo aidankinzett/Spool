@@ -214,14 +214,13 @@ pub fn compute_shortcut_app_id(game_name: &str, spool_exe: &str) -> u32 {
 
 /// Serialises + writes atomically (write `.tmp`, rename). Keeps a `.bak`
 /// of the previous file so a corrupted Steam can be restored manually.
-pub fn write_shortcuts(path: &Path, shortcuts: &[ShortcutOwned]) -> AppResult<()> {
+pub fn write_shortcuts(path: &Path, shortcuts: &mut [ShortcutOwned]) -> AppResult<()> {
     // Re-stamp the order field consecutively from 0 — Steam can choke
     // on gaps after a delete.
-    let mut owned: Vec<ShortcutOwned> = shortcuts.to_vec();
-    for (i, s) in owned.iter_mut().enumerate() {
+    for (i, s) in shortcuts.iter_mut().enumerate() {
         s.order = i.to_string();
     }
-    let borrowed: Vec<_> = owned.iter().map(|s| s.borrow()).collect();
+    let borrowed: Vec<_> = shortcuts.iter().map(|s| s.borrow()).collect();
     let bytes = shortcuts_to_bytes(&borrowed);
 
     crate::paths::write_atomic(path, &bytes, true)?;
@@ -423,7 +422,7 @@ pub async fn remove_game_from_steam(app_id: u32, app_name: &str) -> AppResult<bo
     let removed = shortcuts.len() != before;
 
     if removed {
-        write_shortcuts(&user.shortcuts_path, &shortcuts)?;
+        write_shortcuts(&user.shortcuts_path, &mut shortcuts)?;
         remove_all_grid_art(&user.grid_dir, app_id);
         if let Err(e) = crate::steam_collections::sync_spool_collection(&user, &shortcuts) {
             tracing::warn!(%e, "remove_game_from_steam: failed to sync Spool collection");
@@ -487,7 +486,7 @@ pub async fn reconcile_renamed_game(
     };
 
     if updated {
-        write_shortcuts(&user.shortcuts_path, &shortcuts)?;
+        write_shortcuts(&user.shortcuts_path, &mut shortcuts)?;
         if old_app_id != new_app_id {
             migrate_grid_art(&user.grid_dir, old_app_id, new_app_id);
         }
@@ -547,7 +546,7 @@ pub async fn add_spool_to_steam() -> AppResult<AddToSteamResult> {
         &spool_start_dir,
         "",
     );
-    write_shortcuts(&user.shortcuts_path, &shortcuts)?;
+    write_shortcuts(&user.shortcuts_path, &mut shortcuts)?;
 
     // Place Spool's branded artwork so the shortcut presents with brand art
     // instead of a blank tile / default Steam background. Best-effort — an art
@@ -592,7 +591,7 @@ pub async fn add_to_steam(
 ) -> AppResult<AddToSteamResult> {
     let _lock = get_steam_shortcut_lock().lock().await;
     // 1. Snapshot the data we need from the library (drop lock fast).
-    let (app_name, exe_path, save_path_str, cover_image_path, steam_id, prev_app_id) = {
+    let (app_name, exe_path, cover_image_path, steam_id, prev_app_id) = {
         let entry = library
             .find(&game_id)
             .await?
@@ -600,13 +599,11 @@ pub async fn add_to_steam(
         (
             entry.game_name.clone(),
             entry.exe_path.clone(),
-            entry.save_paths.first().cloned().unwrap_or_default(),
             entry.cover_image_path.clone(),
             entry.steam_id,
             entry.steam_app_id,
         )
     };
-    drop(save_path_str); // not used yet — placeholder for future per-game start dir
 
     // 2. Spool binary path. `cli` mode parses --run from forwarded launches.
     //    Use the AppImage-aware resolver: when running as an AppImage,
@@ -675,7 +672,7 @@ pub async fn add_to_steam(
                     remove_all_grid_art(&grid_dir, prev);
                 }
             }
-            write_shortcuts(&shortcuts_path, &shortcuts)?;
+            write_shortcuts(&shortcuts_path, &mut shortcuts)?;
             Ok((app_id, shortcuts))
         })
         .await

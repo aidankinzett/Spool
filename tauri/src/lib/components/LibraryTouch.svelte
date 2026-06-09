@@ -57,7 +57,6 @@
   const continueCat = $derived(
     lib.games
       .filter((g) => g.last_played_at != null)
-      .slice()
       .sort((a, b) => (b.last_played_at ?? '').localeCompare(a.last_played_at ?? '')),
   );
   const allCat = $derived(
@@ -70,7 +69,6 @@
   const lanCat = $derived(
     lib.displayGames
       .filter((g) => g.peer_source != null)
-      .slice()
       .sort((a, b) => a.game_name.localeCompare(b.game_name)),
   );
 
@@ -332,12 +330,13 @@
         </div>
       </div>
     {:else if selectedGame}
+      {@const cover = coverFor(selectedGame)}
       <div class="flex min-h-0 flex-1 items-center gap-6 overflow-hidden px-6 py-5">
         <!-- Left: cover art -->
         <div class="flex shrink-0 items-center justify-center">
-          {#if coverFor(selectedGame)}
+          {#if cover}
             <img
-              src={coverFor(selectedGame)}
+              src={cover}
               alt={selectedGame.game_name}
               class="rounded-md object-cover shadow-2xl"
               style:width="calc(var(--control-h) * 4.8)"

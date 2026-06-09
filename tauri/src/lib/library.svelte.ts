@@ -7,7 +7,6 @@ import { downloadIsActive, downloadPercent, liveUploads } from '$lib/transfers';
 import { toasts } from '$lib/toasts.svelte';
 import { startUpdateChecks } from '$lib/updater';
 import type {
-  ConfigData,
   DisplayGame,
   DownloadProgress,
   GameEntry,
@@ -304,7 +303,6 @@ export function mergeDisplayGames(
 export function createLibrary() {
   // Core library state
   let games = $state<GameEntry[]>([]);
-  let config = $state<ConfigData | null>(null);
   let loaded = $state(false);
   let error = $state<string | null>(null);
 
@@ -700,10 +698,6 @@ export function createLibrary() {
   // onMount: initial fetch + Tauri event subscriptions
   onMount(() => {
     refresh();
-    api
-      .getConfig()
-      .then((c) => (config = c))
-      .catch((e) => console.error('[library] getConfig failed:', e));
     // Spool hides to tray instead of quitting, so this webview can stay
     // mounted for days — poll for updates on an interval, not just once.
     const stopUpdateChecks = startUpdateChecks();
@@ -980,7 +974,6 @@ export function createLibrary() {
   return {
     // Read state
     get games() { return games; },
-    get config() { return config; },
     get loaded() { return loaded; },
     get error() { return error; },
     get runningId() { return runningId; },
