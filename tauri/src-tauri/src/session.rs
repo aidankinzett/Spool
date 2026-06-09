@@ -57,8 +57,7 @@ pub struct ActiveSession {
 /// `steam::upsert_spool_shortcut`'s computation so the value equals the appid
 /// Steam reports to the plugin: `calculate_app_id("\"<exe>\"", game_name)`.
 pub fn compute_steam_appid(spool_exe: &str, game_name: &str) -> u32 {
-    let quoted_exe = format!("\"{}\"", spool_exe.replace('"', "\\\""));
-    steam_shortcuts_util::app_id_generator::calculate_app_id(&quoted_exe, game_name)
+    crate::steam::compute_shortcut_app_id(game_name, spool_exe)
 }
 
 fn write_start_at(path: &Path, game: &str, steam_appid: u32, started_at: DateTime<Utc>) -> AppResult<String> {
@@ -283,5 +282,6 @@ mod tests {
         let expected =
             steam_shortcuts_util::app_id_generator::calculate_app_id(&quoted, "Hades");
         assert_eq!(compute_steam_appid("/home/u/spool-launcher.sh", "Hades"), expected);
+        assert_eq!(crate::steam::compute_shortcut_app_id("Hades", "/home/u/spool-launcher.sh"), expected);
     }
 }

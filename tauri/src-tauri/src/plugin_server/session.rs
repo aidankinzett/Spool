@@ -38,9 +38,33 @@ pub(super) async fn post_game_stopped(
         return Json(json!({ "acted": false }));
     };
 
+    if rec.backed_up {
+        return Json(json!({ "acted": false }));
+    }
+
     // The JS frontend coerces unAppID to unsigned with `>>> 0` before sending,
-    // so body.appid and rec.steam_appid are both u32 — compare directly.
-    if rec.backed_up || rec.steam_appid != body.appid {
+    // so body.appid and rec.steam_appid are both u32.
+    let mut appid_matched = rec.steam_appid == body.appid;
+
+    if !appid_matched {
+        // Fallback: recompute appid using the current executable and the game name in the session record.
+        // This handles cases where the executable path has changed/drifted between stamp-time and launch-time.
+        if let Some(exe) = crate::paths::spool_executable().or_else(|| std::env::current_exe().ok()) {
+            let recomputed_appid = crate::session::compute_steam_appid(&exe.to_string_lossy(), &rec.game);
+            if recomputed_appid == body.appid {
+                tracing::warn!(
+                    body_appid = body.appid,
+                    record_appid = rec.steam_appid,
+                    recomputed_appid,
+                    game = %rec.game,
+                    "post_game_stopped: appid mismatch but matches recomputed appid with current executable",
+                );
+                appid_matched = true;
+            }
+        }
+    }
+
+    if !appid_matched {
         tracing::info!(
             appid = body.appid,
             session_appid = rec.steam_appid,

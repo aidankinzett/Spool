@@ -207,7 +207,6 @@ pub fn upsert_spool_shortcut(
 /// shortcuts.vdf. Used by the plugin server to expose the appid in
 /// `/library` so the Decky UI can match game-detail pages without needing
 /// the localStorage inverse map.
-#[cfg(unix)]
 pub fn compute_shortcut_app_id(game_name: &str, spool_exe: &str) -> u32 {
     calculate_app_id(&quote_exe(spool_exe), game_name)
 }
@@ -910,6 +909,20 @@ mod tests {
         assert_eq!(id_a, id_b);
         // High bit set per Steam's appid convention.
         assert!(id_a & 0x80000000 != 0);
+    }
+
+    #[test]
+    fn compute_shortcut_app_id_matches_upsert_spool_shortcut() {
+        let mut shortcuts = Vec::new();
+        let id_upserted = upsert_spool_shortcut(
+            &mut shortcuts,
+            "Hades",
+            "C:/Tools/spool.exe",
+            "C:/Tools",
+            "--run \"Hades\" \"C:/Games/Hades/Hades.exe\"",
+        );
+        let id_computed = compute_shortcut_app_id("Hades", "C:/Tools/spool.exe");
+        assert_eq!(id_upserted, id_computed);
     }
 
     #[test]
