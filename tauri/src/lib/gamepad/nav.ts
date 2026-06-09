@@ -62,6 +62,10 @@ const FOCUSABLE_SELECTOR = [
 const scopeStack: Scope[] = [];
 let started = false;
 let unlistenGamepad: UnlistenFn | undefined;
+// Bumped on every start/stop so an in-flight `listen()` promise that resolves
+// after teardown (or after a restart) can tell its registration is stale and
+// unlisten itself instead of leaking.
+let navGen = 0;
 
 // Held-direction auto-repeat for the dpad. gilrs emits a single press/release
 // (no key-repeat), so we synthesise repeat here: one move on press, then after
@@ -371,6 +375,7 @@ function onVisibilityChange() {
 export function startGamepadNav() {
   if (started) return;
   started = true;
+  const gen = ++navGen;
 
   // Default to mouse modality so programmatic focus (e.g. a view's initial
   // focus) doesn't flash a ring before the user touches a key or pad.
@@ -378,6 +383,12 @@ export function startGamepadNav() {
 
   listen<GamepadInput>('gamepad:input', (e) => onGamepad(e.payload))
     .then((fn) => {
+      // If we were stopped (or restarted) while this promise was in flight, the
+      // registration is stale — tear it down now rather than leak it.
+      if (!started || gen !== navGen) {
+        fn();
+        return;
+      }
       unlistenGamepad = fn;
     })
     .catch((err) => {
@@ -400,6 +411,7 @@ export function startGamepadNav() {
 export function stopGamepadNav() {
   if (!started) return;
   started = false;
+  navGen++;
   stopRepeat();
   unlistenGamepad?.();
   unlistenGamepad = undefined;
@@ -425,6 +437,12 @@ export function pushScope(
   if (parent && document.activeElement instanceof HTMLElement && parent.el.contains(document.activeElement)) {
     parent.lastFocused = document.activeElement;
   }
+
+  // A dpad held across a scope change (e.g. a press that opens a modal) would
+  // otherwise keep auto-repeating `move` into the freshly-pushed scope. Cancel
+  // it so the held direction doesn't bleed across — the user re-presses inside
+  // the new scope.
+  stopRepeat();
 
   const scope: Scope = { el, onBack: opts.onBack, onButton: opts.onButton };
   scopeStack.push(scope);
@@ -453,6 +471,10 @@ function releaseScope(scope: Scope) {
   const idx = scopeStack.indexOf(scope);
   if (idx === -1) return;
   scopeStack.splice(idx, 1);
+
+  // Stop any auto-repeat that was running under the scope being torn down, so a
+  // still-held dpad doesn't keep moving focus in whatever scope is now active.
+  stopRepeat();
 
   // Restore the parent scope's remembered focus.
   const parent = activeScope();

@@ -115,6 +115,7 @@
 
   onMount(() => {
     let unlisten: (() => void) | undefined;
+    let unlistenPeers: (() => void) | undefined;
     let destroyed = false;
 
     // Register the live-status listener up front, independent of the slow data
@@ -131,6 +132,24 @@
         else unlisten = fn;
       })
       .catch((e) => console.error('[settings] sync listener failed:', e));
+
+    // Keep the discovered-peers list live. Without this it's a one-shot fetch
+    // at mount, so peers that appear or drop off while Settings is open never
+    // update. `lan:peers-changed` is a bare signal — re-fetch on it. Same
+    // destroyed-guard as the sync listener above. (#389)
+    listen<null>('lan:peers-changed', () => {
+      api
+        .listLanPeers()
+        .then((p) => {
+          if (!destroyed) peers = p;
+        })
+        .catch((e) => console.error('[settings] listLanPeers (peers-changed) failed:', e));
+    })
+      .then((fn) => {
+        if (destroyed) fn();
+        else unlistenPeers = fn;
+      })
+      .catch((e) => console.error('[settings] peers listener failed:', e));
 
     const setup = async () => {
       // Only the core config is fatal — the whole page is bound to it. Loading
@@ -207,6 +226,7 @@
     return () => {
       destroyed = true;
       unlisten?.();
+      unlistenPeers?.();
     };
   });
 
@@ -379,10 +399,21 @@
     oauthConnecting = false;
   }
 
-  // Derived nav status for sidebar dots
-  const cloudConfigured = $derived(
-    !!config?.cloud_provider && !(config.cloud_provider === 'custom' && !config.cloud_remote)
-  );
+  // "Enabled" = the user has picked a provider (drives the on/off toggle and
+  // reveals the sub-fields). Distinct from "configured" below.
+  const cloudEnabled = $derived(!!config?.cloud_provider);
+  // "Configured" = a remote is actually connected, not merely selected — so the
+  // status pill / nav dot don't claim a working sync the moment the toggle is
+  // flipped (which only defaults the provider to webdav). Each provider needs
+  // its own connection detail: custom → an rclone remote name, webdav → a URL,
+  // OAuth → an authorised remote (`remoteExists`). (#389)
+  const cloudConfigured = $derived.by(() => {
+    const p = config?.cloud_provider;
+    if (!p) return false;
+    if (p === 'custom') return !!config?.cloud_remote;
+    if (p === 'webdav') return !!config?.cloud_webdav_url;
+    return remoteExists;
+  });
   const cloudOnline = $derived(syncStatus?.reachability === 'online');
   const deckOk = $derived(
     !isLinux || (!!deckyPlugin?.installed && deps.every(d => d.found))
@@ -717,13 +748,13 @@
                     <div class="flex-1">
                       <div class="text-[13px] font-medium text-ink-0">Sync saves to the cloud</div>
                       <div class="mt-[3px] text-[11.5px] text-ink-2">
-                        {cloudConfigured
+                        {cloudEnabled
                           ? `Provider: ${config.cloud_provider}.`
                           : 'Off — saves are backed up locally only.'}
                       </div>
                     </div>
                     <Toggle
-                      checked={cloudConfigured}
+                      checked={cloudEnabled}
                       onchange={(v) => {
                         if (!config) return;
                         config.cloud_provider = v ? 'webdav' : '';
@@ -732,7 +763,7 @@
                     />
                   </div>
 
-                  {#if cloudConfigured || config.cloud_provider}
+                  {#if cloudEnabled}
                     <div class="bg-bg-0 pb-1">
                       <SettingsRow label="Provider" helper="Choose a cloud storage provider or Custom for a custom rclone remote name.">
                         {#snippet extras()}
@@ -744,8 +775,13 @@
                               if (oauthConnecting) await cancelOAuth();
                               remoteExists = false;
                               await persist();
-                              if (config && OAUTH_PROVIDERS.includes(config.cloud_provider)) {
-                                remoteExists = await api.checkCloudRemoteExists(config.cloud_provider);
+                              const provider = config?.cloud_provider;
+                              if (provider && OAUTH_PROVIDERS.includes(provider)) {
+                                const exists = await api.checkCloudRemoteExists(provider);
+                                // Guard against a rapid second switch while this
+                                // probe was in flight, which would otherwise apply
+                                // the old provider's result to the new selection.
+                                if (config?.cloud_provider === provider) remoteExists = exists;
                               }
                             }}
                           />

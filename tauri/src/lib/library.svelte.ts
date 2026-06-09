@@ -511,11 +511,17 @@ export function createLibrary() {
     }
     peerGamesLoading = true;
     try {
-      peerGames = await api.fetchPeerGames(peer.addr, peer.file_server_port);
+      const games = await api.fetchPeerGames(peer.addr, peer.file_server_port);
+      // Guard against a stale resolve: the user may have switched to a
+      // different peer (or closed the drill-down) while this request was in
+      // flight, in which case a newer call owns the view state.
+      if (openPeer?.device_id !== peer.device_id) return;
+      peerGames = games;
     } catch (e) {
+      if (openPeer?.device_id !== peer.device_id) return;
       peerGamesError = String(e);
     } finally {
-      peerGamesLoading = false;
+      if (openPeer?.device_id === peer.device_id) peerGamesLoading = false;
     }
   }
 

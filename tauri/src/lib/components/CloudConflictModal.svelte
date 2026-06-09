@@ -132,7 +132,10 @@
 
   async function runResolve() {
     const side = selected;
-    if (!side) return;
+    // In-flight guard: ignore a re-entry (a quick second "Try again" click, or
+    // a gamepad confirm racing the click) so we never kick off two concurrent
+    // `resolve` transfers for the same conflict.
+    if (!side || phase === 'applying') return;
     phase = 'applying';
     try {
       await resolve(side);
