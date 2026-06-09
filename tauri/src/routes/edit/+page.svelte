@@ -142,12 +142,23 @@
       registryRunAsAdmin = false;
       return;
     }
-    api
-      .getRunAsAdminInRegistry(exe)
-      .then((v) => {
-        registryRunAsAdmin = v;
-      })
-      .catch((e) => console.error('[edit] registry probe failed:', e));
+    // `exe_path` is a bound text field, so without this we'd fire one IPC per
+    // keystroke. Debounce, and let the effect's cleanup cancel the pending
+    // timer and invalidate an already-dispatched probe — so a fast typist
+    // can't land an older exe's result over a newer one (resolve-order race).
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      api
+        .getRunAsAdminInRegistry(exe)
+        .then((v) => {
+          if (!cancelled) registryRunAsAdmin = v;
+        })
+        .catch((e) => console.error('[edit] registry probe failed:', e));
+    }, 250);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
   });
 
   // Re-check whether the Proton prefix exists whenever the exe (or platform)
@@ -161,12 +172,22 @@
       prefixReady = true;
       return;
     }
-    api
-      .prefixReady(id)
-      .then((v) => {
-        prefixReady = v;
-      })
-      .catch((e) => console.error('[edit] prefixReady probe failed:', e));
+    // Same debounce + stale-guard as the registry probe: the effect re-runs on
+    // every exe keystroke (the `.exe` test reads it), so coalesce the IPC and
+    // drop a resolve that lands after the input moved on.
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      api
+        .prefixReady(id)
+        .then((v) => {
+          if (!cancelled) prefixReady = v;
+        })
+        .catch((e) => console.error('[edit] prefixReady probe failed:', e));
+    }, 250);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
   });
 
   onMount(async () => {

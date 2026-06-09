@@ -44,8 +44,10 @@
 
   const selected = $derived(options.find((o) => o.value === value) ?? null);
 
-  function openMenu() {
-    if (disabled || !triggerEl) return;
+  // Compute the popup's fixed-position rect off the trigger's current screen
+  // box. Split out from `openMenu` so it can re-run on scroll/resize while open.
+  function computePos() {
+    if (!triggerEl) return;
     const r = triggerEl.getBoundingClientRect();
     const gap = 4;
     const spaceBelow = window.innerHeight - r.bottom - gap;
@@ -60,8 +62,29 @@
       above,
       maxH,
     };
+  }
+
+  function openMenu() {
+    if (disabled || !triggerEl) return;
+    computePos();
     open = true;
   }
+
+  // The popup is `position: fixed` off a rect captured at open time, so any
+  // scroll (in an ancestor pane) or window resize would otherwise leave it
+  // floating away from its trigger. While open, recompute on those events —
+  // capture-phase so inner scroll containers (the settings panes) are caught,
+  // since scroll events don't bubble.
+  $effect(() => {
+    if (!open) return;
+    const onReflow = () => computePos();
+    window.addEventListener('scroll', onReflow, true);
+    window.addEventListener('resize', onReflow);
+    return () => {
+      window.removeEventListener('scroll', onReflow, true);
+      window.removeEventListener('resize', onReflow);
+    };
+  });
 
   function close() {
     open = false;

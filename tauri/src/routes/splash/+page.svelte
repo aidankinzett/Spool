@@ -105,6 +105,10 @@
   const RAMP_PHASES = new Set(['restoring', 'backing-up', 'uploading']);
 
   function startRamp() {
+    // Cancel any ramp still in flight so two phases in quick succession
+    // (restoring → backing-up → uploading) don't leave overlapping RAF loops
+    // both writing `progress`.
+    if (progressRaf != null) cancelAnimationFrame(progressRaf);
     progress = 0;
     const start = performance.now();
     function tick(now: number) {

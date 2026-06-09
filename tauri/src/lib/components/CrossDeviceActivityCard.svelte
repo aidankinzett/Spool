@@ -82,15 +82,25 @@
     return latest?.device_name || null;
   });
 
-  // Daily play totals (minutes), oldest bucket first, newest = current day.
-  // Sessions older than DAYS days fall off the left edge of the chart.
+  // Daily play totals (minutes), oldest bucket first, newest = today.
+  // Bucketed by *calendar day* (local midnight), not a rolling 24h window from
+  // `now`, so the bars line up with the "N D AGO … NOW" day axis — e.g. a
+  // session at 9am today and one at 11pm yesterday land in adjacent day bars,
+  // not the same rolling-24h bucket. Sessions older than DAYS days fall off the
+  // left edge. Differences of local midnights are rounded so a DST day (23/25h)
+  // still maps to a whole-day offset.
   const activity = $derived.by(() => {
     const buckets = new Array<number>(DAYS).fill(0);
-    const now = Date.now();
+    // Local midnight via the (y, m, d) constructor rather than mutating a Date
+    // with setHours — keeps the lint rule happy and avoids a shared mutable.
+    const now = new Date();
+    const todayMs = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
     for (const s of sessions) {
-      const t = new Date(s.started_at).getTime();
-      if (Number.isNaN(t)) continue;
-      const idx = DAYS - 1 - Math.floor((now - t) / DAY_MS);
+      const sd = new Date(s.started_at);
+      if (Number.isNaN(sd.getTime())) continue;
+      const dayMs = new Date(sd.getFullYear(), sd.getMonth(), sd.getDate()).getTime();
+      const dayDiff = Math.round((todayMs - dayMs) / DAY_MS);
+      const idx = DAYS - 1 - dayDiff;
       if (idx >= 0 && idx < DAYS) buckets[idx] += s.duration_secs / 60;
     }
     return buckets;

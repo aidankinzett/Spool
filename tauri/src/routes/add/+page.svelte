@@ -13,7 +13,7 @@
    *   - "Add without save tracking" — uses the exe filename, no manifest data
    *   - Cancel                     — back to library
    */
-  import { onMount } from 'svelte';
+  import { onDestroy, onMount } from 'svelte';
   import { open as openDialog } from '@tauri-apps/plugin-dialog';
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import {
@@ -219,6 +219,15 @@
   // clearTimeout only cancels a pending timer, not an already-dispatched fetch.
   // (#292)
   let searchSeq = 0;
+
+  // Drop a pending debounce timer when the window closes, and bump the
+  // sequence so any already-dispatched search that resolves after teardown is
+  // ignored rather than touching state on a dead component.
+  onDestroy(() => {
+    if (searchTimer) clearTimeout(searchTimer);
+    searchTimer = null;
+    searchSeq++;
+  });
 
   function onSearchInput(value: string) {
     searchQuery = value;

@@ -101,7 +101,14 @@
       // immediately so we don't leak the listener.
       if (isUnmounted) fn();
       else unlisten = fn;
-      protonVersions = await api.listProtonVersions();
+      // Proton versions are a non-essential convenience (the dropdown just
+      // falls back to "auto") — don't let a reject here throw out of the IIFE
+      // and silently skip the auto-open setup picker below.
+      try {
+        protonVersions = await api.listProtonVersions();
+      } catch (e) {
+        console.error('[install] listProtonVersions failed:', e);
+      }
       await pickSetup(true);
     })();
     return () => {
