@@ -2,6 +2,7 @@ import { Navigation, Focusable } from "@decky/ui";
 import { useEffect, useState } from "react";
 import type { LanPeer } from "../types";
 import { useServerBase } from "../hooks/use-server-base";
+import { getLanPeers } from "../lib/server";
 
 // Full-screen LAN peers list. Registered as its own route so the B button
 // naturally navigates back to the library (/spool).
@@ -14,8 +15,7 @@ export function LanPage() {
     let cancelled = false;
     const poll = async () => {
       try {
-        const res = await fetch(`${base}/lan/peers`);
-        const data = (await res.json()) as LanPeer[];
+        const data = await getLanPeers(base);
         if (!cancelled) setPeers(data);
       } catch {
         if (!cancelled) setPeers([]);

@@ -2,6 +2,7 @@ import { toaster } from "@decky/api";
 import { Navigation } from "@decky/ui";
 import type { LaunchInfo, LibraryGame } from "../types";
 import { buildInverseAppidMap, loadAppidMap, rememberAppid } from "./appid-map";
+import { getSteamLaunchInfo } from "./server";
 import {
   addToSpoolCollection,
   appStillExists,
@@ -62,9 +63,7 @@ async function ensureShortcut(
 
   let info: LaunchInfo;
   try {
-    const res = await fetch(`${base}/games/${gameId}/steam-launch-info`);
-    if (!res.ok) throw new Error("bad status");
-    info = (await res.json()) as LaunchInfo;
+    info = await getSteamLaunchInfo(base, gameId);
   } catch (e) {
     console.error("[Spool] steam-launch-info fetch failed", e);
     toaster.toast({ title: "Spool", body: "Couldn't prepare the shortcut." });

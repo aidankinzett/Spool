@@ -4,6 +4,7 @@ import { FaCheck, FaPlus } from "react-icons/fa6";
 import type { LibraryGame } from "../types";
 import { useServerBase } from "../hooks/use-server-base";
 import { addLibraryGameShortcut, existingShortcutAppId } from "../lib/launch";
+import { getLibrary } from "../lib/server";
 
 // QAM list of every Spool game. Games not yet added to Steam are selectable and
 // adding one creates a non-Steam shortcut (no launch) so its details show on the
@@ -20,17 +21,11 @@ export function AddToSteamList() {
     let cancelled = false;
     void (async () => {
       try {
-        const res = await fetch(`${base}/library`);
-        const data: unknown = await res.json();
+        const list = await getLibrary(base);
         if (cancelled) return;
-        if (res.ok && Array.isArray(data)) {
-          const list = data as LibraryGame[];
-          setGames(list);
-          // Seed the added set from shortcuts Steam already knows about.
-          setAdded(new Set(list.filter((g) => existingShortcutAppId(g) != null).map((g) => g.id)));
-        } else {
-          setError("Couldn't load your library.");
-        }
+        setGames(list);
+        // Seed the added set from shortcuts Steam already knows about.
+        setAdded(new Set(list.filter((g) => existingShortcutAppId(g) != null).map((g) => g.id)));
       } catch {
         if (!cancelled) setError("Couldn't load your library.");
       }
