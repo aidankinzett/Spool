@@ -9,6 +9,10 @@ import { getLanPeers } from "../lib/server";
 export function LanPage() {
   const { base, error: baseError } = useServerBase();
   const [peers, setPeers] = useState<LanPeer[] | null>(null);
+  // Tracks whether the *latest* /lan/peers fetch failed, kept separate from the
+  // peer list so a connection drop shows a connection error rather than the
+  // identical "No Spool devices found" an empty network shows.
+  const [fetchError, setFetchError] = useState(false);
 
   useEffect(() => {
     if (!base) return;
@@ -16,9 +20,12 @@ export function LanPage() {
     const poll = async () => {
       try {
         const data = await getLanPeers(base);
-        if (!cancelled) setPeers(data);
+        if (!cancelled) {
+          setPeers(data);
+          setFetchError(false);
+        }
       } catch {
-        if (!cancelled) setPeers([]);
+        if (!cancelled) setFetchError(true);
       }
     };
     void poll();
@@ -29,10 +36,19 @@ export function LanPage() {
     };
   }, [base]);
 
+  const unreachable = (
+    <div style={{ padding: "2rem", opacity: 0.8 }}>
+      Couldn't reach Spool on this device.
+    </div>
+  );
+
   if (baseError) return <div style={{ padding: "2rem", opacity: 0.8 }}>{baseError}</div>;
-  if (!peers) return <div style={{ padding: "2rem", opacity: 0.7 }}>Scanning…</div>;
+  // No successful response yet: distinguish "still scanning" from "can't reach".
+  if (!peers) return fetchError ? unreachable : <div style={{ padding: "2rem", opacity: 0.7 }}>Scanning…</div>;
+  // An empty list only means "no devices" when the latest fetch actually
+  // succeeded; if it's failing now, the empty list is stale.
   if (peers.length === 0)
-    return (
+    return fetchError ? unreachable : (
       <div style={{ padding: "2rem", opacity: 0.7 }}>
         No Spool devices found on your network.
       </div>

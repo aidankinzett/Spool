@@ -48,27 +48,7 @@ pub(super) async fn post_game_stopped(
 
     // The JS frontend coerces unAppID to unsigned with `>>> 0` before sending,
     // so body.appid and rec.steam_appid are both u32.
-    let mut appid_matched = rec.steam_appid == body.appid;
-
-    if !appid_matched {
-        // Fallback: recompute appid using the current executable and the game name in the session record.
-        // This handles cases where the executable path has changed/drifted between stamp-time and launch-time.
-        if let Some(exe) = crate::paths::spool_executable().or_else(|| std::env::current_exe().ok()) {
-            let recomputed_appid = crate::session::compute_steam_appid(&exe.to_string_lossy(), &rec.game);
-            if recomputed_appid == body.appid {
-                tracing::warn!(
-                    body_appid = body.appid,
-                    record_appid = rec.steam_appid,
-                    recomputed_appid,
-                    game = %rec.game,
-                    "post_game_stopped: appid mismatch but matches recomputed appid with current executable",
-                );
-                appid_matched = true;
-            }
-        }
-    }
-
-    if !appid_matched {
+    if !session_appid_matches(&rec, body.appid) {
         tracing::info!(
             appid = body.appid,
             session_appid = rec.steam_appid,
@@ -99,9 +79,25 @@ pub(super) async fn post_game_stopped(
     .await
 }
 
-/// Manual backup from the QAM "Back up now" button. No appid check; no lock
-/// release — just backs up whatever game the current session record points to.
-pub(super) async fn post_backup_now(AxState(state): AxState<PluginState>) -> Json<Value> {
+#[derive(Deserialize, Default)]
+#[serde(default)]
+pub(super) struct BackupNowRequest {
+    /// Shortcut appid of the game whose page the request came from, or null for
+    /// the QAM panel's "back up the last session" button (which has no game
+    /// context). When present it's validated against the session record so a
+    /// per-game "Back up now" can't back up an unrelated game.
+    appid: Option<u32>,
+}
+
+/// Manual "Back up now". No lock release — just backs up the game the current
+/// session record points to. The QAM panel sends no appid (back up the last
+/// session regardless); the per-game badge menu sends the game's shortcut appid,
+/// so a "Back up now" on Game B's page no-ops instead of backing up the Game A
+/// the record still names. (#7)
+pub(super) async fn post_backup_now(
+    AxState(state): AxState<PluginState>,
+    Json(body): Json<BackupNowRequest>,
+) -> Json<Value> {
     if !state.library_available {
         return Json(json!({ "acted": true, "ok": false, "reason": "library unavailable" }));
     }
@@ -109,10 +105,53 @@ pub(super) async fn post_backup_now(AxState(state): AxState<PluginState>) -> Jso
     let Some(rec) = crate::session::read() else {
         return Json(json!({ "acted": false, "ok": false, "reason": "no active session" }));
     };
+
+    // Only validate when the caller supplied an appid (the per-game menu). The
+    // QAM panel sends none and backs up whatever the record names.
+    if let Some(appid) = body.appid {
+        if !session_appid_matches(&rec, appid) {
+            tracing::info!(
+                appid,
+                session_appid = rec.steam_appid,
+                game = %rec.game,
+                "plugin: backup-now appid mismatch — no-op",
+            );
+            return Json(
+                json!({ "acted": false, "ok": false, "reason": "no active session for this game" }),
+            );
+        }
+    }
+
     // "Back up now" can fire mid-session — pass None so we don't record a
     // premature/short play session; the real game-stop path records it.
     let config = crate::config::Config::load().unwrap_or_default();
     run_backup(&state, &rec.game, &rec.session_id, None, config).await
+}
+
+/// Whether `appid` identifies the session `rec` describes: an exact match on the
+/// stamped `steam_appid`, or a match against the appid recomputed from the
+/// current executable + the recorded game name (covers an exe path that drifted
+/// between when the record was stamped and now). Shared by `post_game_stopped`
+/// and the per-game `post_backup_now` so the two can't drift.
+fn session_appid_matches(rec: &crate::session::ActiveSession, appid: u32) -> bool {
+    if rec.steam_appid == appid {
+        return true;
+    }
+    let Some(exe) = crate::paths::spool_executable().or_else(|| std::env::current_exe().ok()) else {
+        return false;
+    };
+    let recomputed = crate::session::compute_steam_appid(&exe.to_string_lossy(), &rec.game);
+    if recomputed == appid {
+        tracing::warn!(
+            body_appid = appid,
+            record_appid = rec.steam_appid,
+            recomputed_appid = recomputed,
+            game = %rec.game,
+            "session appid mismatch but matches recomputed appid with current executable",
+        );
+        return true;
+    }
+    false
 }
 
 /// Run the forced-close backup for `game_name`/`session_id`, using the

@@ -30,6 +30,7 @@ import os
 import socket
 import subprocess
 import sys
+import threading
 import time
 from functools import partial
 from typing import Optional
@@ -88,20 +89,30 @@ def _ensure_server(wait_s: float = 12.0) -> Optional[int]:
         return port
 
     global _server_proc
-    # If a server we launched is still alive, it's likely just starting up —
-    # wait for it rather than spawning a second one (which would bind an
-    # ephemeral port and orphan the first). Otherwise (re)start.
-    starting = _server_proc is not None and _server_proc.poll() is None
-    if not starting:
-        _start_server(_load_settings())
-
-    deadline = time.monotonic() + wait_s
-    while time.monotonic() < deadline:
+    # Serialise the spawn decision so concurrent callers can't each start a
+    # server. The fast path above stays unlocked, so once a server is up there's
+    # no contention.
+    with _server_lock:
+        # Re-check inside the lock: another thread may have started it (and it
+        # may have come up) while we waited for the lock.
         port = _read_port()
         if port is not None and _ping(port):
             return port
-        time.sleep(0.25)
-    return None
+
+        # If a server we launched is still alive, it's likely just starting up —
+        # wait for it rather than spawning a second one (which would bind an
+        # ephemeral port and orphan the first). Otherwise (re)start.
+        starting = _server_proc is not None and _server_proc.poll() is None
+        if not starting:
+            _start_server(_load_settings())
+
+        deadline = time.monotonic() + wait_s
+        while time.monotonic() < deadline:
+            port = _read_port()
+            if port is not None and _ping(port):
+                return port
+            time.sleep(0.25)
+        return None
 
 
 def _launcher_path() -> str:
@@ -126,11 +137,37 @@ def _load_settings() -> dict:
 
 def _save_settings(settings: dict) -> None:
     os.makedirs(decky.DECKY_PLUGIN_SETTINGS_DIR, exist_ok=True)
-    with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
-        json.dump(settings, f, indent=2)
+    # Atomic write (tmp in the same dir → os.replace), mirroring the Rust app's
+    # tmp→rename convention. A crash/kill/disk-full mid-write straight to the
+    # real file would leave truncated JSON that _load_settings discards, silently
+    # losing spool_command/notify; the rename is atomic so a reader sees either
+    # the old file or the complete new one, never a partial.
+    tmp = SETTINGS_FILE + ".tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(settings, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, SETTINGS_FILE)
+    except OSError as exc:
+        decky.logger.warning("Spool: failed to save settings: %s", exc)
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        # Propagate so set_settings reports the failure to the caller instead of
+        # returning the new settings as if the write had succeeded.
+        raise
 
 
 # ── HTTP-over-loopback-TCP client ─────────────────────────────────────────────
+
+class _ResponseUnreadable(Exception):
+    """The server responded — so it has already acted — but the body couldn't be
+    read or parsed (truncated `IncompleteRead`, malformed JSON). Distinct from a
+    connection-level failure so the caller does NOT retry a non-idempotent POST
+    in this case (a retry would fire the side effect a second time)."""
+
 
 def _do_request(
     port: int,
@@ -141,8 +178,10 @@ def _do_request(
 ) -> Optional[dict]:
     """One HTTP attempt against the loopback server. Raises `socket.timeout`
     when the server accepted the request but didn't respond in time (it's still
-    working — NOT safe to retry a non-idempotent POST), and other transport
-    errors (refused / dropped) when the server could not have acted (safe to
+    working — NOT safe to retry a non-idempotent POST), `_ResponseUnreadable`
+    when the server responded but its body couldn't be read/parsed (it acted —
+    also NOT safe to retry), and connection-level transport errors (refused /
+    dropped before any response) when the server could not have acted (safe to
     retry). Returns the parsed JSON dict on a completed response, or None for an
     empty body."""
     conn = http.client.HTTPConnection("127.0.0.1", port, timeout=timeout)
@@ -155,8 +194,23 @@ def _do_request(
     try:
         conn.request(method, path, body=data, headers=headers)
         resp = conn.getresponse()
-        raw = resp.read()
-        return json.loads(raw) if raw else None
+        # Past getresponse() the server has accepted and acted on the request.
+        # A read timeout still means "still working" (handled as no-retry by the
+        # caller), but any other failure reading or parsing the body means the
+        # response was lost AFTER the server acted — surface it distinctly so the
+        # caller won't re-fire the request.
+        try:
+            raw = resp.read()
+        except socket.timeout:
+            raise
+        except (http.client.IncompleteRead, OSError, http.client.HTTPException) as exc:
+            raise _ResponseUnreadable(str(exc)) from exc
+        if not raw:
+            return None
+        try:
+            return json.loads(raw)
+        except (json.JSONDecodeError, ValueError) as exc:
+            raise _ResponseUnreadable(str(exc)) from exc
     finally:
         conn.close()
 
@@ -195,17 +249,30 @@ def _request_sync(
                 "Spool: %s timed out; server still working, not retrying", path
             )
             return None
-        except (OSError, http.client.HTTPException,
-                json.JSONDecodeError, ValueError):
-            pass  # connection-level failure — fall through to ensure-server + retry
+        except _ResponseUnreadable as exc:
+            # Server already acted; the response was just lost — re-firing would
+            # double the side effect, so do NOT retry.
+            decky.logger.warning(
+                "Spool: %s response unreadable (server already acted), not retrying: %s",
+                path, exc,
+            )
+            return None
+        except (OSError, http.client.HTTPException):
+            pass  # connection-level failure (no response) — server didn't act — retry below
 
     port = _ensure_server()
     if port is None:
         return None
     try:
         return _do_request(port, method, path, body, timeout)
-    except (OSError, http.client.HTTPException,
-            json.JSONDecodeError, ValueError):
+    except socket.timeout:
+        return None
+    except _ResponseUnreadable as exc:
+        decky.logger.warning(
+            "Spool: %s response unreadable on retry, not re-firing: %s", path, exc
+        )
+        return None
+    except (OSError, http.client.HTTPException):
         return None
 
 
@@ -225,6 +292,14 @@ async def _spool(
 # ── Headless server lifecycle ─────────────────────────────────────────────────
 
 _server_proc: Optional[subprocess.Popen] = None
+
+# Serialises the "is it alive? → spawn → assign _server_proc" decision across the
+# executor threads that run _request_sync. Without it, two handlers firing
+# get_server_base on mount can both observe no live server and both spawn one —
+# the first binds 47650 and is orphaned, the second falls back to an ephemeral
+# port and overwrites plugin-http-port. _start_server does NOT take this lock;
+# its callers do, so a plain (non-reentrant) Lock is safe.
+_server_lock = threading.Lock()
 
 
 def _clean_env() -> dict:
@@ -316,7 +391,11 @@ class Plugin:
     async def _main(self):
         decky.logger.info("Spool plugin loaded")
         settings = _load_settings()
-        _start_server(settings)
+        # Same lock as _ensure_server so a handler firing during load can't
+        # double-spawn alongside this start. Don't restart one that's already up.
+        with _server_lock:
+            if not (_server_proc is not None and _server_proc.poll() is None):
+                _start_server(settings)
 
     async def _unload(self):
         decky.logger.info("Spool plugin unloading")
@@ -380,9 +459,12 @@ class Plugin:
 
     # ── QAM panel ─────────────────────────────────────────────────────────────
 
-    async def backup_now(self) -> dict:
+    async def backup_now(self, appid: Optional[int] = None) -> dict:
+        # `appid` is sent by the per-game badge menu so the server can reject a
+        # "Back up now" that doesn't match the active session's game; the QAM
+        # panel passes None to back up the last session regardless. (#7)
         # Also waits on the server's backup lock — match game-stopped's timeout. (#8)
-        result = await _spool("POST", "/session/backup-now", timeout=240.0)
+        result = await _spool("POST", "/session/backup-now", {"appid": appid}, timeout=240.0)
         if result is None:
             return {"acted": False, "ok": False, "reason": "server unavailable"}
         return result

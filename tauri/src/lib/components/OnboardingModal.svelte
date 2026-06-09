@@ -206,11 +206,25 @@
     if (deckyInstalling) return;
     deckyInstalling = true;
     try {
-      await api.installDeckyPlugin();
-      deckyPlugin = await api.deckyPluginStatus();
-      toasts.show({ kind: 'ok', label: 'DECKY', title: 'Backup plugin installed', sub: 'Decky was restarted — the Spool Backup plugin is now active.' });
-    } catch (e) {
-      toasts.show({ kind: 'bad', label: 'DECKY', title: "Couldn't install plugin", sub: String(e) });
+      let outcome;
+      try {
+        outcome = await api.installDeckyPlugin();
+      } catch (e) {
+        toasts.show({ kind: 'bad', label: 'DECKY', title: "Couldn't install plugin", sub: String(e) });
+        return;
+      }
+      // Install succeeded — a status-refresh failure here must not be reported
+      // as an install failure.
+      try {
+        deckyPlugin = await api.deckyPluginStatus();
+      } catch (e) {
+        console.error('[onboarding] deckyPluginStatus failed after install:', e);
+      }
+      if (outcome.loaderRestarted) {
+        toasts.show({ kind: 'ok', label: 'DECKY', title: 'Backup plugin installed', sub: 'Decky was restarted — the Spool Backup plugin is now active.' });
+      } else {
+        toasts.show({ kind: 'warn', label: 'DECKY', title: 'Backup plugin installed', sub: "The plugin was copied but Decky didn't restart — reboot or restart Decky to load it." });
+      }
     } finally {
       deckyInstalling = false;
     }

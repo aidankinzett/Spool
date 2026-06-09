@@ -7,12 +7,23 @@ import type { ProtonVersion, SaveRevision, Settings } from "../types";
 // shortcuts it equals the `steam_appid` in active-session.json) and `bRunning`
 // (false on a stop event).
 
-export const onAppStop = callable<[appid: number], { acted: boolean; game?: string }>(
-  "on_app_stop",
-);
+// Returns the full forced-close fallback outcome the backend produces (only
+// `acted` is read today — the call is fire-and-forget — but the type mirrors the
+// real payload so a future consumer isn't surprised).
+export const onAppStop = callable<
+  [appid: number],
+  { acted: boolean; ok?: boolean; game?: string; reason?: string; cloud_synced?: boolean }
+>("on_app_stop");
+// Backs up the active session's saves. The per-game badge menu passes the
+// game's shortcut `appid` so the server rejects a "Back up now" that doesn't
+// match the active session's game (no-op with `acted: false`); the QAM panel
+// passes nothing to back up the last session regardless.
 export const backupNow = callable<
-  [],
-  { acted: boolean; ok: boolean; game?: string; reason?: string }
+  [appid?: number],
+  // `cloud_synced` is false when a cloud remote is configured but the upload
+  // failed or hit a conflict (local backup still landed); true also when no
+  // remote is configured (nothing to upload).
+  { acted: boolean; ok: boolean; cloud_synced?: boolean; game?: string; reason?: string }
 >("backup_now");
 export const getStatus = callable<
   [],

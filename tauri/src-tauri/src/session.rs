@@ -13,15 +13,55 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
-/// Serialises read-modify-write of the active-session record so concurrent
-/// in-process writers can't lose each other's updates. The suspend watcher
-/// (checkpointing `suspended_secs` on resume) and the run workflow (flipping
-/// `backed_up` / clearing the record) both mutate the file, and an unguarded
-/// read-then-write could interleave so one clobbers the other's field. The
-/// guard is held only across the synchronous read+write (no await), so it can't
-/// deadlock. Cross-process writers (the headless server) are effectively
-/// serialised by the attached process being dead by the time they run.
+/// Orders read-modify-write of the active-session record between threads of
+/// *this* process. The suspend watcher (checkpointing `suspended_secs` on
+/// resume) and the run workflow (flipping `backed_up` / clearing the record)
+/// both mutate the file, and an unguarded read-then-write could interleave so
+/// one clobbers the other's field. Held only across the synchronous read+write
+/// (no await), so it can't deadlock.
+///
+/// This mutex is invisible to *other* processes, though — and the game-stop
+/// (`/session/game-stopped`) flow runs in the separate headless server while the
+/// attached `--run` workflow is still finishing its own backup, so both can do a
+/// read-modify-write at once. [`lock_session`] adds a machine-wide advisory file
+/// lock on top of this mutex to order those cross-process writers too.
 static SESSION_LOCK: Mutex<()> = Mutex::new(());
+
+/// Combined guard over [`SESSION_LOCK`] (orders this process's threads) and a
+/// machine-wide advisory file lock on `active-session.lock` (orders the *other*
+/// Spool processes — chiefly the attached suspend watcher vs. the headless
+/// game-stop backup). Dropping it releases both; the OS also frees the file lock
+/// when the process exits, so a crash/force-kill can't wedge it.
+struct SessionGuard {
+    // Drop order is declaration order: release the file lock, then the mutex.
+    _file: Option<std::fs::File>,
+    _mutex: std::sync::MutexGuard<'static, ()>,
+}
+
+/// Take the in-process mutex and the cross-process file lock for one short
+/// read-modify-write of the record. Both are held only across the synchronous
+/// read+write below (no await). If the lock file can't be opened or locked we
+/// proceed with just the in-process guard rather than fail the write — a rare
+/// lost update beats dropping the unsynced-session signal a backup-flag flip
+/// carries. The blocking `lock()` is safe: every holder does one short RMW and
+/// releases, and the OS frees it on exit.
+fn lock_session() -> SessionGuard {
+    let mutex = SESSION_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let path = crate::paths::session_lock_file();
+    // Make sure the app data dir exists first, so File::create can't fail (and
+    // silently skip the cross-process lock) on a fresh install where it hasn't
+    // been created yet. Best-effort — a real error surfaces at File::create.
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let file = std::fs::File::create(&path)
+        .ok()
+        .and_then(|f| f.lock().ok().map(|()| f));
+    SessionGuard {
+        _file: file,
+        _mutex: mutex,
+    }
+}
 
 /// Set once when this process writes an active-session record (only attached
 /// `--run` launches do — see [`write_start`]). The in-process play-session
@@ -70,7 +110,7 @@ fn write_start_at(path: &Path, game: &str, steam_appid: u32, started_at: DateTim
         backed_up: false,
         suspended_secs: 0,
     };
-    let _guard = SESSION_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _guard = lock_session();
     crate::paths::write_atomic(path, &serde_json::to_vec_pretty(&rec)?, false)?;
     Ok(session_id)
 }
@@ -106,7 +146,7 @@ pub fn mark_backed_up_if(expected_id: &str) {
 
 #[allow(dead_code)]
 fn mark_backed_up_if_at(path: &Path, expected_id: &str) {
-    let _guard = SESSION_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _guard = lock_session();
     if let Some(mut rec) = read_at(path) {
         if rec.session_id == expected_id {
             rec.backed_up = true;
@@ -133,7 +173,7 @@ pub fn record_suspended_secs(game_name: &str, total_secs: i64) {
 
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn record_suspended_secs_at(path: &Path, game_name: &str, total_secs: i64) {
-    let _guard = SESSION_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _guard = lock_session();
     if let Some(mut rec) = read_at(path) {
         if rec.game == game_name {
             rec.suspended_secs = total_secs;
@@ -156,7 +196,7 @@ pub fn clear_if(expected_id: &str) {
 }
 
 fn clear_if_at(path: &Path, expected_id: &str) {
-    let _guard = SESSION_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _guard = lock_session();
     if let Some(rec) = read_at(path) {
         if rec.session_id == expected_id {
             let _ = std::fs::remove_file(path);
