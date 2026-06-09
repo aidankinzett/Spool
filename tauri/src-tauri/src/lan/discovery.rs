@@ -70,14 +70,14 @@ pub struct LanPeer {
     pub last_seen_ago_secs: u64,
 }
 
-struct PeerEntry {
-    peer: LanPeer,
-    last_seen: Instant,
+pub(crate) struct PeerEntry {
+    pub(crate) peer: LanPeer,
+    pub(crate) last_seen: Instant,
 }
 
 /// Shared LAN state. Held in Tauri state; spawned tasks clone the Arc.
 pub struct LanState {
-    peers: Arc<Mutex<HashMap<String, PeerEntry>>>,
+    pub(crate) peers: Arc<Mutex<HashMap<String, PeerEntry>>>,
 }
 
 impl LanState {
