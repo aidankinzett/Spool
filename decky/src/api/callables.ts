@@ -20,7 +20,10 @@ export const onAppStop = callable<
 // passes nothing to back up the last session regardless.
 export const backupNow = callable<
   [appid?: number],
-  { acted: boolean; ok: boolean; game?: string; reason?: string }
+  // `cloud_synced` is false when a cloud remote is configured but the upload
+  // failed or hit a conflict (local backup still landed); true also when no
+  // remote is configured (nothing to upload).
+  { acted: boolean; ok: boolean; cloud_synced?: boolean; game?: string; reason?: string }
 >("backup_now");
 export const getStatus = callable<
   [],

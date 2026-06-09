@@ -47,7 +47,14 @@ struct SessionGuard {
 /// releases, and the OS frees it on exit.
 fn lock_session() -> SessionGuard {
     let mutex = SESSION_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let file = std::fs::File::create(crate::paths::session_lock_file())
+    let path = crate::paths::session_lock_file();
+    // Make sure the app data dir exists first, so File::create can't fail (and
+    // silently skip the cross-process lock) on a fresh install where it hasn't
+    // been created yet. Best-effort — a real error surfaces at File::create.
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let file = std::fs::File::create(&path)
         .ok()
         .and_then(|f| f.lock().ok().map(|()| f));
     SessionGuard {

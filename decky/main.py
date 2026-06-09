@@ -155,6 +155,9 @@ def _save_settings(settings: dict) -> None:
             os.remove(tmp)
         except OSError:
             pass
+        # Propagate so set_settings reports the failure to the caller instead of
+        # returning the new settings as if the write had succeeded.
+        raise
 
 
 # ── HTTP-over-loopback-TCP client ─────────────────────────────────────────────

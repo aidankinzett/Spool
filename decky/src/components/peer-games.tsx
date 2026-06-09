@@ -106,6 +106,7 @@ export function PeerGamesPage() {
             } else if (p?.status === "error") {
               toaster.toast({ title: "Install failed", body: p.message ?? p.game_name });
             }
+            if (doneTimerRef.current) clearTimeout(doneTimerRef.current);
             doneTimerRef.current = setTimeout(() => setDownload(null), 3000);
           }
         })
@@ -115,6 +116,12 @@ export function PeerGamesPage() {
 
   async function startDownload(game: PeerGame) {
     if (!base || busy) return;
+    // Cancel a pending "clear the row after 3s" timer from a just-finished
+    // download so its stale callback can't wipe this new download mid-transfer.
+    if (doneTimerRef.current) {
+      clearTimeout(doneTimerRef.current);
+      doneTimerRef.current = null;
+    }
     // Optimistically show the row as starting so the UI reacts before the first
     // poll lands; polling then takes over from the backend's real progress.
     setDownload({

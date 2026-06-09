@@ -80,12 +80,12 @@ pub(super) async fn post_game_stopped(
 }
 
 #[derive(Deserialize, Default)]
+#[serde(default)]
 pub(super) struct BackupNowRequest {
     /// Shortcut appid of the game whose page the request came from, or null for
     /// the QAM panel's "back up the last session" button (which has no game
     /// context). When present it's validated against the session record so a
     /// per-game "Back up now" can't back up an unrelated game.
-    #[serde(default)]
     appid: Option<u32>,
 }
 

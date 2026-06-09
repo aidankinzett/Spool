@@ -12,8 +12,8 @@ This review covers the Spool Decky plugin and the headless plugin server that ba
 | Medium | 6 |
 | Low | 11 |
 | Nit | 2 |
-| Disputed (unadjudicated) | 5 |
-| Resolved/Dismissed | 3 |
+| Disputed (unadjudicated) | 0 |
+| Resolved/Dismissed | 8 |
 
 **Headline risks:**
 
@@ -268,4 +268,4 @@ Folding in the completeness critic honestly — several handlers and files were 
 - "Forced-close fallback skipped on DB-open failure" was filed twice (confirmed list) — these are the same finding; dedupe.
 - The LAN empty-token cancel was filed three times across lanes — same root cause; confirm the queued cancel re-fires correctly once the real token lands on both ends.
 
-**What this means:** The two highest-value unreviewed items (the install-deps/proton run-lock gap and the `compute_steam_appid` ↔ `compute_shortcut_app_id` byte-equality) have been resolved post-review. Remaining open gaps include path-traversal containment on `GET /covers/*`, wipe-lock verification on the headless uninstall path, server-side rate-limiting on `/fold`, and a detailed correctness review of unreviewed modals and hooks.
+**What this means:** The highest-value unreviewed items have been resolved post-review: the install-deps/proton run-lock gap, the `compute_steam_appid` ↔ `compute_shortcut_app_id` byte-equality, and (2026-06-09) the three remaining server gaps — `GET /covers/*` path-traversal (safe: tower-http rejects `..` lexically, loopback-only bind, app-written art) and the headless uninstall/`DELETE` wipe-lock (safe: both funnel through `wipe_install_files`, which holds the per-game run lock) were verified safe, and `POST /fold` server-side coalescing was promoted to a confirmed Low and fixed. The remaining genuinely-open item is a detailed correctness review of the unreviewed modals and hooks (`install-deps-modal`, `proton-version-modal`, `revision-picker-modal`, `use-backing-up`, etc.).
