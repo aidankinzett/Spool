@@ -231,7 +231,7 @@ Folding in the completeness critic honestly — several handlers and files were 
 - `hooks/use-backing-up.ts`, `use-now.ts`, `lib/steam-chrome.ts`, `lib/format.ts` — unexamined.
 
 **Uncovered edge cases / failure modes:**
-- **`appid=0` / non-Spool-game stop:** `on_app_stop` fires for *every* app stop (the lifetime listener is global), including real Steam games and appid 0, with no client-side guard before POSTing. Cost is a network op + spinner/toast churn on every unrelated game stop — touched by the toast-storm note but never its own finding.
+- **~~`appid=0` / non-Spool-game stop~~ ✓ Investigated & Fixed — PR #414:** `on_app_stop` fires for *every* app stop (the lifetime listener is global), including real Steam games and appid 0, with no client-side guard before POSTing. Cost is a network op + spinner/toast churn on every unrelated game stop — touched by the toast-storm note but never its own finding.
 - **Plugin version skew:** the no-handshake gap is noted, but the concrete failure (older `main.py` calling a route the newer server renamed) is never traced to a specific contract break.
 - **Offline-cloud during forced-close:** whether the *headless* game-stop path leaves a recoverable `PendingBackup` marker the way the in-process workflow does was not verified.
 - **Missing `umu-run` in Game Mode:** install-deps/proton routes call `proton::` cores; no dependency doctor runs on the headless path.
