@@ -1,0 +1,112 @@
+//! Mounted-drive discovery and free-space queries for the "Library folders"
+//! feature. The Settings UI lists detected drives (with free space) so the user
+//! can add an install root per drive, and the move-install flow shows live free
+//! space for each configured folder.
+//!
+//! Pure read-only system inspection via [`sysinfo`], plus a small helper to
+//! create a chosen library folder on disk. None of this is platform-gated —
+//! drives exist on every OS Spool targets.
+
+use crate::error::{AppError, AppResult};
+use serde::Serialize;
+use std::path::{Path, PathBuf};
+
+/// One mounted drive/volume, as surfaced to the Settings drive picker.
+#[derive(Debug, Clone, Serialize)]
+pub struct DriveInfo {
+    /// Filesystem mount point — `C:\` on Windows, `/` or `/run/media/...` on
+    /// Linux. This is what a library folder is rooted under.
+    pub mount_point: String,
+    /// OS-level volume name (often the device, e.g. `/dev/nvme0n1p2`). Used only
+    /// as a secondary label.
+    pub name: String,
+    pub total_bytes: u64,
+    pub available_bytes: u64,
+    pub is_removable: bool,
+}
+
+/// Lists mounted drives with their free space. Powers the Settings drive picker.
+///
+/// Filters out pseudo / zero-size mounts (snap loopbacks, `/dev`, tmpfs with no
+/// capacity) that the user can't install games onto, and de-duplicates by mount
+/// point (some backends list the same mount twice). Sorted by mount point so the
+/// list is stable across calls.
+#[tauri::command]
+pub fn list_drives() -> Vec<DriveInfo> {
+    let disks = sysinfo::Disks::new_with_refreshed_list();
+    let mut seen = std::collections::HashSet::new();
+    let mut out: Vec<DriveInfo> = disks
+        .list()
+        .iter()
+        .filter(|d| d.total_space() > 0)
+        .filter_map(|d| {
+            let mount_point = d.mount_point().to_string_lossy().to_string();
+            if !seen.insert(mount_point.clone()) {
+                return None;
+            }
+            Some(DriveInfo {
+                mount_point,
+                name: d.name().to_string_lossy().to_string(),
+                total_bytes: d.total_space(),
+                available_bytes: d.available_space(),
+                is_removable: d.is_removable(),
+            })
+        })
+        .collect();
+    out.sort_by(|a, b| a.mount_point.cmp(&b.mount_point));
+    out
+}
+
+/// Available bytes on the filesystem that holds `path`. Matches the drive whose
+/// mount point is the longest prefix of `path` (so `/run/media/sd` wins over `/`
+/// for a path under the SD card). Returns 0 when no drive matches or the path is
+/// empty — the caller treats 0 as "unknown / can't verify".
+#[tauri::command]
+pub fn folder_free_space(path: String) -> u64 {
+    if path.trim().is_empty() {
+        return 0;
+    }
+    // Resolve as far as possible: a not-yet-created destination (e.g. a brand
+    // new `Spool` folder) won't canonicalize, so walk up to the nearest existing
+    // ancestor, whose filesystem is the one the new folder will live on.
+    let target = nearest_existing_ancestor(Path::new(&path));
+    let disks = sysinfo::Disks::new_with_refreshed_list();
+    disks
+        .list()
+        .iter()
+        .filter(|d| target.starts_with(d.mount_point()))
+        .max_by_key(|d| d.mount_point().as_os_str().len())
+        .map(|d| d.available_space())
+        .unwrap_or(0)
+}
+
+/// Walks up from `path` to the first ancestor that exists on disk, canonicalising
+/// it so prefix-matching against mount points sees real paths (symlinks/`..`
+/// resolved). Falls back to the original path when nothing resolves.
+fn nearest_existing_ancestor(path: &Path) -> PathBuf {
+    let mut cur = Some(path);
+    while let Some(p) = cur {
+        if let Ok(canon) = std::fs::canonicalize(p) {
+            return canon;
+        }
+        cur = p.parent();
+    }
+    path.to_path_buf()
+}
+
+/// Ensures the chosen library folder exists on disk and returns its canonical
+/// path. Called when the user confirms a new library folder in Settings so we
+/// create e.g. `<drive>/Spool/` up front (and store a normalised path). Errors
+/// if the directory can't be created.
+#[tauri::command]
+pub fn prepare_library_folder(path: String) -> AppResult<String> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return Err(AppError::Other("Library folder path is empty.".into()));
+    }
+    let p = PathBuf::from(trimmed);
+    std::fs::create_dir_all(&p)
+        .map_err(|e| AppError::Other(format!("couldn't create {}: {e}", p.display())))?;
+    let canonical = std::fs::canonicalize(&p).unwrap_or(p);
+    Ok(canonical.to_string_lossy().to_string())
+}

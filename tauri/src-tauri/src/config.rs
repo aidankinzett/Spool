@@ -81,6 +81,13 @@ pub struct ConfigData {
     /// intact as a safety net — saves are small, so the disk cost is trivial.
     pub save_retention_full: u32,
 
+    /// User-managed install roots (typically one per drive). Each is a folder
+    /// where game installs can live; the "Move install" flow lists these as
+    /// destinations. Empty by default — adding one (Settings → Library folders)
+    /// creates a `Spool/` subfolder on the chosen drive. A flat top-level
+    /// `library_folders` array on disk.
+    pub library_folders: Vec<LibraryFolder>,
+
     /// Cloud-save / rclone settings (flattened to the flat `cloud_*` JSON keys).
     #[serde(flatten)]
     pub cloud: CloudConfig,
@@ -107,11 +114,23 @@ impl Default for ConfigData {
             onboarding_completed: false,
             decky_update_notified_version: String::new(),
             save_retention_full: 5,
+            library_folders: Vec::new(),
             cloud: CloudConfig::default(),
             lan: LanConfig::default(),
             launch: LaunchConfig::default(),
         }
     }
+}
+
+/// One user-managed install root. `path` is the folder games are moved into
+/// (the "Move install" flow appends `<game folder name>` under it); `label` is
+/// an optional friendly name shown in the UI (falls back to the path / drive
+/// when unset).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LibraryFolder {
+    pub path: String,
+    pub label: Option<String>,
 }
 
 /// Cloud-save + rclone settings. Flattened into [`ConfigData`], so each field

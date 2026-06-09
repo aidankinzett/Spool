@@ -23,6 +23,7 @@
     Copy,
     Download,
     Folder,
+    FolderInput,
     HardDriveDownload,
     Pencil,
     Play,
@@ -56,6 +57,7 @@
   import DetailCard from './DetailCard.svelte';
   import CrossDeviceActivityCard from './CrossDeviceActivityCard.svelte';
   import { removeGameDialog } from '$lib/removeGame.svelte';
+  import { moveInstallDialog } from '$lib/moveInstall.svelte';
 
   let {
     game,
@@ -768,6 +770,12 @@
       {#snippet icon()}<Pencil size={14} />{/snippet}
       Edit
     </Btn>
+    {#if game.installed && game.game_folder_path}
+      <Btn variant="ghost" onclick={() => moveInstallDialog.request(game)}>
+        {#snippet icon()}<FolderInput size={14} />{/snippet}
+        Move install…
+      </Btn>
+    {/if}
     <Btn variant="danger" onclick={() => removeGameDialog.request(game)}>
       {#snippet icon()}<Trash2 size={14} />{/snippet}
       Remove

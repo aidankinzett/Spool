@@ -19,13 +19,14 @@
    */
   import { onMount } from 'svelte';
   import { SvelteSet } from 'svelte/reactivity';
-  import { Download, Folder, RefreshCw, Trash2 } from '@lucide/svelte';
+  import { Download, Folder, FolderInput, RefreshCw, Trash2 } from '@lucide/svelte';
   import { open as openDialog } from '@tauri-apps/plugin-dialog';
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import { api, assetUrl } from '$lib/api';
   import { fmtCatalog, absDateTime } from '$lib/format';
   import { toasts } from '$lib/toasts.svelte';
   import { removeGameDialog } from '$lib/removeGame.svelte';
+  import { moveInstallDialog } from '$lib/moveInstall.svelte';
   import type { GameEntry, ManifestOverride, ProtonVersion } from '$lib/types';
   import AppChrome from '$lib/components/AppChrome.svelte';
   import MonoLabel from '$lib/components/MonoLabel.svelte';
@@ -502,17 +503,33 @@
 
           {#snippet installFolder()}
             {#if form!.installed}
-              <div class="flex gap-1.5">
-                <TextField
-                  bind:value={form!.game_folder_path as unknown as string}
-                  placeholder="(unset)"
-                  mono
-                  full
-                />
-                <Btn variant="ghost" onclick={browseFolder}>
-                  {#snippet icon()}<Folder size={14} />{/snippet}
-                  Browse
-                </Btn>
+              <div class="flex flex-col gap-1.5">
+                <div class="flex gap-1.5">
+                  <TextField
+                    bind:value={form!.game_folder_path as unknown as string}
+                    placeholder="(unset)"
+                    mono
+                    full
+                  />
+                  <Btn variant="ghost" onclick={browseFolder}>
+                    {#snippet icon()}<Folder size={14} />{/snippet}
+                    Browse
+                  </Btn>
+                </div>
+                {#if original?.game_folder_path}
+                  <div>
+                    <Btn
+                      variant="ghost"
+                      onclick={() =>
+                        moveInstallDialog.request(original!, {
+                          onDone: () => void getCurrentWindow().close(),
+                        })}
+                    >
+                      {#snippet icon()}<FolderInput size={14} />{/snippet}
+                      Move to another drive…
+                    </Btn>
+                  </div>
+                {/if}
               </div>
             {:else}
               <!-- Uninstalled: install paths are owned by Reinstall, not the

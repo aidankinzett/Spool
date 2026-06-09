@@ -32,6 +32,7 @@ mod decky_install;
 mod plugin_server;
 mod diagnostics;
 mod config;
+mod drives;
 mod error;
 mod gamemode;
 mod gamepad;
@@ -44,6 +45,7 @@ mod ludusavi;
 mod ludusavi_config;
 mod metadata;
 mod metadata_backfill;
+mod move_install;
 mod paths;
 mod process;
 mod proc_lock;
@@ -265,6 +267,7 @@ pub fn run() {
                 .expect("reqwest client build"),
         )
         .manage::<Arc<LanDownloadState>>(Arc::new(LanDownloadState::default()))
+        .manage::<Arc<move_install::MoveState>>(Arc::new(move_install::MoveState::default()))
         .manage::<LanUploadsState>(LanUploadsState::default())
         .manage::<LanServerShutdown>(LanServerShutdown::default())
         .manage::<SyncStatusState>(SyncStatusState::default())
@@ -286,6 +289,13 @@ pub fn run() {
             config::update_config,
             config::detect_umu_run,
             config::app_platform,
+            // drives / library folders + move install
+            drives::list_drives,
+            drives::folder_free_space,
+            drives::prepare_library_folder,
+            move_install::move_game_install,
+            move_install::cancel_move,
+            move_install::current_move,
             diagnostics::check_dependencies,
             // proton / linux launch
             proton::list_proton_versions,

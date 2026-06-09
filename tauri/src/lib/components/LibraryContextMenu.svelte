@@ -14,7 +14,7 @@
    * non-danger rows, red hover for Remove.
    */
   import { onMount, onDestroy } from 'svelte';
-  import { ArrowDownToLine, ArrowUpFromLine, Folder, HardDriveDownload, Package, Pencil, Play, Trash2 } from '@lucide/svelte';
+  import { ArrowDownToLine, ArrowUpFromLine, Folder, FolderInput, HardDriveDownload, Package, Pencil, Play, Trash2 } from '@lucide/svelte';
   import { openView } from '$lib/nav';
   import { api, assetUrl } from '$lib/api';
   import { fmtCatalog, folderForGame, parentDir } from '$lib/format';
@@ -22,6 +22,7 @@
   import { confirmDialog } from '$lib/confirm.svelte';
   import { confirmSteamRestart } from '$lib/steamRestart';
   import { removeGameDialog } from '$lib/removeGame.svelte';
+  import { moveInstallDialog } from '$lib/moveInstall.svelte';
   import { gamepadScope } from '$lib/gamepad';
   import type { GameEntry } from '$lib/types';
 
@@ -311,6 +312,13 @@
     onclose();
     openView('add', { reinstall: game.id });
   }
+
+  // Open the move-install chooser (relocate the install to another library
+  // folder / drive), hosted globally by MoveInstallHost.
+  function moveInstall() {
+    onclose();
+    moveInstallDialog.request(game);
+  }
 </script>
 
 <div
@@ -405,9 +413,11 @@
   {#snippet pencilIcon()}<Pencil size={13} />{/snippet}
   {#snippet trashIcon()}<Trash2 size={13} />{/snippet}
   {#snippet reinstallIcon()}<HardDriveDownload size={13} />{/snippet}
+  {#snippet moveIcon()}<FolderInput size={13} />{/snippet}
 
   <div class="border-t border-dashed border-line-1 py-1">
     {@render item('Edit…', pencilIcon, openEdit)}
+    {@render item('Move install…', moveIcon, moveInstall, !game.installed || !game.game_folder_path)}
     {#if !game.installed}
       {@render item('Reinstall…', reinstallIcon, reinstall)}
     {/if}

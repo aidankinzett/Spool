@@ -8,7 +8,9 @@ import type {
   AddToSteamResult,
   ConfigData,
   DownloadProgress,
+  DriveInfo,
   GameEntry,
+  MoveProgress,
   DepStatus,
   LanPeer,
   NewGame,
@@ -64,6 +66,25 @@ export const api = {
   /** Deletes the install folder from disk but KEEPS the library entry (dimmed,
    *  Play disabled). Re-adding the game reuses this same entry. */
   uninstallGame: (id: string): Promise<void> => invoke('uninstall_game', { id }),
+
+  // Library folders / drives + move install
+  /** Mounted drives with free space, for the Settings drive picker. */
+  listDrives: (): Promise<DriveInfo[]> => invoke('list_drives'),
+  /** Available bytes on the filesystem holding `path` (0 = unknown). */
+  folderFreeSpace: (path: string): Promise<number> =>
+    invoke('folder_free_space', { path }),
+  /** Creates the chosen library folder on disk; returns its canonical path. */
+  prepareLibraryFolder: (path: string): Promise<string> =>
+    invoke('prepare_library_folder', { path }),
+  /** Moves game `id`'s install into `destFolder`; resolves with the updated
+   *  entry. Progress streams via the `move:progress` event. */
+  moveGameInstall: (id: string, destFolder: string): Promise<GameEntry> =>
+    invoke('move_game_install', { id, destFolder }),
+  /** Requests cancellation of the in-flight move for `gameId`. */
+  cancelMove: (gameId: string): Promise<boolean> =>
+    invoke('cancel_move', { gameId }),
+  /** Snapshot of the active move (if any), for a UI mounting mid-transfer. */
+  currentMove: (): Promise<MoveProgress | null> => invoke('current_move'),
 
   // Config
   getConfig: (): Promise<ConfigData> => invoke('get_config'),

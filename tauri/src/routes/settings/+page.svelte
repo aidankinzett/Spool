@@ -12,9 +12,11 @@
     KeyRound,
     Layers,
     MonitorSmartphone,
+    Plus,
     RefreshCcw,
     Shield,
     Sparkles,
+    Trash2,
     Wifi,
   } from '@lucide/svelte';
   import { goto } from '$app/navigation';
@@ -26,9 +28,9 @@
   import { api, type DeckyPluginInfo } from '$lib/api';
   import { toasts } from '$lib/toasts.svelte';
   import { confirmSteamRestart } from '$lib/steamRestart';
-  import { isNewerVersion } from '$lib/format';
+  import { isNewerVersion, fmtSize } from '$lib/format';
   import { checkForUpdateInteractive } from '$lib/updater';
-  import type { ConfigData, DepStatus, LanPeer, ProtonVersion, SyncStatus } from '$lib/types';
+  import type { ConfigData, DepStatus, DriveInfo, LanPeer, ProtonVersion, SyncStatus } from '$lib/types';
   import AppChrome from '$lib/components/AppChrome.svelte';
   import MonoLabel from '$lib/components/MonoLabel.svelte';
   import Btn from '$lib/components/Btn.svelte';
@@ -378,6 +380,81 @@
     }
   }
 
+  // ── Library folders (per-drive install roots) ──────────────────────────────
+  let libDrives = $state<DriveInfo[]>([]);
+  let addingLibFolder = $state(false);
+  let proposedLibFolder = $state('');
+  // path → available bytes, refreshed when the folder list changes.
+  let libFolderFree = $state<Record<string, number>>({});
+
+  async function refreshLibFolderFree() {
+    if (!config) return;
+    const folders = config.library_folders;
+    const entries = await Promise.all(
+      folders.map(async (f) => {
+        try {
+          return [f.path, await api.folderFreeSpace(f.path)] as const;
+        } catch {
+          return [f.path, 0] as const;
+        }
+      }),
+    );
+    libFolderFree = Object.fromEntries(entries);
+  }
+
+  // Keep free-space figures fresh as the configured folder list changes.
+  $effect(() => {
+    if (config?.library_folders) void refreshLibFolderFree();
+  });
+
+  async function startAddLibFolder() {
+    addingLibFolder = true;
+    proposedLibFolder = '';
+    try {
+      libDrives = await api.listDrives();
+    } catch {
+      libDrives = [];
+    }
+  }
+
+  // Picking a drive seeds an editable `<drive>/Spool` path (auto subfolder).
+  function pickDrive(mount: string) {
+    const isWin = mount.includes('\\');
+    const trimmed = mount.replace(/[\\/]+$/, '');
+    proposedLibFolder = isWin ? `${trimmed}\\Spool` : `${trimmed}/Spool`;
+  }
+
+  async function browseLibFolder() {
+    const picked = await openDialog({ title: 'Pick a library folder', directory: true, multiple: false });
+    if (typeof picked === 'string') proposedLibFolder = picked;
+  }
+
+  async function confirmAddLibFolder() {
+    if (!config) return;
+    const raw = proposedLibFolder.trim();
+    if (!raw) return;
+    try {
+      const canonical = await api.prepareLibraryFolder(raw);
+      if (config.library_folders.some((f) => f.path === canonical)) {
+        toasts.show({ kind: 'ok', label: 'LIBRARY', title: 'Already a library folder', sub: canonical });
+      } else {
+        config.library_folders = [...config.library_folders, { path: canonical, label: null }];
+        await persist();
+        await refreshLibFolderFree();
+      }
+      addingLibFolder = false;
+      proposedLibFolder = '';
+    } catch (e) {
+      toasts.show({ kind: 'bad', label: 'LIBRARY', title: "Couldn't add folder", sub: String(e) });
+    }
+  }
+
+  async function removeLibFolder(path: string) {
+    if (!config) return;
+    config.library_folders = config.library_folders.filter((f) => f.path !== path);
+    await persist();
+  }
+
   function onLanPortCommit() {
     if (!config) return;
     if (!Number.isFinite(config.lan_share_port) || config.lan_share_port < 1024) config.lan_share_port = 47632;
@@ -702,6 +779,75 @@
                           </a>
                         {/snippet}
                       </SettingsRow>
+                    </div>
+                  {/if}
+                </div>
+              </SettingsCard>
+
+              <!-- Library folders: per-drive install roots used by "Move install". -->
+              <SettingsCard
+                title="Library folders"
+                helper="Install roots for your games — usually one per drive. The “Move install” action relocates a game into any of these."
+              >
+                <div class="flex flex-col gap-2">
+                  {#if config!.library_folders.length === 0 && !addingLibFolder}
+                    <p class="text-[12px] text-ink-3">
+                      No library folders yet. Add one per drive to move installs there.
+                    </p>
+                  {/if}
+
+                  {#each config!.library_folders as folder (folder.path)}
+                    <div class="flex items-center gap-2 min-w-0 rounded-lg bg-bg-1 px-3 py-2">
+                      <HardDrive size={14} class="shrink-0 text-ink-3" />
+                      <div class="min-w-0 flex-1">
+                        <div class="truncate text-[12.5px] text-ink-1 font-mono">{folder.path}</div>
+                        {#if libFolderFree[folder.path] != null}
+                          <div class="text-[11px] text-ink-3">{fmtSize(libFolderFree[folder.path] / 1048576)} free</div>
+                        {/if}
+                      </div>
+                      <Btn variant="ghost" onclick={() => removeLibFolder(folder.path)}>
+                        {#snippet icon()}<Trash2 size={14} />{/snippet}
+                        Remove
+                      </Btn>
+                    </div>
+                  {/each}
+
+                  {#if addingLibFolder}
+                    <div class="flex flex-col gap-2 rounded-lg border border-line-1 p-3">
+                      {#if libDrives.length > 0}
+                        <div class="text-[11px] uppercase tracking-wide text-ink-3">Detected drives</div>
+                        <div class="flex flex-col gap-1">
+                          {#each libDrives as d (d.mount_point)}
+                            <button
+                              type="button"
+                              class="flex items-center gap-2 rounded-md px-2 py-1.5 text-left hover:bg-bg-1"
+                              onclick={() => pickDrive(d.mount_point)}
+                            >
+                              <HardDrive size={13} class="shrink-0 text-ink-3" />
+                              <span class="flex-1 truncate text-[12px] text-ink-1 font-mono">{d.mount_point}</span>
+                              <span class="text-[11px] text-ink-3">{fmtSize(d.available_bytes / 1048576)} free</span>
+                            </button>
+                          {/each}
+                        </div>
+                      {/if}
+                      <div class="flex items-center gap-2 min-w-0">
+                        <TextField bind:value={proposedLibFolder} placeholder="Pick a drive above, or browse…" mono full />
+                        <Btn variant="ghost" onclick={browseLibFolder}>
+                          {#snippet icon()}<Folder size={14} />{/snippet}
+                          Browse
+                        </Btn>
+                      </div>
+                      <div class="flex items-center justify-end gap-2">
+                        <Btn variant="ghost" onclick={() => { addingLibFolder = false; proposedLibFolder = ''; }}>Cancel</Btn>
+                        <Btn variant="primary" disabled={!proposedLibFolder.trim()} onclick={confirmAddLibFolder}>Add folder</Btn>
+                      </div>
+                    </div>
+                  {:else}
+                    <div>
+                      <Btn variant="ghost" onclick={startAddLibFolder}>
+                        {#snippet icon()}<Plus size={14} />{/snippet}
+                        Add library folder
+                      </Btn>
                     </div>
                   {/if}
                 </div>
