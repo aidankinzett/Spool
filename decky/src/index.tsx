@@ -8,6 +8,7 @@ import {
 import {
   afterPatch,
   appDetailsClasses,
+  appDetailsHeaderClasses,
   createReactTreePatcher,
   findInReactTree,
   staticClasses
@@ -24,6 +25,8 @@ import { PatchWrapper } from "./components/patch/patch-wrapper";
 import { SafeArea } from "./components/safe-area";
 
 export default definePlugin(() => {
+  let hasWarnedPatch = false;
+
   // Register the full-screen LAN browse routes. The QAM "Browse LAN games"
   // button navigates to them; we remove them on dismount to avoid duplicate
   // patches across hot-reloads.
@@ -46,6 +49,14 @@ export default definePlugin(() => {
   const playtimePatch = routerHook.addPatch(
     "/library/app/:appid",
     (tree: any) => {
+      if (!appDetailsClasses || !appDetailsHeaderClasses) {
+        if (!hasWarnedPatch) {
+          console.warn("[Spool] Steam CSS classes (appDetailsClasses or appDetailsHeaderClasses) are undefined; game-detail patch disabled.");
+          hasWarnedPatch = true;
+        }
+        return tree;
+      }
+
       const routeProps = findInReactTree(tree, (x: any) => x?.renderFunc);
       if (!routeProps) return tree;
 
@@ -56,18 +67,25 @@ export default definePlugin(() => {
               ?.props?.children,
         ],
         (_: Array<Record<string, unknown>>, ret?: ReactElement) => {
-          const container = findInReactTree(
-            ret,
-            (x: any) =>
-              Array.isArray(x?.props?.children) &&
-              x?.props?.className?.includes(appDetailsClasses.InnerContainer),
-          );
+          try {
+            const container = findInReactTree(
+              ret,
+              (x: any) =>
+                Array.isArray(x?.props?.children) &&
+                x?.props?.className?.includes(appDetailsClasses.InnerContainer),
+            );
 
-          if (typeof container !== "object") return ret;
-          // Insert as the first child so the zero-height anchor shares the
-          // InnerContainer's top edge — PatchWrapper walks from there to the
-          // hero capsule and floats the bar over it (see patch-wrapper.tsx).
-          container.props.children.splice(0, 0, createElement(PatchWrapper, null));
+            if (typeof container !== "object" || !container?.props?.children) return ret;
+            // Insert as the first child so the zero-height anchor shares the
+            // InnerContainer's top edge — PatchWrapper walks from there to the
+            // hero capsule and floats the bar over it (see patch-wrapper.tsx).
+            container.props.children.splice(0, 0, createElement(PatchWrapper, null));
+          } catch (err) {
+            if (!hasWarnedPatch) {
+              console.warn("[Spool] Failed to apply playtime patch to React tree:", err);
+              hasWarnedPatch = true;
+            }
+          }
 
           return ret;
         },
