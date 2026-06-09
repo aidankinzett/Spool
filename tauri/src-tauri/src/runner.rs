@@ -597,7 +597,7 @@ pub async fn pull_cloud_saves_core(
         // Clean pull — local now reflects the cloud tip. Record it as the synced
         // baseline so the next conflict check is exact, then mark the badge.
         let backup_dir = ludusavi_config::backup_dir();
-        if let Some(tip) = redirects::read_local_backup_tip(&backup_dir, &game_name) {
+        if let Some(tip) = redirects::read_local_backup_tip_async(&backup_dir, &game_name).await {
             let _ = set_baseline_in(library, game_id, &tip.name).await;
         }
         mark_synced_badge(library, game_id).await;
@@ -610,7 +610,7 @@ pub async fn pull_cloud_saves_core(
 
     // local ≠ cloud — reconcile against the baseline.
     let backup_dir = ludusavi_config::backup_dir();
-    let local_tip = redirects::read_local_backup_tip(&backup_dir, &game_name);
+    let local_tip = redirects::read_local_backup_tip_async(&backup_dir, &game_name).await;
     let cloud_tip = fetch_cloud_backup_tip(&game_name).await;
     let base = library
         .find(game_id)
@@ -786,7 +786,7 @@ pub async fn restore_save_revision_core(
         // Advance the cloud-sync baseline to the freshly-written tip so the next
         // launch's conflict check is exact rather than falling back to timestamps.
         let backup_dir = ludusavi_config::backup_dir();
-        if let Some(tip) = redirects::read_local_backup_tip(&backup_dir, &game_name) {
+        if let Some(tip) = redirects::read_local_backup_tip_async(&backup_dir, &game_name).await {
             let _ = set_baseline_in(library, game_id, &tip.name).await;
         }
         // We're the latest backer: clear any marker + record the backer.
@@ -910,7 +910,7 @@ pub async fn resolve_cloud_conflict(
     // chosen copy. Record the resulting tip as the baseline so the very next
     // launch doesn't immediately re-prompt for the same (now-resolved) state.
     let backup_dir = ludusavi_config::backup_dir();
-    if let Some(tip) = redirects::read_local_backup_tip(&backup_dir, &game_name) {
+    if let Some(tip) = redirects::read_local_backup_tip_async(&backup_dir, &game_name).await {
         let _ = set_cloud_baseline(&app, &game_id, &tip.name).await;
     }
 
@@ -1373,7 +1373,13 @@ pub async fn get_cloud_conflict_details(
     let mut local = get_local_active_save_details(&ludusavi_exe, &config_dir, &game_name, wine_prefix.as_deref()).await;
     if local.is_none() {
         tracing::info!("get_local_active_save_details returned None; falling back to local backup directory stats");
-        local = get_local_backup_details(&game_name);
+        // The fallback recursively walks the backup dir (`walkdir` + per-file
+        // metadata), so run it off the async runtime.
+        let gn = game_name.clone();
+        local = tokio::task::spawn_blocking(move || get_local_backup_details(&gn))
+            .await
+            .ok()
+            .flatten();
     }
     tracing::info!("local details for {}: {:?}", game_name, local);
     
@@ -1715,7 +1721,7 @@ async fn restore_with_redirects(
 
     // ── Read mapping.yaml to detect origin ────────────────────────────────
     let backup_dir = ludusavi_config::backup_dir();
-    let Some(origin) = redirects::read_backup_origin(&backup_dir, game_name) else {
+    let Some(origin) = redirects::read_backup_origin_async(&backup_dir, game_name).await else {
         // No backup on disk yet (first-ever session). Nothing to redirect.
         tracing::info!(game_name, "no mapping.yaml found — skipping redirect generation");
         return Ok(first);
@@ -2027,7 +2033,7 @@ async fn phase_restore(ctx: &WorkflowCtx<'_>) -> AppResult<bool> {
             // Clean restore with cloud configured — record the current local tip as
             // the synced baseline so the next conflict check is exact.
             let backup_dir = ludusavi_config::backup_dir();
-            if let Some(tip) = redirects::read_local_backup_tip(&backup_dir, ctx.game_name) {
+            if let Some(tip) = redirects::read_local_backup_tip_async(&backup_dir, ctx.game_name).await {
                 let _ = set_cloud_baseline(ctx.app, ctx.game_id, &tip.name).await;
             }
         }
@@ -2060,7 +2066,7 @@ async fn phase_restore(ctx: &WorkflowCtx<'_>) -> AppResult<bool> {
 /// last sync, which aborts the launch for the user to resolve in Ludusavi.
 async fn reconcile_cloud_conflict(ctx: &WorkflowCtx<'_>) -> AppResult<()> {
     let backup_dir = ludusavi_config::backup_dir();
-    let local_tip = redirects::read_local_backup_tip(&backup_dir, ctx.game_name);
+    let local_tip = redirects::read_local_backup_tip_async(&backup_dir, ctx.game_name).await;
     let cloud_tip = fetch_cloud_backup_tip(ctx.game_name).await;
     let base = ctx
         .app
@@ -2529,7 +2535,7 @@ async fn phase_backup(ctx: &WorkflowCtx<'_>, no_saves: bool, timing: &SessionTim
         let mut backup_redirects_set = false;
         if let Some(prefix) = ctx.wine_prefix() {
             let backup_dir = ludusavi_config::backup_dir();
-            if let Some(origin) = redirects::read_backup_origin(&backup_dir, ctx.game_name) {
+            if let Some(origin) = redirects::read_backup_origin_async(&backup_dir, ctx.game_name).await {
                 let local_win_user = redirects::local_windows_username();
                 match redirects::apply_redirects_for_backup(
                     &origin,
@@ -2587,7 +2593,7 @@ async fn phase_backup(ctx: &WorkflowCtx<'_>, no_saves: bool, timing: &SessionTim
                 // doesn't touch the local mapping.yaml, so this stays valid
                 // across it.)
                 let backup_dir = ludusavi_config::backup_dir();
-                let local_tip = redirects::read_local_backup_tip(&backup_dir, ctx.game_name);
+                let local_tip = redirects::read_local_backup_tip_async(&backup_dir, ctx.game_name).await;
 
                 // Skip the cloud upload when this session produced no save
                 // changes and the remote already holds the current revision.

@@ -734,7 +734,11 @@ async fn post_install_deps(
 /// the desktop `list_proton_versions` command so the Decky picker shows the
 /// same options. Empty on a host with no Proton installed.
 async fn get_proton_versions() -> Json<Value> {
-    let versions = crate::proton::installed_proton_versions();
+    // The scan `canonicalize`s every candidate dir; keep that syscall storm off
+    // the axum worker thread.
+    let versions = tokio::task::spawn_blocking(crate::proton::installed_proton_versions)
+        .await
+        .unwrap_or_default();
     Json(serde_json::to_value(versions).unwrap_or(json!([])))
 }
 

@@ -926,7 +926,7 @@ async fn run_install(
     ctx: Arc<TransferCtx>,
     peer_addr: String,
     peer_port: u16,
-    manifest: PeerGameManifest,
+    mut manifest: PeerGameManifest,
     max_bps: f64,
     install_root: PathBuf,
     library: SharedLibrary,
@@ -980,7 +980,10 @@ async fn run_install(
         .unwrap_or_default();
     let game_name_for_url = manifest.game_name.clone();
 
-    let file_futures = manifest.files.clone().into_iter().map(|file| {
+    // Move the file list out of the manifest rather than cloning it — the
+    // rest of `run_install` only reads scalar manifest fields after this, and
+    // a multi-thousand-entry game manifest is needlessly large to duplicate.
+    let file_futures = std::mem::take(&mut manifest.files).into_iter().map(|file| {
         let partial_dir = partial_dir.clone();
         let ctx = ctx.clone();
         let bytes_done = bytes_done.clone();

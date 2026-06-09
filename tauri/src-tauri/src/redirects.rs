@@ -166,6 +166,29 @@ pub fn read_local_backup_tip(backup_dir: &Path, game_name: &str) -> Option<Backu
     None
 }
 
+/// Async wrapper over [`read_backup_origin`] that runs the `mapping.yaml` read +
+/// parse on the blocking pool. Prefer this from the run workflow / Tauri
+/// commands so the synchronous file IO doesn't sit on the async runtime.
+pub async fn read_backup_origin_async(backup_dir: &Path, game_name: &str) -> Option<BackupOrigin> {
+    let dir = backup_dir.to_path_buf();
+    let name = game_name.to_string();
+    tokio::task::spawn_blocking(move || read_backup_origin(&dir, &name))
+        .await
+        .ok()
+        .flatten()
+}
+
+/// Async wrapper over [`read_local_backup_tip`] — same rationale as
+/// [`read_backup_origin_async`]: keep the `mapping.yaml` read off the runtime.
+pub async fn read_local_backup_tip_async(backup_dir: &Path, game_name: &str) -> Option<BackupTip> {
+    let dir = backup_dir.to_path_buf();
+    let name = game_name.to_string();
+    tokio::task::spawn_blocking(move || read_local_backup_tip(&dir, &name))
+        .await
+        .ok()
+        .flatten()
+}
+
 /// Parse a `mapping.yaml` body and return the tip: the entry (full backup or
 /// differential child) with the maximum `when`. The backup `name` is ludusavi's
 /// unique, timestamp-derived id (e.g. `backup-20260530T120000Z`). Returns

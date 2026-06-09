@@ -368,9 +368,15 @@ pub fn build_umu_launch(
 // ── Tauri commands ──────────────────────────────────────────────────────────
 
 /// Lists discovered Proton versions for the per-game launch settings dropdown.
+/// `installed_proton_versions` scans several Steam dirs and `canonicalize`s
+/// every candidate (plus every already-found entry) — a syscall storm that
+/// would otherwise block Tauri's command thread, so it runs on the blocking
+/// pool.
 #[tauri::command]
-pub fn list_proton_versions() -> Vec<ProtonVersion> {
-    installed_proton_versions()
+pub async fn list_proton_versions() -> Vec<ProtonVersion> {
+    tokio::task::spawn_blocking(installed_proton_versions)
+        .await
+        .unwrap_or_default()
 }
 
 /// Installs Windows runtime dependencies into a game's Proton prefix via
