@@ -301,6 +301,19 @@ pub fn place_grid_art(
     Ok(Some(dest))
 }
 
+/// Async wrapper over [`place_grid_art`] that runs the directory create + image
+/// copy on the blocking pool, for callers already on the async runtime.
+async fn place_grid_art_async(
+    grid_dir: PathBuf,
+    app_id: u32,
+    suffix: &'static str,
+    source: PathBuf,
+) -> AppResult<Option<PathBuf>> {
+    tokio::task::spawn_blocking(move || place_grid_art(&grid_dir, app_id, suffix, Some(&source)))
+        .await
+        .map_err(|e| AppError::Other(format!("grid art task panicked: {e}")))?
+}
+
 /// The four Steam grid-art slots, by filename suffix: portrait capsule (`p`),
 /// wide grid (``), hero banner (`_hero`), logo (`_logo`).
 const GRID_SUFFIXES: [&str; 4] = ["p", "", "_hero", "_logo"];
@@ -610,8 +623,11 @@ pub async fn add_to_steam(
         .unwrap_or_else(|| ".".to_string());
 
     // 3. Pick the most-recently-modified Steam user. (Multi-user picker
-    //    is a polish follow-up.)
-    let users = locate_steam_users()?;
+    //    is a polish follow-up.) The scan walks every Steam user dir, so run
+    //    it off the async runtime.
+    let users = tokio::task::spawn_blocking(locate_steam_users)
+        .await
+        .map_err(|e| AppError::Other(format!("steam user scan task panicked: {e}")))??;
     let user = users
         .first()
         .cloned()
@@ -628,26 +644,43 @@ pub async fn add_to_steam(
         return Err(AppError::Other(STEAM_SHUTDOWN_FAILED_MSG.into()));
     }
 
-    // 4. Read + upsert + write.
-    let mut shortcuts = read_shortcuts(&user.shortcuts_path)?;
-    let launch_options = build_launch_options(&app_name, &exe_path);
-    let app_id = upsert_spool_shortcut(
-        &mut shortcuts,
-        &app_name,
-        &spool_exe_str,
-        &spool_start_dir,
-        &launch_options,
-    );
-    // If this game carried a different appid before (a rename whose reconcile
-    // didn't land, or a pre-tracking duplicate), drop the stale shortcut + its
-    // grid art so re-adding doesn't leave an orphan alongside the new entry.
-    if let Some(prev) = prev_app_id {
-        if prev != app_id {
-            shortcuts.retain(|s| s.app_id != prev);
-            remove_all_grid_art(&user.grid_dir, prev);
-        }
-    }
-    write_shortcuts(&user.shortcuts_path, &shortcuts)?;
+    // 4. Read + upsert + write. All synchronous VDF (de)serialise + file IO
+    //    (plus a possible stale-appid grid-art purge), so run it on the
+    //    blocking pool. Returns the assigned appid and the in-memory shortcut
+    //    list, which stays authoritative for the collection sync in step 7.
+    let (app_id, shortcuts) = {
+        let shortcuts_path = user.shortcuts_path.clone();
+        let grid_dir = user.grid_dir.clone();
+        let app_name = app_name.clone();
+        let exe_path = exe_path.clone();
+        let spool_exe_str = spool_exe_str.clone();
+        let spool_start_dir = spool_start_dir.clone();
+        tokio::task::spawn_blocking(move || -> AppResult<(u32, Vec<ShortcutOwned>)> {
+            let mut shortcuts = read_shortcuts(&shortcuts_path)?;
+            let launch_options = build_launch_options(&app_name, &exe_path);
+            let app_id = upsert_spool_shortcut(
+                &mut shortcuts,
+                &app_name,
+                &spool_exe_str,
+                &spool_start_dir,
+                &launch_options,
+            );
+            // If this game carried a different appid before (a rename whose
+            // reconcile didn't land, or a pre-tracking duplicate), drop the
+            // stale shortcut + its grid art so re-adding doesn't leave an
+            // orphan alongside the new entry.
+            if let Some(prev) = prev_app_id {
+                if prev != app_id {
+                    shortcuts.retain(|s| s.app_id != prev);
+                    remove_all_grid_art(&grid_dir, prev);
+                }
+            }
+            write_shortcuts(&shortcuts_path, &shortcuts)?;
+            Ok((app_id, shortcuts))
+        })
+        .await
+        .map_err(|e| AppError::Other(format!("steam shortcut write task panicked: {e}")))??
+    };
 
     // Record the appid so a later rename/removal can find this exact shortcut.
     if let Err(e) = library
@@ -673,7 +706,9 @@ pub async fn add_to_steam(
         // Step 1: try the library cover already on disk.
         let from_lib = match cover_image_path.as_deref() {
             Some(cover) => {
-                match place_grid_art(&user.grid_dir, app_id, "p", Some(Path::new(cover))) {
+                match place_grid_art_async(user.grid_dir.clone(), app_id, "p", PathBuf::from(cover))
+                    .await
+                {
                     Ok(p) => p,
                     Err(e) => {
                         tracing::warn!(cover, %e, "add_to_steam: portrait copy from library cover failed");
@@ -690,7 +725,9 @@ pub async fn add_to_steam(
         } else {
             match crate::steamgriddb::fetch_and_save_cover(&app, &game_id).await {
                 Ok(Some(fetched)) => {
-                    match place_grid_art(&user.grid_dir, app_id, "p", Some(Path::new(&fetched))) {
+                    match place_grid_art_async(user.grid_dir.clone(), app_id, "p", PathBuf::from(fetched))
+                        .await
+                    {
                         Ok(p) => p,
                         Err(e) => {
                             tracing::warn!(%e, "add_to_steam: portrait copy after SteamGridDB fetch failed");
