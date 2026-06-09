@@ -189,7 +189,7 @@ These have conflicting verdicts; the maintainer should adjudicate.
 *Proposed approach:* One private `ludusavi_prep() -> Result<(exe, config_dir), reason>`; each handler collapses to a `match`.
 *Effort / risk / payoff:* Small / low / small-but-positive. **Scope correction:** the original proposal cited five sites including `run_backup`, but `run_backup`'s preamble is non-contiguous and *deliberately* ordered after `record_session_headless` (its `{acted:true, ok:false}` no-ludusavi shape is intentional, signaling that side effects already happened). Routing `run_backup` through the helper would either be a no-op or reorder `ensure_config` after session recording. **Do the four matching handlers only; leave `run_backup` alone and do not "converge" its error shape.**
 
-**Introduce one typed loopback HTTP client to replace ~12 ad-hoc `fetch` call sites**
+**~~Introduce one typed loopback HTTP client to replace ~12 ad-hoc `fetch` call sites~~ ✓ Done — PR #410**
 *Scope:* `decky/src/lib/server.ts` (new) + `use-spool-playtime.ts`, `add-to-steam-list.tsx`, `lan-view.tsx`, `peer-games.tsx`, `lib/launch.ts`, `lib/steam.ts`.
 *Current problem:* 12 raw `fetch` sites re-implement URL building, the `res.ok` check (some omit it — `lan-view.tsx` never checks), the `as T` cast, and JSON-body boilerplate, with no analogue to the desktop app's mandated single `api.ts` wrapper. `types.ts` already mirrors every response shape but isn't bound to URLs.
 *Proposed approach:* `serverGet<T>`/`serverSend<T>` plus one named method per route; base resolution stays as-is.
