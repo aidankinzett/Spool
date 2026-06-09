@@ -548,6 +548,11 @@ pub async fn pull_cloud_saves_core(
     library: &SharedLibrary,
     game_id: &str,
 ) -> AppResult<PullResult> {
+    // Acquire the machine-wide run lock so we can't sync cloud saves while a game session is running.
+    let _run_lock = crate::proc_lock::try_acquire_run(game_id)?.ok_or_else(|| {
+        AppError::Other("This game is busy right now (running, or being modified) — close it and try again.".into())
+    })?;
+
     // Without a remote there is nothing to pull — report it so the UI can hint
     // the user to configure cloud saves rather than showing a misleading
     // "up to date".
@@ -740,6 +745,11 @@ pub async fn restore_save_revision_core(
     game_id: &str,
     backup_name: &str,
 ) -> AppResult<ManualRestoreResult> {
+    // Acquire the machine-wide run lock so we can't restore saves while a game session is running.
+    let _run_lock = crate::proc_lock::try_acquire_run(game_id)?.ok_or_else(|| {
+        AppError::Other("This game is busy right now (running, or being modified) — close it and try again.".into())
+    })?;
+
     // Resolve the game's name, Proton prefix, and install folder from the
     // library (the same fields `manual_prep` derives for the command path).
     let (game_name, uses_proton, prefix_override, game_folder) = {

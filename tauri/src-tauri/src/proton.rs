@@ -444,6 +444,11 @@ pub async fn install_proton_deps_core(
     umu_run_path: &str,
     default_proton_path: &str,
 ) -> AppResult<String> {
+    // Acquire the machine-wide run lock so we don't modify the prefix while a session is active.
+    let _run_lock = crate::proc_lock::try_acquire_run(game_id)?.ok_or_else(|| {
+        AppError::Other("This game is busy right now (running, or being modified) — close it and try again.".into())
+    })?;
+
     let verb_list: Vec<String> = verbs.split_whitespace().map(String::from).collect();
     if verb_list.is_empty() {
         return Err(AppError::Other(
