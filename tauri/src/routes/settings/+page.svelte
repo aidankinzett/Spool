@@ -777,11 +777,15 @@
                               await persist();
                               const provider = config?.cloud_provider;
                               if (provider && OAUTH_PROVIDERS.includes(provider)) {
-                                const exists = await api.checkCloudRemoteExists(provider);
-                                // Guard against a rapid second switch while this
-                                // probe was in flight, which would otherwise apply
-                                // the old provider's result to the new selection.
-                                if (config?.cloud_provider === provider) remoteExists = exists;
+                                try {
+                                  const exists = await api.checkCloudRemoteExists(provider);
+                                  // Guard against a rapid second switch while this
+                                  // probe was in flight, which would otherwise apply
+                                  // the old provider's result to the new selection.
+                                  if (config?.cloud_provider === provider) remoteExists = exists;
+                                } catch (e) {
+                                  console.error('[settings] checkCloudRemoteExists failed:', e);
+                                }
                               }
                             }}
                           />
