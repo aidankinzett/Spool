@@ -11,6 +11,7 @@
     HardDrive,
     KeyRound,
     Layers,
+    Library,
     MonitorSmartphone,
     Plus,
     RefreshCcw,
@@ -40,6 +41,7 @@
   import Toggle from '$lib/components/Toggle.svelte';
   import SettingsCard from '$lib/components/SettingsCard.svelte';
   import SettingsRow from '$lib/components/SettingsRow.svelte';
+  import LibraryGamesPanel from '$lib/components/LibraryGamesPanel.svelte';
   import Segmented from '$lib/components/Segmented.svelte';
   import Slider from '$lib/components/Slider.svelte';
   import Select, { type SelectOption } from '$lib/components/Select.svelte';
@@ -534,6 +536,12 @@
       status: 'ok',
     },
     {
+      id: 'library',
+      title: 'Library',
+      sub: 'Folders & installed games',
+      status: 'ok',
+    },
+    {
       id: 'saves',
       title: 'Saves',
       sub: 'Backups & cloud sync',
@@ -564,6 +572,7 @@
 
   const GROUP_BLURB: Record<string, string> = {
     general: 'Display behaviour and the look of your cover-art shelf.',
+    library: 'Install roots for your games, and everything installed across them.',
     saves: 'How saves are backed up locally and mirrored to the cloud.',
     deck: 'Bring Spool into SteamOS Game Mode, and run Windows games via Proton.',
     network: 'Share game installs across your home network.',
@@ -572,6 +581,7 @@
 
   const GROUP_TITLE: Record<string, string> = {
     general: 'General',
+    library: 'Library',
     saves: 'Saves',
     deck: 'Steam Deck & Linux',
     network: 'Network',
@@ -635,6 +645,8 @@
               <span class="flex shrink-0 text-ink-2 w-[22px] justify-center" style:color={isActive ? 'var(--color-spool)' : undefined}>
                 {#if group.id === 'general'}
                   <MonitorSmartphone size={14} />
+                {:else if group.id === 'library'}
+                  <Library size={14} />
                 {:else if group.id === 'saves'}
                   <Layers size={14} />
                 {:else if group.id === 'deck'}
@@ -795,6 +807,12 @@
                 </div>
               </SettingsCard>
 
+            </div>
+
+          <!-- ════ LIBRARY ════ -->
+          {:else if activeGroup === 'library'}
+            <div class="flex flex-col gap-4">
+
               <!-- Library folders: per-drive install roots used by "Move install". -->
               <SettingsCard
                 title="Library folders"
@@ -863,6 +881,8 @@
                   {/if}
                 </div>
               </SettingsCard>
+
+              <LibraryGamesPanel folders={config!.library_folders} folderFree={libFolderFree} />
 
             </div>
 
