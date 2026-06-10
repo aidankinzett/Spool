@@ -17,6 +17,7 @@
   import { api } from '$lib/api';
   import { fmtSize } from '$lib/format';
   import { shadeHex } from '$lib/tokens';
+  import { isCurrentRoot as isCurrentRootOf, neededBytes } from '$lib/pathMatch';
   import type { GameEntry, LibraryFolder, MoveProgress } from '$lib/types';
   import ModalShell from '$lib/components/ModalShell.svelte';
 
@@ -54,32 +55,11 @@
   let hover = $state<Record<string, boolean>>({});
 
   // The install lives at `<root>/<game folder>`, so a library folder is the
-  // current location when it's the parent of the game's folder.
-  function normPath(p: string): string {
-    return p.replace(/[\\/]+$/, '');
-  }
-  function parentOf(p: string): string {
-    return normPath(p).replace(/[\\/][^\\/]+$/, '');
-  }
-  // Windows paths are case-insensitive and mix separators, and the configured
-  // root (canonicalised by the backend) can differ in casing/slashes from the
-  // recorded game folder — fold both so the mismatch can't hide the current
-  // location. Backend canonicalisation stays the authoritative no-op guard.
-  function canonPath(p: string): string {
-    const t = normPath(p);
-    return /^[a-zA-Z]:[\\/]/.test(p) || p.includes('\\')
-      ? t.replace(/\\/g, '/').toLowerCase()
-      : t;
-  }
+  // current location when it's the parent of the game's folder. Path-folding and
+  // the free-space headroom rule live in `$lib/pathMatch` (shared with the batch
+  // move + the Settings library view).
   function isCurrentRoot(root: string): boolean {
-    if (!currentFolder) return false;
-    return canonPath(parentOf(currentFolder)) === canonPath(root);
-  }
-  // Mirror the backend's headroom rule: the on-disk footprint exceeds the file
-  // byte total (cluster rounding, directory metadata), so an exact fit would
-  // fail mid-copy.
-  function neededBytes(size: number): number {
-    return size + Math.max(size / 100, 256 * 1048576);
+    return isCurrentRootOf(root, currentFolder);
   }
 
   async function loadRows() {
