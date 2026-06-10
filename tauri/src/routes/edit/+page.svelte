@@ -28,7 +28,7 @@
   import { toasts } from '$lib/toasts.svelte';
   import { removeGameDialog } from '$lib/removeGame.svelte';
   import { moveInstallDialog } from '$lib/moveInstall.svelte';
-  import type { GameEntry, ManifestOverride, ProtonVersion } from '$lib/types';
+  import type { GameEntry, ManifestOverride, ProtonVersion, ManifestStatus } from '$lib/types';
   import AppChrome from '$lib/components/AppChrome.svelte';
   import MonoLabel from '$lib/components/MonoLabel.svelte';
   import CatalogId from '$lib/components/CatalogId.svelte';
@@ -47,6 +47,8 @@
   let tab = $state<Tab>('identity');
   let saving = $state(false);
   let error = $state<string | null>(null);
+  let manifestStatus = $state<ManifestStatus>('nomanifest');
+  let preparingManifest = $state(false);
 
   // Proton launch (Linux only). Populated on mount.
   let isLinux = $state(false);
@@ -230,6 +232,20 @@
       listen('library:changed', () => {
         void syncOutOfBandPaths().catch((e) => console.error('[edit] path sync failed:', e));
       }).then((fn) => { if (!destroyed) unlistenLibChanged = fn; else fn(); });
+
+      // Fetch initial manifest status
+      api.getManifestStatus(form.id).then((status) => {
+        manifestStatus = status;
+      }).catch(console.error);
+
+      // Listen for manifest status changes
+      listen('lan:manifest-status-changed', (event) => {
+        if (form && event.payload === form.id) {
+          api.getManifestStatus(form.id).then((status) => {
+            manifestStatus = status;
+          }).catch(console.error);
+        }
+      }).then((fn) => { if (!destroyed) unlistenManifestChanged = fn; else fn(); });
     } catch (e) {
       error = String(e);
     }
@@ -237,7 +253,12 @@
 
   let destroyed = false;
   let unlistenLibChanged: (() => void) | null = null;
-  onDestroy(() => { destroyed = true; unlistenLibChanged?.(); });
+  let unlistenManifestChanged: (() => void) | null = null;
+  onDestroy(() => {
+    destroyed = true;
+    unlistenLibChanged?.();
+    unlistenManifestChanged?.();
+  });
 
   // Mirror out-of-band path changes (a move) into the form — but only fields
   // the user hasn't edited, so in-progress changes survive. `original` is
@@ -263,6 +284,29 @@
     if (form.install_size_mb === original.install_size_mb) {
       form.install_size_mb = next.install_size_mb;
       original.install_size_mb = next.install_size_mb;
+    }
+  }
+
+  async function triggerPrepareManifest() {
+    if (!form || preparingManifest) return;
+    preparingManifest = true;
+    try {
+      manifestStatus = await api.prepareManifest(form.id);
+      toasts.show({
+        kind: 'ok',
+        label: 'LAN · MANIFEST',
+        title: 'Manifest prepared',
+        sub: 'Blake3 hashing manifest is ready for peers.',
+      });
+    } catch (e) {
+      toasts.show({
+        kind: 'bad',
+        label: 'LAN · FAILED',
+        title: "Couldn't prepare manifest",
+        sub: String(e),
+      });
+    } finally {
+      preparingManifest = false;
     }
   }
 
@@ -753,6 +797,11 @@
             'Peers see the title, catalog number, developer, and install size. They never see local file paths.',
             sharingVisibility,
           )}
+          {@render field(
+            'Blake3 manifest',
+            'Prepare the hashing manifest so peers can verify files and resume downloads immediately.',
+            sharingManifest,
+          )}
 
           {#snippet sharingToggle()}
             <div class="flex flex-col gap-1.5">
@@ -772,6 +821,32 @@
             <span class="text-[11.5px] text-ink-2">
               Title · Catalog # · Developer · Publisher · Genres · Install size · Save metadata
             </span>
+          {/snippet}
+          {#snippet sharingManifest()}
+            <div class="flex items-center gap-3">
+              <span class="font-mono text-[11px] uppercase tracking-[0.08em] inline-flex items-center gap-1.5">
+                {#if manifestStatus === 'generated'}
+                  <span class="inline-block size-2 rounded-full" style:background="var(--color-ok)"></span>
+                  <span style:color="var(--color-ok)">Generated</span>
+                {:else if manifestStatus === 'generating'}
+                  <span class="inline-block size-2 rounded-full animate-pulse" style:background="var(--color-warn)"></span>
+                  <span style:color="var(--color-warn)">Generating…</span>
+                {:else}
+                  <span class="inline-block size-2 rounded-full" style:background="var(--color-ink-3)"></span>
+                  <span class="text-ink-3">No manifest</span>
+                {/if}
+              </span>
+              <Btn
+                variant="ghost"
+                onclick={triggerPrepareManifest}
+                disabled={preparingManifest || !hasFolder}
+              >
+                {#snippet icon()}
+                  <RefreshCw size={14} class={preparingManifest || manifestStatus === 'generating' ? 'animate-spin' : ''} />
+                {/snippet}
+                {preparingManifest || manifestStatus === 'generating' ? 'Preparing…' : 'Prepare manifest'}
+              </Btn>
+            </div>
           {/snippet}
         {/if}
       </div>

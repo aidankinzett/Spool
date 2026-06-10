@@ -26,6 +26,7 @@ import type {
   SaveRevision,
   PullResult,
   ManifestPath,
+  ManifestStatus,
 } from './types';
 
 /** Status of the companion Spool Backup Decky plugin (mirrors the Rust
@@ -189,6 +190,10 @@ export const api = {
   listActiveUploads: (): Promise<UploadSnapshot[]> => invoke('list_active_uploads'),
   cancelUpload: (sessionId: string): Promise<boolean> =>
     invoke('cancel_upload', { sessionId }),
+  getManifestStatus: (gameId: string): Promise<ManifestStatus> =>
+    invoke('get_manifest_status', { gameId }),
+  prepareManifest: (gameId: string): Promise<ManifestStatus> =>
+    invoke('prepare_manifest', { gameId }),
 
   // Run workflow
   /**
