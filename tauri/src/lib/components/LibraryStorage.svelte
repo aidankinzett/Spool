@@ -20,27 +20,18 @@
    * Folder add/remove and capacity figures are owned by the settings page and
    * flow in via props/callbacks.
    */
-  import { onMount } from 'svelte';
   import { SvelteSet } from 'svelte/reactivity';
-  import { listen } from '@tauri-apps/api/event';
-  import {
-    Check,
-    Folder,
-    FolderInput,
-    FolderTree,
-    HardDrive,
-    Minus,
-    Plus,
-    Trash2,
-  } from '@lucide/svelte';
+  import { Folder, FolderInput, FolderTree, HardDrive, Plus, Trash2 } from '@lucide/svelte';
   import { open as openDialog } from '@tauri-apps/plugin-dialog';
   import { api } from '$lib/api';
   import { fmtSize, fmtCatalog } from '$lib/format';
   import { confirmDialog } from '$lib/confirm.svelte';
   import { toasts } from '$lib/toasts.svelte';
+  import { onLibraryChanged } from '$lib/libraryEvents';
   import { isCurrentRoot, parentOf } from '$lib/pathMatch';
   import type { DriveInfo, FolderCapacity, GameEntry, LibraryFolder } from '$lib/types';
   import Btn from '$lib/components/Btn.svelte';
+  import Checkbox from '$lib/components/Checkbox.svelte';
   import TextField from '$lib/components/TextField.svelte';
   import BatchMoveModal from '$lib/components/BatchMoveModal.svelte';
 
@@ -92,21 +83,8 @@
     }
   }
 
-  onMount(() => {
-    void loadGames();
-    let disposed = false;
-    let unlisten: (() => void) | undefined;
-    listen<string>('library:changed', () => void loadGames())
-      .then((fn) => {
-        if (disposed) fn();
-        else unlisten = fn;
-      })
-      .catch((e) => console.error('[library-storage] listener failed:', e));
-    return () => {
-      disposed = true;
-      unlisten?.();
-    };
-  });
+  // Load now and reload whenever any window mutates the library.
+  onLibraryChanged(loadGames);
 
   // Only games whose files are actually on disk can be moved or uninstalled.
   const installed = $derived(games.filter((g) => g.installed && g.game_folder_path));
@@ -179,18 +157,62 @@
     return [...g.games].sort((a, b) => (b.install_size_mb || 0) - (a.install_size_mb || 0));
   }
 
-  // Capacity-bar segments for a configured folder, in MB so they share a unit
-  // with install_size_mb / fmtSize. Null when the drive couldn't be measured.
+  // Capacity-bar segments for a drive, in MB so they share a unit with
+  // install_size_mb / fmtSize. Null when the drive couldn't be measured.
   type Segments = { spool: number; other: number; free: number; total: number; lowFree: boolean };
-  function segmentsFor(g: Group): Segments | null {
-    const cap = capacity[g.path];
-    if (!cap || cap.total_bytes <= 0) return null;
-    const total = cap.total_bytes / MB;
-    const free = cap.available_bytes / MB;
-    const spool = groupBytes(g);
-    const other = Math.max(0, total - spool - free);
-    return { spool, other, free, total, lowFree: free / total < LOW_FREE };
-  }
+
+  // A group plus everything the template needs, computed once when the inputs
+  // change rather than re-derived on every render (each selection toggle would
+  // otherwise re-sort and re-reduce every panel).
+  type DriveGroup = Group & {
+    scale: number;
+    sorted: GameEntry[];
+    bytes: number;
+    /** Capacity bar for this drive, or null when unmeasured or when an earlier
+     *  folder already owns the bar for the same physical drive. */
+    seg: Segments | null;
+  };
+
+  // One bar per physical drive. Two library folders on the same drive would each
+  // otherwise draw a full-drive bar — double-counting free space and miscounting
+  // the sibling's games as generic "other on disk". Instead the first folder
+  // group for a drive owns the bar, and its "Spool" segment sums every configured
+  // folder on that drive; later same-drive folders show a plain count line.
+  const folderGroups = $derived.by<DriveGroup[]>(() => {
+    // Total Spool footprint per drive, keyed by mount point.
+    const spoolByMount: Record<string, number> = {};
+    for (const g of groups.folders) {
+      const mount = capacity[g.path]?.mount_point;
+      if (mount) spoolByMount[mount] = (spoolByMount[mount] ?? 0) + groupBytes(g);
+    }
+    const barOwned: Record<string, true> = {};
+    return groups.folders.map((g) => {
+      const cap = capacity[g.path];
+      let seg: Segments | null = null;
+      if (cap && cap.total_bytes > 0 && cap.mount_point && !barOwned[cap.mount_point]) {
+        barOwned[cap.mount_point] = true;
+        const total = cap.total_bytes / MB;
+        const free = cap.available_bytes / MB;
+        const used = Math.max(0, total - free);
+        // Recorded sizes can over-count (stale after files were trimmed on disk),
+        // so clamp Spool to the drive's actual used space — it can't exceed it.
+        const spool = Math.min(spoolByMount[cap.mount_point] ?? groupBytes(g), used);
+        const other = Math.max(0, used - spool);
+        seg = { spool, other, free, total, lowFree: free / total < LOW_FREE };
+      }
+      return { ...g, scale: groupScale(g), sorted: sortedGames(g), bytes: groupBytes(g), seg };
+    });
+  });
+
+  const otherGroups = $derived.by<DriveGroup[]>(() =>
+    groups.other.map((g) => ({
+      ...g,
+      scale: groupScale(g),
+      sorted: sortedGames(g),
+      bytes: groupBytes(g),
+      seg: null,
+    })),
+  );
 
   type CheckState = 'none' | 'some' | 'all';
   function groupState(g: Group): CheckState {
@@ -337,9 +359,11 @@
     showMove = true;
   }
 
-  // % of total for a capacity segment.
+  // % of total for a capacity segment, clamped so an over-counted segment can't
+  // overflow the bar and swallow the free rail (segments are already clamped to
+  // the drive's used space, but keep the bound as defence).
   function pct(mb: number, total: number): string {
-    return `${Math.max(0, (mb / total) * 100)}%`;
+    return `${Math.min(100, Math.max(0, (mb / total) * 100))}%`;
   }
   // Proportional width of a per-game size meter, floored so tiny games still show.
   function meterPct(mb: number, scale: number): string {
@@ -347,30 +371,9 @@
   }
 </script>
 
-<!-- ── themed selection checkbox (sharp-cornered, accent fill) ── -->
-{#snippet checkbox(state: 'none' | 'some' | 'all', onclick: () => void, label: string)}
-  {@const on = state === 'all'}
-  {@const mixed = state === 'some'}
-  <button
-    type="button"
-    role="checkbox"
-    aria-checked={mixed ? 'mixed' : on}
-    aria-label={label}
-    onclick={(e) => {
-      e.stopPropagation();
-      onclick();
-    }}
-    class="flex size-4 shrink-0 items-center justify-center rounded-[3px] transition-colors"
-    style:border={`1.5px solid ${on || mixed ? 'var(--color-spool)' : 'var(--color-line-3)'}`}
-    style:background={on || mixed ? 'var(--color-spool)' : 'transparent'}
-    style:color="var(--color-bg-0)"
-  >
-    {#if on}
-      <Check size={11} strokeWidth={3} />
-    {:else if mixed}
-      <Minus size={11} strokeWidth={3} />
-    {/if}
-  </button>
+<!-- ── group count + size summary (one phrasing everywhere) ── -->
+{#snippet groupSummary(count: number, bytes: number)}
+  {count} {count === 1 ? 'game' : 'games'} · <span class="font-mono text-ink-2">{fmtSize(bytes)}</span>
 {/snippet}
 
 <!-- ── one installed-game row ── -->
@@ -390,7 +393,7 @@
       }
     }}
   >
-    {@render checkbox(checked ? 'all' : 'none', () => toggle(g.id), `Select ${g.game_name}`)}
+    <Checkbox state={checked ? 'all' : 'none'} onToggle={() => toggle(g.id)} label={`Select ${g.game_name}`} />
     <span class="min-w-0 flex-1 truncate text-[13px] text-ink-0">{g.game_name}</span>
     <span class="shrink-0 font-mono text-[10px] text-ink-3">{fmtCatalog(g.catalog_number)}</span>
     <!-- proportional size meter, shared scale per drive -->
@@ -468,15 +471,15 @@
   {/if}
 
   <!-- ── one drive panel per configured library folder ── -->
-  {#each groups.folders as grp (grp.key)}
-    {@const seg = segmentsFor(grp)}
-    {@const scale = groupScale(grp)}
+  {#each folderGroups as grp (grp.key)}
+    {@const seg = grp.seg}
+    {@const scale = grp.scale}
     {@const state = groupState(grp)}
     <div class="overflow-hidden rounded-md border border-line-1 bg-bg-1">
       <!-- drive header -->
       <div class="border-b border-dashed border-line-1 bg-bg-2 px-[16px] pb-3 pt-[13px]">
         <div class="flex items-center gap-[11px]">
-          {@render checkbox(state, () => toggleGroup(grp), `Select all in ${grp.label}`)}
+          <Checkbox {state} onToggle={() => toggleGroup(grp)} label={`Select all in ${grp.label}`} />
           <span class="flex text-ink-2"><HardDrive size={14} /></span>
           <span class="min-w-0 truncate font-mono text-[13px] text-ink-0" title={grp.path}>{grp.path}</span>
           {#if grp.chip}
@@ -536,14 +539,15 @@
                 </span>
               </div>
               <span class="shrink-0 text-[11px] text-ink-3">
-                {grp.games.length} {grp.games.length === 1 ? 'game' : 'games'} · <span class="font-mono text-ink-2">{fmtSize(groupBytes(grp))}</span>
+                {@render groupSummary(grp.games.length, grp.bytes)}
               </span>
             </div>
           </div>
         {:else}
-          <!-- drive couldn't be measured — fall back to a plain game-count line -->
+          <!-- drive couldn't be measured (or another folder owns its bar) — fall
+               back to a plain game-count line -->
           <div class="mt-2 text-[11px] text-ink-3">
-            {grp.games.length} {grp.games.length === 1 ? 'game' : 'games'} · <span class="font-mono text-ink-2">{fmtSize(groupBytes(grp))}</span>
+            {@render groupSummary(grp.games.length, grp.bytes)}
           </div>
         {/if}
       </div>
@@ -552,7 +556,7 @@
       {#if grp.games.length === 0}
         <div class="px-[16px] py-[12px] text-[11.5px] text-ink-3">No games installed here yet.</div>
       {:else}
-        {#each sortedGames(grp) as g (g.id)}
+        {#each grp.sorted as g (g.id)}
           {@render gameRow(g, scale)}
         {/each}
       {/if}
@@ -560,22 +564,22 @@
   {/each}
 
   <!-- ── stray installs outside any configured folder ── -->
-  {#each groups.other as grp (grp.key)}
-    {@const scale = groupScale(grp)}
+  {#each otherGroups as grp (grp.key)}
+    {@const scale = grp.scale}
     {@const state = groupState(grp)}
     <div class="overflow-hidden rounded-md border border-dashed border-line-2 bg-bg-1">
       <div class="flex items-center gap-[11px] border-b border-dashed border-line-1 bg-white/[0.015] px-[16px] py-[11px]">
-        {@render checkbox(state, () => toggleGroup(grp), `Select all in ${grp.label}`)}
+        <Checkbox {state} onToggle={() => toggleGroup(grp)} label={`Select all in ${grp.label}`} />
         <span class="flex text-ink-3"><FolderTree size={14} /></span>
         <div class="min-w-0 flex-1">
           <div class="text-[12.5px] text-ink-1">Outside library folders</div>
           <div class="truncate font-mono text-[10.5px] text-ink-3" title={grp.path}>{grp.path}</div>
         </div>
         <span class="shrink-0 text-[11px] text-ink-3">
-          {grp.games.length} · <span class="font-mono text-ink-2">{fmtSize(groupBytes(grp))}</span>
+          {@render groupSummary(grp.games.length, grp.bytes)}
         </span>
       </div>
-      {#each sortedGames(grp) as g (g.id)}
+      {#each grp.sorted as g (g.id)}
         {@render gameRow(g, scale)}
       {/each}
     </div>

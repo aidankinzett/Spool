@@ -385,19 +385,26 @@
   // configured folder list changes. Drives the capacity bars in LibraryStorage.
   let libFolderCapacity = $state<Record<string, FolderCapacity>>({});
 
+  // Generation counter: only the latest refresh writes to libFolderCapacity.
+  // Rapid folder add/remove can leave two refreshes in flight; without this a
+  // slow earlier run (a sleeping drive) could resolve last and overwrite the
+  // newer map with capacity for folders that no longer exist.
+  let capSeq = 0;
+
   async function refreshLibFolderCapacity() {
     if (!config) return;
+    const seq = ++capSeq;
     const folders = config.library_folders;
     const entries = await Promise.all(
       folders.map(async (f) => {
         try {
           return [f.path, await api.folderCapacity(f.path)] as const;
         } catch {
-          return [f.path, { total_bytes: 0, available_bytes: 0 }] as const;
+          return [f.path, { total_bytes: 0, available_bytes: 0, mount_point: '' }] as const;
         }
       }),
     );
-    libFolderCapacity = Object.fromEntries(entries);
+    if (seq === capSeq) libFolderCapacity = Object.fromEntries(entries);
   }
 
   // Keep capacity figures fresh as the configured folder list changes.

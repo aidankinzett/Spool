@@ -80,11 +80,13 @@ export type DriveInfo = {
 };
 
 /** Mirror of the Rust `FolderCapacity` struct in src-tauri/src/drives.rs — the
- * total + available space on the filesystem holding a library folder. Both 0
- * means the drive couldn't be matched. */
+ * total + available space on the filesystem holding a library folder, plus the
+ * mount point of its drive (so folders sharing a drive collapse into one bar).
+ * Bytes 0 / `mount_point` empty means the drive couldn't be matched. */
 export type FolderCapacity = {
   total_bytes: number;
   available_bytes: number;
+  mount_point: string;
 };
 
 /** Mirror of the Rust `MoveProgress` struct in src-tauri/src/move_install.rs —

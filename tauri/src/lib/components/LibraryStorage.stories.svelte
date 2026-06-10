@@ -41,11 +41,12 @@
     { path: 'D:/Games', label: 'Games SSD' },
   ];
 
-  // Per-folder drive capacity (total + available bytes). C:/Games is nearly
+  // Per-folder drive capacity (total + available bytes + the drive's mount
+  // point, which collapses same-drive folders into one bar). C:/Games is nearly
   // full — its free segment flags amber.
   const CAPACITY: Record<string, FolderCapacity> = {
-    'C:/Games': { total_bytes: 500 * 1024 * 1048576, available_bytes: 40 * 1024 * 1048576 },
-    'D:/Games': { total_bytes: 1024 * 1024 * 1048576, available_bytes: 760 * 1024 * 1048576 },
+    'C:/Games': { total_bytes: 500 * 1024 * 1048576, available_bytes: 40 * 1024 * 1048576, mount_point: 'C:\\' },
+    'D:/Games': { total_bytes: 1024 * 1024 * 1048576, available_bytes: 760 * 1024 * 1048576, mount_point: 'D:\\' },
   };
 
   // Two games on C:/Games, one on D:/Games, one in a stray folder (E:/Misc) that
@@ -96,6 +97,6 @@
   name="One folder, rest stray"
   args={{
     folders: [{ path: 'C:/Games', label: 'System drive' }],
-    capacity: { 'C:/Games': { total_bytes: 500 * 1024 * 1048576, available_bytes: 40 * 1024 * 1048576 } },
+    capacity: { 'C:/Games': { total_bytes: 500 * 1024 * 1048576, available_bytes: 40 * 1024 * 1048576, mount_point: 'C:\\' } },
   }}
 />
