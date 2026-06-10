@@ -911,6 +911,18 @@ fn persist_hash_cache(cache: &HashCache) {
     super::manifest_cache::save_blocking(&crate::paths::lan_hash_cache_file(), cache);
 }
 
+/// Drops cache entries that don't live under any of `roots` (the
+/// library's install folders) — they belong to games removed or moved
+/// while we weren't looking, and no walk will ever prune them. Returns
+/// the number removed. O(entries × roots) path-prefix checks: a few ms
+/// at the 50k cap, brief enough to hold the write lock inline.
+fn prune_orphaned_hash_entries(cache: &HashCache, roots: &[PathBuf]) -> usize {
+    let Ok(mut g) = cache.write() else { return 0 };
+    let before = g.len();
+    g.retain(|path, _| roots.iter().any(|r| path.starts_with(r)));
+    before - g.len()
+}
+
 /// blake3 hex digest of a file. Reads in 64 KiB chunks; total memory
 /// is a single buffer + hasher state regardless of file size.
 fn hash_file_blocking(path: &Path) -> std::io::Result<String> {
@@ -1144,7 +1156,9 @@ pub fn spawn_manifest_prep(app: AppHandle, game_id: String) {
 /// case is a first-ever hash, and serialising the loop keeps that from
 /// thrashing the disk across N games at once. Also repopulates the
 /// in-memory `statuses` map (deliberately not persisted) so the edit
-/// page shows "Generated" again after a restart.
+/// page shows "Generated" again after a restart, and garbage-collects
+/// cache entries orphaned by games removed/moved while the app was
+/// closed (#439).
 pub fn spawn_manifest_warm(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         // Let startup work (art/size/metadata backfills, cloud probe) land
@@ -1162,25 +1176,46 @@ pub fn spawn_manifest_warm(app: AppHandle) {
         }
 
         let library = app.state::<SharedLibrary>();
-        let ids: Vec<String> = match library.list().await {
-            Ok(entries) => entries
-                .iter()
-                .filter(|g| {
-                    g.lan_shared
-                        && g.game_folder_path
-                            .as_deref()
-                            .is_some_and(|p| !p.is_empty())
-                })
-                .map(|g| g.id.clone())
-                .collect(),
+        let entries = match library.list().await {
+            Ok(e) => e,
             Err(e) => {
                 tracing::warn!(error = %e, "manifest warm: library list failed");
                 return;
             }
         };
+        let ids: Vec<String> = entries
+            .iter()
+            .filter(|g| {
+                g.lan_shared
+                    && g.game_folder_path
+                        .as_deref()
+                        .is_some_and(|p| !p.is_empty())
+            })
+            .map(|g| g.id.clone())
+            .collect();
+
+        // GC orphaned cache entries before warming. The per-walk prune only
+        // covers the root being walked, so entries for a game removed from
+        // the library (or whose folder moved) are never walked again and
+        // nothing else evicts them — before persistence a restart cleared
+        // them incidentally; now they'd be reloaded forever. Keyed to *all*
+        // library install folders, not just currently-shared ones, so
+        // toggling a game's sharing off and back on across a restart
+        // doesn't cost a re-hash.
+        let roots: Vec<PathBuf> = entries
+            .iter()
+            .filter_map(|g| g.game_folder_path.as_deref())
+            .filter(|p| !p.is_empty())
+            .map(PathBuf::from)
+            .collect();
+        let pruned =
+            prune_orphaned_hash_entries(&app.state::<LanManifests>().hash_cache, &roots);
+        if pruned > 0 {
+            tracing::info!(pruned, "lan manifest warm: dropped orphaned hash cache entries");
+        }
 
         let mut warmed = 0usize;
-        let mut any_dirty = false;
+        let mut any_dirty = pruned > 0;
         for id in &ids {
             // Re-check the global toggle between games — a cold pass over a
             // big library can run for minutes, and flipping sharing off in
@@ -1227,6 +1262,36 @@ mod tests {
     #[test]
     fn routes_build_with_valid_path_syntax() {
         let _: Router<ServerState> = routes();
+    }
+
+    #[test]
+    fn prune_orphans_keeps_only_entries_under_roots() {
+        let mt = std::time::UNIX_EPOCH;
+        let cache: HashCache = Arc::new(std::sync::RwLock::new(HashMap::from([
+            (PathBuf::from("/games/a/file1"), (mt, "h1".to_string())),
+            (PathBuf::from("/games/a/sub/file2"), (mt, "h2".to_string())),
+            (PathBuf::from("/old/game/file3"), (mt, "h3".to_string())),
+        ])));
+        let pruned = prune_orphaned_hash_entries(
+            &cache,
+            &[PathBuf::from("/games/a"), PathBuf::from("/games/b")],
+        );
+        assert_eq!(pruned, 1);
+        let g = cache.read().unwrap();
+        assert!(g.contains_key(Path::new("/games/a/file1")));
+        assert!(g.contains_key(Path::new("/games/a/sub/file2")));
+        assert!(!g.contains_key(Path::new("/old/game/file3")));
+    }
+
+    #[test]
+    fn prune_orphans_empty_roots_clears_everything() {
+        let mt = std::time::UNIX_EPOCH;
+        let cache: HashCache = Arc::new(std::sync::RwLock::new(HashMap::from([(
+            PathBuf::from("/games/a/file1"),
+            (mt, "h1".to_string()),
+        )])));
+        assert_eq!(prune_orphaned_hash_entries(&cache, &[]), 1);
+        assert!(cache.read().unwrap().is_empty());
     }
 
     #[test]
