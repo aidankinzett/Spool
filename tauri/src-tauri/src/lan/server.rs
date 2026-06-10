@@ -1089,7 +1089,7 @@ async fn prepare_manifest_inner(
     // check-then-set (with the async library lookup between them) would
     // let two concurrent callers — say the warm pass and a button click —
     // both pass the guard and double-hash the same folder.
-    let displaced = {
+    {
         let mut lock = manifests
             .statuses
             .lock()
@@ -1097,16 +1097,19 @@ async fn prepare_manifest_inner(
         if let Some(ManifestStatus::Generating) = lock.get(game_id) {
             return Ok((ManifestStatus::Generating, false));
         }
-        lock.insert(game_id.to_string(), ManifestStatus::Generating)
-    };
+        lock.insert(game_id.to_string(), ManifestStatus::Generating);
+    }
     let _ = app.emit("lan:manifest-status-changed", &game_id);
 
     let folder = match install_folder_for(app, game_id).await {
         Ok(f) => f,
         Err(e) => {
-            // Validation failed — put back whatever the claim displaced so
-            // a bad request doesn't leave a phantom "Generating" behind.
-            set_status(&manifests, app, game_id, displaced);
+            // Validation failed — clear the claim rather than restore what
+            // it displaced: a pre-error `Generated` may be stale (the folder
+            // moved or vanished since it was set), and a deleted game
+            // shouldn't keep a status entry. An absent key reads back as
+            // NoManifest in `get_manifest_status`.
+            set_status(&manifests, app, game_id, None);
             return Err(e);
         }
     };

@@ -60,7 +60,21 @@ pub(crate) fn load_blocking(path: &Path) -> HashMap<PathBuf, (SystemTime, String
     };
     let mut out = HashMap::new();
     for e in parsed.entries.into_iter().take(HASH_CACHE_MAX_ENTRIES) {
-        let mtime = UNIX_EPOCH + Duration::new(e.mtime_secs, e.mtime_nanos);
+        // Defensive against a corrupt / hand-edited file: nanos ≥ 1 s would
+        // make `Duration::new` carry (panicking near u64::MAX secs), and a
+        // time past the platform's `SystemTime` range would make `+` panic —
+        // either would crash startup. Entries we saved always satisfy both
+        // (`subsec_nanos()` < 1e9, mtimes from real files); anything else is
+        // junk, and skipping it costs one re-hash.
+        if e.mtime_nanos >= 1_000_000_000 {
+            tracing::warn!(path = %e.path, nanos = e.mtime_nanos, "lan hash cache: invalid mtime, skipping entry");
+            continue;
+        }
+        let Some(mtime) = UNIX_EPOCH.checked_add(Duration::new(e.mtime_secs, e.mtime_nanos))
+        else {
+            tracing::warn!(path = %e.path, secs = e.mtime_secs, "lan hash cache: mtime out of range, skipping entry");
+            continue;
+        };
         out.insert(PathBuf::from(e.path), (mtime, e.hash));
     }
     tracing::debug!(entries = out.len(), "lan hash cache: loaded from disk");
@@ -164,6 +178,40 @@ mod tests {
         let file = dir.path().join("cache.json");
         std::fs::write(&file, b"{ not json").unwrap();
         assert!(load_blocking(&file).is_empty());
+    }
+
+    /// Out-of-range mtime values in the file must be skipped, not panic the
+    /// startup load — `Duration::new`'s nanos carry and the `SystemTime`
+    /// addition both abort on overflow if fed unchecked.
+    #[test]
+    fn out_of_range_mtimes_are_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("cache.json");
+        let entries = vec![
+            PersistedEntry {
+                path: "/games/ok".into(),
+                mtime_secs: 1_700_000_000,
+                mtime_nanos: 0,
+                hash: "h1".into(),
+            },
+            PersistedEntry {
+                path: "/games/bad-nanos".into(),
+                mtime_secs: u64::MAX,
+                mtime_nanos: u32::MAX,
+                hash: "h2".into(),
+            },
+            PersistedEntry {
+                path: "/games/bad-secs".into(),
+                mtime_secs: u64::MAX,
+                mtime_nanos: 0,
+                hash: "h3".into(),
+            },
+        ];
+        let bytes = serde_json::to_vec(&PersistedHashCache { entries }).unwrap();
+        std::fs::write(&file, bytes).unwrap();
+        let loaded = load_blocking(&file);
+        assert_eq!(loaded.len(), 1);
+        assert!(loaded.contains_key(Path::new("/games/ok")));
     }
 
     #[test]
