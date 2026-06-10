@@ -1420,6 +1420,17 @@ pub async fn add_game(
         let refreshed = state.find(&existing.id).await?.ok_or_else(|| {
             AppError::Other(format!("reinstalled game {} vanished", existing.id))
         })?;
+        // The reinstalled folder's hashes are stale (or absent) in the LAN
+        // manifest cache — pre-hash in the background so a peer's first
+        // manifest request doesn't have to (#435).
+        if refreshed.lan_shared
+            && refreshed
+                .game_folder_path
+                .as_deref()
+                .is_some_and(|p| !p.is_empty())
+        {
+            crate::lan::spawn_manifest_prep(app.clone(), refreshed.id.clone());
+        }
         return Ok(refreshed);
     }
 
@@ -1450,6 +1461,19 @@ pub async fn add_game(
     let entry = state.insert(entry).await?;
     if let Err(e) = app.emit("library:changed", &entry.id) {
         tracing::warn!(error = %e, "failed to emit library:changed after add_game");
+    }
+
+    // Pre-hash the install folder for LAN sharing so the manifest is ready
+    // before any peer asks for it (#435). A separate spawn from the metadata
+    // enrichment below — hashing a large folder must not delay artwork, and
+    // vice versa.
+    if entry.lan_shared
+        && entry
+            .game_folder_path
+            .as_deref()
+            .is_some_and(|p| !p.is_empty())
+    {
+        crate::lan::spawn_manifest_prep(app.clone(), entry.id.clone());
     }
 
     // Enrich the new entry in the background — the card shows immediately while
@@ -1537,6 +1561,23 @@ pub async fn update_game(
             "game with id {} not found",
             entry.id
         )));
+    }
+
+    // Pre-hash for LAN sharing when this edit made the game newly shareable
+    // (sharing turned on, or the install folder changed while shared) so the
+    // manifest is ready before a peer asks (#435). Unchanged shares skip the
+    // spawn entirely — no point re-walking on every save of other fields.
+    let folder_set = entry
+        .game_folder_path
+        .as_deref()
+        .is_some_and(|p| !p.is_empty());
+    let newly_shareable = entry.lan_shared
+        && folder_set
+        && prev.as_ref().is_none_or(|p| {
+            !p.lan_shared || p.game_folder_path != entry.game_folder_path
+        });
+    if newly_shareable {
+        crate::lan::spawn_manifest_prep(app.clone(), entry.id.clone());
     }
 
     // Reconcile the Steam shortcut for a game that was added to Steam (has a
