@@ -20,7 +20,6 @@
    * Mono, graphite surface, brand spool accent).
    */
   import { onMount } from 'svelte';
-  import { registerModal, unregisterModal, modalZIndex } from '$lib/modalStack.svelte';
   import {
     Check,
     ChevronLeft,
@@ -43,14 +42,11 @@
   import Pill from '$lib/components/Pill.svelte';
   import MonoLabel from '$lib/components/MonoLabel.svelte';
   import SpoolMark from '$lib/components/SpoolMark.svelte';
-  import { gamepadScope } from '$lib/gamepad';
+  import ModalShell from '$lib/components/ModalShell.svelte';
 
   const ACCENT = '#d7c9a0'; // brand spool — onboarding has no per-game cover
 
   let { onfinish }: { onfinish: () => void } = $props();
-
-  const _modalId = Symbol();
-  const zIndex = $derived(modalZIndex(_modalId));
 
   // ── Loaded state ────────────────────────────────────────────────────────
   let config = $state<ConfigData | null>(null);
@@ -101,11 +97,6 @@
   // ── Decky step ──────────────────────────────────────────────────────────
   let deckyInstalling = $state(false);
   const deckyInstalled = $derived(!!deckyPlugin?.installed);
-
-  onMount(() => {
-    registerModal(_modalId);
-    return () => unregisterModal(_modalId);
-  });
 
   onMount(async () => {
     try {
@@ -293,29 +284,20 @@
   </div>
 {/snippet}
 
-<div
-  class="ob-scrim fixed inset-0 flex items-center justify-center"
-  style:z-index={zIndex}
-  style:padding="24px"
-  style:background="rgba(8,8,10,0.5)"
-  style:backdrop-filter="blur(6px) saturate(0.9) brightness(0.72)"
-  style:-webkit-backdrop-filter="blur(6px) saturate(0.9) brightness(0.72)"
+<!-- Onboarding supplies its own step-progress header (hideHeader) and a heavier
+     "first run takes over the screen" scrim wash. gamepad B steps back rather
+     than closing; there's no X — the flow ends via Finish/Skip. -->
+<ModalShell
+  hideHeader
+  accent={ACCENT}
+  width="560px"
+  height="548px"
+  surface="var(--color-bg-1)"
+  scrimBackground="rgba(8,8,10,0.5)"
+  scrimBlur="blur(6px) saturate(0.9) brightness(0.72)"
+  onBack={back}
+  ariaLabel="Set up Spool"
 >
-  <div
-    class="ob-modal flex flex-col overflow-hidden bg-bg-1 text-ink-0"
-    role="dialog"
-    aria-modal="true"
-    aria-label="Set up Spool"
-    use:gamepadScope={{ onBack: back }}
-    style:--gp-focus={ACCENT}
-    style:width="560px"
-    style:max-width="calc(100vw - 48px)"
-    style:height="548px"
-    style:max-height="calc(100vh - 48px)"
-    style:border="1px solid var(--color-line-2)"
-    style:border-radius="8px"
-    style:box-shadow="0 30px 90px rgba(0,0,0,0.6)"
-  >
     {#if !config}
       <div class="flex flex-1 items-center justify-center">
         <MonoLabel size={10}>Loading…</MonoLabel>
@@ -534,32 +516,4 @@
         <Btn variant="primary" accent={ACCENT} onclick={next} disabled={navigating}>{primaryLabel}</Btn>
       </div>
     {/if}
-  </div>
-</div>
-
-<style>
-  .ob-scrim {
-    animation: ob-fade 180ms ease;
-  }
-  .ob-modal {
-    animation: ob-pop 220ms ease;
-  }
-  @keyframes ob-fade {
-    from {
-      opacity: 0;
-    }
-    to {
-      opacity: 1;
-    }
-  }
-  @keyframes ob-pop {
-    from {
-      opacity: 0;
-      transform: translateY(10px) scale(0.985);
-    }
-    to {
-      opacity: 1;
-      transform: none;
-    }
-  }
-</style>
+</ModalShell>
