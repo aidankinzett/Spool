@@ -540,7 +540,7 @@ async fn run_move(
                 _ => false,
             };
             if should_log {
-                let pct = if total_bytes > 0 { done * 100 / total_bytes } else { 0 };
+                let pct = (done * 100).checked_div(total_bytes).unwrap_or(0);
                 tracing::info!(copied_bytes = done, total_bytes, pct, "run_move: copying…");
             }
         })
