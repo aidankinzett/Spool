@@ -91,10 +91,22 @@ pub enum ManifestStatus {
     Generated,
 }
 
+/// Result of one folder walk, shared between every caller that wanted it:
+/// the manifest file list plus whether the walk dirtied the hash cache.
+/// `Arc` because `Shared` hands a clone to each awaiter; `String` error
+/// because `io::Error` isn't `Clone`.
+type WalkOutput = Result<(Arc<Vec<PeerFile>>, bool), String>;
+type SharedWalk = futures_util::future::Shared<futures_util::future::BoxFuture<'static, WalkOutput>>;
+
 #[derive(Clone)]
 pub struct LanManifests {
     pub hash_cache: HashCache,
     pub statuses: Arc<Mutex<HashMap<String, ManifestStatus>>>,
+    /// One entry per game whose folder walk is currently running (#440).
+    /// Callers join the in-flight walk instead of starting a second
+    /// concurrent read+hash of the same folder; the entry is removed by
+    /// the walk's own task just before it completes.
+    inflight: Arc<Mutex<HashMap<String, SharedWalk>>>,
 }
 
 impl Default for LanManifests {
@@ -102,6 +114,7 @@ impl Default for LanManifests {
         Self {
             hash_cache: Arc::new(std::sync::RwLock::new(HashMap::new())),
             statuses: Arc::new(Mutex::new(HashMap::new())),
+            inflight: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 }
@@ -118,7 +131,7 @@ impl LanManifests {
         let loaded = super::manifest_cache::load_blocking(&crate::paths::lan_hash_cache_file());
         Self {
             hash_cache: Arc::new(std::sync::RwLock::new(loaded)),
-            statuses: Arc::new(Mutex::new(HashMap::new())),
+            ..Self::default()
         }
     }
 }
@@ -132,7 +145,6 @@ pub(crate) const HASH_CACHE_MAX_ENTRIES: usize = 50_000;
 #[derive(Clone)]
 struct ServerState {
     app: AppHandle,
-    hash_cache: HashCache,
 }
 
 /// Binds the HTTP server and starts serving. Returns the actual port it
@@ -165,11 +177,7 @@ pub(super) async fn start_http_server(app: AppHandle, preferred_port: u16) -> Ap
     // graceful drain.
     let notify = app.state::<LanServerShutdown>().notify.clone();
     let shutdown_app = app.clone();
-    let hash_cache = app.state::<LanManifests>().hash_cache.clone();
-    let router = build_router(ServerState {
-        app,
-        hash_cache,
-    });
+    let router = build_router(ServerState { app });
 
     // Server runs until graceful shutdown is signalled (or the listener
     // dies). `into_make_service_with_connect_info` lets the file
@@ -360,44 +368,18 @@ async fn get_manifest_handler(
     }
 
     // Hashing happens here — blake3 is fast but reads every byte on
-    // disk, so move the whole walk + hash off the async runtime via
-    // spawn_blocking. First request for a big game is slow (~1s/GB on
-    // modern hardware); subsequent requests hit the in-memory cache.
-    let cache = state.hash_cache.clone();
-    let walk_folder = folder.clone();
+    // disk, so the walk runs off the async runtime (spawn_blocking,
+    // inside start_or_join_walk). First request for a big game is slow
+    // (~1s/GB on modern hardware); subsequent requests hit the in-memory
+    // cache, and a walk already running for this game (warm pass, prep
+    // command) is joined rather than duplicated. Status bookkeeping +
+    // `lan:manifest-status-changed` emits live in start_or_join_walk.
     let game_id = entry.id.clone();
-
-    let manifests = state.app.state::<LanManifests>();
-    {
-        if let Ok(mut lock) = manifests.statuses.lock() {
-            lock.insert(game_id.clone(), ManifestStatus::Generating);
-        }
-    }
-    let _ = state.app.emit("lan:manifest-status-changed", &game_id);
-
-    let walk_res = tokio::task::spawn_blocking(move || {
-        let res = walk_game_files_with_hashes(&walk_folder, cache.clone());
-        if matches!(&res, Ok((_, true))) {
-            persist_hash_cache(&cache);
-        }
-        res
-    })
-    .await;
-
-    let files = match walk_res {
-        Ok(Ok((f, _))) => {
-            if let Ok(mut lock) = manifests.statuses.lock() {
-                lock.insert(game_id.clone(), ManifestStatus::Generated);
-            }
-            let _ = state.app.emit("lan:manifest-status-changed", &game_id);
-            f
-        }
-        _ => {
-            if let Ok(mut lock) = manifests.statuses.lock() {
-                lock.insert(game_id.clone(), ManifestStatus::NoManifest);
-            }
-            let _ = state.app.emit("lan:manifest-status-changed", &game_id);
-            tracing::warn!(game_id = %game_id, "manifest walk failed");
+    let shared = start_or_join_walk(&state.app, &game_id, folder.clone(), true);
+    let files: Vec<PeerFile> = match shared.await {
+        Ok((files, _)) => Arc::try_unwrap(files).unwrap_or_else(|a| (*a).clone()),
+        Err(e) => {
+            tracing::warn!(game_id = %game_id, error = %e, "manifest walk failed");
             return Err(StatusCode::INTERNAL_SERVER_ERROR);
         }
     };
@@ -911,6 +893,94 @@ fn persist_hash_cache(cache: &HashCache) {
     super::manifest_cache::save_blocking(&crate::paths::lan_hash_cache_file(), cache);
 }
 
+/// Returns the walk for `game_id`'s folder, joining one already in
+/// flight instead of starting a second (#440) — without this, a peer's
+/// `/manifest` request landing while the warm pass (or a prep) was
+/// hashing the same game re-read and re-hashed the whole folder
+/// concurrently.
+///
+/// The walk runs in a detached task so it always finishes — recording
+/// its final status and saving the cache even if every awaiter
+/// disconnects mid-hash (a peer dropping the manifest request used to
+/// strand the status on "Generating"). Status transitions are owned
+/// here: `Generating` exactly once when the walk starts, the final
+/// status exactly once when it ends; joiners never re-emit.
+///
+/// `persist` is the creator's choice and joiners inherit it. The one
+/// mixed case — the non-persisting warm pass creating a walk a peer
+/// request then joins — is backstopped by the warm pass's end-of-pass
+/// save.
+fn start_or_join_walk(
+    app: &AppHandle,
+    game_id: &str,
+    folder: PathBuf,
+    persist: bool,
+) -> SharedWalk {
+    use futures_util::FutureExt as _;
+
+    let manifests = app.state::<LanManifests>();
+    let mut inflight = manifests
+        .inflight
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    if let Some(walk) = inflight.get(game_id) {
+        return walk.clone();
+    }
+
+    // Set Generating before the task spawns so the task's final-status
+    // write can never be overtaken by this one. (Briefly takes the
+    // statuses lock while holding the inflight lock — both sync, never
+    // nested the other way around, no await in between.)
+    set_status(&manifests, app, game_id, Some(ManifestStatus::Generating));
+
+    let cache = manifests.hash_cache.clone();
+    let manifests_owned = manifests.inner().clone();
+    let task_app = app.clone();
+    let gid = game_id.to_string();
+    let task = tokio::spawn(async move {
+        let res = tokio::task::spawn_blocking(move || {
+            let r = walk_game_files_with_hashes(&folder, cache.clone());
+            if persist && matches!(&r, Ok((_, true))) {
+                persist_hash_cache(&cache);
+            }
+            r
+        })
+        .await;
+        let out: WalkOutput = match res {
+            Ok(Ok((files, dirty))) => Ok((Arc::new(files), dirty)),
+            Ok(Err(e)) => Err(e.to_string()),
+            Err(e) => Err(e.to_string()),
+        };
+        // Remove the in-flight entry *before* the result becomes visible
+        // to awaiters: a completed entry left in the map would hand its
+        // stale file list to every future caller.
+        manifests_owned
+            .inflight
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(&gid);
+        let final_status = if out.is_ok() {
+            ManifestStatus::Generated
+        } else {
+            ManifestStatus::NoManifest
+        };
+        set_status(&manifests_owned, &task_app, &gid, Some(final_status));
+        out
+    });
+    let shared: SharedWalk = async move {
+        match task.await {
+            Ok(out) => out,
+            Err(e) => Err(format!("walk task failed: {e}")),
+        }
+    }
+    .boxed()
+    .shared();
+    // The task can't race this insert: its removal takes the inflight
+    // lock, which we still hold.
+    inflight.insert(game_id.to_string(), shared.clone());
+    shared
+}
+
 /// Drops cache entries that don't live under any of `roots` (the
 /// library's install folders) — they belong to games removed or moved
 /// while we weren't looking, and no walk will ever prune them. Returns
@@ -1024,10 +1094,10 @@ pub async fn prepare_manifest(
 
 /// Pre-hashes a game's folder so its manifest can be served instantly.
 /// Shared by the manual "Prepare manifest" button (via the command
-/// above), the add/edit auto-prep hooks, and the startup warm pass. An
-/// already-`Generating` game early-returns, so overlapping callers
-/// (button click during the warm pass, a peer fetch mid-prep) dedupe
-/// naturally.
+/// above), the add/edit auto-prep hooks, and the startup warm pass.
+/// Overlapping callers — a button click during the warm pass, a peer
+/// fetch mid-prep — join the in-flight walk via `start_or_join_walk`
+/// rather than hashing the folder a second time.
 pub(crate) async fn prepare_manifest_for(
     app: &AppHandle,
     game_id: &str,
@@ -1077,59 +1147,35 @@ async fn install_folder_for(app: &AppHandle, game_id: &str) -> Result<PathBuf, A
 /// Body of [`prepare_manifest_for`], also reporting whether the walk
 /// dirtied the hash cache. `persist: false` skips the per-walk disk save
 /// so the startup warm pass can write once at the end instead of
-/// rewriting the whole cache file after every game.
+/// rewriting the whole cache file after every game. Status bookkeeping
+/// (Generating → Generated/NoManifest, with emits) lives in
+/// `start_or_join_walk`; this only clears a stale status when validation
+/// fails before a walk could start.
 async fn prepare_manifest_inner(
     app: &AppHandle,
     game_id: &str,
     persist: bool,
 ) -> Result<(ManifestStatus, bool), AppError> {
-    let manifests = app.state::<LanManifests>();
-
-    // Claim the Generating slot in a single lock acquisition. A separate
-    // check-then-set (with the async library lookup between them) would
-    // let two concurrent callers — say the warm pass and a button click —
-    // both pass the guard and double-hash the same folder.
-    {
-        let mut lock = manifests
-            .statuses
-            .lock()
-            .map_err(|_| AppError::Other("Lock poisoned".into()))?;
-        if let Some(ManifestStatus::Generating) = lock.get(game_id) {
-            return Ok((ManifestStatus::Generating, false));
-        }
-        lock.insert(game_id.to_string(), ManifestStatus::Generating);
-    }
-    let _ = app.emit("lan:manifest-status-changed", &game_id);
-
     let folder = match install_folder_for(app, game_id).await {
         Ok(f) => f,
         Err(e) => {
-            // Validation failed — clear the claim rather than restore what
-            // it displaced: a pre-error `Generated` may be stale (the folder
-            // moved or vanished since it was set), and a deleted game
-            // shouldn't keep a status entry. An absent key reads back as
-            // NoManifest in `get_manifest_status`.
-            set_status(&manifests, app, game_id, None);
+            // Validation failed — clear any recorded status: a leftover
+            // `Generated` may be stale (the folder moved or vanished since
+            // it was set), and a deleted game shouldn't keep a status
+            // entry. An absent key reads back as NoManifest in
+            // `get_manifest_status`.
+            set_status(&app.state::<LanManifests>(), app, game_id, None);
             return Err(e);
         }
     };
 
-    let cache = manifests.hash_cache.clone();
-    let walk_res = tokio::task::spawn_blocking(move || {
-        let res = walk_game_files_with_hashes(&folder, cache.clone());
-        if persist && matches!(&res, Ok((_, true))) {
-            persist_hash_cache(&cache);
+    match start_or_join_walk(app, game_id, folder, persist).await {
+        Ok((_, dirty)) => Ok((ManifestStatus::Generated, dirty)),
+        Err(e) => {
+            tracing::debug!(game_id = %game_id, error = %e, "manifest walk failed");
+            Ok((ManifestStatus::NoManifest, false))
         }
-        res
-    })
-    .await;
-
-    let (final_status, dirty) = match walk_res {
-        Ok(Ok((_, dirty))) => (ManifestStatus::Generated, dirty),
-        _ => (ManifestStatus::NoManifest, false),
-    };
-    set_status(&manifests, app, game_id, Some(final_status));
-    Ok((final_status, dirty))
+    }
 }
 
 /// Fire-and-forget manifest prep, used by the add-game / edit-save hooks
@@ -1230,10 +1276,11 @@ pub fn spawn_manifest_warm(app: AppHandle) {
             // persist=false: a cold pass dirties the cache on every game, and
             // saving inside each walk would rewrite the whole (growing) file
             // N times. One save below covers everything hashed this pass.
+            // A walk already running for this game (a peer's manifest
+            // request racing the warm pass) is joined, not duplicated —
+            // start_or_join_walk dedupes underneath.
             match prepare_manifest_inner(&app, id, false).await {
-                // Generating means another caller is hashing it right now, so
-                // it ends up warm either way.
-                Ok((ManifestStatus::Generated | ManifestStatus::Generating, dirty)) => {
+                Ok((ManifestStatus::Generated, dirty)) => {
                     warmed += 1;
                     any_dirty |= dirty;
                 }
