@@ -14,8 +14,13 @@ export function isTopModal(id: symbol): boolean {
   return stack.length > 0 && stack[stack.length - 1] === id;
 }
 
-/** Z-index for a registered modal; 50-based, one step per stack depth. */
+/**
+ * Z-index for a registered modal; 50-based, one step per stack depth, capped at
+ * 64 so scrims always stay below the WindowChrome strip (z-65) — the window must
+ * remain draggable/minimisable while a modal is open (#432). Real stacks are a
+ * handful deep, so the cap only bites in a pathological (unbounded) case.
+ */
 export function modalZIndex(id: symbol): number {
   const i = stack.indexOf(id);
-  return i === -1 ? 50 : 50 + i;
+  return i === -1 ? 50 : Math.min(64, 50 + i);
 }

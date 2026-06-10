@@ -9,12 +9,13 @@
    * Escape only fires for the topmost open modal (fixes the multi-modal
    * Escape-closes-all bug when two modals are simultaneously visible).
    *
-   * The scrim sits at z-index 50+ (stack depth). On desktop the WindowChrome
-   * strip deliberately renders *above* it at z-65 so the window stays draggable
-   * and the controls stay clickable while a modal is open (#432); the scrim
-   * therefore reserves top padding equal to --chrome-h in desktop context so the
-   * centred box never slides under it. (Touch/gamemode modals pass
-   * context="gamemode" and don't reserve the strip.)
+   * The scrim sits at z-index 50+ (stack depth, capped below 65). In desktop UI
+   * mode the WindowChrome strip deliberately renders *above* it at z-65 so the
+   * window stays draggable and the controls stay clickable while a modal is open
+   * (#432); the scrim therefore reserves top padding equal to --chrome-h in that
+   * case so the centred box never slides under it. Touch UI mode (TouchTopBar
+   * isn't lifted) and the splash (context="gamemode", no strip) don't reserve —
+   * the reservation tracks uiMode.resolved, not just the context prop.
    *
    * Consumers supply their body content via the default snippet and control
    * close-ability via onClose / closeDisabled. The chrome header can be
@@ -26,6 +27,7 @@
   import { X } from '@lucide/svelte';
   import SpoolMark from './SpoolMark.svelte';
   import { gamepadScope } from '$lib/gamepad';
+  import { uiMode } from '$lib/uiMode.svelte';
   import { registerModal, unregisterModal, isTopModal, modalZIndex } from '$lib/modalStack.svelte';
 
   const BRAND_SPOOL = '#d7c9a0';
@@ -107,9 +109,13 @@
     scrimBackground ?? (context === 'desktop' ? 'rgba(4,5,7,0.62)' : 'rgba(4,5,7,0.5)'),
   );
   // Reserve the title-bar strip so the box never slides under the window chrome,
-  // which renders above the scrim. Only desktop/touch have a chrome strip.
+  // which renders above the scrim. Only the desktop WindowChrome is lifted to
+  // z-65; TouchTopBar isn't, and the splash (context="gamemode") has no strip —
+  // so reserve only when the desktop chrome is actually present and on top.
   const scrimPad = $derived(
-    context === 'desktop' ? 'calc(var(--chrome-h) + 24px) 24px 24px' : '24px',
+    context === 'desktop' && uiMode.resolved === 'desktop'
+      ? 'calc(var(--chrome-h) + 24px) 24px 24px'
+      : '24px',
   );
 
   const id = Symbol();
