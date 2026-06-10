@@ -57,6 +57,39 @@ export type ConfigData = {
    * truncated-only-copy on a mid-backup kill.)
    */
   save_retention_full: number;
+
+  /** User-managed install roots (typically one per drive). The "Move install"
+   * flow lists these as destinations; Settings → Library folders manages them. */
+  library_folders: LibraryFolder[];
+};
+
+/** Mirror of the Rust `LibraryFolder` struct in src-tauri/src/config.rs. */
+export type LibraryFolder = {
+  path: string;
+  label: string | null;
+};
+
+/** Mirror of the Rust `DriveInfo` struct in src-tauri/src/drives.rs — one
+ * mounted drive, surfaced to the Settings drive picker. */
+export type DriveInfo = {
+  mount_point: string;
+  name: string;
+  total_bytes: number;
+  available_bytes: number;
+  is_removable: boolean;
+};
+
+/** Mirror of the Rust `MoveProgress` struct in src-tauri/src/move_install.rs —
+ * emitted as `move:progress` while a game's install is being relocated. */
+export type MoveProgress = {
+  game_id: string;
+  game_name: string;
+  copied_bytes: number;
+  total_bytes: number;
+  /** "preparing" | "copying" | "finalizing" | "done" | "error" | "canceled" */
+  status: string;
+  message: string | null;
+  dest_folder: string | null;
 };
 
 // Mirror of the Rust `SaveRevision` struct in src-tauri/src/ludusavi.rs.

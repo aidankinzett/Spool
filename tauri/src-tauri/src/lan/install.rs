@@ -1109,7 +1109,7 @@ async fn run_install(
         .unwrap_or_default();
 
     let folder_path = final_dir.to_string_lossy().to_string();
-    let install_size_mb = (manifest.total_bytes as f64) / (1024.0 * 1024.0);
+    let install_size_mb = crate::size_backfill::bytes_to_mb(manifest.total_bytes);
 
     // Re-add reuse: if an *uninstalled* entry already exists for this game
     // (same steam id, else same name), reinstall it in place so its catalog

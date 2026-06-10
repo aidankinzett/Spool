@@ -64,11 +64,32 @@ pub async fn generate_armoury_launcher(
     config: State<'_, SharedConfig>,
     game_id: String,
 ) -> AppResult<String> {
+    let spool_exe = {
+        let cfg = config.lock().map_err(|_| AppError::LockPoisoned)?;
+        cfg.data.spool_exe.clone()
+    };
+    let path_str = write_launcher(&library, &spool_exe, &game_id).await?;
+    if let Err(e) = app.emit("library:changed", &game_id) {
+        tracing::warn!(error = %e, "library:changed emit failed after launcher generation");
+    }
+    Ok(path_str)
+}
+
+/// Re-stamps an existing game's Armoury Crate launcher stub with the game's
+/// current name + exe path, updating `launcher_exe_path`. Used after a move-
+/// install so the stub points at the relocated exe instead of the old (now
+/// deleted) path. Shares the write logic with [`generate_armoury_launcher`];
+/// the caller emits `library:changed`. No-op-safe: just rewrites the file.
+pub(crate) async fn write_launcher(
+    library: &SharedLibrary,
+    spool_exe: &str,
+    game_id: &str,
+) -> AppResult<String> {
     // Snapshot inputs before any I/O so we don't hold the config lock across
     // filesystem ops.
     let (game_name, exe_path, safe_name) = {
         let entry = library
-            .find(&game_id)
+            .find(game_id)
             .await?
             .ok_or_else(|| AppError::Other(format!("game not found: {game_id}")))?;
         let safe = if entry.safe_name.is_empty() {
@@ -77,10 +98,6 @@ pub async fn generate_armoury_launcher(
             entry.safe_name.clone()
         };
         (entry.game_name.clone(), entry.exe_path.clone(), safe)
-    };
-    let spool_exe = {
-        let cfg = config.lock().map_err(|_| AppError::LockPoisoned)?;
-        cfg.data.spool_exe.clone()
     };
 
     // The payload is a newline-delimited record and the C# stub splits on CR/LF,
@@ -120,13 +137,10 @@ pub async fn generate_armoury_launcher(
     // Update the library entry's launcher path.
     library
         .update_fields(
-            &game_id,
+            game_id,
             &[("launcher_exe_path", serde_json::json!(path_str))],
         )
         .await?;
-    if let Err(e) = app.emit("library:changed", &game_id) {
-        tracing::warn!(error = %e, "library:changed emit failed after launcher generation");
-    }
 
     Ok(path_str)
 }

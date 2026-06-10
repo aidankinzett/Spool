@@ -17,15 +17,17 @@
    *     fires automatically → window closes
    *   - Cancel → close without saving (form state is discarded)
    */
-  import { onMount } from 'svelte';
+  import { onMount, onDestroy } from 'svelte';
   import { SvelteSet } from 'svelte/reactivity';
-  import { Download, Folder, RefreshCw, Trash2 } from '@lucide/svelte';
+  import { Download, Folder, FolderInput, RefreshCw, Trash2 } from '@lucide/svelte';
   import { open as openDialog } from '@tauri-apps/plugin-dialog';
   import { getCurrentWindow } from '@tauri-apps/api/window';
+  import { listen } from '@tauri-apps/api/event';
   import { api, assetUrl } from '$lib/api';
   import { fmtCatalog, absDateTime } from '$lib/format';
   import { toasts } from '$lib/toasts.svelte';
   import { removeGameDialog } from '$lib/removeGame.svelte';
+  import { moveInstallDialog } from '$lib/moveInstall.svelte';
   import type { GameEntry, ManifestOverride, ProtonVersion } from '$lib/types';
   import AppChrome from '$lib/components/AppChrome.svelte';
   import MonoLabel from '$lib/components/MonoLabel.svelte';
@@ -221,10 +223,48 @@
       } catch (e) {
         console.error('[edit] proton init failed:', e);
       }
+
+      // "Move install…" rewrites the entry's paths out of band while this
+      // window may stay open; without this, a later Save would post the stale
+      // snapshot and repoint the entry at the deleted old location.
+      listen('library:changed', () => {
+        void syncOutOfBandPaths().catch((e) => console.error('[edit] path sync failed:', e));
+      }).then((fn) => { if (!destroyed) unlistenLibChanged = fn; else fn(); });
     } catch (e) {
       error = String(e);
     }
   });
+
+  let destroyed = false;
+  let unlistenLibChanged: (() => void) | null = null;
+  onDestroy(() => { destroyed = true; unlistenLibChanged?.(); });
+
+  // Mirror out-of-band path changes (a move) into the form — but only fields
+  // the user hasn't edited, so in-progress changes survive. `original` is
+  // patched too so the dirty-compare baseline stays correct, same pattern as
+  // refetchCover's artwork patch.
+  async function syncOutOfBandPaths() {
+    if (!form || !original) return;
+    const all = await api.listGames();
+    const next = all.find((g) => g.id === form!.id);
+    if (!next || !form || !original) return;
+    if ((form.game_folder_path ?? '') === (original.game_folder_path ?? '')) {
+      form.game_folder_path = next.game_folder_path;
+      original.game_folder_path = next.game_folder_path;
+    }
+    if (form.exe_path === original.exe_path) {
+      form.exe_path = next.exe_path;
+      original.exe_path = next.exe_path;
+    }
+    if ((form.wine_prefix_path ?? '') === (original.wine_prefix_path ?? '')) {
+      form.wine_prefix_path = next.wine_prefix_path ?? '';
+      original.wine_prefix_path = next.wine_prefix_path;
+    }
+    if (form.install_size_mb === original.install_size_mb) {
+      form.install_size_mb = next.install_size_mb;
+      original.install_size_mb = next.install_size_mb;
+    }
+  }
 
   async function browseExe() {
     if (!form) return;
@@ -502,17 +542,33 @@
 
           {#snippet installFolder()}
             {#if form!.installed}
-              <div class="flex gap-1.5">
-                <TextField
-                  bind:value={form!.game_folder_path as unknown as string}
-                  placeholder="(unset)"
-                  mono
-                  full
-                />
-                <Btn variant="ghost" onclick={browseFolder}>
-                  {#snippet icon()}<Folder size={14} />{/snippet}
-                  Browse
-                </Btn>
+              <div class="flex flex-col gap-1.5">
+                <div class="flex gap-1.5">
+                  <TextField
+                    bind:value={form!.game_folder_path as unknown as string}
+                    placeholder="(unset)"
+                    mono
+                    full
+                  />
+                  <Btn variant="ghost" onclick={browseFolder}>
+                    {#snippet icon()}<Folder size={14} />{/snippet}
+                    Browse
+                  </Btn>
+                </div>
+                {#if original?.game_folder_path}
+                  <div>
+                    <Btn
+                      variant="ghost"
+                      onclick={() =>
+                        moveInstallDialog.request(original!, {
+                          onDone: () => void getCurrentWindow().close(),
+                        })}
+                    >
+                      {#snippet icon()}<FolderInput size={14} />{/snippet}
+                      Move to another drive…
+                    </Btn>
+                  </div>
+                {/if}
               </div>
             {:else}
               <!-- Uninstalled: install paths are owned by Reinstall, not the

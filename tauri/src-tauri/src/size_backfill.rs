@@ -63,8 +63,7 @@ async fn run_backfill(app: AppHandle) {
             .await
             .unwrap_or(0);
         if bytes > 0 {
-            let mb = (bytes as f64) / (1024.0 * 1024.0);
-            results.push((id, mb));
+            results.push((id, bytes_to_mb(bytes)));
         }
     }
     if results.is_empty() {
@@ -91,20 +90,50 @@ async fn run_backfill(app: AppHandle) {
     }
 }
 
-/// Recursive directory size in bytes. Follows symlinks (matches
-/// `walkdir::WalkDir::follow_links(true)` used by the LAN walk).
-/// Errors on individual files are silently skipped — a partial
-/// total is still informative.
-pub(crate) fn directory_size(path: &std::path::Path) -> u64 {
-    let mut total = 0u64;
+/// Recursive `(file count, total bytes)` for a directory tree. Follows symlinks
+/// (matches `walkdir::WalkDir::follow_links(true)` used by the LAN walk). Errors
+/// on individual files are silently skipped — a partial total is still
+/// informative. The move-install flow uses the pair as a copy-verification
+/// fingerprint; [`directory_size`] wraps it for callers that only need the bytes.
+pub(crate) fn directory_stats(path: &std::path::Path) -> (u64, u64) {
+    let mut count = 0u64;
+    let mut bytes = 0u64;
     for entry in walkdir::WalkDir::new(path).follow_links(true) {
         let Ok(entry) = entry else { continue };
         if !entry.file_type().is_file() {
             continue;
         }
         if let Ok(meta) = entry.metadata() {
-            total += meta.len();
+            count += 1;
+            bytes += meta.len();
         }
     }
-    total
+    (count, bytes)
+}
+
+/// Recursive directory size in bytes — the byte half of [`directory_stats`].
+pub(crate) fn directory_size(path: &std::path::Path) -> u64 {
+    directory_stats(path).1
+}
+
+/// Bytes → the MiB unit stored in `GameEntry::install_size_mb`. One definition
+/// shared by the backfill, the LAN installer, and the move-install flow so the
+/// recorded sizes stay comparable.
+pub(crate) fn bytes_to_mb(bytes: u64) -> f64 {
+    (bytes as f64) / (1024.0 * 1024.0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn directory_stats_counts_files_and_bytes() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("a.txt"), b"hello").unwrap();
+        std::fs::create_dir(tmp.path().join("sub")).unwrap();
+        std::fs::write(tmp.path().join("sub/b.bin"), b"world!").unwrap();
+        assert_eq!(directory_stats(tmp.path()), (2, 11));
+        assert_eq!(directory_size(tmp.path()), 11);
+    }
 }

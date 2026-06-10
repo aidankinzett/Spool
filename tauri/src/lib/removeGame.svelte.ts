@@ -14,28 +14,8 @@
  *   removeGameDialog.request(game);
  *   removeGameDialog.request(entry, { onDone: () => getCurrentWindow().close() });
  */
-import type { GameEntry } from '$lib/types';
+import { GameDialogStore, type GameDialogRequest } from '$lib/gameDialog.svelte';
 
-export interface RemoveRequest {
-  /** The game to remove. */
-  game: GameEntry;
-  /** Run after a successful removal (e.g. close the edit window). */
-  onDone?: () => void;
-}
+export type RemoveRequest = GameDialogRequest;
 
-class RemoveGameStore {
-  /** The request currently on screen, or null when the modal is closed. */
-  current = $state<RemoveRequest | null>(null);
-
-  /** Open the remove chooser for `game`. A second call replaces the first. */
-  request(game: GameEntry, opts?: { onDone?: () => void }): void {
-    this.current = { game, onDone: opts?.onDone };
-  }
-
-  /** Dismiss the modal (Cancel / Escape / scrim / after a successful removal). */
-  close(): void {
-    this.current = null;
-  }
-}
-
-export const removeGameDialog = new RemoveGameStore();
+export const removeGameDialog = new GameDialogStore();

@@ -6,6 +6,7 @@
   import ToastStack from '$lib/components/ToastStack.svelte';
   import ConfirmHost from '$lib/components/ConfirmHost.svelte';
   import RemoveGameHost from '$lib/components/RemoveGameHost.svelte';
+  import MoveInstallHost from '$lib/components/MoveInstallHost.svelte';
   import { api } from '$lib/api';
   import { uiMode } from '$lib/uiMode.svelte';
   import { startGamepadNav } from '$lib/gamepad';
@@ -66,3 +67,6 @@
 
 <!-- Global remove-game chooser host — opened via removeGameDialog.request(). -->
 <RemoveGameHost />
+
+<!-- Global move-install chooser host — opened via moveInstallDialog.request(). -->
+<MoveInstallHost />
