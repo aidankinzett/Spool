@@ -69,7 +69,7 @@ mod util;
 
 use cli::CliMode;
 use config::{Config, SharedConfig};
-use lan::{LanDownloadState, LanServerShutdown, LanState, LanUploadsState};
+use lan::{LanDownloadState, LanManifests, LanServerShutdown, LanState, LanUploadsState};
 use rclone::SyncStatusState;
 use library::{Library, SharedLibrary};
 use ludusavi::LudusaviClient;
@@ -269,6 +269,7 @@ pub fn run() {
         .manage::<Arc<LanDownloadState>>(Arc::new(LanDownloadState::default()))
         .manage::<Arc<move_install::MoveState>>(Arc::new(move_install::MoveState::default()))
         .manage::<LanUploadsState>(LanUploadsState::default())
+        .manage::<LanManifests>(LanManifests::default())
         .manage::<LanServerShutdown>(LanServerShutdown::default())
         .manage::<SyncStatusState>(SyncStatusState::default())
         .manage::<rclone::OAuthState>(rclone::OAuthState::default())
@@ -335,6 +336,8 @@ pub fn run() {
             lan::install::cancel_peer_install,
             lan::server::list_active_uploads,
             lan::server::cancel_upload,
+            lan::server::get_manifest_status,
+            lan::server::prepare_manifest,
             // runner
             runner::launch_game,
             runner::manual_backup,

@@ -79,7 +79,30 @@ impl LanServerShutdown {
 /// see a file, or when its mtime changes). Per `domain-web`'s
 /// "read-heavy shared state → Arc<RwLock<T>>" rule, concurrent
 /// manifest requests get to read in parallel.
-type HashCache = Arc<std::sync::RwLock<HashMap<PathBuf, (std::time::SystemTime, String)>>>;
+pub type HashCache = Arc<std::sync::RwLock<HashMap<PathBuf, (std::time::SystemTime, String)>>>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ManifestStatus {
+    NoManifest,
+    Generating,
+    Generated,
+}
+
+#[derive(Clone)]
+pub struct LanManifests {
+    pub hash_cache: HashCache,
+    pub statuses: Arc<Mutex<HashMap<String, ManifestStatus>>>,
+}
+
+impl Default for LanManifests {
+    fn default() -> Self {
+        Self {
+            hash_cache: Arc::new(std::sync::RwLock::new(HashMap::new())),
+            statuses: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+}
 
 /// Hard cap on cached file-hash entries (across all shared games). A bounded
 /// backstop so a host that has shared many large games over a long-lived tray
@@ -123,9 +146,10 @@ pub(super) async fn start_http_server(app: AppHandle, preferred_port: u16) -> Ap
     // graceful drain.
     let notify = app.state::<LanServerShutdown>().notify.clone();
     let shutdown_app = app.clone();
+    let hash_cache = app.state::<LanManifests>().hash_cache.clone();
     let router = build_router(ServerState {
         app,
-        hash_cache: Arc::new(std::sync::RwLock::new(HashMap::new())),
+        hash_cache,
     });
 
     // Server runs until graceful shutdown is signalled (or the listener
@@ -322,17 +346,37 @@ async fn get_manifest_handler(
     // modern hardware); subsequent requests hit the in-memory cache.
     let cache = state.hash_cache.clone();
     let walk_folder = folder.clone();
-    let files =
+    let game_id = entry.id.clone();
+
+    let manifests = state.app.state::<LanManifests>();
+    {
+        if let Ok(mut lock) = manifests.statuses.lock() {
+            lock.insert(game_id.clone(), ManifestStatus::Generating);
+        }
+    }
+    let _ = state.app.emit("lan:manifest-status-changed", &game_id);
+
+    let walk_res =
         tokio::task::spawn_blocking(move || walk_game_files_with_hashes(&walk_folder, cache))
-            .await
-            .map_err(|e| {
-                tracing::warn!(game_id = %id, error = %e, "manifest walk task join failed");
-                StatusCode::INTERNAL_SERVER_ERROR
-            })?
-            .map_err(|e| {
-                tracing::warn!(game_id = %id, error = %e, "manifest walk failed");
-                StatusCode::INTERNAL_SERVER_ERROR
-            })?;
+            .await;
+
+    let files = match walk_res {
+        Ok(Ok(f)) => {
+            if let Ok(mut lock) = manifests.statuses.lock() {
+                lock.insert(game_id.clone(), ManifestStatus::Generated);
+            }
+            let _ = state.app.emit("lan:manifest-status-changed", &game_id);
+            f
+        }
+        _ => {
+            if let Ok(mut lock) = manifests.statuses.lock() {
+                lock.insert(game_id.clone(), ManifestStatus::NoManifest);
+            }
+            let _ = state.app.emit("lan:manifest-status-changed", &game_id);
+            tracing::warn!(game_id = %game_id, "manifest walk failed");
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        }
+    };
     let total_bytes: u64 = files.iter().map(|f| f.size).sum();
 
     // Register the upload session now that we know the total byte count.
@@ -893,6 +937,75 @@ pub fn cancel_upload(
         let _ = app.emit("lan:uploads-changed", &());
     }
     ok
+}
+
+#[tauri::command]
+pub fn get_manifest_status(
+    manifests: State<'_, LanManifests>,
+    game_id: String,
+) -> ManifestStatus {
+    let lock = match manifests.statuses.lock() {
+        Ok(l) => l,
+        Err(_) => return ManifestStatus::NoManifest,
+    };
+    lock.get(&game_id).copied().unwrap_or(ManifestStatus::NoManifest)
+}
+
+#[tauri::command]
+pub async fn prepare_manifest(
+    app: AppHandle,
+    library: State<'_, SharedLibrary>,
+    manifests: State<'_, LanManifests>,
+    game_id: String,
+) -> Result<ManifestStatus, AppError> {
+    {
+        let lock = manifests.statuses.lock().map_err(|_| AppError::Other("Lock poisoned".into()))?;
+        if let Some(ManifestStatus::Generating) = lock.get(&game_id) {
+            return Ok(ManifestStatus::Generating);
+        }
+    }
+
+    let entry = library
+        .find(&game_id)
+        .await?
+        .ok_or_else(|| AppError::Other("Game not found".into()))?;
+
+    let folder = match entry.game_folder_path.as_ref() {
+        Some(p) if !p.is_empty() => std::path::PathBuf::from(p),
+        _ => return Err(AppError::Other("No install folder configured".into())),
+    };
+    if !folder.is_dir() {
+        return Err(AppError::Other("Install folder does not exist".into()));
+    }
+
+    {
+        let mut lock = manifests.statuses.lock().map_err(|_| AppError::Other("Lock poisoned".into()))?;
+        lock.insert(game_id.clone(), ManifestStatus::Generating);
+    }
+    let _ = app.emit("lan:manifest-status-changed", &game_id);
+
+    let cache = manifests.hash_cache.clone();
+    let walk_folder = folder.clone();
+    let game_id_clone = game_id.clone();
+    let app_clone = app.clone();
+    let manifests_clone = manifests.inner().clone();
+
+    let walk_res = tokio::task::spawn_blocking(move || {
+        walk_game_files_with_hashes(&walk_folder, cache)
+    }).await;
+
+    let final_status = match walk_res {
+        Ok(Ok(_)) => ManifestStatus::Generated,
+        _ => ManifestStatus::NoManifest,
+    };
+
+    {
+        let mut lock = manifests_clone.statuses.lock().map_err(|_| AppError::Other("Lock poisoned".into()))?;
+        lock.insert(game_id_clone.clone(), final_status);
+    }
+    let _ = app_clone.emit("lan:manifest-status-changed", &game_id_clone);
+
+    Ok(final_status)
 }
 
 #[cfg(test)]

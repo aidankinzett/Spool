@@ -39,7 +39,7 @@ pub(crate) mod server;
 
 pub use discovery::{spawn_discovery, LanState};
 pub use install::LanDownloadState;
-pub use server::LanServerShutdown;
+pub use server::{LanManifests, LanServerShutdown};
 
 use crate::library::GameEntry;
 use chrono::{DateTime, Utc};

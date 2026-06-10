@@ -14,6 +14,7 @@
 
 use crate::error::AppResult;
 use std::time::Duration;
+#[cfg(any(windows, target_os = "linux"))]
 use tokio::process::Command;
 
 /// How long to wait for Steam to exit after `-shutdown` before giving up.

@@ -624,3 +624,5 @@ export type PullResult = {
   outcome: PullOutcome;
   game_count: number;
 };
+
+export type ManifestStatus = 'nomanifest' | 'generating' | 'generated';
