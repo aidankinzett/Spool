@@ -543,7 +543,7 @@
             <!-- Peer-sourced row: Download (from another device on the LAN)
                  replaces Play. Shows live progress + Cancel while in flight. -->
             {#if peerInflight && peerDownload}
-              <div class="flex flex-col gap-1.5" style:min-width="260px">
+              <div class="flex flex-col gap-1.5 min-w-0" style:width="260px">
                 <div class="flex items-center gap-2.5">
                   <span class="font-sans text-[length:var(--text-base)] font-semibold text-ink-0">
                     Downloading…

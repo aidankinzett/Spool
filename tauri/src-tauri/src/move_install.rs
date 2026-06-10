@@ -33,6 +33,10 @@ use tauri::{AppHandle, Emitter, State};
 /// would flood the IPC channel.
 const PROGRESS_EMIT_INTERVAL: Duration = Duration::from_millis(200);
 
+/// How often to write a copy-progress log line at INFO level so the log shows
+/// the move is still active without flooding it.
+const PROGRESS_LOG_INTERVAL: Duration = Duration::from_secs(5);
+
 /// errno returned by `rename(2)` / `MoveFile` when source and destination are on
 /// different filesystems — the signal to fall back to copy + delete.
 #[cfg(windows)]
@@ -172,6 +176,8 @@ pub async fn move_game_install(
     let library: SharedLibrary = (*library).clone();
     let move_state: Arc<MoveState> = (*move_state).clone();
 
+    tracing::info!(game_id = %id, dest_folder = %dest_folder, "move_game_install: starting");
+
     // Snapshot the entry before any IO.
     let entry = library
         .find(&id)
@@ -215,6 +221,14 @@ pub async fn move_game_install(
         .ok_or_else(|| AppError::Other("Couldn't read the install folder name.".into()))?;
     let dest_root = PathBuf::from(dest_folder.trim());
     let dest = dest_root.join(base);
+
+    tracing::info!(
+        game_id = %id,
+        game_name = %game_name,
+        src = %src.display(),
+        dest = %dest.display(),
+        "move_game_install: validated paths"
+    );
 
     // Reject no-op / colliding destinations.
     if paths_equal(&src, &dest) {
@@ -270,6 +284,7 @@ pub async fn move_game_install(
         )
     })?;
 
+    tracing::info!(game_id = %id, "move_game_install: locks acquired, starting file move");
     emit(&app, &move_state, |p| p.status = "copying".into());
 
     // Move the bytes. Fast path: a same-filesystem rename (instant). Fallback:
@@ -282,6 +297,7 @@ pub async fn move_game_install(
         Err(e) => {
             let msg = e.to_string();
             let status = if e.is_canceled() { "canceled" } else { "error" };
+            tracing::warn!(game_id = %id, status = %status, error = %msg, "move_game_install: file move failed");
             emit(&app, &move_state, |p| {
                 p.status = status.into();
                 p.message = Some(msg);
@@ -290,6 +306,12 @@ pub async fn move_game_install(
         }
     };
 
+    tracing::info!(
+        game_id = %id,
+        cross_device = outcome.total_bytes.is_some(),
+        total_bytes = ?outcome.total_bytes,
+        "move_game_install: file move complete, entering finalizing"
+    );
     emit(&app, &move_state, |p| p.status = "finalizing".into());
 
     // Repoint the entry: new folder, new exe (joined under the new folder), and —
@@ -320,11 +342,14 @@ pub async fn move_game_install(
         let install_size_mb = crate::size_backfill::bytes_to_mb(total_bytes);
         fields.push(("install_size_mb", serde_json::json!(install_size_mb)));
     }
+    tracing::info!(game_id = %id, fields = ?fields.iter().map(|(k, _)| *k).collect::<Vec<_>>(), "move_game_install: updating library entry");
     if let Err(e) = library.update_fields(&id, &fields).await {
+        tracing::error!(game_id = %id, error = %e, "move_game_install: DB repoint failed");
         // The same-filesystem fast path already consumed the source (the copy
         // path hasn't deleted it yet — `source_to_delete` is still `Some`). Roll
         // the rename back so the entry keeps pointing at a folder that exists.
         if outcome.source_to_delete.is_none() {
+            tracing::info!(game_id = %id, "move_game_install: rolling back same-fs rename after DB failure");
             if let Err(rb) = tokio::fs::rename(&dest, &src).await {
                 tracing::warn!(
                     error = %rb,
@@ -335,6 +360,7 @@ pub async fn move_game_install(
             // Copy path: the source is still intact, so delete the verified
             // copy at the destination — leaving it would strand the disk space
             // and block every retry on the `dest.exists()` precondition.
+            tracing::info!(game_id = %id, "move_game_install: removing copied dest after DB failure (source intact)");
             if let Err(rb) = tokio::fs::remove_dir_all(&dest).await {
                 tracing::warn!(
                     error = %rb,
@@ -344,13 +370,15 @@ pub async fn move_game_install(
         }
         return Err(e);
     }
+    tracing::info!(game_id = %id, "move_game_install: library entry repointed");
 
     // The entry now points at the new location, so it's safe to delete the old
     // copy (cross-device path only — the rename already consumed the source).
     // Best-effort: a failed delete only leaves reclaimable disk, not a broken game.
     if let Some(old_src) = outcome.source_to_delete {
+        tracing::info!(game_id = %id, src = %old_src.display(), "move_game_install: deleting source after cross-device copy");
         match tokio::task::spawn_blocking(move || std::fs::remove_dir_all(&old_src)).await {
-            Ok(Ok(())) => {}
+            Ok(Ok(())) => tracing::info!(game_id = %id, "move_game_install: source deleted"),
             Ok(Err(e)) => tracing::warn!(error = %e, "move: couldn't delete source after copy"),
             Err(e) => tracing::warn!(error = %e, "move: source delete task join failed"),
         }
@@ -359,14 +387,17 @@ pub async fn move_game_install(
     // Regenerate anything that baked in the old absolute exe path. Best-effort —
     // the move itself succeeded and the entry is already correct, so a failure
     // here is logged, not fatal.
+    tracing::info!(game_id = %id, "move_game_install: regenerating shortcuts");
     regenerate_shortcuts(&library, &config, &entry, &new_exe).await;
 
     // `<base>` custom-save templates expand from `game_folder_path`, so
     // re-project ludusavi's customGames block now rather than waiting for the
     // next launch preflight — otherwise a manual or Decky game-stop backup in
     // that window would back up the deleted old path.
+    tracing::info!(game_id = %id, "move_game_install: syncing custom saves");
     crate::custom_saves::sync_best_effort(&app).await;
 
+    tracing::info!(game_id = %id, "move_game_install: done, emitting move:progress done + library:changed");
     emit(&app, &move_state, |p| {
         p.copied_bytes = p.total_bytes;
         p.status = "done".into();
@@ -399,6 +430,8 @@ async fn run_move(
     src: &Path,
     dest: &Path,
 ) -> AppResult<MoveOutcome> {
+    tracing::info!(src = %src.display(), dest = %dest.display(), "run_move: starting");
+
     // Ensure the destination's parent exists for both the rename and the copy.
     if let Some(parent) = dest.parent() {
         tokio::fs::create_dir_all(parent)
@@ -409,13 +442,15 @@ async fn run_move(
     // Fast path: atomic rename. Succeeds instantly within one filesystem (no size
     // walk or free-space check needed); fails with a cross-device errno when src
     // and dest are on different drives.
+    tracing::info!(src = %src.display(), dest = %dest.display(), "run_move: attempting same-filesystem rename");
     match std::fs::rename(src, dest) {
         Ok(()) => {
+            tracing::info!(src = %src.display(), dest = %dest.display(), "run_move: same-filesystem rename succeeded");
             emit(app, state, |p| p.copied_bytes = p.total_bytes);
             return Ok(MoveOutcome { total_bytes: None, source_to_delete: None });
         }
         Err(e) if e.raw_os_error() == Some(CROSS_DEVICE_ERRNO) => {
-            tracing::info!("move: cross-device, falling back to copy + delete");
+            tracing::info!("run_move: cross-device rename (errno {}), falling back to copy + delete", CROSS_DEVICE_ERRNO);
         }
         Err(e) => return Err(AppError::Other(format!("move (rename): {e}"))),
     }
@@ -425,6 +460,7 @@ async fn run_move(
     // refresh and the recursive stat-walk can block). The (count, bytes) pair
     // doubles as the copy-verification fingerprint below — the run lock holds
     // the tree still for the whole move, so pre-copy stats stay valid.
+    tracing::info!(src = %src.display(), "run_move: walking source to determine size");
     let src_stats = {
         let src = src.to_path_buf();
         tokio::task::spawn_blocking(move || crate::size_backfill::directory_stats(&src))
@@ -436,6 +472,7 @@ async fn run_move(
         .parent()
         .map(Path::to_path_buf)
         .unwrap_or_else(|| dest.to_path_buf());
+    tracing::info!(total_bytes, file_count = src_stats.0, dest = %dest.display(), "run_move: source sized, probing free space");
     let free = {
         let dest_root = dest_root.clone();
         tokio::task::spawn_blocking(move || crate::drives::free_space_for(&dest_root))
@@ -446,6 +483,7 @@ async fn run_move(
     // directory metadata make the on-disk footprint larger, so an exact fit
     // would run for the whole copy and then die with "no space left on device".
     let needed = total_bytes.saturating_add((total_bytes / 100).max(256 * 1024 * 1024));
+    tracing::info!(free_bytes = free, needed_bytes = needed, "run_move: free-space check");
     if free > 0 && free < needed {
         return Err(AppError::Other(format!(
             "Not enough free space at the destination ({} free, {} needed).",
@@ -465,29 +503,45 @@ async fn run_move(
         dest.with_file_name(name)
     };
     if partial.exists() {
+        tracing::info!(partial = %partial.display(), "run_move: clearing stale partial dir");
         tokio::fs::remove_dir_all(&partial)
             .await
             .map_err(|e| AppError::Other(format!("clear stale partial {partial:?}: {e}")))?;
     }
 
+    tracing::info!(src = %src.display(), partial = %partial.display(), total_bytes, "run_move: starting recursive copy");
     let app_for_copy = app.clone();
     let state_for_copy = state.clone();
     let src_copy = src.to_path_buf();
     let partial_copy = partial.clone();
     let copy_result: AppResult<()> = tokio::task::spawn_blocking(move || {
         let last_emit = Mutex::new(Instant::now() - PROGRESS_EMIT_INTERVAL);
+        let last_log = Mutex::new(Instant::now() - PROGRESS_LOG_INTERVAL);
         let mut copied: u64 = 0;
         copy_dir_recursive(&src_copy, &partial_copy, &mut copied, &state_for_copy, &|done| {
-            // Throttled progress emit from the blocking copy thread.
-            let should = match last_emit.lock() {
-                Ok(mut le) if le.elapsed() >= PROGRESS_EMIT_INTERVAL => {
-                    *le = Instant::now();
+            let now = Instant::now();
+            // Throttled progress emit (200 ms) for the UI.
+            let should_emit = match last_emit.lock() {
+                Ok(mut le) if now.duration_since(*le) >= PROGRESS_EMIT_INTERVAL => {
+                    *le = now;
                     true
                 }
                 _ => false,
             };
-            if should {
+            if should_emit {
                 emit(&app_for_copy, &state_for_copy, |p| p.copied_bytes = done);
+            }
+            // Throttled log line (5 s) so the log shows the copy is still alive.
+            let should_log = match last_log.lock() {
+                Ok(mut ll) if now.duration_since(*ll) >= PROGRESS_LOG_INTERVAL => {
+                    *ll = now;
+                    true
+                }
+                _ => false,
+            };
+            if should_log {
+                let pct = if total_bytes > 0 { done * 100 / total_bytes } else { 0 };
+                tracing::info!(copied_bytes = done, total_bytes, pct, "run_move: copying…");
             }
         })
     })
@@ -496,9 +550,11 @@ async fn run_move(
 
     if let Err(e) = copy_result {
         // Clean up the partial dir; source is untouched.
+        tracing::warn!(error = %e, "run_move: copy failed, cleaning up partial");
         let _ = tokio::fs::remove_dir_all(&partial).await;
         return Err(e);
     }
+    tracing::info!(partial = %partial.display(), "run_move: recursive copy complete, verifying");
 
     // Verify the copy before the caller deletes the source: equal file count +
     // total size against the pre-copy fingerprint (the run lock guarantees the
@@ -510,18 +566,22 @@ async fn run_move(
     .await
     .map_err(|e| AppError::Other(format!("verify task join failed: {e}")))?;
     if !verified {
+        tracing::warn!(partial = %partial.display(), "run_move: verification failed (file count or size mismatch)");
         let _ = tokio::fs::remove_dir_all(&partial).await;
         return Err(AppError::Other(
             "Copy verification failed (file count or size mismatch). The original was left untouched.".into(),
         ));
     }
+    tracing::info!(partial = %partial.display(), dest = %dest.display(), "run_move: copy verified, renaming partial into place");
 
     // Swap the staging dir into place. On failure, clean up the partial so a
     // retry starts fresh; the source is still intact.
     if let Err(e) = tokio::fs::rename(&partial, dest).await {
+        tracing::warn!(error = %e, partial = %partial.display(), dest = %dest.display(), "run_move: final rename failed");
         let _ = tokio::fs::remove_dir_all(&partial).await;
         return Err(AppError::Other(format!("finalise move dir: {e}")));
     }
+    tracing::info!(dest = %dest.display(), total_bytes, "run_move: complete");
     Ok(MoveOutcome {
         total_bytes: Some(total_bytes),
         source_to_delete: Some(src.to_path_buf()),
