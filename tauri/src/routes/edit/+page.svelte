@@ -227,16 +227,17 @@
       // "Move install…" rewrites the entry's paths out of band while this
       // window may stay open; without this, a later Save would post the stale
       // snapshot and repoint the entry at the deleted old location.
-      unlistenLibChanged = await listen('library:changed', () => {
+      listen('library:changed', () => {
         void syncOutOfBandPaths().catch((e) => console.error('[edit] path sync failed:', e));
-      });
+      }).then((fn) => { if (!destroyed) unlistenLibChanged = fn; else fn(); });
     } catch (e) {
       error = String(e);
     }
   });
 
+  let destroyed = false;
   let unlistenLibChanged: (() => void) | null = null;
-  onDestroy(() => unlistenLibChanged?.());
+  onDestroy(() => { destroyed = true; unlistenLibChanged?.(); });
 
   // Mirror out-of-band path changes (a move) into the form — but only fields
   // the user hasn't edited, so in-progress changes survive. `original` is
