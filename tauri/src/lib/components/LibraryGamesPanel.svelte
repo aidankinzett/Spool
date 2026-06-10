@@ -39,11 +39,20 @@
   let showMove = $state(false);
   let busy = $state(false);
 
+  // Generation counter: only the latest loadGames() call writes to `games`.
+  // Rapid-fire library:changed events (e.g. N concurrent uninstalls) can cause
+  // multiple in-flight api.listGames() calls; the counter ensures earlier
+  // responses that arrive after a later one are discarded.
+  let loadSeq = 0;
+
   async function loadGames() {
+    const seq = ++loadSeq;
     try {
-      games = await api.listGames();
+      const gs = await api.listGames();
+      if (seq === loadSeq) games = gs;
     } catch (e) {
-      toasts.show({ kind: 'bad', label: 'LIBRARY', title: "Couldn't load games", sub: String(e) });
+      if (seq === loadSeq)
+        toasts.show({ kind: 'bad', label: 'LIBRARY', title: "Couldn't load games", sub: String(e) });
     }
   }
 
@@ -158,7 +167,9 @@
   }
 
   async function deleteSelected() {
-    const ids = [...selected];
+    // Snapshot the derived list so stale selected IDs (for games no longer
+    // installed) are excluded before confirming and running the uninstalls.
+    const ids = selectedGames.map((g) => g.id);
     const n = ids.length;
     if (n === 0 || busy) return;
     const ok = await confirmDialog({
@@ -180,8 +191,17 @@
       sub: 'Backing up saves, then deleting install files.',
       duration: 0,
     });
-    // Per-game run locks make these independent, so they can run concurrently.
-    const settled = await Promise.allSettled(ids.map((id) => api.uninstallGame(id)));
+    // Uninstalls share a global backup lock — run them one at a time to avoid
+    // lock-timeout failures when cloud uploads are slow (180 s timeout).
+    const settled: PromiseSettledResult<unknown>[] = [];
+    for (const id of ids) {
+      settled.push(
+        await api
+          .uninstallGame(id)
+          .then(() => ({ status: 'fulfilled' as const, value: undefined }))
+          .catch((reason) => ({ status: 'rejected' as const, reason })),
+      );
+    }
     toasts.dismiss(progressId);
     busy = false;
 
@@ -297,21 +317,21 @@
       class="flex items-center gap-2.5 px-[18px] py-[11px] border-t border-line-1 bg-bg-2/50"
     >
       <span class="text-[12px] text-ink-2">
-        {#if selected.size === 0}
+        {#if selectedGames.length === 0}
           {totalInstalled} installed
         {:else}
-          {selected.size} selected · {fmtSize(selectedSize)}
+          {selectedGames.length} selected · {fmtSize(selectedSize)}
         {/if}
       </span>
       <div class="flex-1"></div>
-      {#if selected.size > 0}
+      {#if selectedGames.length > 0}
         <Btn variant="ghost" onclick={clearSelection}>Clear</Btn>
       {/if}
-      <Btn variant="ghost" disabled={selected.size === 0 || busy} onclick={openMove}>
+      <Btn variant="ghost" disabled={selectedGames.length === 0 || busy} onclick={openMove}>
         {#snippet icon()}<FolderInput size={14} />{/snippet}
         Move…
       </Btn>
-      <Btn variant="danger" disabled={selected.size === 0 || busy} onclick={deleteSelected}>
+      <Btn variant="danger" disabled={selectedGames.length === 0 || busy} onclick={deleteSelected}>
         {#snippet icon()}<Trash2 size={14} />{/snippet}
         Delete from disk
       </Btn>

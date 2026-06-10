@@ -59,6 +59,8 @@
     tooSmall: boolean;
     /** Every selected game already lives here — nothing to do. */
     allHere: boolean;
+    /** True when the free-space query failed (path inaccessible / unmounted). */
+    freeError: boolean;
   };
   let rows = $state<FolderRow[]>([]);
   let selected = $state<string | null>(null);
@@ -67,11 +69,12 @@
   async function loadRows() {
     const out = await Promise.all(
       folders.map(async (f): Promise<FolderRow> => {
-        let free: number;
+        let free = 0;
+        let freeError = false;
         try {
           free = await api.folderFreeSpace(f.path);
         } catch {
-          free = 0;
+          freeError = true;
         }
         const here = games.filter((g) => isCurrentRoot(f.path, g.game_folder_path));
         const bytesToMove = games
@@ -83,13 +86,14 @@
           free,
           alreadyHere: here.length,
           bytesToMove,
-          tooSmall: free > 0 && bytesToMove > 0 && free < neededBytes(bytesToMove),
+          tooSmall: !freeError && free > 0 && bytesToMove > 0 && free < neededBytes(bytesToMove),
           allHere: here.length === games.length,
+          freeError,
         };
       }),
     );
     rows = out;
-    const usable = (r: FolderRow) => !r.tooSmall && !r.allHere;
+    const usable = (r: FolderRow) => !r.tooSmall && !r.allHere && !r.freeError;
     const stillValid = out.some((r) => r.path === selected && usable(r));
     if (!stillValid) selected = out.find(usable)?.path ?? null;
   }
@@ -128,13 +132,14 @@
     results.filter((r) => r.status === 'done' || r.status === 'skipped' || r.status === 'error' || r.status === 'canceled')
       .length,
   );
-  // Combined progress across the whole batch.
+  // Combined progress across the whole batch. Denominator is results.length
+  // (queue + skipped) so pre-seeded skipped entries don't inflate the fraction.
   const pct = $derived(
     phase === 'done'
       ? 100
-      : queueLen === 0
+      : results.length === 0
         ? 0
-        : Math.min(100, Math.round(((completedCount + activeFraction) / queueLen) * 100)),
+        : Math.min(100, Math.round(((completedCount + activeFraction) / results.length) * 100)),
   );
 
   const summary = $derived.by(() => {
@@ -148,7 +153,7 @@
   function pick(path: string) {
     if (locked) return;
     const row = rows.find((r) => r.path === path);
-    if (!row || row.tooSmall || row.allHere) return;
+    if (!row || row.tooSmall || row.allHere || row.freeError) return;
     selected = path;
   }
 
@@ -197,9 +202,10 @@
           await api.moveGameInstall(g.id, dest);
           setStatus(g.id, 'done');
         } catch (err) {
-          // A user-requested cancel rejects with the backend's "install
-          // cancelled" error — mark canceled, not failed (source left intact).
-          if (canceled && /install cancelled/i.test(String(err))) {
+          // `canceled` is set before api.cancelMove() is called, so any
+          // rejection that follows a user cancel is treated as canceled, not
+          // as a failure (source files are left intact in both cases).
+          if (canceled) {
             setStatus(g.id, 'canceled');
           } else {
             setStatus(g.id, 'error', String(err));
@@ -208,7 +214,10 @@
         }
       }
       phase = 'done';
-      onDone?.();
+      // Only clear the caller's selection when everything succeeded or was
+      // skipped — leave it intact so the user can see and retry any failures.
+      const hadProblems = results.some((r) => r.status === 'error' || r.status === 'canceled');
+      if (!hadProblems) onDone?.();
       closeTimer = setTimeout(() => onClose(), 1100);
     } catch (e) {
       errorMsg = String(e);
@@ -240,6 +249,7 @@
 
   function rowSubtitle(r: FolderRow): string {
     if (r.allHere) return 'All selected games are already here';
+    if (r.freeError) return 'Could not read free space — check the drive is accessible';
     if (r.tooSmall) return `Not enough space — ${fmtSize(r.free / 1048576)} free`;
     const base = `${fmtSize(r.free / 1048576)} free`;
     return r.alreadyHere > 0 ? `${base} · ${r.alreadyHere} already here` : base;
@@ -248,7 +258,7 @@
 
 {#snippet folderCard(r: FolderRow)}
   {@const active = selected === r.path}
-  {@const disabled = r.tooSmall || r.allHere || locked}
+  {@const disabled = r.tooSmall || r.allHere || r.freeError || locked}
   {@const borderCol = disabled
     ? 'var(--color-line-1)'
     : active
@@ -268,7 +278,7 @@
     style:padding="11px 13px"
     style:background={bg}
     style:border="1px solid {borderCol}"
-    style:opacity={r.tooSmall || r.allHere ? 0.55 : 1}
+    style:opacity={r.tooSmall || r.allHere || r.freeError ? 0.55 : 1}
     style:cursor={disabled ? 'default' : 'pointer'}
     style:box-shadow={active ? `0 0 0 1px ${acc}66, 0 8px 26px ${acc}1f` : 'none'}
   >
