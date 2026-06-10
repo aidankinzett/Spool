@@ -77,12 +77,43 @@ pub async fn folder_free_space(path: String) -> u64 {
         .unwrap_or(0)
 }
 
+/// Total and available bytes on the filesystem holding `path`. Lets the
+/// Settings → Library storage view draw each folder's capacity bar (Spool games
+/// / other on disk / free) rather than free space alone. Both are 0 when no
+/// drive matches — the caller treats that as "unknown / can't verify".
+#[derive(Debug, Clone, Serialize)]
+pub struct FolderCapacity {
+    pub total_bytes: u64,
+    pub available_bytes: u64,
+}
+
+#[tauri::command]
+pub async fn folder_capacity(path: String) -> FolderCapacity {
+    // Off the main thread — see `list_drives`.
+    tokio::task::spawn_blocking(move || capacity_for(Path::new(path.trim())))
+        .await
+        .unwrap_or(FolderCapacity {
+            total_bytes: 0,
+            available_bytes: 0,
+        })
+}
+
 /// Core of [`folder_free_space`], callable from backend code that already has
 /// a [`Path`] (the move-install free-space gate runs it inside its own
 /// `spawn_blocking`).
 pub fn free_space_for(path: &Path) -> u64 {
+    capacity_for(path).available_bytes
+}
+
+/// Resolves the drive holding `path` and returns its total + available space.
+/// Shared by [`free_space_for`] and [`folder_capacity`].
+fn capacity_for(path: &Path) -> FolderCapacity {
+    let none = FolderCapacity {
+        total_bytes: 0,
+        available_bytes: 0,
+    };
     if path.as_os_str().is_empty() {
-        return 0;
+        return none;
     }
     // Resolve as far as possible: a not-yet-created destination (e.g. a brand
     // new `Spool` folder) won't canonicalize, so walk up to the nearest existing
@@ -93,9 +124,13 @@ pub fn free_space_for(path: &Path) -> u64 {
         .list()
         .iter()
         .filter(|d| target.starts_with(d.mount_point()))
+        // Longest matching mount point wins (e.g. `/run/media/sd` over `/`).
         .max_by_key(|d| d.mount_point().as_os_str().len())
-        .map(|d| d.available_space())
-        .unwrap_or(0)
+        .map(|d| FolderCapacity {
+            total_bytes: d.total_space(),
+            available_bytes: d.available_space(),
+        })
+        .unwrap_or(none)
 }
 
 /// Walks up from `path` to the first ancestor that exists on disk, canonicalising

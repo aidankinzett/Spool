@@ -79,6 +79,14 @@ export type DriveInfo = {
   is_removable: boolean;
 };
 
+/** Mirror of the Rust `FolderCapacity` struct in src-tauri/src/drives.rs — the
+ * total + available space on the filesystem holding a library folder. Both 0
+ * means the drive couldn't be matched. */
+export type FolderCapacity = {
+  total_bytes: number;
+  available_bytes: number;
+};
+
 /** Mirror of the Rust `MoveProgress` struct in src-tauri/src/move_install.rs —
  * emitted as `move:progress` while a game's install is being relocated. */
 export type MoveProgress = {
