@@ -296,6 +296,7 @@ pub fn run() {
             // drives / library folders + move install
             drives::list_drives,
             drives::folder_free_space,
+            drives::folder_capacity,
             drives::prepare_library_folder,
             move_install::move_game_install,
             move_install::cancel_move,

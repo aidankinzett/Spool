@@ -9,6 +9,7 @@ import type {
   ConfigData,
   DownloadProgress,
   DriveInfo,
+  FolderCapacity,
   GameEntry,
   MoveProgress,
   DepStatus,
@@ -74,6 +75,10 @@ export const api = {
   /** Available bytes on the filesystem holding `path` (0 = unknown). */
   folderFreeSpace: (path: string): Promise<number> =>
     invoke('folder_free_space', { path }),
+  /** Total + available bytes on the filesystem holding `path` (both 0 =
+   *  unknown). Drives the per-folder capacity bar in Settings → Library. */
+  folderCapacity: (path: string): Promise<FolderCapacity> =>
+    invoke('folder_capacity', { path }),
   /** Creates the chosen library folder on disk; returns its canonical path. */
   prepareLibraryFolder: (path: string): Promise<string> =>
     invoke('prepare_library_folder', { path }),
