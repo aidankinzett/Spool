@@ -43,9 +43,13 @@
   }
 </script>
 
+<!-- relative z-[65] keeps the strip above every modal scrim (ModalShell z-50..,
+     ConfirmHost z-60) so the window stays draggable and the controls clickable
+     while a modal is open; the scrim's blur shows through the translucent bg
+     behind it. Stays below Select dropdowns (z-70) so those still layer on top. -->
 <div
   data-tauri-drag-region="deep"
-  class="flex shrink-0 items-center gap-3 border-b border-line-1 bg-black/30 pl-3.5"
+  class="relative z-[65] flex shrink-0 items-center gap-3 border-b border-line-1 bg-black/30 pl-3.5"
   style:height="var(--chrome-h)"
 >
   <SpoolMark size={18} color="var(--color-ink-1)" tape={accent ?? 'var(--color-spool)'} />
