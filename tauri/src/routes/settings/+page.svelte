@@ -446,7 +446,7 @@
           config.library_folders = prev;
           return;
         }
-        await refreshLibFolderFree();
+        // The $effect watching `library_folders` refreshes the free-space map.
       }
       addingLibFolder = false;
       proposedLibFolder = '';

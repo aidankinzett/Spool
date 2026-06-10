@@ -63,8 +63,7 @@ async fn run_backfill(app: AppHandle) {
             .await
             .unwrap_or(0);
         if bytes > 0 {
-            let mb = (bytes as f64) / (1024.0 * 1024.0);
-            results.push((id, mb));
+            results.push((id, bytes_to_mb(bytes)));
         }
     }
     if results.is_empty() {
@@ -115,6 +114,13 @@ pub(crate) fn directory_stats(path: &std::path::Path) -> (u64, u64) {
 /// Recursive directory size in bytes — the byte half of [`directory_stats`].
 pub(crate) fn directory_size(path: &std::path::Path) -> u64 {
     directory_stats(path).1
+}
+
+/// Bytes → the MiB unit stored in `GameEntry::install_size_mb`. One definition
+/// shared by the backfill, the LAN installer, and the move-install flow so the
+/// recorded sizes stay comparable.
+pub(crate) fn bytes_to_mb(bytes: u64) -> f64 {
+    (bytes as f64) / (1024.0 * 1024.0)
 }
 
 #[cfg(test)]

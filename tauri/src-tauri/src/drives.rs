@@ -32,7 +32,15 @@ pub struct DriveInfo {
 /// point (some backends list the same mount twice). Sorted by mount point so the
 /// list is stable across calls.
 #[tauri::command]
-pub fn list_drives() -> Vec<DriveInfo> {
+pub async fn list_drives() -> Vec<DriveInfo> {
+    // sysinfo stats every mount and can block (sleeping USB drives, network
+    // mounts); a sync command would run that on the main thread and freeze the UI.
+    tokio::task::spawn_blocking(list_drives_blocking)
+        .await
+        .unwrap_or_default()
+}
+
+fn list_drives_blocking() -> Vec<DriveInfo> {
     let disks = sysinfo::Disks::new_with_refreshed_list();
     let mut seen = std::collections::HashSet::new();
     let mut out: Vec<DriveInfo> = disks
@@ -62,14 +70,24 @@ pub fn list_drives() -> Vec<DriveInfo> {
 /// for a path under the SD card). Returns 0 when no drive matches or the path is
 /// empty — the caller treats 0 as "unknown / can't verify".
 #[tauri::command]
-pub fn folder_free_space(path: String) -> u64 {
-    if path.trim().is_empty() {
+pub async fn folder_free_space(path: String) -> u64 {
+    // Off the main thread — see `list_drives`.
+    tokio::task::spawn_blocking(move || free_space_for(Path::new(path.trim())))
+        .await
+        .unwrap_or(0)
+}
+
+/// Core of [`folder_free_space`], callable from backend code that already has
+/// a [`Path`] (the move-install free-space gate runs it inside its own
+/// `spawn_blocking`).
+pub fn free_space_for(path: &Path) -> u64 {
+    if path.as_os_str().is_empty() {
         return 0;
     }
     // Resolve as far as possible: a not-yet-created destination (e.g. a brand
     // new `Spool` folder) won't canonicalize, so walk up to the nearest existing
     // ancestor, whose filesystem is the one the new folder will live on.
-    let target = nearest_existing_ancestor(Path::new(&path));
+    let target = nearest_existing_ancestor(path);
     let disks = sysinfo::Disks::new_with_refreshed_list();
     disks
         .list()
@@ -118,7 +136,14 @@ fn strip_verbatim(p: PathBuf) -> PathBuf {
 /// create e.g. `<drive>/Spool/` up front (and store a normalised path). Errors
 /// if the directory can't be created.
 #[tauri::command]
-pub fn prepare_library_folder(path: String) -> AppResult<String> {
+pub async fn prepare_library_folder(path: String) -> AppResult<String> {
+    // Off the main thread — create_dir_all/canonicalize can stall on slow media.
+    tokio::task::spawn_blocking(move || prepare_library_folder_blocking(&path))
+        .await
+        .map_err(|e| AppError::Other(format!("prepare folder task join failed: {e}")))?
+}
+
+fn prepare_library_folder_blocking(path: &str) -> AppResult<String> {
     let trimmed = path.trim();
     if trimmed.is_empty() {
         return Err(AppError::Other("Library folder path is empty.".into()));

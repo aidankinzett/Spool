@@ -61,9 +61,25 @@
   function parentOf(p: string): string {
     return normPath(p).replace(/[\\/][^\\/]+$/, '');
   }
+  // Windows paths are case-insensitive and mix separators, and the configured
+  // root (canonicalised by the backend) can differ in casing/slashes from the
+  // recorded game folder — fold both so the mismatch can't hide the current
+  // location. Backend canonicalisation stays the authoritative no-op guard.
+  function canonPath(p: string): string {
+    const t = normPath(p);
+    return /^[a-zA-Z]:[\\/]/.test(p) || p.includes('\\')
+      ? t.replace(/\\/g, '/').toLowerCase()
+      : t;
+  }
   function isCurrentRoot(root: string): boolean {
     if (!currentFolder) return false;
-    return parentOf(currentFolder) === normPath(root);
+    return canonPath(parentOf(currentFolder)) === canonPath(root);
+  }
+  // Mirror the backend's headroom rule: the on-disk footprint exceeds the file
+  // byte total (cluster rounding, directory metadata), so an exact fit would
+  // fail mid-copy.
+  function neededBytes(size: number): number {
+    return size + Math.max(size / 100, 256 * 1048576);
   }
 
   async function loadRows() {
@@ -80,7 +96,7 @@
           path: f.path,
           label: f.label,
           free,
-          tooSmall: free > 0 && free < sizeBytes,
+          tooSmall: free > 0 && sizeBytes > 0 && free < neededBytes(sizeBytes),
           isCurrent: isCurrentRoot(f.path),
         };
       }),
@@ -110,10 +126,14 @@
   });
 
   const locked = $derived(phase === 'moving');
+  // 100 on 'done' regardless of the event stream — the fast-path rename never
+  // learns a byte total, so the ratio alone would read 0% at completion.
   const pct = $derived(
-    progress && progress.total_bytes > 0
-      ? Math.min(100, Math.round((progress.copied_bytes / progress.total_bytes) * 100))
-      : 0,
+    phase === 'done'
+      ? 100
+      : progress && progress.total_bytes > 0
+        ? Math.min(100, Math.round((progress.copied_bytes / progress.total_bytes) * 100))
+        : 0,
   );
 
   function pick(path: string) {
@@ -141,9 +161,12 @@
       // Brief beat on the "done" state so the bar reads 100% before close.
       closeTimer = setTimeout(() => onClose(), 700);
     } catch (e) {
-      // A user-requested cancel rejects the move promise too — close cleanly
-      // rather than presenting it as a failure (the source is left intact).
-      if (canceled) {
+      // A user-requested cancel rejects the move promise with the backend's
+      // Canceled error ("install cancelled") — close cleanly rather than
+      // presenting it as a failure (the source is left intact). Any other
+      // rejection after a cancel click is a real failure that raced the
+      // cancel; surface it instead of swallowing it.
+      if (canceled && /install cancelled/i.test(String(e))) {
         onClose();
       } else {
         errorMsg = String(e);
@@ -295,12 +318,12 @@
       <div class="mb-3">
         <div class="mb-1.5 flex items-center justify-between" style:font-size="12px" style:color="var(--color-ink-2)">
           <span>{phase === 'done' ? 'Done' : progress?.status === 'finalizing' ? 'Finalising…' : 'Copying…'}</span>
-          <span class="font-mono">{phase === 'done' ? 100 : pct}%</span>
+          <span class="font-mono">{pct}%</span>
         </div>
         <div class="h-1.5 w-full overflow-hidden rounded-full" style:background="var(--color-bg-3)">
           <div
             class="h-full rounded-full transition-[width] duration-200"
-            style:width="{phase === 'done' ? 100 : pct}%"
+            style:width="{pct}%"
             style:background={acc}
           ></div>
         </div>

@@ -165,6 +165,7 @@ pub async fn move_game_install(
     library: State<'_, SharedLibrary>,
     config: State<'_, SharedConfig>,
     move_state: State<'_, Arc<MoveState>>,
+    uploads: State<'_, crate::lan::LanUploadsState>,
     id: String,
     dest_folder: String,
 ) -> AppResult<GameEntry> {
@@ -239,6 +240,15 @@ pub async fn move_game_install(
         ));
     }
 
+    // Refuse to relocate files a peer is mid-download on — the LAN server
+    // serves `/file` straight out of `game_folder_path`, so deleting the source
+    // after the copy would abort the peer's transfer.
+    if uploads.has_active_upload(&id) {
+        return Err(AppError::Other(
+            "This game is being shared to another device right now. Wait for the transfer to finish (or cancel it) and try again.".into(),
+        ));
+    }
+
     // Claim the single move slot + the per-game run lock for the whole move, so
     // the game can't launch or be wiped while its files are in flight. The total
     // size is unknown until we know this is a cross-drive copy — the same-
@@ -294,8 +304,20 @@ pub async fn move_game_install(
         ("game_folder_path", serde_json::json!(dest_str)),
         ("exe_path", serde_json::json!(new_exe)),
     ];
+    // A Wine-prefix override living inside the install folder travels with it —
+    // repoint it too, or the entry would reference the deleted source and the
+    // next launch would silently create a fresh empty prefix.
+    if let Some(rel) = entry
+        .wine_prefix_path
+        .as_deref()
+        .filter(|p| !p.trim().is_empty())
+        .and_then(|p| relative_inside(Path::new(p), &src))
+    {
+        let new_prefix = dest.join(rel).to_string_lossy().to_string();
+        fields.push(("wine_prefix_path", serde_json::json!(new_prefix)));
+    }
     if let Some(total_bytes) = outcome.total_bytes {
-        let install_size_mb = (total_bytes as f64) / (1024.0 * 1024.0);
+        let install_size_mb = crate::size_backfill::bytes_to_mb(total_bytes);
         fields.push(("install_size_mb", serde_json::json!(install_size_mb)));
     }
     if let Err(e) = library.update_fields(&id, &fields).await {
@@ -307,6 +329,16 @@ pub async fn move_game_install(
                 tracing::warn!(
                     error = %rb,
                     "move: rollback rename failed after DB repoint error — files are at the new path but the entry still points at the old one",
+                );
+            }
+        } else {
+            // Copy path: the source is still intact, so delete the verified
+            // copy at the destination — leaving it would strand the disk space
+            // and block every retry on the `dest.exists()` precondition.
+            if let Err(rb) = tokio::fs::remove_dir_all(&dest).await {
+                tracing::warn!(
+                    error = %rb,
+                    "move: couldn't remove the copied destination after DB repoint error",
                 );
             }
         }
@@ -327,7 +359,13 @@ pub async fn move_game_install(
     // Regenerate anything that baked in the old absolute exe path. Best-effort —
     // the move itself succeeded and the entry is already correct, so a failure
     // here is logged, not fatal.
-    regenerate_shortcuts(&app, &library, &config, &entry, &new_exe).await;
+    regenerate_shortcuts(&library, &config, &entry, &new_exe).await;
+
+    // `<base>` custom-save templates expand from `game_folder_path`, so
+    // re-project ludusavi's customGames block now rather than waiting for the
+    // next launch preflight — otherwise a manual or Decky game-stop backup in
+    // that window would back up the deleted old path.
+    crate::custom_saves::sync_best_effort(&app).await;
 
     emit(&app, &move_state, |p| {
         p.copied_bytes = p.total_bytes;
@@ -384,28 +422,35 @@ async fn run_move(
 
     // Cross-device: size the source, then confirm the destination has room before
     // copying a single byte. Both run off the async runtime (sysinfo's disk
-    // refresh and the recursive stat-walk can block).
-    let total_bytes = {
+    // refresh and the recursive stat-walk can block). The (count, bytes) pair
+    // doubles as the copy-verification fingerprint below — the run lock holds
+    // the tree still for the whole move, so pre-copy stats stay valid.
+    let src_stats = {
         let src = src.to_path_buf();
-        tokio::task::spawn_blocking(move || crate::size_backfill::directory_size(&src))
+        tokio::task::spawn_blocking(move || crate::size_backfill::directory_stats(&src))
             .await
             .map_err(|e| AppError::Other(format!("size walk join failed: {e}")))?
     };
+    let total_bytes = src_stats.1;
     let dest_root = dest
         .parent()
         .map(Path::to_path_buf)
         .unwrap_or_else(|| dest.to_path_buf());
     let free = {
-        let dest_root = dest_root.to_string_lossy().to_string();
-        tokio::task::spawn_blocking(move || crate::drives::folder_free_space(dest_root))
+        let dest_root = dest_root.clone();
+        tokio::task::spawn_blocking(move || crate::drives::free_space_for(&dest_root))
             .await
             .map_err(|e| AppError::Other(format!("free-space probe join failed: {e}")))?
     };
-    if free > 0 && free < total_bytes {
+    // Require headroom beyond the file-byte total: cluster rounding and
+    // directory metadata make the on-disk footprint larger, so an exact fit
+    // would run for the whole copy and then die with "no space left on device".
+    let needed = total_bytes.saturating_add((total_bytes / 100).max(256 * 1024 * 1024));
+    if free > 0 && free < needed {
         return Err(AppError::Other(format!(
             "Not enough free space at the destination ({} free, {} needed).",
             human_bytes(free),
-            human_bytes(total_bytes)
+            human_bytes(needed)
         )));
     }
     // Publish the now-known total so the progress bar has a denominator.
@@ -456,12 +501,11 @@ async fn run_move(
     }
 
     // Verify the copy before the caller deletes the source: equal file count +
-    // total size.
-    let (src_for_verify, partial_for_verify) = (src.to_path_buf(), partial.clone());
+    // total size against the pre-copy fingerprint (the run lock guarantees the
+    // source hasn't changed, so re-walking it would only repeat the first walk).
+    let partial_for_verify = partial.clone();
     let verified = tokio::task::spawn_blocking(move || {
-        let a = crate::size_backfill::directory_stats(&src_for_verify);
-        let b = crate::size_backfill::directory_stats(&partial_for_verify);
-        a == b
+        crate::size_backfill::directory_stats(&partial_for_verify) == src_stats
     })
     .await
     .map_err(|e| AppError::Other(format!("verify task join failed: {e}")))?;
@@ -524,28 +568,33 @@ fn copy_dir_recursive(
 /// Regenerates launcher stubs / Steam shortcuts that embed the absolute exe path.
 /// Both are best-effort and only run when the entry actually had that integration.
 async fn regenerate_shortcuts(
-    app: &AppHandle,
     library: &SharedLibrary,
     config: &SharedConfig,
     entry: &GameEntry,
     new_exe: &str,
 ) {
     // Armoury Crate launcher stub (Windows): re-stamp it with the new exe path.
+    // The caller emits `library:changed` once the whole move is finalised.
     if entry
         .launcher_exe_path
         .as_deref()
         .map(|p| !p.trim().is_empty())
         .unwrap_or(false)
     {
-        let spool_exe = config
-            .lock()
-            .map(|c| c.data.spool_exe.clone())
-            .unwrap_or_default();
-        match crate::launcher::write_launcher(library, &spool_exe, &entry.id).await {
-            Ok(_) => {
-                let _ = app.emit("library:changed", &entry.id);
+        // `.ok()` drops the poisoned-lock guard before the await below.
+        let spool_exe = config.lock().ok().map(|c| c.data.spool_exe.clone());
+        match spool_exe {
+            Some(spool_exe) => {
+                if let Err(e) =
+                    crate::launcher::write_launcher(library, &spool_exe, &entry.id).await
+                {
+                    tracing::warn!(error = %e, "move: failed to regenerate Armoury launcher");
+                }
             }
-            Err(e) => tracing::warn!(error = %e, "move: failed to regenerate Armoury launcher"),
+            // A poisoned config lock: skip the re-stamp rather than write a
+            // stub with an empty spool path (the original launcher command
+            // errors out in this state too).
+            None => tracing::warn!("move: config lock poisoned; skipping Armoury launcher re-stamp"),
         }
     }
 
@@ -583,24 +632,33 @@ fn relative_inside(exe: &Path, folder: &Path) -> Option<PathBuf> {
         let folder_l = folder.to_str()?.to_ascii_lowercase();
         let folder_l = folder_l.trim_end_matches(['\\', '/']);
         if let Some(rest) = exe_s.to_ascii_lowercase().strip_prefix(folder_l) {
-            let rest = rest.trim_start_matches(['\\', '/']);
-            if !rest.is_empty() {
-                // Same byte length as the lowercased tail → slice the original.
-                let tail = &exe_s[exe_s.len() - rest.len()..];
-                return collect_normal(Path::new(tail));
+            // The match must end on a component boundary — without this check,
+            // folder `C:\Games\My` would claim `C:\Games\MyGame\…` as inside.
+            if rest.starts_with(['\\', '/']) {
+                let rest = rest.trim_start_matches(['\\', '/']);
+                if !rest.is_empty() {
+                    // Same byte length as the lowercased tail → slice the original.
+                    let tail = &exe_s[exe_s.len() - rest.len()..];
+                    return collect_normal(Path::new(tail));
+                }
             }
         }
     }
     None
 }
 
-/// Collects the `Normal` components of `rel` into a `PathBuf`, or `None` when
-/// there are none (so the folder-itself case yields `None`).
+/// Collects the components of `rel` into a `PathBuf`. `None` when there are
+/// none (so the folder-itself case yields `None`) or when any component isn't
+/// a plain name — a `..` means the exe doesn't sit plainly inside the folder,
+/// and silently dropping it would repoint the exe at the wrong file after the
+/// move (or defeat the caller's outside-the-folder refusal entirely).
 fn collect_normal(rel: &Path) -> Option<PathBuf> {
     let mut out = PathBuf::new();
     for c in rel.components() {
-        if let Component::Normal(s) = c {
-            out.push(s);
+        match c {
+            Component::Normal(s) => out.push(s),
+            Component::CurDir => {}
+            _ => return None,
         }
     }
     (!out.as_os_str().is_empty()).then_some(out)
@@ -651,6 +709,22 @@ mod tests {
     }
 
     #[test]
+    fn relative_inside_rejects_parent_components() {
+        let folder = Path::new("/games/MyGame");
+        // `..` inside the remainder: collapsing it would repoint the exe at a
+        // path that doesn't exist after the move.
+        assert_eq!(
+            relative_inside(Path::new("/games/MyGame/bin/../game.exe"), folder),
+            None
+        );
+        // `..` escaping the folder: the exe is genuinely outside.
+        assert_eq!(
+            relative_inside(Path::new("/games/MyGame/../Other/game.exe"), folder),
+            None
+        );
+    }
+
+    #[test]
     fn human_bytes_scales() {
         assert_eq!(human_bytes(512), "512 B");
         assert_eq!(human_bytes(2048), "2.0 KB");
@@ -698,5 +772,10 @@ mod tests {
         assert_eq!(relative_inside(exe, folder), Some(PathBuf::from(r"bin\game.exe")));
         // A genuinely different folder is still rejected.
         assert_eq!(relative_inside(Path::new(r"C:\Other\game.exe"), folder), None);
+        // A sibling folder sharing a name prefix is not "inside".
+        assert_eq!(
+            relative_inside(Path::new(r"c:\games\mygamedeluxe\game.exe"), Path::new(r"C:\Games\MyGame")),
+            None
+        );
     }
 }

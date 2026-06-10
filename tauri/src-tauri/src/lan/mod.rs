@@ -102,6 +102,16 @@ pub struct LanUploadsState {
 }
 
 impl LanUploadsState {
+    /// True when a peer is actively downloading `game_id` from this host.
+    /// Sessions are reaped shortly after going idle, so presence ≈ in flight.
+    /// Used by the move-install flow to refuse relocating files mid-transfer.
+    pub fn has_active_upload(&self, game_id: &str) -> bool {
+        self.sessions
+            .lock()
+            .map(|g| g.values().any(|s| s.game_id == game_id && !s.cancelled))
+            .unwrap_or(false)
+    }
+
     fn snapshot(&self) -> Vec<UploadSnapshot> {
         let now = Instant::now();
         let g = match self.sessions.lock() {

@@ -17,11 +17,12 @@
    *     fires automatically → window closes
    *   - Cancel → close without saving (form state is discarded)
    */
-  import { onMount } from 'svelte';
+  import { onMount, onDestroy } from 'svelte';
   import { SvelteSet } from 'svelte/reactivity';
   import { Download, Folder, FolderInput, RefreshCw, Trash2 } from '@lucide/svelte';
   import { open as openDialog } from '@tauri-apps/plugin-dialog';
   import { getCurrentWindow } from '@tauri-apps/api/window';
+  import { listen } from '@tauri-apps/api/event';
   import { api, assetUrl } from '$lib/api';
   import { fmtCatalog, absDateTime } from '$lib/format';
   import { toasts } from '$lib/toasts.svelte';
@@ -222,10 +223,47 @@
       } catch (e) {
         console.error('[edit] proton init failed:', e);
       }
+
+      // "Move install…" rewrites the entry's paths out of band while this
+      // window may stay open; without this, a later Save would post the stale
+      // snapshot and repoint the entry at the deleted old location.
+      unlistenLibChanged = await listen('library:changed', () => {
+        void syncOutOfBandPaths().catch((e) => console.error('[edit] path sync failed:', e));
+      });
     } catch (e) {
       error = String(e);
     }
   });
+
+  let unlistenLibChanged: (() => void) | null = null;
+  onDestroy(() => unlistenLibChanged?.());
+
+  // Mirror out-of-band path changes (a move) into the form — but only fields
+  // the user hasn't edited, so in-progress changes survive. `original` is
+  // patched too so the dirty-compare baseline stays correct, same pattern as
+  // refetchCover's artwork patch.
+  async function syncOutOfBandPaths() {
+    if (!form || !original) return;
+    const all = await api.listGames();
+    const next = all.find((g) => g.id === form!.id);
+    if (!next || !form || !original) return;
+    if ((form.game_folder_path ?? '') === (original.game_folder_path ?? '')) {
+      form.game_folder_path = next.game_folder_path;
+      original.game_folder_path = next.game_folder_path;
+    }
+    if (form.exe_path === original.exe_path) {
+      form.exe_path = next.exe_path;
+      original.exe_path = next.exe_path;
+    }
+    if ((form.wine_prefix_path ?? '') === (original.wine_prefix_path ?? '')) {
+      form.wine_prefix_path = next.wine_prefix_path ?? '';
+      original.wine_prefix_path = next.wine_prefix_path;
+    }
+    if (form.install_size_mb === original.install_size_mb) {
+      form.install_size_mb = next.install_size_mb;
+      original.install_size_mb = next.install_size_mb;
+    }
+  }
 
   async function browseExe() {
     if (!form) return;
