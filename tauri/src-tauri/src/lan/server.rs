@@ -69,9 +69,11 @@ impl LanServerShutdown {
 
 /// In-memory hash cache keyed by absolute file path. Invalidated by
 /// mtime — if the source file changes the hash is recomputed on the
-/// next manifest fetch. Persistence across process restarts is a
-/// future polish item; for now we re-hash on first manifest after
-/// each launch.
+/// next manifest fetch. Persisted to `lan-hash-cache.json` (see
+/// [`super::manifest_cache`]): loaded once when [`LanManifests`] is
+/// constructed at startup, saved by walk callers whenever a walk changed
+/// it (the startup warm pass batches one save for the whole pass) — so a
+/// restart costs mtime stats, not a full re-hash.
 ///
 /// `RwLock` (not `Mutex`) because reads dominate: every manifest
 /// request walks every shared game and probes the cache for each
@@ -104,11 +106,28 @@ impl Default for LanManifests {
     }
 }
 
+impl LanManifests {
+    /// Constructs the managed state with the hash cache pre-seeded from
+    /// `lan-hash-cache.json`. Runs at `.manage()` time, before the LAN
+    /// server can serve a manifest, so a warm cache is visible to the
+    /// first request. Statuses start empty — they're re-derived by the
+    /// startup warm pass from a fresh validated walk, never persisted
+    /// (a stored status could lie if the folder changed while the app
+    /// was closed).
+    pub fn load() -> Self {
+        let loaded = super::manifest_cache::load_blocking(&crate::paths::lan_hash_cache_file());
+        Self {
+            hash_cache: Arc::new(std::sync::RwLock::new(loaded)),
+            statuses: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+}
+
 /// Hard cap on cached file-hash entries (across all shared games). A bounded
 /// backstop so a host that has shared many large games over a long-lived tray
 /// session can't grow the cache without limit; per-game stale entries are pruned
 /// after each walk regardless (see `walk_game_files_with_hashes`).
-const HASH_CACHE_MAX_ENTRIES: usize = 50_000;
+pub(crate) const HASH_CACHE_MAX_ENTRIES: usize = 50_000;
 
 #[derive(Clone)]
 struct ServerState {
@@ -356,12 +375,17 @@ async fn get_manifest_handler(
     }
     let _ = state.app.emit("lan:manifest-status-changed", &game_id);
 
-    let walk_res =
-        tokio::task::spawn_blocking(move || walk_game_files_with_hashes(&walk_folder, cache))
-            .await;
+    let walk_res = tokio::task::spawn_blocking(move || {
+        let res = walk_game_files_with_hashes(&walk_folder, cache.clone());
+        if matches!(&res, Ok((_, true))) {
+            persist_hash_cache(&cache);
+        }
+        res
+    })
+    .await;
 
     let files = match walk_res {
-        Ok(Ok(f)) => {
+        Ok(Ok((f, _))) => {
             if let Ok(mut lock) = manifests.statuses.lock() {
                 lock.insert(game_id.clone(), ManifestStatus::Generated);
             }
@@ -764,11 +788,24 @@ fn parse_range_start(value: &str) -> Option<u64> {
 ///
 /// This runs on `spawn_blocking` from the manifest handler — it's
 /// synchronous and disk-bound by design.
-fn walk_game_files_with_hashes(root: &Path, cache: HashCache) -> std::io::Result<Vec<PeerFile>> {
+///
+/// The returned bool reports whether the walk changed the cache (fresh
+/// hash inserted or stale entries pruned). Callers use it to decide when
+/// to persist via [`persist_hash_cache`] — left to the caller rather
+/// than done here so a multi-game pass (the startup warm) can save once
+/// at the end instead of rewriting the whole file after every game.
+fn walk_game_files_with_hashes(
+    root: &Path,
+    cache: HashCache,
+) -> std::io::Result<(Vec<PeerFile>, bool)> {
     let mut out = Vec::new();
     // Absolute paths seen this walk, used afterwards to evict cache entries for
     // files deleted from this game's folder so the cache can't grow unbounded.
     let mut seen: HashSet<PathBuf> = HashSet::new();
+    // Set when this walk changed the cache (fresh hash inserted or stale
+    // entries pruned) — steady-state walks that hit the cache on every
+    // file report clean so nothing rewrites the persisted file.
+    let mut dirty = false;
     for entry in walkdir::WalkDir::new(root).follow_links(true) {
         let entry = entry?;
         if !entry.file_type().is_file() {
@@ -829,6 +866,7 @@ fn walk_game_files_with_hashes(root: &Path, cache: HashCache) -> std::io::Result
             // we just don't cache it for next time.
             if let (Some(mt), Ok(mut g)) = (mtime, cache.write()) {
                 g.insert(abs.clone(), (mt, h.clone()));
+                dirty = true;
             }
             h
         };
@@ -852,12 +890,37 @@ fn walk_game_files_with_hashes(root: &Path, cache: HashCache) -> std::io::Result
     // entirely. Without this the cache only ever grows, one entry per file ever
     // hashed over the tray process's lifetime. (#275)
     if let Ok(mut g) = cache.write() {
+        let before = g.len();
         g.retain(|path, _| !path.starts_with(root) || seen.contains(path));
         if g.len() > HASH_CACHE_MAX_ENTRIES {
             g.retain(|path, _| path.starts_with(root));
         }
+        if g.len() != before {
+            dirty = true;
+        }
     }
-    Ok(out)
+    Ok((out, dirty))
+}
+
+/// Persists the hash cache so the hashes survive a restart. Blocking by
+/// design — callers are already on `spawn_blocking` (or a dedicated
+/// blocking task). Concurrent saves are harmless: `write_atomic` renames
+/// a complete snapshot into place, so the last writer wins with a valid
+/// file either way.
+fn persist_hash_cache(cache: &HashCache) {
+    super::manifest_cache::save_blocking(&crate::paths::lan_hash_cache_file(), cache);
+}
+
+/// Drops cache entries that don't live under any of `roots` (the
+/// library's install folders) — they belong to games removed or moved
+/// while we weren't looking, and no walk will ever prune them. Returns
+/// the number removed. O(entries × roots) path-prefix checks: a few ms
+/// at the 50k cap, brief enough to hold the write lock inline.
+fn prune_orphaned_hash_entries(cache: &HashCache, roots: &[PathBuf]) -> usize {
+    let Ok(mut g) = cache.write() else { return 0 };
+    let before = g.len();
+    g.retain(|path, _| roots.iter().any(|r| path.starts_with(r)));
+    before - g.len()
 }
 
 /// blake3 hex digest of a file. Reads in 64 KiB chunks; total memory
@@ -954,58 +1017,240 @@ pub fn get_manifest_status(
 #[tauri::command]
 pub async fn prepare_manifest(
     app: AppHandle,
-    library: State<'_, SharedLibrary>,
-    manifests: State<'_, LanManifests>,
     game_id: String,
 ) -> Result<ManifestStatus, AppError> {
-    {
-        let lock = manifests.statuses.lock().map_err(|_| AppError::Other("Lock poisoned".into()))?;
-        if let Some(ManifestStatus::Generating) = lock.get(&game_id) {
-            return Ok(ManifestStatus::Generating);
+    prepare_manifest_for(&app, &game_id).await
+}
+
+/// Pre-hashes a game's folder so its manifest can be served instantly.
+/// Shared by the manual "Prepare manifest" button (via the command
+/// above), the add/edit auto-prep hooks, and the startup warm pass. An
+/// already-`Generating` game early-returns, so overlapping callers
+/// (button click during the warm pass, a peer fetch mid-prep) dedupe
+/// naturally.
+pub(crate) async fn prepare_manifest_for(
+    app: &AppHandle,
+    game_id: &str,
+) -> Result<ManifestStatus, AppError> {
+    prepare_manifest_inner(app, game_id, true).await.map(|(s, _)| s)
+}
+
+/// Sets (or, with `None`, clears) a game's manifest status and notifies
+/// listeners.
+fn set_status(
+    manifests: &LanManifests,
+    app: &AppHandle,
+    game_id: &str,
+    status: Option<ManifestStatus>,
+) {
+    if let Ok(mut lock) = manifests.statuses.lock() {
+        match status {
+            Some(s) => {
+                lock.insert(game_id.to_string(), s);
+            }
+            None => {
+                lock.remove(game_id);
+            }
         }
     }
+    let _ = app.emit("lan:manifest-status-changed", &game_id);
+}
 
+/// Looks up the game and validates it has a real install folder to walk.
+async fn install_folder_for(app: &AppHandle, game_id: &str) -> Result<PathBuf, AppError> {
+    let library = app.state::<SharedLibrary>();
     let entry = library
-        .find(&game_id)
+        .find(game_id)
         .await?
         .ok_or_else(|| AppError::Other("Game not found".into()))?;
 
     let folder = match entry.game_folder_path.as_ref() {
-        Some(p) if !p.is_empty() => std::path::PathBuf::from(p),
+        Some(p) if !p.is_empty() => PathBuf::from(p),
         _ => return Err(AppError::Other("No install folder configured".into())),
     };
     if !folder.is_dir() {
         return Err(AppError::Other("Install folder does not exist".into()));
     }
+    Ok(folder)
+}
 
+/// Body of [`prepare_manifest_for`], also reporting whether the walk
+/// dirtied the hash cache. `persist: false` skips the per-walk disk save
+/// so the startup warm pass can write once at the end instead of
+/// rewriting the whole cache file after every game.
+async fn prepare_manifest_inner(
+    app: &AppHandle,
+    game_id: &str,
+    persist: bool,
+) -> Result<(ManifestStatus, bool), AppError> {
+    let manifests = app.state::<LanManifests>();
+
+    // Claim the Generating slot in a single lock acquisition. A separate
+    // check-then-set (with the async library lookup between them) would
+    // let two concurrent callers — say the warm pass and a button click —
+    // both pass the guard and double-hash the same folder.
     {
-        let mut lock = manifests.statuses.lock().map_err(|_| AppError::Other("Lock poisoned".into()))?;
-        lock.insert(game_id.clone(), ManifestStatus::Generating);
+        let mut lock = manifests
+            .statuses
+            .lock()
+            .map_err(|_| AppError::Other("Lock poisoned".into()))?;
+        if let Some(ManifestStatus::Generating) = lock.get(game_id) {
+            return Ok((ManifestStatus::Generating, false));
+        }
+        lock.insert(game_id.to_string(), ManifestStatus::Generating);
     }
     let _ = app.emit("lan:manifest-status-changed", &game_id);
 
-    let cache = manifests.hash_cache.clone();
-    let walk_folder = folder.clone();
-    let game_id_clone = game_id.clone();
-    let app_clone = app.clone();
-    let manifests_clone = manifests.inner().clone();
-
-    let walk_res = tokio::task::spawn_blocking(move || {
-        walk_game_files_with_hashes(&walk_folder, cache)
-    }).await;
-
-    let final_status = match walk_res {
-        Ok(Ok(_)) => ManifestStatus::Generated,
-        _ => ManifestStatus::NoManifest,
+    let folder = match install_folder_for(app, game_id).await {
+        Ok(f) => f,
+        Err(e) => {
+            // Validation failed — clear the claim rather than restore what
+            // it displaced: a pre-error `Generated` may be stale (the folder
+            // moved or vanished since it was set), and a deleted game
+            // shouldn't keep a status entry. An absent key reads back as
+            // NoManifest in `get_manifest_status`.
+            set_status(&manifests, app, game_id, None);
+            return Err(e);
+        }
     };
 
-    {
-        let mut lock = manifests_clone.statuses.lock().map_err(|_| AppError::Other("Lock poisoned".into()))?;
-        lock.insert(game_id_clone.clone(), final_status);
-    }
-    let _ = app_clone.emit("lan:manifest-status-changed", &game_id_clone);
+    let cache = manifests.hash_cache.clone();
+    let walk_res = tokio::task::spawn_blocking(move || {
+        let res = walk_game_files_with_hashes(&folder, cache.clone());
+        if persist && matches!(&res, Ok((_, true))) {
+            persist_hash_cache(&cache);
+        }
+        res
+    })
+    .await;
 
-    Ok(final_status)
+    let (final_status, dirty) = match walk_res {
+        Ok(Ok((_, dirty))) => (ManifestStatus::Generated, dirty),
+        _ => (ManifestStatus::NoManifest, false),
+    };
+    set_status(&manifests, app, game_id, Some(final_status));
+    Ok((final_status, dirty))
+}
+
+/// Fire-and-forget manifest prep, used by the add-game / edit-save hooks
+/// so a peer's first manifest request finds the hashes already computed
+/// (#435). No-op when LAN sharing is disabled in config. Failures are
+/// debug-logged only — "no install folder" is the expected case for an
+/// exe-only add, not a problem.
+pub fn spawn_manifest_prep(app: AppHandle, game_id: String) {
+    tauri::async_runtime::spawn(async move {
+        let enabled = app
+            .state::<SharedConfig>()
+            .lock()
+            .map(|c| c.data.lan.share_enabled)
+            .unwrap_or(false);
+        if !enabled {
+            return;
+        }
+        if let Err(e) = prepare_manifest_for(&app, &game_id).await {
+            tracing::debug!(game_id = %game_id, error = %e, "manifest prep skipped");
+        }
+    });
+}
+
+/// One-shot startup warm pass: prepares the manifest of every shared game
+/// with an install folder, one game at a time. With the persisted hash
+/// cache this is mtime stats only (milliseconds per game); the expensive
+/// case is a first-ever hash, and serialising the loop keeps that from
+/// thrashing the disk across N games at once. Also repopulates the
+/// in-memory `statuses` map (deliberately not persisted) so the edit
+/// page shows "Generated" again after a restart, and garbage-collects
+/// cache entries orphaned by games removed/moved while the app was
+/// closed (#439).
+pub fn spawn_manifest_warm(app: AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        // Let startup work (art/size/metadata backfills, cloud probe) land
+        // first — a first-launch hash of a big library is heavy disk IO.
+        tokio::time::sleep(Duration::from_secs(10)).await;
+
+        let share_enabled = || {
+            app.state::<SharedConfig>()
+                .lock()
+                .map(|c| c.data.lan.share_enabled)
+                .unwrap_or(false)
+        };
+        if !share_enabled() {
+            return;
+        }
+
+        let library = app.state::<SharedLibrary>();
+        let entries = match library.list().await {
+            Ok(e) => e,
+            Err(e) => {
+                tracing::warn!(error = %e, "manifest warm: library list failed");
+                return;
+            }
+        };
+        let ids: Vec<String> = entries
+            .iter()
+            .filter(|g| {
+                g.lan_shared
+                    && g.game_folder_path
+                        .as_deref()
+                        .is_some_and(|p| !p.is_empty())
+            })
+            .map(|g| g.id.clone())
+            .collect();
+
+        // GC orphaned cache entries before warming. The per-walk prune only
+        // covers the root being walked, so entries for a game removed from
+        // the library (or whose folder moved) are never walked again and
+        // nothing else evicts them — before persistence a restart cleared
+        // them incidentally; now they'd be reloaded forever. Keyed to *all*
+        // library install folders, not just currently-shared ones, so
+        // toggling a game's sharing off and back on across a restart
+        // doesn't cost a re-hash.
+        let roots: Vec<PathBuf> = entries
+            .iter()
+            .filter_map(|g| g.game_folder_path.as_deref())
+            .filter(|p| !p.is_empty())
+            .map(PathBuf::from)
+            .collect();
+        let pruned =
+            prune_orphaned_hash_entries(&app.state::<LanManifests>().hash_cache, &roots);
+        if pruned > 0 {
+            tracing::info!(pruned, "lan manifest warm: dropped orphaned hash cache entries");
+        }
+
+        let mut warmed = 0usize;
+        let mut any_dirty = pruned > 0;
+        for id in &ids {
+            // Re-check the global toggle between games — a cold pass over a
+            // big library can run for minutes, and flipping sharing off in
+            // Settings should stop the disk churn, not just future requests.
+            if !share_enabled() {
+                tracing::info!("lan manifest warm: sharing disabled, stopping");
+                break;
+            }
+            // persist=false: a cold pass dirties the cache on every game, and
+            // saving inside each walk would rewrite the whole (growing) file
+            // N times. One save below covers everything hashed this pass.
+            match prepare_manifest_inner(&app, id, false).await {
+                // Generating means another caller is hashing it right now, so
+                // it ends up warm either way.
+                Ok((ManifestStatus::Generated | ManifestStatus::Generating, dirty)) => {
+                    warmed += 1;
+                    any_dirty |= dirty;
+                }
+                Ok((_, dirty)) => any_dirty |= dirty,
+                Err(e) => {
+                    tracing::debug!(game_id = %id, error = %e, "manifest warm: prep skipped");
+                }
+            }
+        }
+        if any_dirty {
+            let cache = app.state::<LanManifests>().hash_cache.clone();
+            let _ = tokio::task::spawn_blocking(move || persist_hash_cache(&cache)).await;
+        }
+        if !ids.is_empty() {
+            tracing::info!(warmed, total = ids.len(), "lan manifest warm: done");
+        }
+    });
 }
 
 #[cfg(test)]
@@ -1020,6 +1265,36 @@ mod tests {
     #[test]
     fn routes_build_with_valid_path_syntax() {
         let _: Router<ServerState> = routes();
+    }
+
+    #[test]
+    fn prune_orphans_keeps_only_entries_under_roots() {
+        let mt = std::time::UNIX_EPOCH;
+        let cache: HashCache = Arc::new(std::sync::RwLock::new(HashMap::from([
+            (PathBuf::from("/games/a/file1"), (mt, "h1".to_string())),
+            (PathBuf::from("/games/a/sub/file2"), (mt, "h2".to_string())),
+            (PathBuf::from("/old/game/file3"), (mt, "h3".to_string())),
+        ])));
+        let pruned = prune_orphaned_hash_entries(
+            &cache,
+            &[PathBuf::from("/games/a"), PathBuf::from("/games/b")],
+        );
+        assert_eq!(pruned, 1);
+        let g = cache.read().unwrap();
+        assert!(g.contains_key(Path::new("/games/a/file1")));
+        assert!(g.contains_key(Path::new("/games/a/sub/file2")));
+        assert!(!g.contains_key(Path::new("/old/game/file3")));
+    }
+
+    #[test]
+    fn prune_orphans_empty_roots_clears_everything() {
+        let mt = std::time::UNIX_EPOCH;
+        let cache: HashCache = Arc::new(std::sync::RwLock::new(HashMap::from([(
+            PathBuf::from("/games/a/file1"),
+            (mt, "h1".to_string()),
+        )])));
+        assert_eq!(prune_orphaned_hash_entries(&cache, &[]), 1);
+        assert!(cache.read().unwrap().is_empty());
     }
 
     #[test]
