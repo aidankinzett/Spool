@@ -703,16 +703,18 @@
                   label="Layout"
                   helper={`Gamepad mode: bigger targets, controller navigation, couch-friendly spacing. Currently rendering: ${uiMode.resolved === 'touch' ? 'Gamepad' : 'Desktop'}.`}
                 >
-                  {#snippet extras()}
-                    <Segmented
-                      value={config!.ui_mode}
-                      onchange={(v) => setUiMode(v as ConfigData['ui_mode'])}
-                      options={[
-                        { value: 'auto', label: 'Auto' },
-                        { value: 'desktop', label: 'Desktop' },
-                        { value: 'touch', label: 'Gamepad' },
-                      ]}
-                    />
+                  {#snippet control()}
+                    <div class="flex justify-end">
+                      <Segmented
+                        value={config!.ui_mode}
+                        onchange={(v) => setUiMode(v as ConfigData['ui_mode'])}
+                        options={[
+                          { value: 'auto', label: 'Auto' },
+                          { value: 'desktop', label: 'Desktop' },
+                          { value: 'touch', label: 'Gamepad' },
+                        ]}
+                      />
+                    </div>
                   {/snippet}
                 </SettingsRow>
               </SettingsCard>
@@ -735,15 +737,17 @@
                   helper={updateCheckMsg ??
                     (appVersion ? `Currently running v${appVersion}.` : 'Currently running Spool.')}
                 >
-                  {#snippet extras()}
-                    <Btn
-                      variant={updateCheck === 'available' ? 'primary' : 'ghost'}
-                      onclick={onCheckForUpdates}
-                      disabled={updateCheck === 'checking'}
-                    >
-                      {#snippet icon()}<RefreshCcw size={14} />{/snippet}
-                      {updateCheck === 'checking' ? 'Checking…' : 'Check for updates'}
-                    </Btn>
+                  {#snippet control()}
+                    <div class="flex justify-end">
+                      <Btn
+                        variant={updateCheck === 'available' ? 'primary' : 'ghost'}
+                        onclick={onCheckForUpdates}
+                        disabled={updateCheck === 'checking'}
+                      >
+                        {#snippet icon()}<RefreshCcw size={14} />{/snippet}
+                        {updateCheck === 'checking' ? 'Checking…' : 'Check for updates'}
+                      </Btn>
+                    </div>
                   {/snippet}
                 </SettingsRow>
               </SettingsCard>
@@ -796,7 +800,7 @@
                 title="Library folders"
                 helper="Install roots for your games — usually one per drive. The “Move install” action relocates a game into any of these."
               >
-                <div class="flex flex-col gap-2">
+                <div class="flex flex-col gap-2 px-[18px] py-2">
                   {#if config!.library_folders.length === 0 && !addingLibFolder}
                     <p class="text-[12px] text-ink-3">
                       No library folders yet. Add one per drive to move installs there.
