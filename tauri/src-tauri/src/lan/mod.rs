@@ -35,11 +35,12 @@
 // path — so `lib.rs` references the commands as `lan::<module>::<command>`.
 pub(crate) mod discovery;
 pub(crate) mod install;
+pub(crate) mod manifest_cache;
 pub(crate) mod server;
 
 pub use discovery::{spawn_discovery, LanState};
 pub use install::LanDownloadState;
-pub use server::{LanManifests, LanServerShutdown};
+pub use server::{spawn_manifest_prep, spawn_manifest_warm, LanManifests, LanServerShutdown};
 
 use crate::library::GameEntry;
 use chrono::{DateTime, Utc};

@@ -799,7 +799,7 @@
           )}
           {@render field(
             'Blake3 manifest',
-            'Prepare the hashing manifest so peers can verify files and resume downloads immediately.',
+            'The hashing manifest peers use to verify files and resume downloads. Prepared automatically for shared games; the button re-runs it by hand.',
             sharingManifest,
           )}
 

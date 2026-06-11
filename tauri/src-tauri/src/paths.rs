@@ -75,6 +75,13 @@ pub fn config_file() -> PathBuf {
     app_data_dir().join("config.json")
 }
 
+/// Persisted LAN manifest hash cache (file path → mtime + blake3), so a
+/// restart doesn't force re-hashing every shared game before its manifest
+/// can be served (see `lan::manifest_cache`).
+pub fn lan_hash_cache_file() -> PathBuf {
+    app_data_dir().join("lan-hash-cache.json")
+}
+
 /// Record of the in-progress launch session, written by attached `--run` mode
 /// so the Decky plugin can decide whether a forced-close fallback backup is
 /// needed. Removed/marked done once a backup succeeds.

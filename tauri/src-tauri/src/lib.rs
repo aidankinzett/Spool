@@ -269,7 +269,10 @@ pub fn run() {
         .manage::<Arc<LanDownloadState>>(Arc::new(LanDownloadState::default()))
         .manage::<Arc<move_install::MoveState>>(Arc::new(move_install::MoveState::default()))
         .manage::<LanUploadsState>(LanUploadsState::default())
-        .manage::<LanManifests>(LanManifests::default())
+        // Seeded from the persisted hash cache so a restart doesn't re-hash
+        // every shared game before its manifest can be served. Managed before
+        // the LAN server spawns, so the first request sees the warm cache.
+        .manage::<LanManifests>(LanManifests::load())
         .manage::<LanServerShutdown>(LanServerShutdown::default())
         .manage::<SyncStatusState>(SyncStatusState::default())
         .manage::<rclone::OAuthState>(rclone::OAuthState::default())
@@ -293,6 +296,7 @@ pub fn run() {
             // drives / library folders + move install
             drives::list_drives,
             drives::folder_free_space,
+            drives::folder_capacity,
             drives::prepare_library_folder,
             drives::default_lan_install_dir,
             move_install::move_game_install,
@@ -728,6 +732,12 @@ fn spawn_startup_tasks(app: &AppHandle) {
     // socket can't bind (port in use, firewall, etc.) — peer count stays at 0
     // in that case but everything else keeps working.
     lan::spawn_discovery(app.clone());
+
+    // Warm the LAN manifest hash cache: prepare every shared game's manifest
+    // (one at a time, after a short delay) so a peer's first request is served
+    // instantly instead of waiting out a full folder hash (#435). With the
+    // persisted cache this is usually just mtime stats per file.
+    lan::spawn_manifest_warm(app.clone());
 
     // Read the controller in Rust and forward events to the webview as
     // `gamepad:input` (the webview can't see pads itself on Linux WebKitGTK).
