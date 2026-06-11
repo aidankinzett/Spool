@@ -25,6 +25,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use sqlx::{Row, SqlitePool};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -350,6 +351,11 @@ pub struct NewGame {
     /// an uninstalled entry. See [`add_game`].
     #[serde(default)]
     pub reinstall_target_id: Option<String>,
+    /// When true, the Add flow may relocate the selected install folder into
+    /// the default library folder before registering the entry. If the folder is
+    /// already inside a configured library folder, this is a no-op.
+    #[serde(default)]
+    pub import_to_library: bool,
 }
 
 /// JSON paths (under `$.`) of the fields that are owned by the running
@@ -1300,6 +1306,163 @@ pub fn make_safe_filename(name: &str) -> String {
     }
 }
 
+struct AddGameImportResult {
+    new_game: NewGame,
+    original_folder: Option<PathBuf>,
+    source_to_delete: Option<PathBuf>,
+}
+
+fn library_folder_contains_game(root: &Path, game_folder: &Path) -> bool {
+    let root_real = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    let game_real = std::fs::canonicalize(game_folder).unwrap_or_else(|_| game_folder.to_path_buf());
+    game_real.starts_with(&root_real)
+}
+
+fn default_library_folder(app: &AppHandle) -> AppResult<Option<String>> {
+    let config = app.state::<crate::config::SharedConfig>();
+    let guard = config.lock().map_err(|_| AppError::LockPoisoned)?;
+    Ok(guard.data.default_install_folder().map(|f| f.path.clone()))
+}
+
+async fn maybe_import_add_game(
+    app: &AppHandle,
+    mut new_game: NewGame,
+) -> AppResult<AddGameImportResult> {
+    if !new_game.import_to_library {
+        return Ok(AddGameImportResult {
+            new_game,
+            original_folder: None,
+            source_to_delete: None,
+        });
+    }
+
+    let src_folder = match new_game
+        .game_folder_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+    {
+        Some(p) => PathBuf::from(p),
+        None => {
+            return Ok(AddGameImportResult {
+                new_game,
+                original_folder: None,
+                source_to_delete: None,
+            })
+        }
+    };
+    if !src_folder.is_dir() {
+        return Err(AppError::Other(format!(
+            "Install folder doesn't exist on disk: {}",
+            src_folder.display()
+        )));
+    }
+
+    let rel_exe = crate::move_install::relative_inside(Path::new(&new_game.exe_path), &src_folder)
+        .ok_or_else(|| {
+            AppError::Other(
+                "The game's executable is outside its install folder, so it can't be imported automatically. Pick the folder that contains the executable.".into(),
+            )
+        })?;
+
+    let default_root = match default_library_folder(app)? {
+        Some(root) => PathBuf::from(root),
+        None => {
+            return Err(AppError::Other(
+                "Add a library folder in Settings before importing games into the library.".into(),
+            ))
+        }
+    };
+
+    let config = app.state::<crate::config::SharedConfig>();
+    {
+        let guard = config.lock().map_err(|_| AppError::LockPoisoned)?;
+        if guard
+            .data
+            .library_folders
+            .iter()
+            .any(|f| library_folder_contains_game(Path::new(&f.path), &src_folder))
+        {
+            return Ok(AddGameImportResult {
+                new_game,
+                original_folder: None,
+                source_to_delete: None,
+            });
+        }
+    }
+
+    let dest = default_root.join(make_safe_filename(&new_game.game_name));
+    if crate::move_install::paths_equal(&src_folder, &dest) {
+        return Ok(AddGameImportResult {
+            new_game,
+            original_folder: None,
+            source_to_delete: None,
+        });
+    }
+    if dest.exists() {
+        return Err(AppError::Other(format!(
+            "A folder named '{}' already exists in the default library folder.",
+            dest.file_name().and_then(|s| s.to_str()).unwrap_or("this game")
+        )));
+    }
+
+    let src_real = std::fs::canonicalize(&src_folder).unwrap_or_else(|_| src_folder.clone());
+    let default_root_real = std::fs::canonicalize(&default_root).unwrap_or_else(|_| default_root.clone());
+    if default_root_real.starts_with(&src_real) {
+        return Err(AppError::Other(
+            "The default library folder is inside the game's install folder. Pick a different library folder in Settings.".into(),
+        ));
+    }
+
+    tracing::info!(
+        game_name = %new_game.game_name,
+        src = %src_folder.display(),
+        dest = %dest.display(),
+        "add_game: importing install folder into library"
+    );
+    let move_state = Arc::new(crate::move_install::MoveState::default());
+    let outcome = crate::move_install::run_move(app, &move_state, &src_folder, &dest).await?;
+
+    new_game.exe_path = dest.join(rel_exe).to_string_lossy().to_string();
+    new_game.game_folder_path = Some(dest.to_string_lossy().to_string());
+    Ok(AddGameImportResult {
+        new_game,
+        original_folder: Some(src_folder),
+        source_to_delete: outcome.source_to_delete,
+    })
+}
+
+async fn cleanup_imported_source(source_to_delete: Option<PathBuf>) {
+    if let Some(old_src) = source_to_delete {
+        match tokio::task::spawn_blocking(move || std::fs::remove_dir_all(&old_src)).await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => tracing::warn!(error = %e, "add_game import: couldn't delete original source after copy"),
+            Err(e) => tracing::warn!(error = %e, "add_game import: source delete task join failed"),
+        }
+    }
+}
+
+async fn rollback_imported_folder(
+    folder: Option<&String>,
+    original_folder: Option<PathBuf>,
+    source_to_delete: Option<PathBuf>,
+) {
+    let (Some(folder), Some(src)) = (folder, original_folder) else {
+        return;
+    };
+    let dest = PathBuf::from(folder);
+    if source_to_delete.is_some() {
+        if let Err(e) = tokio::fs::remove_dir_all(&dest).await {
+            tracing::warn!(error = %e, "add_game import: couldn't remove copied destination after DB failure");
+        }
+    } else if dest.exists() {
+        tracing::info!(dest = %dest.display(), "add_game import: rolling back same-filesystem rename after DB failure");
+        if let Err(e) = tokio::fs::rename(&dest, &src).await {
+            tracing::warn!(error = %e, "add_game import: rollback rename failed after DB failure");
+        }
+    }
+}
+
 // ── Tauri commands ──────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -1325,6 +1488,12 @@ pub async fn add_game(
     app: AppHandle,
     new_game: NewGame,
 ) -> AppResult<GameEntry> {
+    let AddGameImportResult {
+        new_game,
+        original_folder: imported_original_folder,
+        source_to_delete: imported_source_to_delete,
+    } = maybe_import_add_game(&app, new_game).await?;
+
     // Seed the per-entry Run-As-Admin toggle from the Windows AppCompatFlags
     // registry so an exe the OS already flags as "always run as administrator"
     // imports with the toggle on (no-op / false on non-Windows). Launches honour
@@ -1411,7 +1580,16 @@ pub async fn add_game(
         if new_game.custom_save.is_some() {
             fields.push(("custom_save", json!(new_game.custom_save)));
         }
-        state.update_fields(&existing.id, &fields).await?;
+        if let Err(e) = state.update_fields(&existing.id, &fields).await {
+            rollback_imported_folder(
+                new_game.game_folder_path.as_ref(),
+                imported_original_folder,
+                imported_source_to_delete,
+            )
+            .await;
+            return Err(e);
+        }
+        cleanup_imported_source(imported_source_to_delete).await;
         if let Err(e) = app.emit("library:changed", &existing.id) {
             tracing::warn!(error = %e, "failed to emit library:changed after reinstall");
         }
@@ -1434,6 +1612,7 @@ pub async fn add_game(
         return Ok(refreshed);
     }
 
+    let imported_folder_for_rollback = new_game.game_folder_path.clone();
     let entry = GameEntry {
         id: uuid::Uuid::new_v4().to_string(),
         // 0 → insert() assigns the next catalog number atomically.
@@ -1458,7 +1637,19 @@ pub async fn add_game(
         lan_shared: true,
         ..GameEntry::default()
     };
-    let entry = state.insert(entry).await?;
+    let entry = match state.insert(entry).await {
+        Ok(entry) => entry,
+        Err(e) => {
+            rollback_imported_folder(
+                imported_folder_for_rollback.as_ref(),
+                imported_original_folder,
+                imported_source_to_delete,
+            )
+            .await;
+            return Err(e);
+        }
+    };
+    cleanup_imported_source(imported_source_to_delete).await;
     if let Err(e) = app.emit("library:changed", &entry.id) {
         tracing::warn!(error = %e, "failed to emit library:changed after add_game");
     }

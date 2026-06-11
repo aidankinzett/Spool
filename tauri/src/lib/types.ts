@@ -589,6 +589,9 @@ export type NewGame = {
    *  new one (passed by the "Reinstall…" affordance). Falls back to a
    *  steam-id/name match, then a fresh insert, if the id is stale. */
   reinstall_target_id?: string | null;
+  /** Relocate the selected install folder into the default library folder
+   * before registering it. No-op when already inside a configured library. */
+  import_to_library?: boolean;
 };
 
 /**

@@ -19,6 +19,7 @@
   import {
     FileWarning,
     Folder,
+    FolderInput,
     HardDriveDownload,
     Search,
     ExternalLink,
@@ -27,10 +28,12 @@
   } from '@lucide/svelte';
   import { api } from '$lib/api';
   import { parentDir } from '$lib/format';
-  import type { SearchCandidate } from '$lib/types';
+  import { canonPath } from '$lib/pathMatch';
+  import type { LibraryFolder, SearchCandidate } from '$lib/types';
   import AppChrome from '$lib/components/AppChrome.svelte';
   import MonoLabel from '$lib/components/MonoLabel.svelte';
   import Btn from '$lib/components/Btn.svelte';
+  import Toggle from '$lib/components/Toggle.svelte';
   import CandidateRow from '$lib/components/CandidateRow.svelte';
   import { gamepadScope } from '$lib/gamepad';
 
@@ -56,6 +59,8 @@
   // The user can verify or override it before adding. A folder is what makes
   // LAN sharing (on by default) actually streamable.
   let gameFolder = $state<string | null>(null);
+  let libraryFolders = $state<LibraryFolder[]>([]);
+  let importToLibrary = $state(true);
   // True once the user picks a folder by hand, so auto-detection stops
   // overwriting their choice when they switch candidates.
   let folderTouched = $state(false);
@@ -99,6 +104,17 @@
     return baseName(path).replace(/\.[^.]+$/, '') || 'Untitled Game';
   }
 
+  function safeFolderName(name: string): string {
+    const invalid = new Set(['<', '>', ':', '"', '/', '\\', '|', '?', '*']);
+    const cleaned = Array.from(name)
+      .map((c) => (c.charCodeAt(0) > 127 ? '' : invalid.has(c) || c.charCodeAt(0) < 32 ? ' ' : c))
+      .join('')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .replace(/\.+$/, '');
+    return cleaned || 'Game';
+  }
+
   /**
    * Stable identity for a candidate. `SearchCandidate` has no unique id and
    * the multi-query lookup can surface two entries with the same display name,
@@ -125,6 +141,30 @@
     };
   });
 
+  const defaultLibraryFolder = $derived(
+    libraryFolders.find((f) => f.default_install)?.path ?? libraryFolders[0]?.path ?? null,
+  );
+
+  const gameFolderInsideLibrary = $derived.by(() => {
+    if (!gameFolder) return false;
+    const folder = canonPath(gameFolder);
+    return libraryFolders.some((f) => {
+      const root = canonPath(f.path);
+      return folder === root || folder.startsWith(`${root}/`);
+    });
+  });
+
+  const importStepVisible = $derived(
+    !!gameFolder && !!defaultLibraryFolder && !gameFolderInsideLibrary,
+  );
+
+  const importDestination = $derived.by(() => {
+    if (!defaultLibraryFolder) return null;
+    const name = (picked?.name ?? untrackedName.trim()) || (exePath ? cleanFileName(exePath) : 'Game');
+    const sep = defaultLibraryFolder.includes('\\') ? '\\' : '/';
+    return `${defaultLibraryFolder.replace(/[\\/]+$/, '')}${sep}${safeFolderName(name)}`;
+  });
+
   const stripColor = $derived(
     stage === 'no-match'
       ? 'var(--color-warn)'
@@ -135,6 +175,11 @@
 
   // ── Mount: pick exe immediately, or bail back to library ───────────────
   onMount(async () => {
+    try {
+      libraryFolders = (await api.getConfig()).library_folders;
+    } catch {
+      libraryFolders = [];
+    }
     // Reinstall flow: opened with `?reinstall=<id>` from an uninstalled game.
     const reinstall = new URLSearchParams(window.location.search).get('reinstall');
     if (reinstall) {
@@ -269,6 +314,7 @@
         save_paths: picked.save_paths,
         game_folder_path: gameFolder,
         reinstall_target_id: reinstallTargetId,
+        import_to_library: importStepVisible && importToLibrary,
       });
       await getCurrentWindow().close();
     } catch (e) {
@@ -290,6 +336,7 @@
         save_paths: [],
         game_folder_path: gameFolder,
         reinstall_target_id: reinstallTargetId,
+        import_to_library: importStepVisible && importToLibrary,
       });
       await getCurrentWindow().close();
     } catch (e) {
@@ -435,6 +482,37 @@
             </div>
           </div>
         </div>
+
+        {#if importStepVisible}
+          <div
+            class="relative flex items-center gap-3.5 overflow-hidden rounded-md border border-line-1 bg-bg-1 px-3.5 py-3"
+          >
+            <div class="absolute inset-y-0 left-0 w-[3px]" style:background="var(--color-info)"></div>
+            <div
+              class="flex size-[38px] shrink-0 items-center justify-center rounded-sm border border-line-2 bg-bg-2 text-ink-1"
+            >
+              <FolderInput size={18} strokeWidth={1.4} />
+            </div>
+            <div class="min-w-0 flex-1">
+              <div class="flex items-center gap-2">
+                <div class="font-mono min-w-0 flex-1 truncate text-[13px] font-medium">
+                  Import into library
+                </div>
+                <Toggle bind:checked={importToLibrary} aria-label="Import into library" />
+              </div>
+              <div
+                class="font-mono mt-1 flex items-center gap-1.5 text-[10.5px] tracking-[0.04em] text-ink-3"
+              >
+                <FolderInput size={11} />
+                <span class="min-w-0 truncate">
+                  {importToLibrary && importDestination
+                    ? `Move and rename install folder to ${importDestination}`
+                    : 'Keep this game in its current external folder.'}
+                </span>
+              </div>
+            </div>
+          </div>
+        {/if}
       {/if}
 
       <!-- Search bar -->
@@ -587,4 +665,3 @@
     </footer>
   </main>
 </div>
-
