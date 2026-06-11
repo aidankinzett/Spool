@@ -1,0 +1,126 @@
+INFO  2026-06-11 10:38:41,782 serena.cli:health_check:939 - Starting health check for project: /Users/aidankinzett/Git/Spool
+INFO  2026-06-11 10:38:41,782 serena.cli:health_check:943 - Creating SerenaAgent with disabled dashboard...
+INFO  2026-06-11 10:38:41,782 serena.util.file_system:_load_gitignore_files:152 - Processing .gitignore file: /Users/aidankinzett/Git/Spool/.serena/.gitignore
+INFO  2026-06-11 10:38:41,783 serena.util.file_system:_load_gitignore_files:152 - Processing .gitignore file: /Users/aidankinzett/Git/Spool/tauri/.gitignore
+INFO  2026-06-11 10:38:41,789 serena.util.file_system:_load_gitignore_files:152 - Processing .gitignore file: /Users/aidankinzett/Git/Spool/tauri/src-tauri/.gitignore
+INFO  2026-06-11 10:38:41,793 serena.util.file_system:_load_gitignore_files:152 - Processing .gitignore file: /Users/aidankinzett/Git/Spool/.claude/worktrees/upbeat-goldstine-5fbcbb/.gitignore
+INFO  2026-06-11 10:38:41,795 serena.util.file_system:_load_gitignore_files:152 - Processing .gitignore file: /Users/aidankinzett/Git/Spool/.claude/worktrees/agitated-goldstine-2cdfbf/.gitignore
+INFO  2026-06-11 10:38:41,799 serena.util.file_system:_load_gitignore_files:152 - Processing .gitignore file: /Users/aidankinzett/Git/Spool/.claude/worktrees/upbeat-goldstine-5fbcbb/decky/.gitignore
+INFO  2026-06-11 10:38:41,800 serena.util.file_system:_load_gitignore_files:152 - Processing .gitignore file: /Users/aidankinzett/Git/Spool/.claude/worktrees/upbeat-goldstine-5fbcbb/docs-site/.gitignore
+INFO  2026-06-11 10:38:41,802 serena.util.file_system:_load_gitignore_files:152 - Processing .gitignore file: /Users/aidankinzett/Git/Spool/.claude/worktrees/upbeat-goldstine-5fbcbb/tauri/.gitignore
+INFO  2026-06-11 10:38:41,805 serena.agent:__init__:610 - Will record tool usage statistics with token count estimator: CHAR_COUNT.
+INFO  2026-06-11 10:38:41,808 serena.util.file_system:_load_gitignore_files:152 - Processing .gitignore file: /Users/aidankinzett/Git/Spool/.claude/worktrees/agitated-goldstine-2cdfbf/decky/.gitignore
+INFO  2026-06-11 10:38:41,810 serena.util.file_system:_load_gitignore_files:152 - Processing .gitignore file: /Users/aidankinzett/Git/Spool/.claude/worktrees/agitated-goldstine-2cdfbf/docs-site/.gitignore
+INFO  2026-06-11 10:38:41,812 serena.util.file_system:_load_gitignore_files:152 - Processing .gitignore file: /Users/aidankinzett/Git/Spool/.claude/worktrees/agitated-goldstine-2cdfbf/tauri/.gitignore
+INFO  2026-06-11 10:38:41,820 serena.util.file_system:_load_gitignore_files:152 - Processing .gitignore file: /Users/aidankinzett/Git/Spool/.claude/worktrees/upbeat-goldstine-5fbcbb/tauri/src-tauri/.gitignore
+INFO  2026-06-11 10:38:41,821 serena.agent:__init__:614 - Starting Serena server (version=1.5.3, process id=65627, parent process id=65230; language backend=LSP); Python version=3.13.13, platform=macOS-26.5-arm64-arm-64bit-Mach-O
+INFO  2026-06-11 10:38:41,821 serena.agent:__init__:618 - Configuration file: /Users/aidankinzett/.serena/serena_config.yml
+INFO  2026-06-11 10:38:41,822 serena.agent:__init__:619 - Available projects: Spool
+INFO  2026-06-11 10:38:41,822 serena.agent:__init__:620 - Loaded tools (51): create_text_file, replace_content, delete_lines, replace_lines, insert_at_line, replace_symbol_body, insert_after_symbol, insert_before_symbol, read_file, list_dir, find_file, search_for_pattern, restart_language_server, get_symbols_overview, find_symbol, find_referencing_symbols, find_implementations, find_declaration, get_diagnostics_for_file, get_diagnostics_for_symbol, rename_symbol, safe_delete_symbol, write_memory, read_memory, list_memories, delete_memory, rename_memory, edit_memory, execute_shell_command, open_dashboard, activate_project, remove_project, get_current_config, onboarding, initial_instructions, serena_info, jet_brains_find_symbol, jet_brains_move, jet_brains_safe_delete, jet_brains_inline_symbol, jet_brains_find_referencing_symbols, jet_brains_get_symbols_overview, jet_brains_type_hierarchy, jet_brains_find_declaration, jet_brains_find_implementations, jet_brains_rename, jet_brains_debug, jet_brains_run_inspections, jet_brains_list_inspections, list_queryable_projects, query_project
+INFO  2026-06-11 10:38:41,822 serena.agent:__init__:632 - Using language backend from global configuration: LSP
+INFO  2026-06-11 10:38:41,836 serena.config.serena_config:start:329 - Loading project instance for RegisteredProject[project_root=/Users/aidankinzett/Git/Spool, project_config=ProjectConfig[project_name=Spool]] starting ...
+INFO  2026-06-11 10:38:41,836 serena.project:__init__:43 - Serena project data folder: /Users/aidankinzett/Git/Spool/.serena
+INFO  2026-06-11 10:38:41,837 serena.project:start:329 - Gathering ignore spec for project Spool starting ...
+INFO  2026-06-11 10:38:41,837 serena.config.serena_config:stop:336 - Loading project instance for RegisteredProject[project_root=/Users/aidankinzett/Git/Spool, project_config=ProjectConfig[project_name=Spool]] completed in 0.000 seconds
+INFO  2026-06-11 10:38:41,837 serena.util.file_system:start:329 - Loading of .gitignore files starting ...
+INFO  2026-06-11 10:38:41,837 serena.agent:activate_project_from_path_or_name:1152 - Found registered project 'Spool' at path /Users/aidankinzett/Git/Spool
+INFO  2026-06-11 10:38:41,837 serena.agent:_activate_project:1089 - Activating Spool at /Users/aidankinzett/Git/Spool
+INFO  2026-06-11 10:38:41,837 serena.task_executor:issue_task:192 - Scheduling Task-1:init_language_server_manager
+INFO  2026-06-11 10:38:41,837 serena.agent:_update_active_modes:1018 - Active modes (2): editing, interactive
+INFO  2026-06-11 10:38:41,837 serena.util.file_system:_load_gitignore_files:152 - Processing .gitignore file: /Users/aidankinzett/Git/Spool/.gitignore
+INFO  2026-06-11 10:38:41,838 serena.util.file_system:_load_gitignore_files:152 - Processing .gitignore file: /Users/aidankinzett/Git/Spool/decky/.gitignore
+INFO  2026-06-11 10:38:41,839 serena.util.file_system:_load_gitignore_files:152 - Processing .gitignore file: /Users/aidankinzett/Git/Spool/docs-site/.gitignore
+INFO  2026-06-11 10:38:41,840 serena.agent:_create_base_toolset:777 - Number of exposed tools: 28
+INFO  2026-06-11 10:38:41,842 serena.agent:__init__:656 - Number of exposed tools: 28. Exposed tools: ['activate_project', 'create_text_file', 'delete_memory', 'edit_memory', 'execute_shell_command', 'find_declaration', 'find_file', 'find_implementations', 'find_referencing_symbols', 'find_symbol', 'get_current_config', 'get_diagnostics_for_file', 'get_symbols_overview', 'initial_instructions', 'insert_after_symbol', 'insert_before_symbol', 'list_dir', 'list_memories', 'onboarding', 'read_file', 'read_memory', 'rename_memory', 'rename_symbol', 'replace_content', 'replace_symbol_body', 'safe_delete_symbol', 'search_for_pattern', 'write_memory']
+INFO  2026-06-11 10:38:41,842 serena.agent:_update_active_tools:1036 - Active tools (28): activate_project, create_text_file, delete_memory, edit_memory, execute_shell_command, find_declaration, find_file, find_implementations, find_referencing_symbols, find_symbol, get_current_config, get_diagnostics_for_file, get_symbols_overview, initial_instructions, insert_after_symbol, insert_before_symbol, list_dir, list_memories, onboarding, read_file, read_memory, rename_memory, rename_symbol, replace_content, replace_symbol_body, safe_delete_symbol, search_for_pattern, write_memory
+INFO  2026-06-11 10:38:41,843 serena.util.file_system:_load_gitignore_files:152 - Processing .gitignore file: /Users/aidankinzett/Git/Spool/.serena/.gitignore
+INFO  2026-06-11 10:38:41,845 serena.util.file_system:_load_gitignore_files:152 - Processing .gitignore file: /Users/aidankinzett/Git/Spool/tauri/.gitignore
+INFO  2026-06-11 10:38:41,845 serena.util.file_system:_load_gitignore_files:152 - Processing .gitignore file: /Users/aidankinzett/Git/Spool/.claude/worktrees/agitated-goldstine-2cdfbf/tauri/src-tauri/.gitignore
+INFO  2026-06-11 10:38:41,849 serena.util.file_system:_load_gitignore_files:152 - Processing .gitignore file: /Users/aidankinzett/Git/Spool/tauri/src-tauri/.gitignore
+INFO  2026-06-11 10:38:41,853 serena.util.file_system:_load_gitignore_files:152 - Processing .gitignore file: /Users/aidankinzett/Git/Spool/.claude/worktrees/upbeat-goldstine-5fbcbb/.gitignore
+INFO  2026-06-11 10:38:41,853 serena.util.file_system:_load_gitignore_files:152 - Processing .gitignore file: /Users/aidankinzett/Git/Spool/.claude/worktrees/agitated-goldstine-2cdfbf/.gitignore
+INFO  2026-06-11 10:38:41,856 serena.util.file_system:_load_gitignore_files:152 - Processing .gitignore file: /Users/aidankinzett/Git/Spool/.claude/worktrees/upbeat-goldstine-5fbcbb/decky/.gitignore
+INFO  2026-06-11 10:38:41,856 serena.util.file_system:_load_gitignore_files:152 - Processing .gitignore file: /Users/aidankinzett/Git/Spool/.claude/worktrees/upbeat-goldstine-5fbcbb/docs-site/.gitignore
+INFO  2026-06-11 10:38:41,857 serena.util.file_system:_load_gitignore_files:152 - Processing .gitignore file: /Users/aidankinzett/Git/Spool/.claude/worktrees/upbeat-goldstine-5fbcbb/tauri/.gitignore
+INFO  2026-06-11 10:38:41,860 serena.util.file_system:_load_gitignore_files:152 - Processing .gitignore file: /Users/aidankinzett/Git/Spool/.claude/worktrees/agitated-goldstine-2cdfbf/decky/.gitignore
+INFO  2026-06-11 10:38:41,861 serena.util.file_system:_load_gitignore_files:152 - Processing .gitignore file: /Users/aidankinzett/Git/Spool/.claude/worktrees/agitated-goldstine-2cdfbf/docs-site/.gitignore
+INFO  2026-06-11 10:38:41,861 serena.util.file_system:_load_gitignore_files:152 - Processing .gitignore file: /Users/aidankinzett/Git/Spool/.claude/worktrees/agitated-goldstine-2cdfbf/tauri/.gitignore
+INFO  2026-06-11 10:38:41,865 serena.util.file_system:_load_gitignore_files:152 - Processing .gitignore file: /Users/aidankinzett/Git/Spool/.claude/worktrees/upbeat-goldstine-5fbcbb/tauri/src-tauri/.gitignore
+INFO  2026-06-11 10:38:41,867 serena.util.file_system:_load_gitignore_files:152 - Processing .gitignore file: /Users/aidankinzett/Git/Spool/.claude/worktrees/agitated-goldstine-2cdfbf/tauri/src-tauri/.gitignore
+INFO  2026-06-11 10:38:41,872 serena.util.file_system:stop:336 - Loading of .gitignore files completed in 0.093 seconds
+INFO  2026-06-11 10:38:41,875 serena.project:stop:336 - Gathering ignore spec for project Spool completed in 0.095 seconds
+INFO  2026-06-11 10:38:41,882 serena.util.file_system:stop:336 - Loading of .gitignore files completed in 0.045 seconds
+INFO  2026-06-11 10:38:41,884 serena.project:stop:336 - Gathering ignore spec for project Spool completed in 0.047 seconds
+INFO  2026-06-11 10:38:41,927 serena.task_executor:_process_task_queue:123 - Starting execution of Task-1:init_language_server_manager
+INFO  2026-06-11 10:38:41,927 serena.task_executor:start:329 - Task-1:init_language_server_manager starting ...
+INFO  2026-06-11 10:38:41,927 serena.agent:start:329 - Language server initialization starting ...
+INFO  2026-06-11 10:38:41,927 serena.project:create_language_server_manager:420 - Creating language server manager for /Users/aidankinzett/Git/Spool
+INFO  2026-06-11 10:38:41,928 sensai.util.logging:start:329 - Language server startup (language=svelte) starting ...
+INFO  2026-06-11 10:38:41,928 serena.ls_manager:create_language_server:50 - Creating language server instance for /Users/aidankinzett/Git/Spool, language=svelte.
+INFO  2026-06-11 10:38:42,081 solidlsp.ls:start:3123 - Starting language server with language svelte for /Users/aidankinzett/Git/Spool
+INFO  2026-06-11 10:38:42,081 solidlsp.ls_process:_start:468 - Starting language server process via command: ['/Users/aidankinzett/.serena/language_servers/static/SvelteLanguageServer/svelte-lsp-0.18.0/node_modules/.bin/svelteserver', '--stdio']
+INFO  2026-06-11 10:38:42,618 solidlsp.ls_process:_read_ls_process_stderr:601 - Initialize language server at  file:///Users/aidankinzett/Git/Spool
+
+INFO  2026-06-11 10:38:42,624 solidlsp.language_servers.svelte_language_server:_start_typescript_server:375 - Creating companion SvelteTypeScriptServer
+INFO  2026-06-11 10:38:42,625 solidlsp.language_servers.svelte_language_server:_start_typescript_server:384 - Starting companion SvelteTypeScriptServer
+INFO  2026-06-11 10:38:42,625 solidlsp.ls:start:3123 - Starting language server with language typescript for /Users/aidankinzett/Git/Spool
+INFO  2026-06-11 10:38:42,625 solidlsp.language_servers.typescript_language_server:_start_server:367 - Starting TypeScript server process
+INFO  2026-06-11 10:38:42,625 solidlsp.ls_process:_start:468 - Starting language server process via command: ['/Users/aidankinzett/.serena/language_servers/static/SvelteLanguageServer/svelte-lsp-0.18.0/node_modules/.bin/typescript-language-server', '--stdio']
+INFO  2026-06-11 10:38:42,630 solidlsp.language_servers.typescript_language_server:_start_server:371 - Sending initialize request from LSP client to LSP server and awaiting response
+INFO  2026-06-11 10:38:42,716 solidlsp.language_servers.typescript_language_server:window_log_message:304 - LSP: window/logMessage: {'type': 3, 'message': 'Using Typescript version (user-setting) 6.0.3 from path "/Users/aidankinzett/.serena/language_servers/static/SvelteLanguageServer/svelte-lsp-0.18.0/node_modules/typescript/lib/tsserver.js"'}
+INFO  2026-06-11 10:38:42,717 solidlsp.language_servers.typescript_language_server:handle_typescript_version:312 - TypeScript server version notification received: {'version': '6.0.3', 'source': 'user-setting'}
+INFO  2026-06-11 10:38:42,717 solidlsp.language_servers.typescript_language_server:_start_server:386 - TypeScript server is ready
+INFO  2026-06-11 10:38:42,717 solidlsp.language_servers.typescript_language_server:_start_server:396 - Waiting for TypeScript project indexing to complete (if async)...
+INFO  2026-06-11 10:38:42,717 solidlsp.language_servers.typescript_language_server:_start_server:398 - TypeScript project indexing complete
+INFO  2026-06-11 10:38:42,717 solidlsp.language_servers.svelte_language_server:_start_typescript_server:386 - Waiting for companion SvelteTypeScriptServer to be ready ...
+INFO  2026-06-11 10:38:42,717 solidlsp.language_servers.svelte_language_server:_start_typescript_server:391 - Companion SvelteTypeScriptServer ready
+INFO  2026-06-11 10:38:42,717 solidlsp.language_servers.svelte_language_server:_ensure_svelte_files_indexed_on_ts_server:327 - Indexing .svelte files on companion TypeScript server for cross-file awareness
+INFO  2026-06-11 10:38:42,886 serena.cli:health_check:946 - SerenaAgent created successfully
+INFO  2026-06-11 10:38:42,886 serena.cli:health_check:949 - Searching for analyzable files...
+INFO  2026-06-11 10:38:42,965 serena.cli:health_check:958 - Found analyzable file: decky/rollup.config.js
+INFO  2026-06-11 10:38:42,965 serena.cli:health_check:976 - Testing GetSymbolsOverviewTool on file: decky/rollup.config.js
+INFO  2026-06-11 10:38:42,965 serena.task_executor:issue_task:192 - Scheduling Task-2:<lambda>
+INFO  2026-06-11 10:38:44,802 solidlsp.language_servers.svelte_language_server:_ensure_svelte_files_indexed_on_ts_server:343 - Svelte file indexing complete; waiting for companion TS server to finish processing
+INFO  2026-06-11 10:38:44,804 solidlsp.language_servers.typescript_language_server:progress_handler:341 - TypeScript LSP progress [87bb7096-1aa2-4765-8a16-7156b0ce838e]: started - Initializing JS/TS language features…
+INFO  2026-06-11 10:38:47,418 solidlsp.language_servers.typescript_language_server:progress_handler:352 - TypeScript LSP progress [87bb7096-1aa2-4765-8a16-7156b0ce838e]: ended - 
+INFO  2026-06-11 10:38:47,418 solidlsp.language_servers.svelte_language_server:_ensure_svelte_files_indexed_on_ts_server:347 - Companion TypeScript server finished indexing .svelte files
+INFO  2026-06-11 10:38:47,419 sensai.util.logging:stop:336 - Language server startup (language=svelte) completed in 5.491 seconds
+INFO  2026-06-11 10:38:47,419 serena.agent:stop:336 - Language server initialization completed in 5.491 seconds
+INFO  2026-06-11 10:38:47,419 serena.task_executor:stop:336 - Task-1:init_language_server_manager completed in 5.491 seconds
+INFO  2026-06-11 10:38:47,419 serena.task_executor:_process_task_queue:123 - Starting execution of Task-2:<lambda>
+INFO  2026-06-11 10:38:47,419 serena.task_executor:start:329 - Task-2:<lambda> starting ...
+INFO  2026-06-11 10:38:47,423 solidlsp.ls_process:_read_ls_process_stderr:601 - Initialize new ts service at  /Users/aidankinzett/Git/Spool/decky/tsconfig.json
+
+INFO  2026-06-11 10:38:47,432 solidlsp.ls_process:_read_ls_process_stderr:601 - Trying to load configs for /Users/aidankinzett/Git/Spool/decky
+
+INFO  2026-06-11 10:38:47,441 solidlsp.ls_process:_read_ls_process_stderr:601 - SnapshotManager File Statistics:
+
+INFO  2026-06-11 10:38:47,441 solidlsp.ls_process:_read_ls_process_stderr:601 - Project files: 39
+
+INFO  2026-06-11 10:38:47,441 solidlsp.ls_process:_read_ls_process_stderr:601 - Svelte files: 0
+
+INFO  2026-06-11 10:38:47,441 solidlsp.ls_process:_read_ls_process_stderr:601 - From node_modules: 0
+
+INFO  2026-06-11 10:38:47,441 solidlsp.ls_process:_read_ls_process_stderr:601 - Total: 39
+
+INFO  2026-06-11 10:38:48,131 solidlsp.ls_process:_read_ls_process_stderr:601 - Initialize new ts service at  
+
+INFO  2026-06-11 10:38:48,132 solidlsp.ls_process:_read_ls_process_stderr:601 - Trying to load configs for /Users/aidankinzett/Git/Spool
+
+INFO  2026-06-11 10:38:48,508 solidlsp.ls_process:_read_ls_process_stderr:601 - Loaded config at  /Users/aidankinzett/Git/Spool/tauri/svelte.config.js
+
+INFO  2026-06-11 10:38:48,516 solidlsp.ls_process:_read_ls_process_stderr:601 - SnapshotManager File Statistics:
+
+INFO  2026-06-11 10:38:48,516 solidlsp.ls_process:_read_ls_process_stderr:601 - Project files: 0
+
+INFO  2026-06-11 10:38:48,516 solidlsp.ls_process:_read_ls_process_stderr:601 - Svelte files: 0
+
+INFO  2026-06-11 10:38:48,516 solidlsp.ls_process:_read_ls_process_stderr:601 - From node_modules: 0
+
+INFO  2026-06-11 10:38:48,516 solidlsp.ls_process:_read_ls_process_stderr:601 - Total: 1
+
+WARNING 2026-06-11 10:38:48,522 solidlsp.ls_process:_notification_handler:413 - Unhandled method 'textDocument/publishDiagnostics'
+WARNING 2026-06-11 10:38:49,529 solidlsp.ls_process:_notification_handler:413 - Unhandled method 'textDocument/publishDiagnostics'
+INFO  2026-06-11 10:38:49,530 serena.task_executor:stop:336 - Task-2:<lambda> completed in 2.111 seconds
+INFO  2026-06-11 10:38:49,530 serena.cli:health_check:978 - GetSymbolsOverviewTool returned: []
+ERROR 2026-06-11 10:38:49,530 serena.cli:health_check:981 - No symbols found in file decky/rollup.config.js
