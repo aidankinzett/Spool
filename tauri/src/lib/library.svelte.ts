@@ -335,6 +335,10 @@ export function createLibrary() {
   // Set when a Download targets a game offered by more than one device — drives
   // the source-chooser modal (issue #321). Null whenever the chooser is closed.
   let peerChoice = $state<{ game: DisplayGame; sources: PeerSource[] } | null>(null);
+  // Set when a download starts with no library folders configured — drives the
+  // install-location prompt, holding the pending install until the user
+  // answers (confirmInstallLocation) or cancels. Null whenever it's closed.
+  let installLocationAsk = $state<{ peer: LanPeer; game: PeerGame } | null>(null);
   // Per-device peer catalogues aggregated for the merged sidebar (keyed by
   // device_id; each value carries the peer's stable metadata + its games).
   // Populated lazily in the background; never blocks first paint. Mutated in
@@ -558,6 +562,19 @@ export function createLibrary() {
       });
       return;
     }
+    // First download with no library folders configured: ask where games
+    // should go before starting. The answer becomes the default-install
+    // library folder and confirmInstallLocation re-enters here, by which
+    // point a folder exists. If config can't be read, fall through — the
+    // backend resolves its app-data fallback regardless.
+    try {
+      if ((await api.getConfig()).library_folders.length === 0) {
+        installLocationAsk = { peer, game };
+        return;
+      }
+    } catch {
+      /* fall through */
+    }
     startingGameId = game.id;
     try {
       await api.startPeerInstall(peer.addr, peer.file_server_port, game.id);
@@ -577,6 +594,40 @@ export function createLibrary() {
     } finally {
       if (startingGameId === game.id) startingGameId = null;
     }
+  }
+
+  /**
+   * Answer handler for the install-location prompt: registers the picked
+   * folder (`null` = the `<app_data>/lan-games` fallback) as the
+   * default-install library folder, then starts the install that was waiting
+   * on the answer. On failure the download is abandoned with a toast — the
+   * user can hit Download again.
+   */
+  async function confirmInstallLocation(path: string | null) {
+    const ask = installLocationAsk;
+    installLocationAsk = null;
+    if (!ask) return;
+    try {
+      const target = path ?? (await api.defaultLanInstallDir());
+      const canonical = await api.prepareLibraryFolder(target);
+      const cfg = await api.getConfig();
+      if (!cfg.library_folders.some((f) => f.path === canonical)) {
+        cfg.library_folders = [
+          ...cfg.library_folders,
+          { path: canonical, label: null, default_install: true },
+        ];
+        await api.updateConfig(cfg);
+      }
+    } catch (e) {
+      toasts.show({
+        kind: 'bad',
+        label: 'LAN',
+        title: "Couldn't set the install location",
+        sub: String(e),
+      });
+      return;
+    }
+    await installFromPeer(ask.peer, ask.game);
   }
 
   /**
@@ -1000,6 +1051,8 @@ export function createLibrary() {
     set conflictGameId(v: string | null) { conflictGameId = v; },
     get peerChoice() { return peerChoice; },
     set peerChoice(v: { game: DisplayGame; sources: PeerSource[] } | null) { peerChoice = v; },
+    get installLocationAsk() { return installLocationAsk; },
+    set installLocationAsk(v: { peer: LanPeer; game: PeerGame } | null) { installLocationAsk = v; },
     get suspendedConflict() { return suspendedConflict; },
     set suspendedConflict(v: { gameId: string; deviceName: string } | null) { suspendedConflict = v; },
     // Derived (read-only)
@@ -1027,6 +1080,7 @@ export function createLibrary() {
     clearPeerView,
     cancelActiveInstall,
     installFromPeer,
+    confirmInstallLocation,
     downloadGame,
     chooseDownloadSource,
   };

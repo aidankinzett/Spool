@@ -34,8 +34,8 @@
   );
 
   const FOLDERS: LibraryFolder[] = [
-    { path: 'C:/Games', label: null },
-    { path: 'D:/Games', label: 'Fast SSD' },
+    { path: 'C:/Games', label: null, default_install: false },
+    { path: 'D:/Games', label: 'Fast SSD', default_install: false },
   ];
 
   const FOLDER_FREE: Record<string, number> = {
@@ -86,5 +86,5 @@
      match no folder, so they fall into "Other folders" (grouped by parent dir). -->
 <Story
   name="One folder, rest stray"
-  args={{ folders: [{ path: 'C:/Games', label: null }], folderFree: { 'C:/Games': 120 * 1024 * 1048576 } }}
+  args={{ folders: [{ path: 'C:/Games', label: null, default_install: false }], folderFree: { 'C:/Games': 120 * 1024 * 1048576 } }}
 />

@@ -83,9 +83,10 @@ pub struct ConfigData {
 
     /// User-managed install roots (typically one per drive). Each is a folder
     /// where game installs can live; the "Move install" flow lists these as
-    /// destinations. Empty by default — adding one (Settings → Library folders)
-    /// creates a `Spool/` subfolder on the chosen drive. A flat top-level
-    /// `library_folders` array on disk.
+    /// destinations and LAN downloads land in the default-install one (see
+    /// [`ConfigData::lan_install_root`]). Empty by default — adding one
+    /// (Settings → Library folders) creates a `Spool/` subfolder on the chosen
+    /// drive. A flat top-level `library_folders` array on disk.
     pub library_folders: Vec<LibraryFolder>,
 
     /// Cloud-save / rclone settings (flattened to the flat `cloud_*` JSON keys).
@@ -125,12 +126,15 @@ impl Default for ConfigData {
 /// One user-managed install root. `path` is the folder games are moved into
 /// (the "Move install" flow appends `<game folder name>` under it); `label` is
 /// an optional friendly name shown in the UI (falls back to the path / drive
-/// when unset).
+/// when unset). `default_install` marks the folder new installs (LAN
+/// downloads) land in — at most one folder carries it, and when none does the
+/// first folder acts as the default (see [`ConfigData::lan_install_root`]).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct LibraryFolder {
     pub path: String,
     pub label: Option<String>,
+    pub default_install: bool,
 }
 
 /// Cloud-save + rclone settings. Flattened into [`ConfigData`], so each field
@@ -188,6 +192,11 @@ pub struct LanConfig {
     pub share_enabled: bool,
     #[serde(rename = "lan_share_port")]
     pub share_port: u16,
+    /// Legacy LAN install dir. Superseded by library folders — kept only so
+    /// `migrate_lan_install_dir` can read a pre-library-folders config and
+    /// convert the value into a `LibraryFolder` (after which it's cleared).
+    /// Nothing else reads it; resolution goes through
+    /// [`ConfigData::lan_install_root`].
     #[serde(rename = "lan_install_dir")]
     pub install_dir: String,
     /// Max aggregate LAN download throughput in Mbps (megabits/s, decimal).
@@ -272,6 +281,7 @@ impl Config {
         changed |= migrate_cloud_base_path(&mut data);
         changed |= migrate_onboarding_completed(raw_json.as_deref(), &mut data);
         changed |= migrate_retention_floor(&mut data);
+        changed |= migrate_lan_install_dir(&mut data);
 
         let cfg = Self { data };
         if changed {
@@ -294,6 +304,30 @@ impl Config {
 /// std::sync::Mutex is fine — same rule as the library: never hold across
 /// `.await`. See `library.rs` for the rationale.
 pub type SharedConfig = Mutex<Config>;
+
+impl ConfigData {
+    /// The library folder new installs land in: the one flagged
+    /// `default_install`, else the first configured folder. `None` when no
+    /// library folders exist.
+    pub fn default_install_folder(&self) -> Option<&LibraryFolder> {
+        self.library_folders
+            .iter()
+            .find(|f| f.default_install)
+            .or_else(|| self.library_folders.first())
+    }
+
+    /// Resolves where new LAN installs land: the default-install library
+    /// folder, falling back to `<app_data>/lan-games` when no library folders
+    /// are configured (so the zero-config path — e.g. a Decky-initiated
+    /// install on a fresh device — still works). Both the GUI install path
+    /// and the plugin server resolve through here so they can't disagree.
+    pub fn lan_install_root(&self) -> PathBuf {
+        match self.default_install_folder() {
+            Some(folder) => PathBuf::from(&folder.path),
+            None => paths::app_data_dir().join("lan-games"),
+        }
+    }
+}
 
 // ── First-run helpers ───────────────────────────────────────────────────────
 
@@ -458,6 +492,40 @@ fn migrate_retention_floor(data: &mut ConfigData) -> bool {
         return true;
     }
     false
+}
+
+/// Converts a legacy `lan_install_dir` into a library folder.
+///
+/// LAN installs used to land in their own configurable directory; they now go
+/// to the default-install library folder (`ConfigData::lan_install_root`). A
+/// config with a custom `lan_install_dir` keeps its behaviour: the directory
+/// becomes a library folder flagged `default_install` (or, if the same path is
+/// already a library folder, that folder gets the flag), and the legacy field
+/// is cleared so this never fires again. An empty `lan_install_dir` (the old
+/// implicit `<app_data>/lan-games` default) migrates to nothing — the new
+/// resolution falls back to the same path when no library folders exist, and
+/// registering an app-data folder nobody chose would clutter every upgrader's
+/// folder list. Returns true if anything changed.
+fn migrate_lan_install_dir(data: &mut ConfigData) -> bool {
+    let dir = data.lan.install_dir.trim().to_string();
+    if dir.is_empty() {
+        return false;
+    }
+    let no_default_yet = !data.library_folders.iter().any(|f| f.default_install);
+    if let Some(existing) = data.library_folders.iter_mut().find(|f| f.path == dir) {
+        if no_default_yet {
+            existing.default_install = true;
+        }
+    } else {
+        data.library_folders.push(LibraryFolder {
+            path: dir.clone(),
+            label: Some("LAN downloads".to_string()),
+            default_install: no_default_yet,
+        });
+    }
+    data.lan.install_dir = String::new();
+    tracing::info!(dir, "migrated legacy lan_install_dir to a library folder");
+    true
 }
 
 fn hostname() -> String {
@@ -676,6 +744,71 @@ mod tests {
             assert!(!migrate_retention_floor(&mut data), "{ok} should not migrate");
             assert_eq!(data.save_retention_full, ok);
         }
+    }
+
+    #[test]
+    fn lan_install_dir_migrates_to_default_library_folder() {
+        // A custom lan_install_dir becomes a default-install library folder
+        // and the legacy field is cleared so the migration never re-fires.
+        let mut data = ConfigData {
+            lan: LanConfig { install_dir: "/mnt/sd/lan".to_string(), ..LanConfig::default() },
+            ..Default::default()
+        };
+        assert!(migrate_lan_install_dir(&mut data));
+        assert_eq!(data.library_folders.len(), 1);
+        assert_eq!(data.library_folders[0].path, "/mnt/sd/lan");
+        assert!(data.library_folders[0].default_install);
+        assert!(data.lan.install_dir.is_empty());
+        assert!(!migrate_lan_install_dir(&mut data));
+    }
+
+    #[test]
+    fn lan_install_dir_migration_flags_existing_folder() {
+        // When the dir is already a library folder, no duplicate is added —
+        // the existing folder just becomes the install default.
+        let mut data = ConfigData {
+            library_folders: vec![LibraryFolder {
+                path: "/mnt/sd/lan".to_string(),
+                ..Default::default()
+            }],
+            lan: LanConfig { install_dir: "/mnt/sd/lan".to_string(), ..LanConfig::default() },
+            ..Default::default()
+        };
+        assert!(migrate_lan_install_dir(&mut data));
+        assert_eq!(data.library_folders.len(), 1);
+        assert!(data.library_folders[0].default_install);
+        assert!(data.lan.install_dir.is_empty());
+    }
+
+    #[test]
+    fn empty_lan_install_dir_migrates_to_nothing() {
+        // The old implicit <app_data>/lan-games default isn't registered as a
+        // folder — the new resolution falls back to the same path anyway.
+        let mut data = ConfigData::default();
+        assert!(!migrate_lan_install_dir(&mut data));
+        assert!(data.library_folders.is_empty());
+    }
+
+    #[test]
+    fn install_root_resolution_prefers_flagged_then_first_folder() {
+        let mut data = ConfigData {
+            library_folders: vec![
+                LibraryFolder { path: "/a".to_string(), ..Default::default() },
+                LibraryFolder {
+                    path: "/b".to_string(),
+                    default_install: true,
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        assert_eq!(data.lan_install_root(), PathBuf::from("/b"));
+        // Without a flagged folder the first one acts as the default.
+        data.library_folders[1].default_install = false;
+        assert_eq!(data.lan_install_root(), PathBuf::from("/a"));
+        // No folders at all → the app-data fallback.
+        data.library_folders.clear();
+        assert_eq!(data.lan_install_root(), paths::app_data_dir().join("lan-games"));
     }
 
     #[test]

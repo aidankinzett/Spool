@@ -77,6 +77,10 @@ export const api = {
   /** Creates the chosen library folder on disk; returns its canonical path. */
   prepareLibraryFolder: (path: string): Promise<string> =>
     invoke('prepare_library_folder', { path }),
+  /** The `<app_data>/lan-games` fallback dir LAN installs use when no library
+   *  folders exist — the install-location prompt's "Use Spool's data folder"
+   *  option registers it as one. */
+  defaultLanInstallDir: (): Promise<string> => invoke('default_lan_install_dir'),
   /** Moves game `id`'s install into `destFolder`; resolves with the updated
    *  entry. Progress streams via the `move:progress` event. */
   moveGameInstall: (id: string, destFolder: string): Promise<GameEntry> =>

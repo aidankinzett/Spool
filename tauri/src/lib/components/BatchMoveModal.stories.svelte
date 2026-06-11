@@ -50,9 +50,9 @@
   );
 
   const FOLDERS: LibraryFolder[] = [
-    { path: 'C:/Games', label: null },
-    { path: 'D:/Games', label: 'Fast SSD' },
-    { path: 'E:/Library', label: 'Bulk HDD' },
+    { path: 'C:/Games', label: null, default_install: false },
+    { path: 'D:/Games', label: 'Fast SSD', default_install: false },
+    { path: 'E:/Library', label: 'Bulk HDD', default_install: false },
   ];
 
   // A selection of three installed games, all currently on C:/Games — so every

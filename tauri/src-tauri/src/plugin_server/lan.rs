@@ -155,14 +155,7 @@ pub(super) async fn post_lan_install(
         .map(|c| c.data)
         .unwrap_or_default();
 
-    let install_root = {
-        let dir = &config.lan.install_dir;
-        if dir.is_empty() {
-            crate::paths::app_data_dir().join("lan-games")
-        } else {
-            std::path::PathBuf::from(dir)
-        }
-    };
+    let install_root = config.lan_install_root();
     let max_bps = config.lan.download_max_mbps * 1_000_000.0 / 8.0;
 
     let token = crate::lan::install::begin_install(

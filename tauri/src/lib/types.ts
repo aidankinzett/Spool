@@ -13,6 +13,8 @@ export type ConfigData = {
 
   lan_share_enabled: boolean;
   lan_share_port: number;
+  /** Legacy — migrated into `library_folders` on load and cleared. LAN
+   * installs now land in the default-install library folder. */
   lan_install_dir: string;
   /** Max aggregate LAN download throughput in MB/s. `0` = unlimited. */
   lan_download_max_mbps: number;
@@ -59,7 +61,8 @@ export type ConfigData = {
   save_retention_full: number;
 
   /** User-managed install roots (typically one per drive). The "Move install"
-   * flow lists these as destinations; Settings → Library folders manages them. */
+   * flow lists these as destinations, LAN downloads land in the
+   * default-install one; Settings → Library folders manages them. */
   library_folders: LibraryFolder[];
 };
 
@@ -67,6 +70,9 @@ export type ConfigData = {
 export type LibraryFolder = {
   path: string;
   label: string | null;
+  /** New installs (LAN downloads) land here. At most one folder is flagged;
+   * when none is, the first folder acts as the default. */
+  default_install: boolean;
 };
 
 /** Mirror of the Rust `DriveInfo` struct in src-tauri/src/drives.rs — one

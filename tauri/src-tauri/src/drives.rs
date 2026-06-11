@@ -143,6 +143,18 @@ pub async fn prepare_library_folder(path: String) -> AppResult<String> {
         .map_err(|e| AppError::Other(format!("prepare folder task join failed: {e}")))?
 }
 
+/// The `<app_data>/lan-games` directory LAN installs fall back to when no
+/// library folders are configured. The install-location prompt's "Use Spool's
+/// data folder" option registers this path as a library folder, and the
+/// frontend can't derive app-data paths itself, so it asks here.
+#[tauri::command]
+pub fn default_lan_install_dir() -> String {
+    crate::paths::app_data_dir()
+        .join("lan-games")
+        .to_string_lossy()
+        .to_string()
+}
+
 fn prepare_library_folder_blocking(path: &str) -> AppResult<String> {
     let trimmed = path.trim();
     if trimmed.is_empty() {

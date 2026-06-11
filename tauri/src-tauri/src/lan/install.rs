@@ -6,7 +6,6 @@
 
 use super::server::safe_join;
 use super::{PeerFile, PeerGame, PeerGameManifest};
-use crate::config::ConfigData;
 use crate::error::{AppError, AppResult};
 use crate::library::{make_safe_filename, GameEntry, SharedLibrary};
 use crate::paths;
@@ -304,17 +303,6 @@ struct TransferCtx {
     on_progress: Arc<dyn Fn(&DownloadProgress) + Send + Sync>,
 }
 
-/// Resolves where new LAN installs land. Defaults to
-/// `<app_data>/lan-games` when the user hasn't set `lan_install_dir`
-/// in config — matches the convention of every other Spool path.
-fn install_root_from(config: &ConfigData) -> AppResult<PathBuf> {
-    if config.lan.install_dir.is_empty() {
-        Ok(paths::app_data_dir().join("lan-games"))
-    } else {
-        Ok(PathBuf::from(&config.lan.install_dir))
-    }
-}
-
 /// The on-disk folder name a game's install lands at, before any
 /// collision suffix. The single source of truth for both directory
 /// allocation and the per-install cross-process lock key, so the lock
@@ -491,7 +479,7 @@ pub async fn start_peer_install(
     let (max_bps, install_root) = {
         let cfg = app.state::<crate::config::SharedConfig>();
         let data = cfg.lock().map_err(|_| AppError::LockPoisoned)?.data.clone();
-        let root = install_root_from(&data)?;
+        let root = data.lan_install_root();
         let bps = data.lan.download_max_mbps * 1_000_000.0 / 8.0;
         (bps, root)
     };

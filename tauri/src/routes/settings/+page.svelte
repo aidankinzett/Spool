@@ -374,14 +374,6 @@
     }
   }
 
-  async function browseLanInstallDir() {
-    const picked = await openDialog({ title: 'Pick the LAN install folder', directory: true, multiple: false });
-    if (typeof picked === 'string' && config) {
-      config.lan_install_dir = picked;
-      await persist();
-    }
-  }
-
   // ── Library folders (per-drive install roots) ──────────────────────────────
   let libDrives = $state<DriveInfo[]>([]);
   let addingLibFolder = $state(false);
@@ -443,7 +435,7 @@
         // Restore the prior list if the save fails, so the UI doesn't drift from
         // what's on disk (persist() toasts the error and returns false).
         const prev = config.library_folders;
-        config.library_folders = [...prev, { path: canonical, label: null }];
+        config.library_folders = [...prev, { path: canonical, label: null, default_install: false }];
         if (!(await persist())) {
           config.library_folders = prev;
           return;
@@ -461,6 +453,19 @@
     if (!config) return;
     const prev = config.library_folders;
     config.library_folders = prev.filter((f) => f.path !== path);
+    if (!(await persist())) config.library_folders = prev;
+  }
+
+  /** The folder new installs (LAN downloads) land in — the flagged one, else
+   * the first. Mirrors `ConfigData::default_install_folder` in Rust. */
+  const defaultInstallFolder = $derived(
+    config?.library_folders.find((f) => f.default_install) ?? config?.library_folders[0] ?? null,
+  );
+
+  async function setDefaultLibFolder(path: string) {
+    if (!config) return;
+    const prev = config.library_folders;
+    config.library_folders = prev.map((f) => ({ ...f, default_install: f.path === path }));
     if (!(await persist())) config.library_folders = prev;
   }
 
@@ -816,7 +821,7 @@
               <!-- Library folders: per-drive install roots used by "Move install". -->
               <SettingsCard
                 title="Library folders"
-                helper="Install roots for your games — usually one per drive. The “Move install” action relocates a game into any of these."
+                helper="Install roots for your games — usually one per drive. The “Move install” action relocates a game into any of these; downloads from LAN peers install into the default folder."
               >
                 <div class="flex flex-col gap-2 px-[18px] py-2">
                   {#if config!.library_folders.length === 0 && !addingLibFolder}
@@ -834,6 +839,11 @@
                           <div class="text-[11px] text-ink-3">{fmtSize(libFolderFree[folder.path] / 1048576)} free</div>
                         {/if}
                       </div>
+                      {#if folder.path === defaultInstallFolder?.path}
+                        <Pill kind="info">Default</Pill>
+                      {:else}
+                        <Btn variant="ghost" onclick={() => setDefaultLibFolder(folder.path)}>Set default</Btn>
+                      {/if}
                       <Btn variant="ghost" onclick={() => removeLibFolder(folder.path)}>
                         {#snippet icon()}<Trash2 size={14} />{/snippet}
                         Remove
@@ -1299,15 +1309,17 @@
                         {/snippet}
                       </SettingsRow>
 
-                      <SettingsRow label="Default install dir" helper="Where downloads from peers land.">
+                      <SettingsRow
+                        label="Install location"
+                        helper={defaultInstallFolder
+                          ? `Downloads from peers install into ${defaultInstallFolder.path}.`
+                          : 'Downloads from peers install into Spool’s data folder. Add a library folder to choose a drive.'}
+                      >
                         {#snippet control()}
-                          <div class="flex items-center gap-2 min-w-0">
-                            <TextField bind:value={config!.lan_install_dir} placeholder="(default · lan-games inside Spool app data)" mono full oncommit={persist} />
-                            <Btn variant="ghost" onclick={browseLanInstallDir}>
-                              {#snippet icon()}<Folder size={14} />{/snippet}
-                              Browse
-                            </Btn>
-                          </div>
+                          <Btn variant="ghost" onclick={() => (activeGroup = 'library')}>
+                            {#snippet icon()}<HardDrive size={14} />{/snippet}
+                            Library folders
+                          </Btn>
                         {/snippet}
                       </SettingsRow>
 
