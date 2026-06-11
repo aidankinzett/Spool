@@ -6,6 +6,9 @@
         "start-mcp-server",
         "--context=antigravity"
       ]
+    },
+    "headroom": {
+      "command": "headroom mcp serve"
     }
   }
 }
