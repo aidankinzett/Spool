@@ -437,9 +437,7 @@ pub async fn fetch_peer_games(app: AppHandle, addr: String, port: u16) -> AppRes
 /// on mount to catch up after a navigation that lost in-memory state —
 /// otherwise it tracks live via the `lan:download` event stream.
 #[tauri::command]
-pub fn current_peer_download(
-    state: State<'_, Arc<LanDownloadState>>,
-) -> Option<DownloadProgress> {
+pub fn current_peer_download(state: State<'_, Arc<LanDownloadState>>) -> Option<DownloadProgress> {
     state.snapshot()
 }
 
@@ -449,10 +447,7 @@ pub fn current_peer_download(
 /// `true` if the token matched an active install, `false` if there was
 /// nothing to cancel (no in-flight transfer, or different token).
 #[tauri::command]
-pub fn cancel_peer_install(
-    state: State<'_, Arc<LanDownloadState>>,
-    install_token: String,
-) -> bool {
+pub fn cancel_peer_install(state: State<'_, Arc<LanDownloadState>>, install_token: String) -> bool {
     state.request_cancel(&install_token)
 }
 
@@ -487,10 +482,9 @@ pub async fn start_peer_install(
     let library = (*app.state::<SharedLibrary>()).clone();
 
     let app_for_changed = app.clone();
-    let on_library_changed: Arc<dyn Fn(&str) + Send + Sync> =
-        Arc::new(move |id: &str| {
-            let _ = app_for_changed.emit("library:changed", id);
-        });
+    let on_library_changed: Arc<dyn Fn(&str) + Send + Sync> = Arc::new(move |id: &str| {
+        let _ = app_for_changed.emit("library:changed", id);
+    });
 
     let app_for_progress = app.clone();
     let on_progress: Arc<dyn Fn(&DownloadProgress) + Send + Sync> =
@@ -520,9 +514,7 @@ pub async fn start_peer_install(
                 )
                 .await;
                 if !got_cover {
-                    if let Err(e) =
-                        crate::steamgriddb::fetch_and_save_cover(&app, &new_id).await
-                    {
+                    if let Err(e) = crate::steamgriddb::fetch_and_save_cover(&app, &new_id).await {
                         tracing::warn!(
                             game_id = %new_id,
                             error = %e,
@@ -1054,8 +1046,7 @@ async fn run_install(
         })
     };
 
-    let mut stream =
-        futures_util::stream::iter(file_futures).buffer_unordered(LAN_PARALLEL_FILES);
+    let mut stream = futures_util::stream::iter(file_futures).buffer_unordered(LAN_PARALLEL_FILES);
     let mut maybe_err: Option<AppError> = None;
     while let Some(result) = stream.next().await {
         if ctx.state.is_canceled() {
@@ -1131,7 +1122,10 @@ async fn run_install(
             fields.push(("gog_id", serde_json::json!(manifest.gog_id)));
         }
         if manifest.lutris_slug.is_some() {
-            fields.push(("lutris_slug", serde_json::json!(manifest.lutris_slug.clone())));
+            fields.push((
+                "lutris_slug",
+                serde_json::json!(manifest.lutris_slug.clone()),
+            ));
         }
         if manifest.manifest_install_dir.is_some() {
             fields.push((
@@ -1225,7 +1219,12 @@ async fn fetch_peer_artwork(
     let hero = hero_path.as_ref().map(|p| p.to_string_lossy().to_string());
     let _ = app
         .state::<SharedLibrary>()
-        .set_art(new_game_id, cover.as_deref(), hero.as_deref(), accent.as_deref())
+        .set_art(
+            new_game_id,
+            cover.as_deref(),
+            hero.as_deref(),
+            accent.as_deref(),
+        )
         .await;
     let _ = app.emit("library:changed", &new_game_id.to_string());
     cover_path.is_some()
@@ -1415,9 +1414,7 @@ pub(crate) async fn begin_install(
             .timeout(MANIFEST_FETCH_TIMEOUT)
             .send()
             .await
-            .map_err(|e| {
-                AppError::Other(format!("GET manifest: {}", format_reqwest_error(&e)))
-            })?;
+            .map_err(|e| AppError::Other(format!("GET manifest: {}", format_reqwest_error(&e))))?;
         if !resp.status().is_success() {
             return Err(AppError::Other(format!(
                 "peer responded {} to /manifest",
@@ -1517,9 +1514,7 @@ pub(crate) async fn begin_install(
             if tokio::fs::create_dir_all(&covers_dir).await.is_err() {
                 return;
             }
-            let url = format!(
-                "http://{cover_peer_addr}:{peer_port}/games/{cover_source_id}/cover"
-            );
+            let url = format!("http://{cover_peer_addr}:{peer_port}/games/{cover_source_id}/cover");
             let Some(path) =
                 fetch_and_save_peer_image(&http_c, &url, &covers_dir, &safe_name, "").await
             else {

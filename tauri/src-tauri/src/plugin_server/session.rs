@@ -37,7 +37,7 @@ pub(super) async fn post_game_stopped(
     // the (network) marker write and backup, so the recorded duration reflects
     // the real game-stop instant rather than the plugin/rclone latency. (#5)
     let ended_at = chrono::Utc::now();
-    
+
     let Some(rec) = crate::session::read() else {
         return Json(json!({ "acted": false }));
     };
@@ -137,7 +137,8 @@ fn session_appid_matches(rec: &crate::session::ActiveSession, appid: u32) -> boo
     if rec.steam_appid == appid {
         return true;
     }
-    let Some(exe) = crate::paths::spool_executable().or_else(|| std::env::current_exe().ok()) else {
+    let Some(exe) = crate::paths::spool_executable().or_else(|| std::env::current_exe().ok())
+    else {
         return false;
     };
     let recomputed = crate::session::compute_steam_appid(&exe.to_string_lossy(), &rec.game);
@@ -169,12 +170,22 @@ async fn run_backup(
     state: &PluginState,
     game_name: &str,
     session_id: &str,
-    session: Option<(chrono::DateTime<chrono::Utc>, i64, chrono::DateTime<chrono::Utc>)>,
+    session: Option<(
+        chrono::DateTime<chrono::Utc>,
+        i64,
+        chrono::DateTime<chrono::Utc>,
+    )>,
     config: crate::config::Config,
 ) -> Json<Value> {
     let config_dir = crate::paths::ludusavi_config_dir();
 
-    let Some(game_id) = state.library.find_id_by_name(game_name, None).await.ok().flatten() else {
+    let Some(game_id) = state
+        .library
+        .find_id_by_name(game_name, None)
+        .await
+        .ok()
+        .flatten()
+    else {
         tracing::error!(name = %game_name, "plugin backup: game not in library");
         return Json(json!({ "acted": true, "ok": false, "reason": "game not in library" }));
     };
@@ -209,9 +220,7 @@ async fn run_backup(
     let Some(ludusavi_exe) = crate::paths::resolve_ludusavi_path() else {
         tracing::error!("plugin backup: ludusavi sidecar not found");
         // The session is already recorded above; we just can't back up saves.
-        return Json(
-            json!({ "acted": true, "ok": false, "reason": "ludusavi sidecar not found" }),
-        );
+        return Json(json!({ "acted": true, "ok": false, "reason": "ludusavi sidecar not found" }));
     };
     if let Err(e) = crate::ludusavi_config::ensure_config() {
         tracing::warn!(error = %e, "plugin backup: ensure_config warning");
@@ -259,15 +268,15 @@ async fn run_backup(
                 }
                 tracing::warn!(game = %game_name, "plugin backup: cloud upload failed — leaving session marker in place");
             }
-            Json(json!({ "acted": true, "ok": true, "game": game_name, "cloud_synced": r.cloud_synced }))
+            Json(
+                json!({ "acted": true, "ok": true, "game": game_name, "cloud_synced": r.cloud_synced }),
+            )
         }
         Err(e) => {
             // The session (incl. cross-device playtime) is already recorded; the
             // PendingBackup marker stays so peers/next-launch reconcile.
             tracing::error!(error = %e, game = %game_name, "plugin backup: failed");
-            Json(
-                json!({ "acted": true, "ok": false, "game": game_name, "reason": e.to_string() }),
-            )
+            Json(json!({ "acted": true, "ok": false, "game": game_name, "reason": e.to_string() }))
         }
     }
 }

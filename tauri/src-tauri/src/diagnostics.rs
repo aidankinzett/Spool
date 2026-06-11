@@ -73,7 +73,11 @@ fn check_umu_run(configured: &str, distro: &Distro) -> DepStatus {
     }
     let well_known = std::path::Path::new("/usr/bin/umu-run");
     if well_known.is_file() {
-        return found("umu-run", well_known.to_str().unwrap_or(""), DepSource::System);
+        return found(
+            "umu-run",
+            well_known.to_str().unwrap_or(""),
+            DepSource::System,
+        );
     }
     if let Some(p) = paths::find_system_binary("umu-run") {
         return found("umu-run", &p.to_string_lossy(), DepSource::System);
@@ -183,4 +187,3 @@ fn install_hint_umu(distro: &Distro) -> String {
         Distro::Other => "# See the guide below".to_string(),
     }
 }
-

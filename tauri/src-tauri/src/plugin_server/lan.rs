@@ -16,7 +16,9 @@ const PEER_PROXY_TIMEOUT: Duration = Duration::from_secs(5);
 fn validate_peer(state: &PluginState, addr: &str, port: u16) -> Result<(), StatusCode> {
     // 1. Check if the peer is in the discovered peers snapshot
     let peers = state.lan.snapshot();
-    let found = peers.iter().any(|p| p.addr == addr && p.file_server_port == port);
+    let found = peers
+        .iter()
+        .any(|p| p.addr == addr && p.file_server_port == port);
     if !found {
         tracing::warn!(addr = %addr, port = port, "Rejecting LAN request: peer not in discovered list");
         return Err(StatusCode::FORBIDDEN);
@@ -209,9 +211,9 @@ pub(super) async fn delete_lan_download(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lan::LanState;
     use crate::lan::discovery::{LanPeer, PeerEntry};
     use crate::lan::install::LanDownloadState;
+    use crate::lan::LanState;
     use crate::library::Library;
     use crate::ludusavi::LudusaviClient;
     use std::time::Instant;

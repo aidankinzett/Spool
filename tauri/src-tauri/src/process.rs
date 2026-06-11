@@ -135,8 +135,12 @@ fn appimage_env_ops() -> Vec<EnvOp> {
 pub(crate) fn strip_appimage_env(cmd: &mut Command) {
     for op in appimage_env_ops() {
         match op {
-            EnvOp::Remove(v) => { cmd.env_remove(v); }
-            EnvOp::Set(v, s) => { cmd.env(v, s); }
+            EnvOp::Remove(v) => {
+                cmd.env_remove(v);
+            }
+            EnvOp::Set(v, s) => {
+                cmd.env(v, s);
+            }
         }
     }
 }
@@ -145,8 +149,12 @@ pub(crate) fn strip_appimage_env(cmd: &mut Command) {
 pub(crate) fn strip_appimage_env_blocking(cmd: &mut std::process::Command) {
     for op in appimage_env_ops() {
         match op {
-            EnvOp::Remove(v) => { cmd.env_remove(v); }
-            EnvOp::Set(v, s) => { cmd.env(v, s); }
+            EnvOp::Remove(v) => {
+                cmd.env_remove(v);
+            }
+            EnvOp::Set(v, s) => {
+                cmd.env(v, s);
+            }
         }
     }
 }
@@ -180,7 +188,10 @@ pub async fn run_game(exe_path: &Path, spec: LaunchSpec<'_>) -> AppResult<GameEx
         LaunchSpec::Native { run_as_admin } => {
             if cfg!(windows) && run_as_admin {
                 let code = run_elevated(exe_path).await?;
-                return Ok(GameExitResult { code, crash_hint: None });
+                return Ok(GameExitResult {
+                    code,
+                    crash_hint: None,
+                });
             }
 
             let mut cmd = Command::new(exe_path);
@@ -195,7 +206,10 @@ pub async fn run_game(exe_path: &Path, spec: LaunchSpec<'_>) -> AppResult<GameEx
                 .await
                 .map_err(|e| AppError::Other(format!("failed waiting on game: {e}")))?;
 
-            Ok(GameExitResult { code: status.code().unwrap_or(-1), crash_hint: None })
+            Ok(GameExitResult {
+                code: status.code().unwrap_or(-1),
+                crash_hint: None,
+            })
         }
         LaunchSpec::Proton {
             umu_run,
@@ -274,11 +288,19 @@ pub async fn run_game(exe_path: &Path, spec: LaunchSpec<'_>) -> AppResult<GameEx
                 .map_err(|e| AppError::Other(format!("failed waiting on Proton game: {e}")))?;
             let elapsed = start.elapsed();
 
-            if let Some(h) = stdout_handle { let _ = h.await; }
-            if let Some(h) = stderr_handle { let _ = h.await; }
+            if let Some(h) = stdout_handle {
+                let _ = h.await;
+            }
+            if let Some(h) = stderr_handle {
+                let _ = h.await;
+            }
 
             let code = status.code().unwrap_or(-1);
-            tracing::info!(exit_code = code, elapsed_secs = elapsed.as_secs(), "umu-run process exited");
+            tracing::info!(
+                exit_code = code,
+                elapsed_secs = elapsed.as_secs(),
+                "umu-run process exited"
+            );
 
             // A non-zero exit in under 5 seconds means the game almost certainly
             // never opened a window — Wine/Proton printed the reason to stderr
@@ -296,7 +318,11 @@ pub async fn run_game(exe_path: &Path, spec: LaunchSpec<'_>) -> AppResult<GameEx
                     .map(String::as_str)
                     .collect::<Vec<_>>()
                     .join("\n");
-                if tail.is_empty() { None } else { Some(tail) }
+                if tail.is_empty() {
+                    None
+                } else {
+                    Some(tail)
+                }
             } else {
                 None
             };
@@ -419,7 +445,11 @@ mod tests {
         std::env::remove_var("APPDIR");
         let mut cmd = Command::new("true");
         strip_appimage_env(&mut cmd);
-        assert_eq!(cmd.as_std().get_envs().count(), 0, "should be a no-op outside an AppImage");
+        assert_eq!(
+            cmd.as_std().get_envs().count(),
+            0,
+            "should be a no-op outside an AppImage"
+        );
 
         // ── Phase 2: AppImage env → sanitised ──
         std::env::set_var("APPDIR", "/tmp/.mount_SpoolXYZ");

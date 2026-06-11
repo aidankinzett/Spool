@@ -43,10 +43,16 @@ const UMU_HTTP_RETRIES_MAX: &str = "1";
 /// existing user override in the process environment.
 fn push_umu_http_limits(env: &mut Vec<(String, String)>) {
     if std::env::var_os("UMU_HTTP_TIMEOUT").is_none() {
-        env.push(("UMU_HTTP_TIMEOUT".to_string(), UMU_HTTP_TIMEOUT_SECS.to_string()));
+        env.push((
+            "UMU_HTTP_TIMEOUT".to_string(),
+            UMU_HTTP_TIMEOUT_SECS.to_string(),
+        ));
     }
     if std::env::var_os("UMU_HTTP_RETRIES").is_none() {
-        env.push(("UMU_HTTP_RETRIES".to_string(), UMU_HTTP_RETRIES_MAX.to_string()));
+        env.push((
+            "UMU_HTTP_RETRIES".to_string(),
+            UMU_HTTP_RETRIES_MAX.to_string(),
+        ));
     }
 }
 
@@ -141,7 +147,11 @@ pub fn installed_proton_versions() -> Vec<ProtonVersion> {
         &mut push_dir,
     );
 
-    found.sort_by(|a, b| proton_rank(&b.name).cmp(&proton_rank(&a.name)).then(b.name.cmp(&a.name)));
+    found.sort_by(|a, b| {
+        proton_rank(&b.name)
+            .cmp(&proton_rank(&a.name))
+            .then(b.name.cmp(&a.name))
+    });
     found
 }
 
@@ -199,7 +209,10 @@ fn version_score(name: &str) -> u32 {
 /// built the game's prefix — the game would exit instantly (issue: auto-Proton
 /// regression after #80). Letting umu-run choose keeps prefix and runtime in
 /// sync, matching what a bare `umu-run <exe>` does.
-pub fn resolve_proton_path(override_path: Option<&str>, default_path: Option<&str>) -> Option<PathBuf> {
+pub fn resolve_proton_path(
+    override_path: Option<&str>,
+    default_path: Option<&str>,
+) -> Option<PathBuf> {
     for candidate in [override_path, default_path].into_iter().flatten() {
         let trimmed = candidate.trim();
         if trimmed.is_empty() {
@@ -273,7 +286,8 @@ pub fn resolve_umu_run(override_path: Option<&str>) -> AppResult<PathBuf> {
         }
     }
     Err(AppError::Other(
-        "umu-run not found. Install umu-launcher or set its path in Settings → Compatibility.".into(),
+        "umu-run not found. Install umu-launcher or set its path in Settings → Compatibility."
+            .into(),
     ))
 }
 
@@ -348,10 +362,16 @@ pub fn build_umu_launch(
 
     let mut env = vec![
         ("GAMEID".to_string(), format!("umu-{game_id}")),
-        ("WINEPREFIX".to_string(), prefix_root.to_string_lossy().to_string()),
+        (
+            "WINEPREFIX".to_string(),
+            prefix_root.to_string_lossy().to_string(),
+        ),
     ];
     if let Some(proton_path) = proton_path {
-        env.push(("PROTONPATH".to_string(), proton_path.to_string_lossy().to_string()));
+        env.push((
+            "PROTONPATH".to_string(),
+            proton_path.to_string_lossy().to_string(),
+        ));
     }
 
     // Bound umu-run's network touches so an offline launch fails fast instead
@@ -446,7 +466,10 @@ pub async fn install_proton_deps_core(
 ) -> AppResult<String> {
     // Acquire the machine-wide run lock so we don't modify the prefix while a session is active.
     let _run_lock = crate::proc_lock::try_acquire_run(game_id)?.ok_or_else(|| {
-        AppError::Other("This game is busy right now (running, or being modified) — close it and try again.".into())
+        AppError::Other(
+            "This game is busy right now (running, or being modified) — close it and try again."
+                .into(),
+        )
     })?;
 
     let verb_list: Vec<String> = verbs.split_whitespace().map(String::from).collect();
@@ -516,7 +539,11 @@ pub async fn install_proton_deps_core(
         // Surface the most useful tail (stderr, falling back to stdout).
         let stderr = String::from_utf8_lossy(&output.stderr);
         let stdout = String::from_utf8_lossy(&output.stdout);
-        let src = if stderr.trim().is_empty() { stdout } else { stderr };
+        let src = if stderr.trim().is_empty() {
+            stdout
+        } else {
+            stderr
+        };
         let tail = src
             .lines()
             .rev()
@@ -548,7 +575,13 @@ mod tests {
             "abc",
         );
         assert_eq!(l.program, PathBuf::from("/usr/bin/umu-run"));
-        assert_eq!(l.args, vec!["/games/Hades/Hades.exe".to_string(), "--skip-intro".to_string()]);
+        assert_eq!(
+            l.args,
+            vec![
+                "/games/Hades/Hades.exe".to_string(),
+                "--skip-intro".to_string()
+            ]
+        );
         let get = |k: &str| l.env.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone());
         assert_eq!(get("GAMEID"), Some("umu-abc".to_string()));
         assert_eq!(get("WINEPREFIX"), Some("/prefixes/abc".to_string()));

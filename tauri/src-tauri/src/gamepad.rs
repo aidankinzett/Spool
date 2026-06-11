@@ -57,7 +57,9 @@ impl GamepadPresence {
         // Saturating — never wrap below zero on a spurious disconnect.
         let _ = self
             .count
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |c| Some(c.saturating_sub(1)));
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |c| {
+                Some(c.saturating_sub(1))
+            });
     }
     fn any(&self) -> bool {
         self.count.load(Ordering::Relaxed) > 0
@@ -210,9 +212,7 @@ fn run(app: AppHandle) {
                 // Connect/disconnect always pass through (and the count is kept
                 // current above) so the "offer Gamepad layout" prompt stays right.
                 let is_presence = matches!(p.kind, "connected" | "disconnected");
-                if (is_presence || presence.is_active())
-                    && app.emit("gamepad:input", p).is_err()
-                {
+                if (is_presence || presence.is_active()) && app.emit("gamepad:input", p).is_err() {
                     tracing::warn!("gamepad bridge: emit failed");
                 }
             }

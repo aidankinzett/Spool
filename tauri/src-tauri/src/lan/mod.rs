@@ -145,9 +145,7 @@ impl LanUploadsState {
         let now = Instant::now();
         // Seed emit timer in the past so the very first add_bytes_sent call
         // is never dropped by the throttle.
-        let emit_base = now
-            .checked_sub(Duration::from_millis(200))
-            .unwrap_or(now);
+        let emit_base = now.checked_sub(Duration::from_millis(200)).unwrap_or(now);
         let is_new = !g.contains_key(session_id);
         let entry = g
             .entry(session_id.to_string())
@@ -184,9 +182,7 @@ impl LanUploadsState {
             Err(_) => return false,
         };
         let now = Instant::now();
-        let emit_base = now
-            .checked_sub(Duration::from_millis(200))
-            .unwrap_or(now);
+        let emit_base = now.checked_sub(Duration::from_millis(200)).unwrap_or(now);
         let is_new = !g.contains_key(session_id);
         let entry = g
             .entry(session_id.to_string())

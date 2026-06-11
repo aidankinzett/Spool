@@ -40,7 +40,11 @@
 fn norm(p: &str) -> String {
     let s = p.replace('\\', "/");
     let t = s.trim_end_matches('/');
-    if t.is_empty() { "/".to_string() } else { t.to_string() }
+    if t.is_empty() {
+        "/".to_string()
+    } else {
+        t.to_string()
+    }
 }
 
 /// Case-insensitively strip `prefix/` (or exactly `prefix`) from the front of
@@ -262,7 +266,10 @@ mod tests {
     #[test]
     fn prefix_appdata_roaming() {
         let picked = format!("{PFX}/drive_c/users/steamuser/AppData/Roaming/Game");
-        assert_eq!(classify(&picked, Some(PFX), None, None), "<winAppData>/Game");
+        assert_eq!(
+            classify(&picked, Some(PFX), None, None),
+            "<winAppData>/Game"
+        );
     }
 
     #[test]
@@ -303,7 +310,10 @@ mod tests {
     fn prefix_game_specific_profile_dir_uses_home() {
         // A folder dropped straight under the user profile.
         let picked = format!("{PFX}/drive_c/users/steamuser/MyGameSaves");
-        assert_eq!(classify(&picked, Some(PFX), None, None), "<home>/MyGameSaves");
+        assert_eq!(
+            classify(&picked, Some(PFX), None, None),
+            "<home>/MyGameSaves"
+        );
     }
 
     #[test]
@@ -332,7 +342,10 @@ mod tests {
         // A Proton game writing to the real Linux home (not the prefix) must stay
         // literal — <home> would be misread as the prefix under --wine-prefix.
         let picked = "/home/deck/.config/MyGame";
-        assert_eq!(classify(picked, Some(PFX), None, Some("/home/deck")), picked);
+        assert_eq!(
+            classify(picked, Some(PFX), None, Some("/home/deck")),
+            picked
+        );
     }
 
     // ── Non-ASCII folder names must not panic (strip_prefix_ci boundary) ─────
@@ -349,7 +362,10 @@ mod tests {
     fn non_ascii_profile_subfolder_maps_to_home() {
         // A Cyrillic folder under the user profile → <home>/… (and no panic).
         let picked = format!("{PFX}/drive_c/users/steamuser/Игры/Slot1");
-        assert_eq!(classify(&picked, Some(PFX), None, None), "<home>/Игры/Slot1");
+        assert_eq!(
+            classify(&picked, Some(PFX), None, None),
+            "<home>/Игры/Slot1"
+        );
     }
 
     #[test]
@@ -364,7 +380,12 @@ mod tests {
     #[test]
     fn windows_appdata_local() {
         assert_eq!(
-            classify("C:/Users/Alice/AppData/Local/MyGame/Saves", None, None, None),
+            classify(
+                "C:/Users/Alice/AppData/Local/MyGame/Saves",
+                None,
+                None,
+                None
+            ),
             "<winLocalAppData>/MyGame/Saves"
         );
     }

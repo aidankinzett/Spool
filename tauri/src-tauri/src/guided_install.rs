@@ -55,7 +55,14 @@ pub async fn run_guided_installer(
     install_dir_override: Option<String>,
     proton_version_override: Option<String>,
 ) -> AppResult<GuidedInstallResult> {
-    run_impl(app, setup_exe, game_name, install_dir_override, proton_version_override).await
+    run_impl(
+        app,
+        setup_exe,
+        game_name,
+        install_dir_override,
+        proton_version_override,
+    )
+    .await
 }
 
 #[cfg(target_os = "linux")]
@@ -76,9 +83,7 @@ async fn run_impl(
 
     let setup_path = PathBuf::from(&setup_exe);
     if !setup_path.is_file() {
-        return Err(AppError::Other(format!(
-            "installer not found: {setup_exe}"
-        )));
+        return Err(AppError::Other(format!("installer not found: {setup_exe}")));
     }
 
     // Resolve umu-run + default Proton from config, mirroring proton.rs.
@@ -137,7 +142,10 @@ async fn run_impl(
             .map_err(|e| AppError::Other(format!("failed to mount install drive: {e}")))?;
 
         // Tell the frontend the drive letter now, before the installer blocks.
-        let _ = app.emit("install:drive-ready", format!("{}:", letter.to_ascii_uppercase()));
+        let _ = app.emit(
+            "install:drive-ready",
+            format!("{}:", letter.to_ascii_uppercase()),
+        );
 
         // Run the installer and wait for it to exit. run_game handles strip-appimage
         // env + cwd; the setup.exe's window staying open blocks here intentionally.

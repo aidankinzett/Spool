@@ -12,7 +12,10 @@ use serde_json::{json, Value};
 /// GUI may also be running) and reports the outcome so the Decky UI can toast
 /// "Pulled latest saves" / "Already up to date" / "Local saves are newer", or a
 /// conflict the user must resolve in the desktop app.
-pub(super) async fn post_pull_cloud_saves(AxPath(id): AxPath<String>, AxState(state): AxState<PluginState>) -> Json<Value> {
+pub(super) async fn post_pull_cloud_saves(
+    AxPath(id): AxPath<String>,
+    AxState(state): AxState<PluginState>,
+) -> Json<Value> {
     if !state.library_available {
         return Json(json!({ "ok": false, "reason": "library unavailable" }));
     }

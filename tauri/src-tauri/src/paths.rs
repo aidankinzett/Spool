@@ -149,7 +149,13 @@ pub fn run_locks_dir() -> PathBuf {
 pub fn run_lock_file(game_id: &str) -> PathBuf {
     let safe: String = game_id
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     run_locks_dir().join(format!("run-{safe}.lock"))
 }
@@ -165,7 +171,13 @@ pub fn run_lock_file(game_id: &str) -> PathBuf {
 pub fn lan_install_lock_file(base: &str) -> PathBuf {
     let safe: String = base
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     let hash = blake3::hash(base.as_bytes()).to_hex().to_string();
     let hash_prefix = &hash[..16];
@@ -414,7 +426,11 @@ pub fn resolve_rclone_path() -> Option<std::path::PathBuf> {
 }
 
 pub fn find_system_binary(name: &str) -> Option<std::path::PathBuf> {
-    let exe_name = if cfg!(windows) { format!("{}.exe", name) } else { name.to_string() };
+    let exe_name = if cfg!(windows) {
+        format!("{}.exe", name)
+    } else {
+        name.to_string()
+    };
 
     // Check PATH
     if let Some(path_env) = std::env::var_os("PATH") {
@@ -467,7 +483,10 @@ mod tests {
     fn lan_install_lock_file_avoids_collisions() {
         let path_a = lan_install_lock_file("A B");
         let path_b = lan_install_lock_file("A_B");
-        assert_ne!(path_a, path_b, "paths with spaces vs underscores should not collide");
+        assert_ne!(
+            path_a, path_b,
+            "paths with spaces vs underscores should not collide"
+        );
 
         let file_name_a = path_a.file_name().unwrap().to_str().unwrap();
         assert!(file_name_a.starts_with("lan-install-A_B-"));

@@ -70,8 +70,7 @@ pub(crate) fn load_blocking(path: &Path) -> HashMap<PathBuf, (SystemTime, String
             tracing::warn!(path = %e.path, nanos = e.mtime_nanos, "lan hash cache: invalid mtime, skipping entry");
             continue;
         }
-        let Some(mtime) = UNIX_EPOCH.checked_add(Duration::new(e.mtime_secs, e.mtime_nanos))
-        else {
+        let Some(mtime) = UNIX_EPOCH.checked_add(Duration::new(e.mtime_secs, e.mtime_nanos)) else {
             tracing::warn!(path = %e.path, secs = e.mtime_secs, "lan hash cache: mtime out of range, skipping entry");
             continue;
         };

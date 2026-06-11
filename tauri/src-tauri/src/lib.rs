@@ -27,11 +27,10 @@
 
 mod accent_backfill;
 mod cli;
+mod config;
 mod custom_saves;
 mod decky_install;
-mod plugin_server;
 mod diagnostics;
-mod config;
 mod drives;
 mod error;
 mod gamemode;
@@ -47,8 +46,9 @@ mod metadata;
 mod metadata_backfill;
 mod move_install;
 mod paths;
-mod process;
+mod plugin_server;
 mod proc_lock;
+mod process;
 mod proton;
 mod rclone;
 mod redirects;
@@ -70,9 +70,9 @@ mod util;
 use cli::CliMode;
 use config::{Config, SharedConfig};
 use lan::{LanDownloadState, LanManifests, LanServerShutdown, LanState, LanUploadsState};
-use rclone::SyncStatusState;
 use library::{Library, SharedLibrary};
 use ludusavi::LudusaviClient;
+use rclone::SyncStatusState;
 use runner::RunState;
 use std::sync::{Arc, Mutex};
 use steamgriddb::SteamGridDbClient;
@@ -408,7 +408,11 @@ pub fn run() {
 /// Looks up a game by exact `game_name` match. Returns the entry id.
 /// Sync wrapper (block_on) for the cold-start / single-instance callback paths,
 /// which run on the main thread rather than inside the async runtime.
-fn find_game_id_by_name(library: &SharedLibrary, name: &str, exe_path: Option<&str>) -> Option<String> {
+fn find_game_id_by_name(
+    library: &SharedLibrary,
+    name: &str,
+    exe_path: Option<&str>,
+) -> Option<String> {
     tauri::async_runtime::block_on(library.find_id_by_name(name, exe_path))
         .ok()
         .flatten()
@@ -522,9 +526,15 @@ fn install_panic_hook() {
 /// library (no args) or queues a game launch (`--run "Name" "Exe"`).
 fn handle_forwarded_launch(app: &AppHandle, argv: &[String]) {
     match cli::parse_args(argv) {
-        CliMode::Run { game_name, exe_path, .. } => {
+        CliMode::Run {
+            game_name,
+            exe_path,
+            ..
+        } => {
             tray::show_library(app); // bring the window up so the user sees the workflow run
-            let Some(id) = find_game_id_by_name(&app.state::<SharedLibrary>(), &game_name, Some(&exe_path)) else {
+            let Some(id) =
+                find_game_id_by_name(&app.state::<SharedLibrary>(), &game_name, Some(&exe_path))
+            else {
                 tracing::warn!(name = %game_name, "forwarded --run: no library entry matches");
                 return;
             };
@@ -543,7 +553,6 @@ fn handle_forwarded_launch(app: &AppHandle, argv: &[String]) {
     }
 }
 
-
 /// Attached Game-Mode launch: no tray, no pollers, no library window. Show a
 /// splash, launch the game from Rust, then exit when the workflow ends so the
 /// host (SteamOS gamescope / Apollo / Sunshine) sees the game stop with Spool.
@@ -551,11 +560,17 @@ fn run_attached_launch(
     app: &tauri::App,
     cli_mode: CliMode,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let CliMode::Run { game_name, exe_path, .. } = cli_mode else {
+    let CliMode::Run {
+        game_name,
+        exe_path,
+        ..
+    } = cli_mode
+    else {
         app.handle().exit(1);
         return Ok(());
     };
-    let Some(id) = find_game_id_by_name(&app.state::<SharedLibrary>(), &game_name, Some(&exe_path)) else {
+    let Some(id) = find_game_id_by_name(&app.state::<SharedLibrary>(), &game_name, Some(&exe_path))
+    else {
         tracing::error!(name = %game_name, "attached --run: no library entry matches");
         app.handle().exit(1);
         return Ok(());
@@ -588,16 +603,13 @@ fn run_attached_launch(
     gamepad::spawn_bridge(app.handle().clone());
 
     // Splash window (the `main` window stays hidden / unused).
-    if let Err(e) = tauri::WebviewWindowBuilder::new(
-        app,
-        "splash",
-        tauri::WebviewUrl::App("splash".into()),
-    )
-    .title("Spool")
-    .decorations(false)
-    .fullscreen(true)
-    .resizable(false)
-    .build()
+    if let Err(e) =
+        tauri::WebviewWindowBuilder::new(app, "splash", tauri::WebviewUrl::App("splash".into()))
+            .title("Spool")
+            .decorations(false)
+            .fullscreen(true)
+            .resizable(false)
+            .build()
     {
         tracing::warn!(error = %e, "failed to create splash window");
     }
@@ -614,11 +626,9 @@ fn run_attached_launch(
     tauri::async_runtime::spawn(async move {
         {
             let ready = app_handle.state::<SplashReady>();
-            let _ = tokio::time::timeout(
-                std::time::Duration::from_secs(5),
-                ready.notify.notified(),
-            )
-            .await;
+            let _ =
+                tokio::time::timeout(std::time::Duration::from_secs(5), ready.notify.notified())
+                    .await;
         }
         if let Err(e) = runner::launch_game_inner(&app_handle, &id).await {
             tracing::error!(error = %e, "attached --run workflow failed");
@@ -645,10 +655,7 @@ fn run_attached_launch(
 /// Normal tray-resident startup: mount the tray, wire the window-close→hide
 /// behaviour, ensure the ludusavi config, kick off background pollers, and
 /// queue any startup `--run` for the frontend to pick up.
-fn run_normal_setup(
-    app: &tauri::App,
-    cli_mode: CliMode,
-) -> Result<(), Box<dyn std::error::Error>> {
+fn run_normal_setup(app: &tauri::App, cli_mode: CliMode) -> Result<(), Box<dyn std::error::Error>> {
     // Mount tray icon + menu.
     tray::mount_tray(app.handle())?;
 
@@ -710,7 +717,12 @@ fn run_normal_setup(
 
     // Startup --run dispatch: queue the game id so the frontend can pick it up
     // once its listeners are ready.
-    if let CliMode::Run { ref game_name, ref exe_path, .. } = cli_mode {
+    if let CliMode::Run {
+        ref game_name,
+        ref exe_path,
+        ..
+    } = cli_mode
+    {
         let library = app.state::<SharedLibrary>();
         let pending = app.state::<PendingRun>();
         if let Some(id) = find_game_id_by_name(&library, game_name, Some(exe_path)) {

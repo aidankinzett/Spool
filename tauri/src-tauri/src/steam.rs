@@ -36,7 +36,6 @@ fn get_steam_shortcut_lock() -> &'static Mutex<()> {
     STEAM_SHORTCUT_LOCK.get_or_init(|| Mutex::new(()))
 }
 
-
 /// One discovered Steam user — the userdata subfolder + path to their
 /// existing shortcuts.vdf (which may not exist yet).
 #[derive(Debug, Clone)]
@@ -290,10 +289,7 @@ pub fn place_grid_art(
     }
     std::fs::create_dir_all(grid_dir)?;
     remove_stale_grid_art(grid_dir, app_id, suffix);
-    let ext = source
-        .extension()
-        .and_then(|s| s.to_str())
-        .unwrap_or("png");
+    let ext = source.extension().and_then(|s| s.to_str()).unwrap_or("png");
     let dest = grid_dir.join(format!("{app_id}{suffix}.{ext}"));
     std::fs::copy(source, &dest)?;
     Ok(Some(dest))
@@ -414,8 +410,8 @@ pub async fn remove_game_from_steam(app_id: u32, app_name: &str) -> AppResult<bo
     // Match the tracked appid, or a same-named shortcut still carrying our tag
     // (a belt-and-suspenders for an appid that drifted from the stored value).
     shortcuts.retain(|s| {
-        let ours = s.app_id == app_id
-            || (s.app_name == app_name && s.tags.iter().any(|t| t == "Spool"));
+        let ours =
+            s.app_id == app_id || (s.app_name == app_name && s.tags.iter().any(|t| t == "Spool"));
         !ours
     });
     let removed = shortcuts.len() != before;
@@ -721,8 +717,13 @@ pub async fn add_to_steam(
         } else {
             match crate::steamgriddb::fetch_and_save_cover(&app, &game_id).await {
                 Ok(Some(fetched)) => {
-                    match place_grid_art_async(user.grid_dir.clone(), app_id, "p", PathBuf::from(fetched))
-                        .await
+                    match place_grid_art_async(
+                        user.grid_dir.clone(),
+                        app_id,
+                        "p",
+                        PathBuf::from(fetched),
+                    )
+                    .await
                     {
                         Ok(p) => p,
                         Err(e) => {
@@ -732,7 +733,9 @@ pub async fn add_to_steam(
                     }
                 }
                 Ok(None) => {
-                    tracing::debug!("add_to_steam: no portrait from SteamGridDB (not configured or no results)");
+                    tracing::debug!(
+                        "add_to_steam: no portrait from SteamGridDB (not configured or no results)"
+                    );
                     None
                 }
                 Err(e) => {
@@ -744,7 +747,10 @@ pub async fn add_to_steam(
     };
 
     if placed_portrait.is_none() {
-        tracing::warn!(app_id, "add_to_steam: portrait not placed — Steam tile will be blank");
+        tracing::warn!(
+            app_id,
+            "add_to_steam: portrait not placed — Steam tile will be blank"
+        );
     } else {
         tracing::debug!(app_id, "add_to_steam: portrait placed");
     }

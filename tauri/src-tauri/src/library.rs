@@ -474,7 +474,11 @@ fn row_to_session(row: &sqlx::sqlite::SqliteRow) -> AppResult<PlaySession> {
 /// Returns `items` with duplicates removed, preserving first-seen order.
 fn dedup_preserve_order(items: &[String]) -> Vec<String> {
     let mut seen = std::collections::HashSet::new();
-    items.iter().filter(|s| seen.insert((*s).clone())).cloned().collect()
+    items
+        .iter()
+        .filter(|s| seen.insert((*s).clone()))
+        .cloned()
+        .collect()
 }
 
 /// The game library, backed by a SQLite connection pool. Cheap to clone the
@@ -676,7 +680,10 @@ impl Library {
         .execute(&self.pool)
         .await?;
         if seeded > 0 {
-            tracing::info!(seeded, "seeded legacy play sessions for pre-sessions playtime");
+            tracing::info!(
+                seeded,
+                "seeded legacy play sessions for pre-sessions playtime"
+            );
         }
         Ok(())
     }
@@ -710,7 +717,11 @@ impl Library {
     }
 
     /// The id of the first game with an exact `game_name` match.
-    pub async fn find_id_by_name(&self, name: &str, exe_path: Option<&str>) -> AppResult<Option<String>> {
+    pub async fn find_id_by_name(
+        &self,
+        name: &str,
+        exe_path: Option<&str>,
+    ) -> AppResult<Option<String>> {
         let row = if let Some(exe) = exe_path {
             sqlx::query(
                 "SELECT id FROM games
@@ -825,13 +836,15 @@ impl Library {
             entry.catalog_number = (max.unwrap_or(0) as u32) + 1;
         }
         let data = serde_json::to_string(&entry)?;
-        sqlx::query("INSERT INTO games (id, catalog_number, game_name, data) VALUES (?1, ?2, ?3, ?4)")
-            .bind(&entry.id)
-            .bind(entry.catalog_number as i64)
-            .bind(&entry.game_name)
-            .bind(&data)
-            .execute(&mut *tx)
-            .await?;
+        sqlx::query(
+            "INSERT INTO games (id, catalog_number, game_name, data) VALUES (?1, ?2, ?3, ?4)",
+        )
+        .bind(&entry.id)
+        .bind(entry.catalog_number as i64)
+        .bind(&entry.game_name)
+        .bind(&data)
+        .execute(&mut *tx)
+        .await?;
         tx.commit().await?;
         Ok(entry)
     }
@@ -983,10 +996,9 @@ impl Library {
     /// game (rather than one `UPDATE … FROM`) to stay portable across SQLite
     /// builds; the session count is small enough that this is cheap.
     pub async fn recompute_all_playtime(&self) -> AppResult<usize> {
-        let names: Vec<String> =
-            sqlx::query_scalar("SELECT DISTINCT game_name FROM play_sessions")
-                .fetch_all(&self.pool)
-                .await?;
+        let names: Vec<String> = sqlx::query_scalar("SELECT DISTINCT game_name FROM play_sessions")
+            .fetch_all(&self.pool)
+            .await?;
         let mut updated = 0usize;
         for name in names {
             if self.recompute_playtime(&name).await? {
@@ -1106,7 +1118,8 @@ impl Library {
 
     /// Sets the cross-device sync badge ("synced" / "local-newer" / …).
     pub async fn set_sync_badge(&self, id: &str, badge: &str) -> AppResult<bool> {
-        self.update_fields(id, &[("sync_badge", json!(badge))]).await
+        self.update_fields(id, &[("sync_badge", json!(badge))])
+            .await
     }
 
     /// Records the cloud-sync merge-base for fast-forward vs. divergence
@@ -1120,11 +1133,7 @@ impl Library {
     /// atomically via `json_set` so it doesn't race a concurrent editor save or
     /// playtime bump — and `custom_save` is in [`RUNTIME_FIELDS`], so a later
     /// whole-entry `replace` re-overlays this value rather than clobbering it.
-    pub async fn set_custom_save(
-        &self,
-        id: &str,
-        custom: Option<&CustomSave>,
-    ) -> AppResult<bool> {
+    pub async fn set_custom_save(&self, id: &str, custom: Option<&CustomSave>) -> AppResult<bool> {
         // Dedup files/registry (first-seen order) so a malformed or hand-edited
         // cross-device definition with repeated paths can't reach the editor's
         // keyed `{#each}` and crash it. This is the single chokepoint every
@@ -1173,7 +1182,8 @@ impl Library {
         // re-derivation and the UI both treat it as "plain manifest".
         let normalized = ov.filter(|o| o.is_active());
         let value = serde_json::to_value(normalized)?;
-        self.update_fields(id, &[("manifest_override", value)]).await
+        self.update_fields(id, &[("manifest_override", value)])
+            .await
     }
 
     /// Sets the manifest override only when the entry doesn't already have one —
@@ -1311,7 +1321,8 @@ struct AddGameImportResult {
 
 fn library_folder_contains_game(root: &Path, game_folder: &Path) -> bool {
     let root_real = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
-    let game_real = std::fs::canonicalize(game_folder).unwrap_or_else(|_| game_folder.to_path_buf());
+    let game_real =
+        std::fs::canonicalize(game_folder).unwrap_or_else(|_| game_folder.to_path_buf());
     game_real.starts_with(&root_real)
 }
 
@@ -1399,12 +1410,15 @@ async fn maybe_import_add_game(
     if dest.exists() {
         return Err(AppError::Other(format!(
             "A folder named '{}' already exists in the default library folder.",
-            dest.file_name().and_then(|s| s.to_str()).unwrap_or("this game")
+            dest.file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("this game")
         )));
     }
 
     let src_real = std::fs::canonicalize(&src_folder).unwrap_or_else(|_| src_folder.clone());
-    let default_root_real = std::fs::canonicalize(&default_root).unwrap_or_else(|_| default_root.clone());
+    let default_root_real =
+        std::fs::canonicalize(&default_root).unwrap_or_else(|_| default_root.clone());
     if default_root_real.starts_with(&src_real) {
         return Err(AppError::Other(
             "The default library folder is inside the game's install folder. Pick a different library folder in Settings.".into(),
@@ -1433,7 +1447,9 @@ async fn cleanup_imported_source(source_to_delete: Option<PathBuf>) {
     if let Some(old_src) = source_to_delete {
         match tokio::task::spawn_blocking(move || std::fs::remove_dir_all(&old_src)).await {
             Ok(Ok(())) => {}
-            Ok(Err(e)) => tracing::warn!(error = %e, "add_game import: couldn't delete original source after copy"),
+            Ok(Err(e)) => {
+                tracing::warn!(error = %e, "add_game import: couldn't delete original source after copy")
+            }
             Err(e) => tracing::warn!(error = %e, "add_game import: source delete task join failed"),
         }
     }
@@ -1592,9 +1608,10 @@ pub async fn add_game(
         }
         // The entry already has its cover / hero / metadata from when it was
         // first added, so no art or Steam-Store fetch is needed here.
-        let refreshed = state.find(&existing.id).await?.ok_or_else(|| {
-            AppError::Other(format!("reinstalled game {} vanished", existing.id))
-        })?;
+        let refreshed = state
+            .find(&existing.id)
+            .await?
+            .ok_or_else(|| AppError::Other(format!("reinstalled game {} vanished", existing.id)))?;
         // The reinstalled folder's hashes are stale (or absent) in the LAN
         // manifest cache — pre-hash in the background so a peer's first
         // manifest request doesn't have to (#435).
@@ -1702,7 +1719,8 @@ pub async fn add_game(
         // and Steam-Store metadata (fills only empty fields; a no-op without a
         // steam id) run concurrently — they touch different fields. Any steam id
         // resolved above is already persisted, so both see it.
-        let art = crate::steamgriddb::fetch_and_save_cover_and_hero(&app_for_enrich, &id_for_enrich);
+        let art =
+            crate::steamgriddb::fetch_and_save_cover_and_hero(&app_for_enrich, &id_for_enrich);
         let meta = crate::metadata::fetch_and_save_metadata(&app_for_enrich, &id_for_enrich);
         let (art_res, meta_res) = tokio::join!(art, meta);
         if let Err(e) = art_res {
@@ -1761,9 +1779,9 @@ pub async fn update_game(
         .is_some_and(|p| !p.is_empty());
     let newly_shareable = entry.lan_shared
         && folder_set
-        && prev.as_ref().is_none_or(|p| {
-            !p.lan_shared || p.game_folder_path != entry.game_folder_path
-        });
+        && prev
+            .as_ref()
+            .is_none_or(|p| !p.lan_shared || p.game_folder_path != entry.game_folder_path);
     if newly_shareable {
         crate::lan::spawn_manifest_prep(app.clone(), entry.id.clone());
     }
@@ -1907,9 +1925,8 @@ pub async fn uninstall_game(
 ) -> AppResult<()> {
     // The run-vs-wipe exclusion is enforced in `wipe_install_files` (reached via
     // uninstall_game_with_backup → uninstall_game_core), cross-process.
-    let ludusavi_exe = crate::paths::resolve_ludusavi_path().ok_or_else(|| {
-        AppError::Other("Ludusavi sidecar not found — reinstall Spool.".into())
-    })?;
+    let ludusavi_exe = crate::paths::resolve_ludusavi_path()
+        .ok_or_else(|| AppError::Other("Ludusavi sidecar not found — reinstall Spool.".into()))?;
     let config_dir = crate::paths::ludusavi_config_dir();
     let ludusavi_client = app.state::<crate::ludusavi::LudusaviClient>();
     crate::runner::uninstall_game_with_backup(
@@ -2157,7 +2174,13 @@ mod tests {
         assert_eq!(all.len(), 2);
         let found = lib.find("a").await.unwrap().unwrap();
         assert_eq!(found.game_name, "Hades");
-        assert_eq!(lib.find_id_by_name("Celeste", None).await.unwrap().as_deref(), Some("b"));
+        assert_eq!(
+            lib.find_id_by_name("Celeste", None)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("b")
+        );
     }
 
     #[tokio::test]
@@ -2186,7 +2209,10 @@ mod tests {
         assert!(lock_path.exists(), "marker exists before removal");
 
         assert!(lib.remove(id).await.unwrap());
-        assert!(!lock_path.exists(), "run-lock marker removed when the entry is retired");
+        assert!(
+            !lock_path.exists(),
+            "run-lock marker removed when the entry is retired"
+        );
     }
 
     #[tokio::test]
@@ -2224,7 +2250,13 @@ mod tests {
         let e = lib.find("a").await.unwrap().unwrap();
         assert_eq!(e.game_name, "Hades Renamed"); // editor change applied
         assert_eq!(e.playtime_minutes, 45); // runtime field preserved
-        assert_eq!(lib.find_id_by_name("Hades Renamed", None).await.unwrap().as_deref(), Some("a"));
+        assert_eq!(
+            lib.find_id_by_name("Hades Renamed", None)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("a")
+        );
     }
 
     #[tokio::test]
@@ -2240,12 +2272,18 @@ mod tests {
 
         // Exact match for the second one:
         assert_eq!(
-            lib.find_id_by_name("Hades", Some("/games/Hades_Epic/hades.exe")).await.unwrap().as_deref(),
+            lib.find_id_by_name("Hades", Some("/games/Hades_Epic/hades.exe"))
+                .await
+                .unwrap()
+                .as_deref(),
             Some("b")
         );
         // Exact match for the first one:
         assert_eq!(
-            lib.find_id_by_name("Hades", Some("/games/Hades_Steam/hades.exe")).await.unwrap().as_deref(),
+            lib.find_id_by_name("Hades", Some("/games/Hades_Steam/hades.exe"))
+                .await
+                .unwrap()
+                .as_deref(),
             Some("a")
         );
         // No exe_path provided: falls back to catalog_number (oldest first, i.e., "a")
@@ -2255,7 +2293,10 @@ mod tests {
         );
         // Mismatched exe_path: still falls back to catalog_number (oldest first, i.e., "a")
         assert_eq!(
-            lib.find_id_by_name("Hades", Some("/other/hades.exe")).await.unwrap().as_deref(),
+            lib.find_id_by_name("Hades", Some("/other/hades.exe"))
+                .await
+                .unwrap()
+                .as_deref(),
             Some("a")
         );
     }
@@ -2276,7 +2317,10 @@ mod tests {
         let mut edited = sample("a", "Game"); // editor's stale copy, steam_id None
         assert!(edited.steam_id.is_none());
         assert!(lib.replace(&edited).await.unwrap());
-        assert_eq!(lib.find("a").await.unwrap().unwrap().steam_id, Some(1145360));
+        assert_eq!(
+            lib.find("a").await.unwrap().unwrap().steam_id,
+            Some(1145360)
+        );
 
         // A genuine identity change still applies the rest of the editor's edits.
         edited.game_name = "Renamed".into();
@@ -2306,13 +2350,21 @@ mod tests {
     /// Give a game `mins` of playtime the way the app now does it: record a
     /// session, then derive the cached totals from the timeline.
     async fn give_playtime(lib: &Library, game: &str, mins: i64) {
-        let s = session(&format!("seed:{game}:{mins}"), "seed-device", game, "2026-01-01T00:00:00Z", mins);
+        let s = session(
+            &format!("seed:{game}:{mins}"),
+            "seed-device",
+            game,
+            "2026-01-01T00:00:00Z",
+            mins,
+        );
         lib.insert_session(&s).await.unwrap();
         lib.recompute_playtime(game).await.unwrap();
     }
 
     fn session(id: &str, device: &str, game: &str, start: &str, mins: i64) -> PlaySession {
-        let started = DateTime::parse_from_rfc3339(start).unwrap().with_timezone(&Utc);
+        let started = DateTime::parse_from_rfc3339(start)
+            .unwrap()
+            .with_timezone(&Utc);
         PlaySession {
             session_id: id.to_string(),
             device_id: device.to_string(),
@@ -2330,15 +2382,27 @@ mod tests {
         // are folded into the same table); last-played is the latest session end.
         let lib = Library::open_in_memory().await.unwrap();
         lib.insert(sample("a", "Hades")).await.unwrap();
-        lib.insert_session(&session("deck:1", "deck", "Hades", "2026-05-01T10:00:00Z", 20)).await.unwrap();
-        lib.insert_session(&session("pc:1", "pc", "Hades", "2026-05-03T10:00:00Z", 25)).await.unwrap();
+        lib.insert_session(&session(
+            "deck:1",
+            "deck",
+            "Hades",
+            "2026-05-01T10:00:00Z",
+            20,
+        ))
+        .await
+        .unwrap();
+        lib.insert_session(&session("pc:1", "pc", "Hades", "2026-05-03T10:00:00Z", 25))
+            .await
+            .unwrap();
 
         assert!(lib.recompute_playtime("Hades").await.unwrap());
         let e = lib.find("a").await.unwrap().unwrap();
         assert_eq!(e.playtime_minutes, 45, "summed across devices");
         assert_eq!(
             e.last_played_at.unwrap(),
-            DateTime::parse_from_rfc3339("2026-05-03T10:25:00Z").unwrap().with_timezone(&Utc),
+            DateTime::parse_from_rfc3339("2026-05-03T10:25:00Z")
+                .unwrap()
+                .with_timezone(&Utc),
             "latest session end",
         );
     }
@@ -2359,12 +2423,21 @@ mod tests {
         let lib = Library::open_in_memory().await.unwrap();
         let mut g = sample("a", "Hades");
         g.playtime_minutes = 120;
-        g.last_played_at =
-            Some(DateTime::parse_from_rfc3339("2025-01-01T00:00:00Z").unwrap().with_timezone(&Utc));
+        g.last_played_at = Some(
+            DateTime::parse_from_rfc3339("2025-01-01T00:00:00Z")
+                .unwrap()
+                .with_timezone(&Utc),
+        );
         lib.insert(g).await.unwrap();
-        lib.insert_session(&session("deck:1", "deck", "Hades", "2025-06-01T00:00:00Z", 30))
-            .await
-            .unwrap();
+        lib.insert_session(&session(
+            "deck:1",
+            "deck",
+            "Hades",
+            "2025-06-01T00:00:00Z",
+            30,
+        ))
+        .await
+        .unwrap();
 
         // open() already ran the once-guarded migration on the (empty) DB, so
         // clear the flag to exercise it against the seeded game.
@@ -2398,9 +2471,27 @@ mod tests {
     async fn list_sessions_filters_by_game_and_orders_by_start() {
         let lib = Library::open_in_memory().await.unwrap();
         // Insert out of chronological order to prove ORDER BY started_at.
-        lib.insert_session(&session("deck:2", "deck", "Hades", "2026-05-02T10:00:00Z", 10)).await.unwrap();
-        lib.insert_session(&session("deck:1", "deck", "Hades", "2026-05-01T10:00:00Z", 20)).await.unwrap();
-        lib.insert_session(&session("pc:1", "pc", "Celeste", "2026-05-01T12:00:00Z", 5)).await.unwrap();
+        lib.insert_session(&session(
+            "deck:2",
+            "deck",
+            "Hades",
+            "2026-05-02T10:00:00Z",
+            10,
+        ))
+        .await
+        .unwrap();
+        lib.insert_session(&session(
+            "deck:1",
+            "deck",
+            "Hades",
+            "2026-05-01T10:00:00Z",
+            20,
+        ))
+        .await
+        .unwrap();
+        lib.insert_session(&session("pc:1", "pc", "Celeste", "2026-05-01T12:00:00Z", 5))
+            .await
+            .unwrap();
 
         let hades = lib.list_sessions(Some("Hades")).await.unwrap();
         assert_eq!(hades.len(), 2);
@@ -2413,8 +2504,18 @@ mod tests {
     #[tokio::test]
     async fn sessions_for_device_scopes_to_one_device() {
         let lib = Library::open_in_memory().await.unwrap();
-        lib.insert_session(&session("deck:1", "deck", "Hades", "2026-05-01T10:00:00Z", 20)).await.unwrap();
-        lib.insert_session(&session("pc:1", "pc", "Hades", "2026-05-01T12:00:00Z", 5)).await.unwrap();
+        lib.insert_session(&session(
+            "deck:1",
+            "deck",
+            "Hades",
+            "2026-05-01T10:00:00Z",
+            20,
+        ))
+        .await
+        .unwrap();
+        lib.insert_session(&session("pc:1", "pc", "Hades", "2026-05-01T12:00:00Z", 5))
+            .await
+            .unwrap();
         let deck = lib.sessions_for_device("deck").await.unwrap();
         assert_eq!(deck.len(), 1);
         assert_eq!(deck[0].device_id, "deck");
@@ -2423,14 +2524,26 @@ mod tests {
     #[tokio::test]
     async fn upsert_sessions_skips_existing_and_counts_new() {
         let lib = Library::open_in_memory().await.unwrap();
-        lib.insert_session(&session("deck:1", "deck", "Hades", "2026-05-01T10:00:00Z", 20)).await.unwrap();
+        lib.insert_session(&session(
+            "deck:1",
+            "deck",
+            "Hades",
+            "2026-05-01T10:00:00Z",
+            20,
+        ))
+        .await
+        .unwrap();
         // Folding a peer batch that re-includes deck:1 only adds the new rows.
         let batch = [
             session("deck:1", "deck", "Hades", "2026-05-01T10:00:00Z", 20),
             session("pc:1", "pc", "Hades", "2026-05-02T10:00:00Z", 15),
             session("pc:2", "pc", "Celeste", "2026-05-03T10:00:00Z", 5),
         ];
-        assert_eq!(lib.upsert_sessions(&batch).await.unwrap(), 2, "only the two new rows");
+        assert_eq!(
+            lib.upsert_sessions(&batch).await.unwrap(),
+            2,
+            "only the two new rows"
+        );
         assert_eq!(lib.list_sessions(None).await.unwrap().len(), 3);
     }
 
@@ -2462,27 +2575,42 @@ mod tests {
         assert!(lib.replace(&sample("a", "Hades Renamed")).await.unwrap());
         let e = lib.find("a").await.unwrap().unwrap();
         assert_eq!(e.game_name, "Hades Renamed");
-        assert!(e.custom_save.is_some(), "custom_save preserved across editor save");
+        assert!(
+            e.custom_save.is_some(),
+            "custom_save preserved across editor save"
+        );
     }
 
     #[tokio::test]
     async fn set_custom_save_if_absent_is_conditional() {
         let lib = Library::open_in_memory().await.unwrap();
         lib.insert(sample("a", "Hades")).await.unwrap();
-        let a = CustomSave { files: vec!["<winLocalAppData>/A".into()], registry: vec![] };
-        let b = CustomSave { files: vec!["<winLocalAppData>/B".into()], registry: vec![] };
+        let a = CustomSave {
+            files: vec!["<winLocalAppData>/A".into()],
+            registry: vec![],
+        };
+        let b = CustomSave {
+            files: vec!["<winLocalAppData>/B".into()],
+            registry: vec![],
+        };
 
         // First adopt wins; a later/racing adopt can't clobber it.
         assert!(lib.set_custom_save_if_absent("a", &a).await.unwrap());
         assert!(!lib.set_custom_save_if_absent("a", &b).await.unwrap());
         let e = lib.find("a").await.unwrap().unwrap();
-        assert_eq!(e.custom_save.unwrap().files, vec!["<winLocalAppData>/A".to_string()]);
+        assert_eq!(
+            e.custom_save.unwrap().files,
+            vec!["<winLocalAppData>/A".to_string()]
+        );
 
         // Once cleared, it's "absent" again and can be set.
         assert!(lib.set_custom_save("a", None).await.unwrap());
         assert!(lib.set_custom_save_if_absent("a", &b).await.unwrap());
         let e = lib.find("a").await.unwrap().unwrap();
-        assert_eq!(e.custom_save.unwrap().files, vec!["<winLocalAppData>/B".to_string()]);
+        assert_eq!(
+            e.custom_save.unwrap().files,
+            vec!["<winLocalAppData>/B".to_string()]
+        );
     }
 
     #[tokio::test]
@@ -2493,13 +2621,18 @@ mod tests {
         let lib = Library::open_in_memory().await.unwrap();
         // Insert raw JSON missing `installed`.
         let data = r#"{"id":"a","catalog_number":1,"game_name":"Hades","exe_path":"/x/h.exe"}"#;
-        sqlx::query("INSERT INTO games (id, catalog_number, game_name, data) VALUES ('a', 1, 'Hades', ?1)")
-            .bind(data)
-            .execute(&lib.pool)
-            .await
-            .unwrap();
+        sqlx::query(
+            "INSERT INTO games (id, catalog_number, game_name, data) VALUES ('a', 1, 'Hades', ?1)",
+        )
+        .bind(data)
+        .execute(&lib.pool)
+        .await
+        .unwrap();
         let e = lib.find("a").await.unwrap().unwrap();
-        assert!(e.installed, "legacy row without the field defaults to installed");
+        assert!(
+            e.installed,
+            "legacy row without the field defaults to installed"
+        );
     }
 
     #[tokio::test]
@@ -2510,7 +2643,9 @@ mod tests {
         let lib: SharedLibrary = Arc::new(Library::open_in_memory().await.unwrap());
 
         // A real folder on disk to be wiped.
-        let dir = std::env::temp_dir().join("spool-uninstall-test-keep").join("Hades");
+        let dir = std::env::temp_dir()
+            .join("spool-uninstall-test-keep")
+            .join("Hades");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("game.exe"), b"x").unwrap();
 
@@ -2551,7 +2686,10 @@ mod tests {
 
         assert!(uninstall_game_core(&lib, "uninst-nofolder").await.is_err());
         let e = lib.find("uninst-nofolder").await.unwrap().unwrap();
-        assert!(e.installed, "entry stays installed when nothing was deleted");
+        assert!(
+            e.installed,
+            "entry stays installed when nothing was deleted"
+        );
     }
 
     #[tokio::test]
@@ -2561,7 +2699,9 @@ mod tests {
         // SURVIVE. Guards against a regression that swaps uninstall_game_core's
         // update_fields for a remove (which would delete the marker).
         let lib: SharedLibrary = Arc::new(Library::open_in_memory().await.unwrap());
-        let dir = std::env::temp_dir().join("spool-uninstall-keeps-lock").join("Hades");
+        let dir = std::env::temp_dir()
+            .join("spool-uninstall-keeps-lock")
+            .join("Hades");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("game.exe"), b"x").unwrap();
         let id = "uninst-keeps-lock-d41e";
@@ -2575,7 +2715,10 @@ mod tests {
         // wipe_install_files acquires the run lock, materialising the marker; it
         // must still be present (uninstall uses update_fields, not remove).
         let lock_path = crate::paths::run_lock_file(id);
-        assert!(lock_path.exists(), "uninstall keeps the run-lock marker for reinstall/re-run");
+        assert!(
+            lock_path.exists(),
+            "uninstall keeps the run-lock marker for reinstall/re-run"
+        );
         assert!(lib.find(id).await.unwrap().is_some(), "entry kept");
 
         let _ = std::fs::remove_file(&lock_path);
@@ -2591,7 +2734,10 @@ mod tests {
         installed.steam_id = Some(1145360);
         lib.insert(installed).await.unwrap();
         assert!(
-            lib.find_reusable_entry(Some(1145360), "Hades").await.unwrap().is_none(),
+            lib.find_reusable_entry(Some(1145360), "Hades")
+                .await
+                .unwrap()
+                .is_none(),
             "an installed entry is never offered for reuse"
         );
 
@@ -2600,7 +2746,10 @@ mod tests {
         uninst.steam_id = Some(1145360);
         uninst.installed = false;
         lib.insert(uninst).await.unwrap();
-        let hit = lib.find_reusable_entry(Some(1145360), "Hades").await.unwrap();
+        let hit = lib
+            .find_reusable_entry(Some(1145360), "Hades")
+            .await
+            .unwrap();
         assert_eq!(hit.unwrap().id, "uninst", "matched by steam id over name");
 
         // Name fallback when no steam id given.
@@ -2611,7 +2760,11 @@ mod tests {
         assert_eq!(hit.unwrap().id, "named");
 
         // No match → None.
-        assert!(lib.find_reusable_entry(None, "Nonexistent").await.unwrap().is_none());
+        assert!(lib
+            .find_reusable_entry(None, "Nonexistent")
+            .await
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]
@@ -2626,12 +2779,19 @@ mod tests {
         // A *different* game also named "Doom" with a different steam id must
         // NOT reuse it (would merge two distinct games into one entry).
         assert!(
-            lib.find_reusable_entry(Some(2371630), "Doom").await.unwrap().is_none(),
+            lib.find_reusable_entry(Some(2371630), "Doom")
+                .await
+                .unwrap()
+                .is_none(),
             "name match rejected on a positive steam-id conflict"
         );
         // No requested steam id → no conflict → reuse by name.
         assert_eq!(
-            lib.find_reusable_entry(None, "Doom").await.unwrap().unwrap().id,
+            lib.find_reusable_entry(None, "Doom")
+                .await
+                .unwrap()
+                .unwrap()
+                .id,
             "doom"
         );
         // An untracked uninstalled entry (no steam id) is still reusable by name
@@ -2641,7 +2801,11 @@ mod tests {
         quake.steam_id = None;
         lib.insert(quake).await.unwrap();
         assert_eq!(
-            lib.find_reusable_entry(Some(2310), "Quake").await.unwrap().unwrap().id,
+            lib.find_reusable_entry(Some(2310), "Quake")
+                .await
+                .unwrap()
+                .unwrap()
+                .id,
             "quake"
         );
     }
@@ -2653,7 +2817,9 @@ mod tests {
         let lib = Library::open_in_memory().await.unwrap();
         lib.insert(sample("a", "Hades")).await.unwrap();
         // Mark uninstalled out-of-band (as uninstall_game_core does).
-        lib.update_fields("a", &[("installed", json!(false))]).await.unwrap();
+        lib.update_fields("a", &[("installed", json!(false))])
+            .await
+            .unwrap();
 
         // Editor loaded the entry while installed and saves with installed=true.
         let mut edited = sample("a", "Hades");
@@ -2661,7 +2827,10 @@ mod tests {
         assert!(lib.replace(&edited).await.unwrap());
 
         let e = lib.find("a").await.unwrap().unwrap();
-        assert!(!e.installed, "live uninstalled state survives an editor save");
+        assert!(
+            !e.installed,
+            "live uninstalled state survives an editor save"
+        );
     }
 
     #[tokio::test]
@@ -2695,7 +2864,10 @@ mod tests {
         let e = lib.find("a").await.unwrap().unwrap();
         assert!(!e.installed, "stays uninstalled");
         assert_eq!(e.exe_path, "", "cleared exe_path not resurrected");
-        assert_eq!(e.game_folder_path, None, "cleared game_folder_path not resurrected");
+        assert_eq!(
+            e.game_folder_path, None,
+            "cleared game_folder_path not resurrected"
+        );
     }
 
     #[tokio::test]
@@ -2714,7 +2886,10 @@ mod tests {
         assert!(lib.replace(&edited).await.unwrap());
 
         let e = lib.find("a").await.unwrap().unwrap();
-        assert_eq!(e.exe_path, "/new/h.exe", "editor path edit applies when installed");
+        assert_eq!(
+            e.exe_path, "/new/h.exe",
+            "editor path edit applies when installed"
+        );
         assert_eq!(e.game_folder_path.as_deref(), Some("/new"));
     }
 
@@ -2728,11 +2903,13 @@ mod tests {
         // (`sync_badge`) must still be preserved as null, not clobbered.
         let lib = Library::open_in_memory().await.unwrap();
         let data = r#"{"id":"a","catalog_number":1,"game_name":"Hades","exe_path":"/x/h.exe","playtime_minutes":42,"sync_badge":null}"#;
-        sqlx::query("INSERT INTO games (id, catalog_number, game_name, data) VALUES ('a', 1, 'Hades', ?1)")
-            .bind(data)
-            .execute(&lib.pool)
-            .await
-            .unwrap();
+        sqlx::query(
+            "INSERT INTO games (id, catalog_number, game_name, data) VALUES ('a', 1, 'Hades', ?1)",
+        )
+        .bind(data)
+        .execute(&lib.pool)
+        .await
+        .unwrap();
 
         // Editor loads + renames + saves (its GameEntry carries installed=true).
         assert!(lib.replace(&sample("a", "Hades Renamed")).await.unwrap());
@@ -2740,8 +2917,14 @@ mod tests {
         // Row still deserializes — no `"installed":null` corruption.
         let e = lib.find("a").await.unwrap().unwrap();
         assert_eq!(e.game_name, "Hades Renamed");
-        assert!(e.installed, "missing-key installed falls back to incoming true, not null");
+        assert!(
+            e.installed,
+            "missing-key installed falls back to incoming true, not null"
+        );
         assert_eq!(e.playtime_minutes, 42, "present runtime field preserved");
-        assert_eq!(e.sync_badge, None, "present-null Option preserved, not clobbered");
+        assert_eq!(
+            e.sync_badge, None,
+            "present-null Option preserved, not clobbered"
+        );
     }
 }
