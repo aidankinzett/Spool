@@ -87,7 +87,11 @@ pub fn ensure_config() -> AppResult<()> {
     let mut changed = false;
 
     changed |= set_path(&mut v, &["manifest", "enable"], Value::Bool(true));
-    changed |= set_path(&mut v, &["backup", "path"], Value::String(backup_path.clone()));
+    changed |= set_path(
+        &mut v,
+        &["backup", "path"],
+        Value::String(backup_path.clone()),
+    );
     changed |= set_path(&mut v, &["restore", "path"], Value::String(backup_path));
     changed |= set_path(
         &mut v,
@@ -96,9 +100,17 @@ pub fn ensure_config() -> AppResult<()> {
     );
     // Seed the revision count only if absent — the user's Settings value is
     // applied via `set_retention` and must not be clobbered on every startup.
-    changed |= ensure_key_exists(&mut v, &["backup", "retention", "full"], Value::Number(5.into()));
+    changed |= ensure_key_exists(
+        &mut v,
+        &["backup", "retention", "full"],
+        Value::Number(5.into()),
+    );
     // Differentials always off (see invariants above).
-    changed |= set_path(&mut v, &["backup", "retention", "differential"], Value::Number(0.into()));
+    changed |= set_path(
+        &mut v,
+        &["backup", "retention", "differential"],
+        Value::Number(0.into()),
+    );
 
     // Upgrade a legacy bare-string remote (written by Spool versions that
     // targeted an older ludusavi) to ludusavi 0.31's tagged struct-variant form,
@@ -112,7 +124,11 @@ pub fn ensure_config() -> AppResult<()> {
     // Always use a bare "rclone" name so each Spool process injects its own
     // bundled binary via PATH when spawning ludusavi, rather than storing an
     // absolute AppImage FUSE-mount path that becomes stale when that process exits.
-    changed |= set_path(&mut v, &["apps", "rclone", "path"], Value::String("rclone".into()));
+    changed |= set_path(
+        &mut v,
+        &["apps", "rclone", "path"],
+        Value::String("rclone".into()),
+    );
 
     // Ensure fast-fail timeout flags are present in apps.rclone.arguments so
     // --cloud-sync gives up quickly on an unreachable remote. Fold them into
@@ -125,7 +141,11 @@ pub fn ensure_config() -> AppResult<()> {
         .unwrap_or("")
         .to_string();
     let with_timeouts = ensure_rclone_timeouts(&current_args);
-    changed |= set_path(&mut v, &["apps", "rclone", "arguments"], Value::String(with_timeouts));
+    changed |= set_path(
+        &mut v,
+        &["apps", "rclone", "arguments"],
+        Value::String(with_timeouts),
+    );
 
     if changed || !file.exists() {
         write_value(&v)?;
@@ -222,14 +242,32 @@ fn apply_cloud(
             // whole config. So every remote is written as the tagged map
             // `{ <Tag>: { id: <name> } }`.
             match prov {
-                "custom" => { set_path(v, &["cloud", "remote"], tagged_remote("Custom", rem)); }
+                "custom" => {
+                    set_path(v, &["cloud", "remote"], tagged_remote("Custom", rem));
+                }
                 // The OAuth presets create an rclone remote whose name equals the
                 // ludusavi variant tag (see `oauth_remote` in rclone.rs), so the
                 // `id` is the tag itself.
-                "box" => { set_path(v, &["cloud", "remote"], tagged_remote("Box", "Box")); }
-                "dropbox" => { set_path(v, &["cloud", "remote"], tagged_remote("Dropbox", "Dropbox")); }
-                "google-drive" => { set_path(v, &["cloud", "remote"], tagged_remote("GoogleDrive", "GoogleDrive")); }
-                "onedrive" => { set_path(v, &["cloud", "remote"], tagged_remote("OneDrive", "OneDrive")); }
+                "box" => {
+                    set_path(v, &["cloud", "remote"], tagged_remote("Box", "Box"));
+                }
+                "dropbox" => {
+                    set_path(v, &["cloud", "remote"], tagged_remote("Dropbox", "Dropbox"));
+                }
+                "google-drive" => {
+                    set_path(
+                        v,
+                        &["cloud", "remote"],
+                        tagged_remote("GoogleDrive", "GoogleDrive"),
+                    );
+                }
+                "onedrive" => {
+                    set_path(
+                        v,
+                        &["cloud", "remote"],
+                        tagged_remote("OneDrive", "OneDrive"),
+                    );
+                }
                 // FTP/SMB/WebDAV are struct variants needing connection details
                 // (host/port/url/credentials) that this function isn't given. The
                 // WebDAV form configures its remote through `ludusavi cloud set
@@ -237,7 +275,9 @@ fn apply_cloud(
                 // struct. Leave any existing remote untouched rather than clobber
                 // it with an incomplete (and invalid) value.
                 "webdav" | "ftp" | "smb" | "spool-server" => {}
-                _ => { set_path(v, &["cloud", "remote"], Value::Null); }
+                _ => {
+                    set_path(v, &["cloud", "remote"], Value::Null);
+                }
             }
         }
     }
@@ -540,7 +580,9 @@ fn set_path(root: &mut Value, path: &[&str], val: Value) -> bool {
         map.insert(k(key), val.clone());
         old.as_ref() != Some(&val)
     } else {
-        let child = map.entry(k(key)).or_insert(Value::Mapping(Default::default()));
+        let child = map
+            .entry(k(key))
+            .or_insert(Value::Mapping(Default::default()));
         set_path(child, rest, val)
     }
 }
@@ -572,7 +614,9 @@ fn ensure_key_exists(root: &mut Value, path: &[&str], default: Value) -> bool {
             changed = true;
         }
     } else {
-        let child = map.entry(k(key)).or_insert(Value::Mapping(Default::default()));
+        let child = map
+            .entry(k(key))
+            .or_insert(Value::Mapping(Default::default()));
         changed |= ensure_key_exists(child, rest, default);
     }
     changed
@@ -607,9 +651,17 @@ mod tests {
     #[test]
     fn ensure_key_exists_only_inserts_when_absent() {
         let mut v = Value::Mapping(Default::default());
-        assert!(ensure_key_exists(&mut v, &["a", "b"], Value::Number(3.into())));
+        assert!(ensure_key_exists(
+            &mut v,
+            &["a", "b"],
+            Value::Number(3.into())
+        ));
         // Present now — second call is a no-op and doesn't overwrite.
-        assert!(!ensure_key_exists(&mut v, &["a", "b"], Value::Number(9.into())));
+        assert!(!ensure_key_exists(
+            &mut v,
+            &["a", "b"],
+            Value::Number(9.into())
+        ));
         assert_eq!(
             v.get("a").and_then(|a| a.get("b")).and_then(|n| n.as_u64()),
             Some(3)
@@ -769,7 +821,11 @@ mod tests {
         // must not clobber the full struct with an incomplete value.
         for provider in ["webdav", "ftp", "smb", "spool-server"] {
             let mut v = Value::Mapping(Default::default());
-            set_path(&mut v, &["cloud", "remote"], tagged_remote("Custom", "preset"));
+            set_path(
+                &mut v,
+                &["cloud", "remote"],
+                tagged_remote("Custom", "preset"),
+            );
             apply_cloud(&mut v, Some(provider), Some(""), None, None, None);
             let remote = get_path(&v, &["cloud", "remote"]).unwrap();
             assert_eq!(
@@ -783,7 +839,11 @@ mod tests {
     #[test]
     fn migrate_bare_remote_upgrades_legacy_preset() {
         let mut v = Value::Mapping(Default::default());
-        set_path(&mut v, &["cloud", "remote"], Value::String("Dropbox".into()));
+        set_path(
+            &mut v,
+            &["cloud", "remote"],
+            Value::String("Dropbox".into()),
+        );
         assert!(migrate_bare_remote(&mut v));
         let remote = get_path(&v, &["cloud", "remote"]).unwrap();
         assert_eq!(
@@ -810,7 +870,11 @@ mod tests {
         let remote = get_path(&v, &["cloud", "remote"]).unwrap();
         // Expect: { Custom: { id: bazzite } }
         let id = get_path(remote, &["Custom", "id"]);
-        assert_eq!(id, Some(&Value::String("bazzite".into())), "got: {remote:?}");
+        assert_eq!(
+            id,
+            Some(&Value::String("bazzite".into())),
+            "got: {remote:?}"
+        );
     }
 
     #[test]
@@ -882,7 +946,12 @@ mod tests {
     #[test]
     fn ensure_rclone_timeouts_appends_missing_flags() {
         let out = ensure_rclone_timeouts("--fast-list --ignore-checksum");
-        for flag in ["--contimeout", "--timeout", "--retries", "--low-level-retries"] {
+        for flag in [
+            "--contimeout",
+            "--timeout",
+            "--retries",
+            "--low-level-retries",
+        ] {
             assert!(out.contains(flag), "expected {flag} in {out:?}");
         }
         // User flags survive at the front.
@@ -956,11 +1025,31 @@ mod tests {
     fn base_invariants_config() -> Value {
         let mut v = Value::Mapping(Default::default());
         set_path(&mut v, &["manifest", "enable"], Value::Bool(true));
-        set_path(&mut v, &["backup", "path"], Value::String("ludusavi-backup".into()));
-        set_path(&mut v, &["restore", "path"], Value::String("ludusavi-backup".into()));
-        set_path(&mut v, &["backup", "format", "chosen"], Value::String("simple".into()));
-        set_path(&mut v, &["backup", "retention", "full"], Value::Number(5.into()));
-        set_path(&mut v, &["backup", "retention", "differential"], Value::Number(0.into()));
+        set_path(
+            &mut v,
+            &["backup", "path"],
+            Value::String("ludusavi-backup".into()),
+        );
+        set_path(
+            &mut v,
+            &["restore", "path"],
+            Value::String("ludusavi-backup".into()),
+        );
+        set_path(
+            &mut v,
+            &["backup", "format", "chosen"],
+            Value::String("simple".into()),
+        );
+        set_path(
+            &mut v,
+            &["backup", "retention", "full"],
+            Value::Number(5.into()),
+        );
+        set_path(
+            &mut v,
+            &["backup", "retention", "differential"],
+            Value::Number(0.into()),
+        );
         v
     }
 
@@ -972,7 +1061,10 @@ mod tests {
         for entry in std::fs::read_dir(&dir).ok()?.flatten() {
             if entry.file_name().to_string_lossy().starts_with("ludusavi-") {
                 let path = entry.path();
-                if std::fs::metadata(&path).map(|m| m.len() > 0).unwrap_or(false) {
+                if std::fs::metadata(&path)
+                    .map(|m| m.len() > 0)
+                    .unwrap_or(false)
+                {
                     return Some(path);
                 }
             }
@@ -990,8 +1082,10 @@ mod tests {
     #[test]
     fn generated_cloud_configs_pass_ludusavi_validation() {
         let Some(ludusavi) = find_ludusavi_binary() else {
-            eprintln!("skipping generated_cloud_configs_pass_ludusavi_validation: \
-                       no real ludusavi binary in binaries/ (run `bun run download-sidecars`)");
+            eprintln!(
+                "skipping generated_cloud_configs_pass_ludusavi_validation: \
+                       no real ludusavi binary in binaries/ (run `bun run download-sidecars`)"
+            );
             return;
         };
 

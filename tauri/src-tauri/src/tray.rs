@@ -19,11 +19,7 @@ pub(crate) fn mount_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Erro
     let quit_item = MenuItem::with_id(app, "tray:quit", "Quit Spool", true, None::<&str>)?;
     let menu = Menu::with_items(
         app,
-        &[
-            &show_item,
-            &PredefinedMenuItem::separator(app)?,
-            &quit_item,
-        ],
+        &[&show_item, &PredefinedMenuItem::separator(app)?, &quit_item],
     )?;
 
     let _tray = TrayIconBuilder::with_id("main")

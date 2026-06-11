@@ -162,9 +162,11 @@ fn upsert_spool_collection(file: &mut Vec<(String, serde_json::Value)>, appids: 
 
 /// Path to the user's collections namespace file (may not exist yet).
 fn cloudstorage_namespace_path(user: &SteamUser) -> Option<PathBuf> {
-    user.shortcuts_path
-        .parent()
-        .map(|config| config.join("cloudstorage").join("cloud-storage-namespace-1.json"))
+    user.shortcuts_path.parent().map(|config| {
+        config
+            .join("cloudstorage")
+            .join("cloud-storage-namespace-1.json")
+    })
 }
 
 fn now_secs() -> u64 {
@@ -361,11 +363,11 @@ mod tests {
         // Re-adding game 2 moves it out of the tombstone set and back to added.
         upsert_spool_collection(&mut file, &[0x8000_0001, 0x8000_0002, 0x8000_0003], 3);
         let v = spool_value(&file);
-        assert_eq!(
-            v.added,
-            vec![0x8000_0001_i64, 0x8000_0002, 0x8000_0003]
+        assert_eq!(v.added, vec![0x8000_0001_i64, 0x8000_0002, 0x8000_0003]);
+        assert!(
+            v.removed.is_empty(),
+            "re-added game must leave the tombstones"
         );
-        assert!(v.removed.is_empty(), "re-added game must leave the tombstones");
     }
 
     #[test]

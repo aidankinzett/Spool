@@ -227,7 +227,10 @@ mod tests {
     fn lan_install_lock_is_mutually_exclusive_per_base() {
         let base = "test-lan-install-lock-4e1d";
         let held = try_acquire_lan_install(base).unwrap();
-        assert!(held.is_some(), "first acquire of a free LAN install lock succeeds");
+        assert!(
+            held.is_some(),
+            "first acquire of a free LAN install lock succeeds"
+        );
         assert!(
             try_acquire_lan_install(base).unwrap().is_none(),
             "second acquire of the same base while held returns None"
@@ -248,10 +251,14 @@ mod tests {
 
     #[test]
     fn run_locks_for_different_games_are_independent() {
-        let _a = try_acquire_run("test-run-lock-indep-a-9b2c").unwrap().unwrap();
+        let _a = try_acquire_run("test-run-lock-indep-a-9b2c")
+            .unwrap()
+            .unwrap();
         // A different game id is a different lock file → independently acquirable.
         assert!(
-            try_acquire_run("test-run-lock-indep-b-9b2c").unwrap().is_some(),
+            try_acquire_run("test-run-lock-indep-b-9b2c")
+                .unwrap()
+                .is_some(),
             "different games don't block each other"
         );
     }

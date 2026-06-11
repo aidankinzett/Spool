@@ -84,8 +84,11 @@ async fn custom_game_def_for(
                 .collect()
         })
         .unwrap_or_default();
-    let user_registry: Vec<String> =
-        g.custom_save.as_ref().map(|cs| cs.registry.clone()).unwrap_or_default();
+    let user_registry: Vec<String> = g
+        .custom_save
+        .as_ref()
+        .map(|cs| cs.registry.clone())
+        .unwrap_or_default();
 
     if override_active && manifest_covered {
         let derived = match ludusavi_exe {
@@ -299,10 +302,7 @@ fn pick_start_dir(entry: &GameEntry) -> Option<String> {
 /// the prefix (and therefore the save location) is created on the first run.
 /// Always `true` for native games / on Windows, where no prefix is involved.
 #[tauri::command]
-pub async fn prefix_ready(
-    library: State<'_, SharedLibrary>,
-    game_id: String,
-) -> AppResult<bool> {
+pub async fn prefix_ready(library: State<'_, SharedLibrary>, game_id: String) -> AppResult<bool> {
     let entry = library
         .find(&game_id)
         .await?
@@ -350,7 +350,10 @@ pub async fn set_custom_save(
         .ok_or_else(|| AppError::Other(format!("game not found: {game_id}")))?
         .game_name;
 
-    let custom = CustomSave { files: files.clone(), registry: registry.clone() };
+    let custom = CustomSave {
+        files: files.clone(),
+        registry: registry.clone(),
+    };
     if !library.set_custom_save(&game_id, Some(&custom)).await? {
         return Err(AppError::Other(format!("game not found: {game_id}")));
     }
@@ -405,10 +408,21 @@ struct SavesBackupEvent<'a> {
     cloud_synced: Option<bool>,
 }
 
-fn emit_backup(app: &AppHandle, game_id: &str, game_name: &str, phase: &str, cloud_synced: Option<bool>) {
+fn emit_backup(
+    app: &AppHandle,
+    game_id: &str,
+    game_name: &str,
+    phase: &str,
+    cloud_synced: Option<bool>,
+) {
     let _ = app.emit(
         "saves:backup",
-        SavesBackupEvent { game_id, game_name, phase, cloud_synced },
+        SavesBackupEvent {
+            game_id,
+            game_name,
+            phase,
+            cloud_synced,
+        },
     );
 }
 
@@ -425,14 +439,17 @@ fn spawn_force_backup(app: AppHandle, game_id: String, game_name: String) {
     tauri::async_runtime::spawn(async move {
         emit_backup(&app, &game_id, &game_name, "started", None);
         let Some(exe) = crate::paths::resolve_ludusavi_path() else {
-            tracing::warn!("ludusavi sidecar not found — skipping forced backup after override change");
+            tracing::warn!(
+                "ludusavi sidecar not found — skipping forced backup after override change"
+            );
             emit_backup(&app, &game_id, &game_name, "failed", None);
             return;
         };
         let config_dir = crate::paths::ludusavi_config_dir();
         let client = app.state::<LudusaviClient>();
         let library = app.state::<SharedLibrary>();
-        match crate::runner::backup_game_core(&client, &exe, &config_dir, &library, &game_id).await {
+        match crate::runner::backup_game_core(&client, &exe, &config_dir, &library, &game_id).await
+        {
             Ok(res) => {
                 emit_backup(&app, &game_id, &game_name, "done", Some(res.cloud_synced));
                 let _ = app.emit("library:changed", &game_id);
@@ -534,7 +551,11 @@ pub async fn adopt_for_new_game(app: &AppHandle, game_id: &str, game_name: &str)
     // don't clobber it (the earlier check was a TOCTOU).
     if !has_custom {
         if let Some(def) = rclone::fetch_custom_save(app, game_name).await {
-            if library.set_custom_save_if_absent(game_id, &def).await.unwrap_or(false) {
+            if library
+                .set_custom_save_if_absent(game_id, &def)
+                .await
+                .unwrap_or(false)
+            {
                 adopted = true;
                 tracing::info!(game_name, "adopted published custom-save definition");
             }
@@ -542,7 +563,11 @@ pub async fn adopt_for_new_game(app: &AppHandle, game_id: &str, game_name: &str)
     }
     if !has_override {
         if let Some(ov) = rclone::fetch_manifest_override(app, game_name).await {
-            if library.set_manifest_override_if_absent(game_id, &ov).await.unwrap_or(false) {
+            if library
+                .set_manifest_override_if_absent(game_id, &ov)
+                .await
+                .unwrap_or(false)
+            {
                 adopted = true;
                 tracing::info!(game_name, "adopted published manifest override");
             }
@@ -563,12 +588,17 @@ pub fn spawn_startup_adopt(app: AppHandle) {
         tokio::time::sleep(std::time::Duration::from_secs(5)).await;
         // Independent network passes over the (quota-limited) remote — run them
         // concurrently so adoption isn't two serial round trips.
-        let (custom, overrides) =
-            tokio::join!(rclone::fold_custom_saves(&app), rclone::fold_manifest_overrides(&app));
+        let (custom, overrides) = tokio::join!(
+            rclone::fold_custom_saves(&app),
+            rclone::fold_manifest_overrides(&app)
+        );
         let applied = custom + overrides;
         sync_best_effort(&app).await;
         if applied > 0 {
-            tracing::info!(applied, "adopted cross-device custom-save / manifest-override definitions");
+            tracing::info!(
+                applied,
+                "adopted cross-device custom-save / manifest-override definitions"
+            );
             let _ = app.emit("library:changed", &());
         }
     });
@@ -615,12 +645,19 @@ mod tests {
             files: vec![path("<base>/save.dat", &["save"], true)],
             registry: vec![
                 path("HKEY_CURRENT_USER/Software/Game/Save", &["save"], true),
-                path("HKEY_CURRENT_USER/Software/Game/Graphics", &["config"], true),
+                path(
+                    "HKEY_CURRENT_USER/Software/Game/Graphics",
+                    &["config"],
+                    true,
+                ),
             ],
         };
         let (files, registry) = apply_override(&data, &ov(&["config"], &[]));
         assert_eq!(files, vec!["<base>/save.dat".to_string()]);
-        assert_eq!(registry, vec!["HKEY_CURRENT_USER/Software/Game/Save".to_string()]);
+        assert_eq!(
+            registry,
+            vec!["HKEY_CURRENT_USER/Software/Game/Save".to_string()]
+        );
     }
 
     #[test]

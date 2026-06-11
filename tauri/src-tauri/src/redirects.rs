@@ -124,7 +124,9 @@ pub struct BackupOrigin {
 pub fn read_backup_origin(backup_dir: &Path, game_name: &str) -> Option<BackupOrigin> {
     let candidates = [
         backup_dir.join(game_name).join("mapping.yaml"),
-        backup_dir.join(windows_safe_name(game_name)).join("mapping.yaml"),
+        backup_dir
+            .join(windows_safe_name(game_name))
+            .join("mapping.yaml"),
     ];
     for mapping in &candidates {
         if let Ok(raw) = std::fs::read_to_string(mapping) {
@@ -154,7 +156,9 @@ pub struct BackupTip {
 pub fn read_local_backup_tip(backup_dir: &Path, game_name: &str) -> Option<BackupTip> {
     let candidates = [
         backup_dir.join(game_name).join("mapping.yaml"),
-        backup_dir.join(windows_safe_name(game_name)).join("mapping.yaml"),
+        backup_dir
+            .join(windows_safe_name(game_name))
+            .join("mapping.yaml"),
     ];
     for mapping in &candidates {
         if let Ok(raw) = std::fs::read_to_string(mapping) {
@@ -210,7 +214,10 @@ pub fn read_backup_tip_from_str(yaml: &str) -> Option<BackupTip> {
         };
         let when = when.with_timezone(&chrono::Utc);
         if tip.as_ref().is_none_or(|t| when > t.when) {
-            tip = Some(BackupTip { name: name.to_string(), when });
+            tip = Some(BackupTip {
+                name: name.to_string(),
+                when,
+            });
         }
     };
 
@@ -232,7 +239,13 @@ pub fn read_backup_tip_from_str(yaml: &str) -> Option<BackupTip> {
 /// with underscores — matches what ludusavi does when creating backup folders on Windows.
 pub fn windows_safe_name(name: &str) -> String {
     name.chars()
-        .map(|c| if matches!(c, ':' | '*' | '?' | '"' | '<' | '>' | '|') { '_' } else { c })
+        .map(|c| {
+            if matches!(c, ':' | '*' | '?' | '"' | '<' | '>' | '|') {
+                '_'
+            } else {
+                c
+            }
+        })
         .collect()
 }
 
@@ -286,7 +299,13 @@ pub fn apply_redirects_for_restore(
     game_folder: Option<&Path>,
     local_win_user: Option<&str>,
 ) -> AppResult<usize> {
-    let redirects = derive_redirects(origin, prefix_root, game_folder, local_win_user, cfg!(windows));
+    let redirects = derive_redirects(
+        origin,
+        prefix_root,
+        game_folder,
+        local_win_user,
+        cfg!(windows),
+    );
     let count = redirects.len();
     ludusavi_config::set_redirects(&redirects)?;
     Ok(count)
@@ -313,8 +332,13 @@ pub fn apply_redirects_for_backup(
     game_folder: Option<&Path>,
     local_win_user: Option<&str>,
 ) -> AppResult<usize> {
-    let restore_rules =
-        derive_redirects(origin, prefix_root, game_folder, local_win_user, cfg!(windows));
+    let restore_rules = derive_redirects(
+        origin,
+        prefix_root,
+        game_folder,
+        local_win_user,
+        cfg!(windows),
+    );
     let backup_rules = invert_for_backup(restore_rules);
     let count = backup_rules.len();
     ludusavi_config::set_redirects(&backup_rules)?;
@@ -348,8 +372,12 @@ fn derive_redirects(
     // used when steering a Windows-format path into the local prefix.
     let backup_win_user = windows_username_from_paths(&origin.paths);
     // This machine's prefix root (forward-slashed), for Linux↔Linux remaps.
-    let local_drive_c = prefix_root
-        .map(|p| format!("{}/drive_c", p.to_string_lossy().replace('\\', "/").trim_end_matches('/')));
+    let local_drive_c = prefix_root.map(|p| {
+        format!(
+            "{}/drive_c",
+            p.to_string_lossy().replace('\\', "/").trim_end_matches('/')
+        )
+    });
 
     // De-duplicated (source, target) pairs — many files share a root.
     let mut rules: BTreeSet<(String, String)> = BTreeSet::new();
@@ -360,9 +388,12 @@ fn derive_redirects(
                 // Native on Windows; needs the Proton prefix to land on Linux.
                 if !local_is_windows {
                     if let Some(pfx) = prefix_root {
-                        if let Some(rule) =
-                            windows_path_to_prefix(path, backup_win_user.as_deref(), pfx, game_folder)
-                        {
+                        if let Some(rule) = windows_path_to_prefix(
+                            path,
+                            backup_win_user.as_deref(),
+                            pfx,
+                            game_folder,
+                        ) {
                             rules.insert(rule);
                         }
                     }
@@ -459,10 +490,22 @@ fn windows_path_to_prefix(
     game_folder: Option<&Path>,
 ) -> Option<(String, String)> {
     match classify_windows_path(path, backup_win_user, prefix_root, game_folder)? {
-        PathClass::UserProfile { win_root, local_root }
-        | PathClass::Public { win_root, local_root }
-        | PathClass::ProgramData { win_root, local_root } => Some((win_root, local_root)),
-        PathClass::InstallDir { win_root, local_root } => {
+        PathClass::UserProfile {
+            win_root,
+            local_root,
+        }
+        | PathClass::Public {
+            win_root,
+            local_root,
+        }
+        | PathClass::ProgramData {
+            win_root,
+            local_root,
+        } => Some((win_root, local_root)),
+        PathClass::InstallDir {
+            win_root,
+            local_root,
+        } => {
             if local_root.is_none() {
                 tracing::warn!(
                     win_root,
@@ -479,10 +522,22 @@ fn windows_path_to_prefix(
 }
 
 enum PathClass {
-    UserProfile { win_root: String, local_root: String },
-    Public { win_root: String, local_root: String },
-    ProgramData { win_root: String, local_root: String },
-    InstallDir { win_root: String, local_root: Option<String> },
+    UserProfile {
+        win_root: String,
+        local_root: String,
+    },
+    Public {
+        win_root: String,
+        local_root: String,
+    },
+    ProgramData {
+        win_root: String,
+        local_root: String,
+    },
+    InstallDir {
+        win_root: String,
+        local_root: Option<String>,
+    },
     XboxUwp,
     Unknown,
 }
@@ -498,10 +553,7 @@ fn classify_windows_path(
     let pfx = prefix_root.to_string_lossy();
 
     // Xbox / UWP — skip.
-    if p.contains("/XboxGames/")
-        || p.contains("/Packages/")
-        || p.contains("/SystemAppData/wgs/")
-    {
+    if p.contains("/XboxGames/") || p.contains("/Packages/") || p.contains("/SystemAppData/wgs/") {
         return Some(PathClass::XboxUwp);
     }
 
@@ -544,7 +596,10 @@ fn classify_windows_path(
             .and_then(|n| n.to_str());
         let win_root = install_dir_root(&p, game_basename);
         let local_root = game_folder.map(|f| f.to_string_lossy().into_owned());
-        return Some(PathClass::InstallDir { win_root, local_root });
+        return Some(PathClass::InstallDir {
+            win_root,
+            local_root,
+        });
     }
 
     Some(PathClass::Unknown)
@@ -599,11 +654,17 @@ fn prefix_path_to_windows(
 
     // users/Public  (no username needed)
     if rest == "users/Public" || rest.starts_with("users/Public/") {
-        return Some((format!("{drive_c}/users/Public"), "C:/Users/Public".to_string()));
+        return Some((
+            format!("{drive_c}/users/Public"),
+            "C:/Users/Public".to_string(),
+        ));
     }
     // ProgramData  (no username needed)
     if rest == "ProgramData" || rest.starts_with("ProgramData/") {
-        return Some((format!("{drive_c}/ProgramData"), "C:/ProgramData".to_string()));
+        return Some((
+            format!("{drive_c}/ProgramData"),
+            "C:/ProgramData".to_string(),
+        ));
     }
     // users/steamuser → C:/Users/<local windows user>
     if rest == "users/steamuser" || rest.starts_with("users/steamuser/") {
@@ -675,7 +736,10 @@ mod tests {
     #[test]
     fn username_extracted_from_paths() {
         let paths = vec!["C:/Users/akinz/AppData/Local/Foo/save.dat".to_string()];
-        assert_eq!(windows_username_from_paths(&paths), Some("akinz".to_string()));
+        assert_eq!(
+            windows_username_from_paths(&paths),
+            Some("akinz".to_string())
+        );
     }
 
     #[test]
@@ -723,9 +787,8 @@ mod tests {
     fn install_dir_anchors_on_game_folder_name_for_deep_paths() {
         // A Steam-library path is deeper than two dirs; the install root must be
         // anchored on the game folder name, not truncated to `…/steamapps`. (#283)
-        let origin = win_origin(&[
-            "G:/SteamLibrary/steamapps/common/ULTRAKILL/Saves/Slot1/save.bepis",
-        ]);
+        let origin =
+            win_origin(&["G:/SteamLibrary/steamapps/common/ULTRAKILL/Saves/Slot1/save.bepis"]);
         let game_folder = PathBuf::from("/home/deck/Games/ULTRAKILL");
         let redirects = derive_redirects(&origin, Some(&pfx()), Some(&game_folder), None, false);
         assert_eq!(redirects.len(), 1);
@@ -917,7 +980,10 @@ mod tests {
         assert_eq!(backup.len(), 1);
         assert_eq!(backup[0].kind, "backup");
         // source = local prefix path (scanned), target = Windows path (stored).
-        assert_eq!(backup[0].source, "/home/deck/.../prefixes/abc/drive_c/users/steamuser");
+        assert_eq!(
+            backup[0].source,
+            "/home/deck/.../prefixes/abc/drive_c/users/steamuser"
+        );
         assert_eq!(backup[0].target, "C:/Users/akinz");
     }
 
@@ -948,8 +1014,14 @@ mod tests {
 
     #[test]
     fn classify_format_distinguishes_kinds() {
-        assert!(matches!(classify_format("C:/Users/akinz/x"), PathFormat::Windows));
-        assert!(matches!(classify_format("G:/Games/X/s"), PathFormat::Windows));
+        assert!(matches!(
+            classify_format("C:/Users/akinz/x"),
+            PathFormat::Windows
+        ));
+        assert!(matches!(
+            classify_format("G:/Games/X/s"),
+            PathFormat::Windows
+        ));
         assert!(matches!(
             classify_format("/home/deck/p/abc/drive_c/users/steamuser/x"),
             PathFormat::WinePrefix { .. }
@@ -975,8 +1047,12 @@ mod tests {
     #[test]
     fn read_backup_origin_finds_safe_name_folder() {
         let backup_dir = std::path::Path::new("/home/deck/.local/share/Spool/ludusavi-backup");
-        if !backup_dir.exists() { return; }
-        if let Some(origin) = read_backup_origin(backup_dir, "Lego Batman: Legacy of the Dark Knight") {
+        if !backup_dir.exists() {
+            return;
+        }
+        if let Some(origin) =
+            read_backup_origin(backup_dir, "Lego Batman: Legacy of the Dark Knight")
+        {
             assert_eq!(origin.os, BackupOs::Windows);
             assert!(origin.paths.iter().any(|p| p.contains("akinz")));
         }
@@ -1000,7 +1076,11 @@ mod tests {
             return;
         };
         assert_eq!(origin.os, BackupOs::Windows);
-        assert!(origin.paths.len() > 4, "expected paths from diffs too, got {}", origin.paths.len());
+        assert!(
+            origin.paths.len() > 4,
+            "expected paths from diffs too, got {}",
+            origin.paths.len()
+        );
         assert!(origin.paths.iter().all(|p| p.starts_with("C:/")));
     }
 

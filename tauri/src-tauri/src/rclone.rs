@@ -47,10 +47,10 @@ use crate::library::SharedLibrary;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
-use std::future::Future;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 /// Timeout for a control-plane op (cat / rcat / deletefile / lsjson). The
@@ -74,10 +74,14 @@ const SUSPEND_TIMEOUT: Duration = Duration::from_secs(3);
 /// unreachable remote (classic SteamOS Game-Mode boot before Wi-Fi is up)
 /// fails in seconds instead of blocking the launch for minutes.
 pub const FAST_FLAGS: &[&str] = &[
-    "--contimeout", "5s",
-    "--timeout", "30s",
-    "--retries", "1",
-    "--low-level-retries", "1",
+    "--contimeout",
+    "5s",
+    "--timeout",
+    "30s",
+    "--retries",
+    "1",
+    "--low-level-retries",
+    "1",
 ];
 
 // ── Reachability status (unchanged shape, now driven by rclone) ─────────────
@@ -167,7 +171,11 @@ impl RcloneRemote {
     /// `schema` is the highest version this build can safely interpret; blobs
     /// with a higher stored schema are rejected by `BlobStore::fetch`.
     fn store<'a>(&'a self, subdir: &'a str, schema: u32) -> BlobStore<'a> {
-        BlobStore { remote: self, subdir, schema }
+        BlobStore {
+            remote: self,
+            subdir,
+            schema,
+        }
     }
 }
 
@@ -262,7 +270,16 @@ pub fn remote_name_from_yaml(config: &serde_yaml::Value) -> Option<String> {
         // migrated by `ludusavi_config::migrate_bare_remote`.
         serde_yaml::Value::String(s) => Some(s.clone()),
         serde_yaml::Value::Mapping(m) => {
-            for tag in ["Custom", "WebDav", "Box", "Dropbox", "GoogleDrive", "OneDrive", "Ftp", "Smb"] {
+            for tag in [
+                "Custom",
+                "WebDav",
+                "Box",
+                "Dropbox",
+                "GoogleDrive",
+                "OneDrive",
+                "Ftp",
+                "Smb",
+            ] {
                 if let Some(inner) = m.get(serde_yaml::Value::String(tag.into())) {
                     if let Some(id) = inner.get(serde_yaml::Value::String("id".into())) {
                         return id.as_str().map(String::from);
@@ -300,7 +317,11 @@ pub fn resolve_remote_from_config(cfg: &ConfigData) -> Option<RcloneRemote> {
 /// remote roots.
 pub(crate) fn base_path(cfg: &ConfigData) -> String {
     let b = cfg.cloud.base_path.trim().trim_end_matches('/');
-    if b.is_empty() { "Spool".to_string() } else { b.to_string() }
+    if b.is_empty() {
+        "Spool".to_string()
+    } else {
+        b.to_string()
+    }
 }
 
 fn resolve_remote_inner(base: String) -> Option<RcloneRemote> {
@@ -443,7 +464,10 @@ async fn run_op(
         Ok(c) => c,
         Err(e) => {
             tracing::warn!(error = %e, op = label, "rclone spawn failed");
-            report_reach(Reach::Offline, Some(format!("rclone {label}: spawn failed")));
+            report_reach(
+                Reach::Offline,
+                Some(format!("rclone {label}: spawn failed")),
+            );
             return None;
         }
     };
@@ -451,7 +475,10 @@ async fn run_op(
         if let Some(mut stdin) = child.stdin.take() {
             if let Err(e) = stdin.write_all(body).await {
                 tracing::warn!(error = %e, op = label, "rclone stdin write failed");
-                report_reach(Reach::Offline, Some(format!("rclone {label}: stdin write failed")));
+                report_reach(
+                    Reach::Offline,
+                    Some(format!("rclone {label}: stdin write failed")),
+                );
                 return None;
             }
             drop(stdin); // close so rclone sees EOF
@@ -710,7 +737,10 @@ async fn delete_marker_if_ours(remote: &RcloneRemote, game_name: &str, device_id
             return;
         }
     }
-    remote.store("sessions", 0).delete(&session_hash(game_name)).await;
+    remote
+        .store("sessions", 0)
+        .delete(&session_hash(game_name))
+        .await;
 }
 
 /// Phase 1.5: classify any existing marker and, when clear to proceed, claim
@@ -728,17 +758,27 @@ pub async fn claim_session(app: &AppHandle, game_name: &str, steal: bool) -> Ses
     let marker = read_session_marker(&remote, game_name).await;
     match classify(marker.as_ref(), &device_id, Utc::now().timestamp(), steal) {
         Decision::Proceed => {
-            let ours = build_marker(game_name, &device_id, &device_name, SessionState::Active, false);
+            let ours = build_marker(
+                game_name,
+                &device_id,
+                &device_name,
+                SessionState::Active,
+                false,
+            );
             if !write_marker(&remote, &ours).await {
                 tracing::warn!(game_name, "claim_session: failed to write Active marker — advisory locking disabled for this session");
             }
             SessionClass::Free
         }
         Decision::ActiveElsewhere => SessionClass::ActiveElsewhere {
-            device_name: marker.map(|m| m.device_name).unwrap_or_else(|| "another device".into()),
+            device_name: marker
+                .map(|m| m.device_name)
+                .unwrap_or_else(|| "another device".into()),
         },
         Decision::UnsyncedElsewhere => SessionClass::UnsyncedElsewhere {
-            device_name: marker.map(|m| m.device_name).unwrap_or_else(|| "another device".into()),
+            device_name: marker
+                .map(|m| m.device_name)
+                .unwrap_or_else(|| "another device".into()),
         },
     }
 }
@@ -748,7 +788,11 @@ pub async fn claim_session(app: &AppHandle, game_name: &str, steal: bool) -> Ses
 /// session-start timestamp captured at claim time — preserved on every tick
 /// so peers always see accurate session age. Returns the JoinHandle; the
 /// runner `.abort()`s it on session end.
-pub fn start_heartbeat(app: AppHandle, game_name: String, started_at: String) -> tokio::task::JoinHandle<()> {
+pub fn start_heartbeat(
+    app: AppHandle,
+    game_name: String,
+    started_at: String,
+) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         loop {
             tokio::time::sleep(HEARTBEAT_INTERVAL).await;
@@ -807,7 +851,11 @@ impl RemoteIdentity {
         if device_id.is_empty() {
             return None;
         }
-        Some(Self { remote, device_id, device_name })
+        Some(Self {
+            remote,
+            device_id,
+            device_name,
+        })
     }
 
     #[cfg_attr(windows, allow(dead_code))] // only built via the unix-gated plugin server
@@ -881,7 +929,8 @@ async fn complete_session_backup_core(id: &RemoteIdentity, game_name: &str) {
         delete_marker_if_ours(&id.remote, game_name, &id.device_id),
         update_device_blob(&id.remote, &id.device_id, |b| {
             b.device_name = device_name.clone();
-            b.backups.insert(game_name.to_string(), Utc::now().to_rfc3339());
+            b.backups
+                .insert(game_name.to_string(), Utc::now().to_rfc3339());
         }),
     );
 }
@@ -932,7 +981,13 @@ pub async fn mark_session_suspended(app: &AppHandle, game_name: &str) -> bool {
     if device_id.is_empty() {
         return false;
     }
-    let marker = build_marker(game_name, &device_id, &device_name, SessionState::Active, true);
+    let marker = build_marker(
+        game_name,
+        &device_id,
+        &device_name,
+        SessionState::Active,
+        true,
+    );
     tokio::time::timeout(SUSPEND_TIMEOUT, write_marker(&remote, &marker))
         .await
         .unwrap_or(false)
@@ -956,7 +1011,13 @@ pub async fn resume_session(app: &AppHandle, game_name: &str) -> Option<String> 
             return Some(m.device_name.clone());
         }
     }
-    let marker = build_marker(game_name, &device_id, &device_name, SessionState::Active, false);
+    let marker = build_marker(
+        game_name,
+        &device_id,
+        &device_name,
+        SessionState::Active,
+        false,
+    );
     write_marker(&remote, &marker).await;
     None
 }
@@ -981,7 +1042,9 @@ pub struct DeviceBlob {
 }
 
 impl HasSchema for DeviceBlob {
-    fn stored_schema(&self) -> u32 { self.schema }
+    fn stored_schema(&self) -> u32 {
+        self.schema
+    }
 }
 
 /// Read-modify-write of THIS device's blob. Cats the current file (default if
@@ -1042,14 +1105,20 @@ async fn record_session_core(
         if delta > 0 {
             *b.playtime.entry(game_name.to_string()).or_default() += delta;
         }
-        b.last_played.insert(game_name.to_string(), session_end.to_string());
+        b.last_played
+            .insert(game_name.to_string(), session_end.to_string());
     })
     .await;
 }
 
 /// Record a finished session in this device's blob (playtime delta + last
 /// played). Best-effort; no-op when cloud isn't configured.
-pub async fn record_session(app: &AppHandle, game_name: &str, session_minutes: i32, session_end: &str) {
+pub async fn record_session(
+    app: &AppHandle,
+    game_name: &str,
+    session_minutes: i32,
+    session_end: &str,
+) {
     let Some(id) = RemoteIdentity::from_app(app) else {
         return;
     };
@@ -1094,7 +1163,9 @@ pub struct HistoryBlob {
 }
 
 impl HasSchema for HistoryBlob {
-    fn stored_schema(&self) -> u32 { self.schema }
+    fn stored_schema(&self) -> u32 {
+        self.schema
+    }
 }
 
 /// Overwrite this device's history blob with the full set of its local
@@ -1112,7 +1183,10 @@ async fn sync_play_history_core(id: &RemoteIdentity, library: &crate::library::L
         sessions,
         schema: 1,
     };
-    id.remote.store("history", 1).publish(&id.device_id, &blob).await;
+    id.remote
+        .store("history", 1)
+        .publish(&id.device_id, &blob)
+        .await;
 }
 
 /// Push this device's play-session history to the remote: read every local
@@ -1226,7 +1300,9 @@ struct CustomSaveBlob {
 }
 
 impl HasSchema for CustomSaveBlob {
-    fn stored_schema(&self) -> u32 { self.schema }
+    fn stored_schema(&self) -> u32 {
+        self.schema
+    }
 }
 
 /// Publish (or update) this game's custom-save definition to the control plane
@@ -1237,7 +1313,9 @@ pub async fn publish_custom_save(
     files: &[String],
     registry: &[String],
 ) {
-    let Some(remote) = resolve_remote(app) else { return; };
+    let Some(remote) = resolve_remote(app) else {
+        return;
+    };
     let blob = CustomSaveBlob {
         name: game_name.to_string(),
         files: files.to_vec(),
@@ -1245,20 +1323,31 @@ pub async fn publish_custom_save(
         updated_at: Utc::now().to_rfc3339(),
         schema: CUSTOM_SAVE_SCHEMA,
     };
-    remote.store("custom-saves", CUSTOM_SAVE_SCHEMA).publish(&session_hash(game_name), &blob).await;
+    remote
+        .store("custom-saves", CUSTOM_SAVE_SCHEMA)
+        .publish(&session_hash(game_name), &blob)
+        .await;
 }
 
 /// Remove a game's published custom-save definition (when the user clears it).
 /// Best-effort; a missing blob is fine.
 pub async fn delete_custom_save(app: &AppHandle, game_name: &str) {
-    let Some(remote) = resolve_remote(app) else { return; };
-    remote.store("custom-saves", CUSTOM_SAVE_SCHEMA).delete(&session_hash(game_name)).await;
+    let Some(remote) = resolve_remote(app) else {
+        return;
+    };
+    remote
+        .store("custom-saves", CUSTOM_SAVE_SCHEMA)
+        .delete(&session_hash(game_name))
+        .await;
 }
 
 /// Fetch a single published custom-save definition by game name (one `cat`).
 /// Used to adopt a definition the moment a matching game is added on a new
 /// device. `None` when cloud isn't configured or no definition exists.
-pub async fn fetch_custom_save(app: &AppHandle, game_name: &str) -> Option<crate::library::CustomSave> {
+pub async fn fetch_custom_save(
+    app: &AppHandle,
+    game_name: &str,
+) -> Option<crate::library::CustomSave> {
     let remote = resolve_remote(app)?;
     let blob: CustomSaveBlob = remote
         .store("custom-saves", CUSTOM_SAVE_SCHEMA)
@@ -1267,7 +1356,10 @@ pub async fn fetch_custom_save(app: &AppHandle, game_name: &str) -> Option<crate
     if blob.files.is_empty() && blob.registry.is_empty() {
         return None;
     }
-    Some(crate::library::CustomSave { files: blob.files, registry: blob.registry })
+    Some(crate::library::CustomSave {
+        files: blob.files,
+        registry: blob.registry,
+    })
 }
 
 /// Max concurrent `rclone cat` subprocesses when reading a control-plane
@@ -1318,7 +1410,9 @@ async fn read_json_blobs<T: serde::de::DeserializeOwned>(
 /// updated; the caller re-syncs ludusavi's `customGames` block and emits
 /// `library:changed`. Best-effort; 0 when cloud isn't configured.
 pub async fn fold_custom_saves(app: &AppHandle) -> usize {
-    let Some(remote) = resolve_remote(app) else { return 0; };
+    let Some(remote) = resolve_remote(app) else {
+        return 0;
+    };
     fold_name_keyed(
         app,
         &remote.store("custom-saves", CUSTOM_SAVE_SCHEMA),
@@ -1327,10 +1421,20 @@ pub async fn fold_custom_saves(app: &AppHandle) -> usize {
             if blob.schema > CUSTOM_SAVE_SCHEMA || blob.name.is_empty() || !has_paths {
                 return None;
             }
-            Some((blob.name, crate::library::CustomSave { files: blob.files, registry: blob.registry }))
+            Some((
+                blob.name,
+                crate::library::CustomSave {
+                    files: blob.files,
+                    registry: blob.registry,
+                },
+            ))
         },
         |entry| entry.custom_save.is_some(),
-        |lib, id, def| async move { lib.set_custom_save_if_absent(&id, &def).await.unwrap_or(false) },
+        |lib, id, def| async move {
+            lib.set_custom_save_if_absent(&id, &def)
+                .await
+                .unwrap_or(false)
+        },
     )
     .await
 }
@@ -1355,7 +1459,9 @@ struct ManifestOverrideBlob {
 }
 
 impl HasSchema for ManifestOverrideBlob {
-    fn stored_schema(&self) -> u32 { self.schema }
+    fn stored_schema(&self) -> u32 {
+        self.schema
+    }
 }
 
 /// Publish (or update) this game's manifest override so other devices adopt the
@@ -1365,7 +1471,9 @@ pub async fn publish_manifest_override(
     game_name: &str,
     ov: &crate::library::ManifestOverride,
 ) {
-    let Some(remote) = resolve_remote(app) else { return; };
+    let Some(remote) = resolve_remote(app) else {
+        return;
+    };
     let blob = ManifestOverrideBlob {
         name: game_name.to_string(),
         excluded_tags: ov.excluded_tags.clone(),
@@ -1382,7 +1490,9 @@ pub async fn publish_manifest_override(
 /// Remove a game's published manifest override (when the user clears it).
 /// Best-effort; a missing blob is fine.
 pub async fn delete_manifest_override(app: &AppHandle, game_name: &str) {
-    let Some(remote) = resolve_remote(app) else { return; };
+    let Some(remote) = resolve_remote(app) else {
+        return;
+    };
     remote
         .store("manifest-overrides", MANIFEST_OVERRIDE_SCHEMA)
         .delete(&session_hash(game_name))
@@ -1412,7 +1522,9 @@ pub async fn fetch_manifest_override(
 /// the caller re-syncs the `customGames` block and emits `library:changed`.
 /// Best-effort; 0 when cloud isn't configured.
 pub async fn fold_manifest_overrides(app: &AppHandle) -> usize {
-    let Some(remote) = resolve_remote(app) else { return 0; };
+    let Some(remote) = resolve_remote(app) else {
+        return 0;
+    };
     fold_name_keyed(
         app,
         &remote.store("manifest-overrides", MANIFEST_OVERRIDE_SCHEMA),
@@ -1428,7 +1540,9 @@ pub async fn fold_manifest_overrides(app: &AppHandle) -> usize {
         },
         |entry| entry.manifest_override.is_some(),
         |lib, id, def| async move {
-            lib.set_manifest_override_if_absent(&id, &def).await.unwrap_or(false)
+            lib.set_manifest_override_if_absent(&id, &def)
+                .await
+                .unwrap_or(false)
         },
     )
     .await
@@ -1552,7 +1666,12 @@ pub async fn fold_devices_from_config() -> bool {
             continue;
         };
         let fields = fold_fields_for(entry, f, &our_device_id);
-        if !fields.is_empty() && library.update_fields(&entry.id, &fields).await.unwrap_or(false) {
+        if !fields.is_empty()
+            && library
+                .update_fields(&entry.id, &fields)
+                .await
+                .unwrap_or(false)
+        {
             applied += 1;
         }
     }
@@ -1587,7 +1706,10 @@ fn fold_fields_for(
         ));
     }
     if entry.save_cloud_revision_at != rev {
-        fields.push(("save_cloud_revision_at", to_value(rev).unwrap_or(Value::Null)));
+        fields.push((
+            "save_cloud_revision_at",
+            to_value(rev).unwrap_or(Value::Null),
+        ));
     }
     fields
 }
@@ -1633,7 +1755,12 @@ async fn run_startup_fold(app: &AppHandle) {
             continue;
         };
         let fields = fold_fields_for(entry, f, &our_device_id);
-        if !fields.is_empty() && library.update_fields(&entry.id, &fields).await.unwrap_or(false) {
+        if !fields.is_empty()
+            && library
+                .update_fields(&entry.id, &fields)
+                .await
+                .unwrap_or(false)
+        {
             applied += 1;
         }
     }
@@ -1701,11 +1828,11 @@ async fn poll_once(app: &AppHandle) {
 /// `rclone lsd <remote>:` (the reachability probe) will look up.
 fn oauth_remote(provider: &str) -> Option<(&'static str, &'static str)> {
     match provider {
-        "google-drive" => Some(("drive",     "GoogleDrive")),
-        "dropbox"      => Some(("dropbox",   "Dropbox")),
-        "onedrive"     => Some(("onedrive",  "OneDrive")),
-        "box"          => Some(("box",       "Box")),
-        _              => None,
+        "google-drive" => Some(("drive", "GoogleDrive")),
+        "dropbox" => Some(("dropbox", "Dropbox")),
+        "onedrive" => Some(("onedrive", "OneDrive")),
+        "box" => Some(("box", "Box")),
+        _ => None,
     }
 }
 
@@ -1788,8 +1915,11 @@ pub async fn connect_cloud_oauth(
     use crate::error::AppError;
     use tokio::io::AsyncBufReadExt;
 
-    let (rclone_type, remote_name) = oauth_remote(&provider)
-        .ok_or_else(|| AppError::Other(format!("'{provider}' does not use OAuth (use WebDAV form or configure rclone manually)")))?;
+    let (rclone_type, remote_name) = oauth_remote(&provider).ok_or_else(|| {
+        AppError::Other(format!(
+            "'{provider}' does not use OAuth (use WebDAV form or configure rclone manually)"
+        ))
+    })?;
 
     let exe = crate::paths::resolve_rclone_path()
         .ok_or_else(|| AppError::Other("rclone binary not found".into()))?;
@@ -1831,12 +1961,17 @@ pub async fn connect_cloud_oauth(
     #[cfg(target_os = "linux")]
     crate::process::strip_appimage_env(&mut cmd);
 
-    let mut child = cmd.spawn()
+    let mut child = cmd
+        .spawn()
         .map_err(|e| AppError::Other(format!("failed to start rclone authorize: {e}")))?;
 
-    let stdout = child.stdout.take()
+    let stdout = child
+        .stdout
+        .take()
         .ok_or_else(|| AppError::Other("could not open rclone stdout".into()))?;
-    let stderr = child.stderr.take()
+    let stderr = child
+        .stderr
+        .take()
         .ok_or_else(|| AppError::Other("could not open rclone stderr".into()))?;
 
     // Park the child so cancel_cloud_oauth can kill it.
@@ -1894,7 +2029,8 @@ pub async fn connect_cloud_oauth(
 
     if timed_out.is_err() {
         return Err(AppError::Other(
-            "OAuth flow timed out after 300s — the browser window was not completed in time".to_string(),
+            "OAuth flow timed out after 300s — the browser window was not completed in time"
+                .to_string(),
         ));
     }
 
@@ -1933,19 +2069,21 @@ pub async fn connect_cloud_oauth(
     }
     let mut create_cmd = base_command(&exe);
     create_cmd.args(&create_args);
-    let create_child = create_cmd.spawn()
+    let create_child = create_cmd
+        .spawn()
         .map_err(|e| AppError::Other(format!("rclone config create spawn failed: {e}")))?;
-    let create_out = tokio::time::timeout(
-        Duration::from_secs(15),
-        create_child.wait_with_output(),
-    )
-    .await
-    .map_err(|_| AppError::Other("rclone config create timed out".into()))?
-    .map_err(|e| AppError::Other(format!("rclone config create error: {e}")))?;
+    let create_out = tokio::time::timeout(Duration::from_secs(15), create_child.wait_with_output())
+        .await
+        .map_err(|_| AppError::Other("rclone config create timed out".into()))?
+        .map_err(|e| AppError::Other(format!("rclone config create error: {e}")))?;
 
     if !create_out.status.success() {
-        let stderr = String::from_utf8_lossy(&create_out.stderr).trim().to_string();
-        return Err(AppError::Other(format!("rclone config create failed: {stderr}")));
+        let stderr = String::from_utf8_lossy(&create_out.stderr)
+            .trim()
+            .to_string();
+        return Err(AppError::Other(format!(
+            "rclone config create failed: {stderr}"
+        )));
     }
 
     // Write the provider into ludusavi's config.yaml so the reachability probe
@@ -1958,10 +2096,9 @@ pub async fn connect_cloud_oauth(
     // stale or blank if the user hasn't committed the settings change yet.
     let cloud_snapshot = {
         let cfg = app.state::<crate::config::SharedConfig>();
-        cfg.lock().ok().map(|g| (
-            g.data.cloud.rclone_args.clone(),
-            base_path(&g.data),
-        ))
+        cfg.lock()
+            .ok()
+            .map(|g| (g.data.cloud.rclone_args.clone(), base_path(&g.data)))
     };
     if let Some((rclone_args, base)) = cloud_snapshot {
         let ludusavi_remote_path = format!("{}/ludusavi-backup", base);
@@ -2011,7 +2148,12 @@ pub async fn refresh_sync_status(app: AppHandle) -> SyncStatus {
 mod tests {
     use super::*;
 
-    fn marker(state: SessionState, updated_at: &str, suspended: bool, device: &str) -> SessionMarker {
+    fn marker(
+        state: SessionState,
+        updated_at: &str,
+        suspended: bool,
+        device: &str,
+    ) -> SessionMarker {
         SessionMarker {
             game_name: "Hades".into(),
             device_id: device.into(),
@@ -2034,13 +2176,31 @@ mod tests {
     #[test]
     fn has_schema_rejects_newer_blobs() {
         // DeviceBlob and HistoryBlob now implement HasSchema; schema > store cap is rejected.
-        let new_dev = DeviceBlob { schema: 2, ..Default::default() };
-        let old_dev = DeviceBlob { schema: 1, ..Default::default() };
-        assert!(new_dev.stored_schema() > 1, "schema 2 must be filtered by a schema-1 store");
-        assert!(old_dev.stored_schema() <= 1, "schema 1 must pass a schema-1 store");
+        let new_dev = DeviceBlob {
+            schema: 2,
+            ..Default::default()
+        };
+        let old_dev = DeviceBlob {
+            schema: 1,
+            ..Default::default()
+        };
+        assert!(
+            new_dev.stored_schema() > 1,
+            "schema 2 must be filtered by a schema-1 store"
+        );
+        assert!(
+            old_dev.stored_schema() <= 1,
+            "schema 1 must pass a schema-1 store"
+        );
 
-        let new_hist = HistoryBlob { schema: 3, ..Default::default() };
-        let old_hist = HistoryBlob { schema: 1, ..Default::default() };
+        let new_hist = HistoryBlob {
+            schema: 3,
+            ..Default::default()
+        };
+        let old_hist = HistoryBlob {
+            schema: 1,
+            ..Default::default()
+        };
         assert!(new_hist.stored_schema() > 1);
         assert!(old_hist.stored_schema() <= 1);
     }
@@ -2050,7 +2210,10 @@ mod tests {
         let remote = make_remote();
         let store = remote.store("custom-saves", 1);
         assert_eq!(store.dir(), "Dropbox:Spool/_spool/custom-saves");
-        assert_eq!(store.target("abc123"), "Dropbox:Spool/_spool/custom-saves/abc123.json");
+        assert_eq!(
+            store.target("abc123"),
+            "Dropbox:Spool/_spool/custom-saves/abc123.json"
+        );
     }
 
     #[test]
@@ -2085,7 +2248,10 @@ cloud:
   path: Spool/ludusavi-backup
 "#;
         let val: serde_yaml::Value = serde_yaml::from_str(yaml).unwrap();
-        assert_eq!(remote_name_from_yaml(&val), Some("ludusavi-1780143898".into()));
+        assert_eq!(
+            remote_name_from_yaml(&val),
+            Some("ludusavi-1780143898".into())
+        );
     }
 
     #[test]
@@ -2097,7 +2263,12 @@ cloud:
 
     #[test]
     fn session_marker_round_trips() {
-        let m = marker(SessionState::PendingBackup, "2026-05-31T12:00:00Z", true, "deck");
+        let m = marker(
+            SessionState::PendingBackup,
+            "2026-05-31T12:00:00Z",
+            true,
+            "deck",
+        );
         let json = serde_json::to_string(&m).unwrap();
         assert!(json.contains("pending-backup"), "kebab-case state: {json}");
         let back: SessionMarker = serde_json::from_str(&json).unwrap();
@@ -2128,7 +2299,10 @@ cloud:
     fn classify_own_marker_proceeds() {
         let m = marker(SessionState::Active, "1970-01-01T00:00:00Z", false, "me");
         // Even a stale own marker is fine — it's ours to overwrite.
-        assert_eq!(classify(Some(&m), "me", 9_999_999_999, false), Decision::Proceed);
+        assert_eq!(
+            classify(Some(&m), "me", 9_999_999_999, false),
+            Decision::Proceed
+        );
     }
 
     #[test]
@@ -2142,21 +2316,35 @@ cloud:
     fn classify_fresh_active_peer_blocks_as_active() {
         let m = marker(SessionState::Active, "2026-05-31T12:00:00Z", false, "deck");
         let now = parse_ts("2026-05-31T12:01:00Z").unwrap(); // 60s < 180s
-        assert_eq!(classify(Some(&m), "me", now, false), Decision::ActiveElsewhere);
+        assert_eq!(
+            classify(Some(&m), "me", now, false),
+            Decision::ActiveElsewhere
+        );
     }
 
     #[test]
     fn classify_stale_active_peer_is_unsynced() {
         let m = marker(SessionState::Active, "2026-05-31T12:00:00Z", false, "deck");
         let now = parse_ts("2026-05-31T12:10:00Z").unwrap(); // 600s > 180s
-        assert_eq!(classify(Some(&m), "me", now, false), Decision::UnsyncedElsewhere);
+        assert_eq!(
+            classify(Some(&m), "me", now, false),
+            Decision::UnsyncedElsewhere
+        );
     }
 
     #[test]
     fn classify_pending_backup_peer_is_unsynced() {
-        let m = marker(SessionState::PendingBackup, "2026-05-31T12:00:00Z", false, "deck");
+        let m = marker(
+            SessionState::PendingBackup,
+            "2026-05-31T12:00:00Z",
+            false,
+            "deck",
+        );
         let now = parse_ts("2026-05-31T12:00:10Z").unwrap(); // even when fresh
-        assert_eq!(classify(Some(&m), "me", now, false), Decision::UnsyncedElsewhere);
+        assert_eq!(
+            classify(Some(&m), "me", now, false),
+            Decision::UnsyncedElsewhere
+        );
     }
 
     #[test]
@@ -2164,7 +2352,10 @@ cloud:
         // A suspended Deck mid-session: never "active" (so it's overridable).
         let m = marker(SessionState::Active, "2026-05-31T12:00:00Z", true, "deck");
         let now = parse_ts("2026-05-31T12:00:10Z").unwrap();
-        assert_eq!(classify(Some(&m), "me", now, false), Decision::UnsyncedElsewhere);
+        assert_eq!(
+            classify(Some(&m), "me", now, false),
+            Decision::UnsyncedElsewhere
+        );
     }
 
     #[test]
@@ -2172,9 +2363,14 @@ cloud:
         // The device-blob fold now carries only backup state (the sync badge):
         // the newest backup across devices names the latest backer.
         let mut a = DeviceBlob::default();
-        a.backups.insert("Hades".into(), "2026-05-01T00:00:00Z".into());
-        let mut b = DeviceBlob { device_name: "Deck".into(), ..Default::default() };
-        b.backups.insert("Hades".into(), "2026-05-03T00:00:00Z".into());
+        a.backups
+            .insert("Hades".into(), "2026-05-01T00:00:00Z".into());
+        let mut b = DeviceBlob {
+            device_name: "Deck".into(),
+            ..Default::default()
+        };
+        b.backups
+            .insert("Hades".into(), "2026-05-03T00:00:00Z".into());
 
         let folded = fold_device_totals(&[("a".into(), a), ("b".into(), b)]);
         let h = folded.get("Hades").unwrap();
@@ -2190,8 +2386,8 @@ cloud:
         assert_eq!(reach_from_code(Some(3)), Reach::Online); // dir not found
         assert_eq!(reach_from_code(Some(4)), Reach::Online); // file not found
         assert_eq!(reach_from_code(Some(9)), Reach::Online); // no files transferred
-        // Every other code — temporary/fatal/usage errors, connection failures,
-        // signal kills (None) — means we couldn't confirm the remote: Offline.
+                                                             // Every other code — temporary/fatal/usage errors, connection failures,
+                                                             // signal kills (None) — means we couldn't confirm the remote: Offline.
         assert_eq!(reach_from_code(Some(5)), Reach::Offline);
         assert_eq!(reach_from_code(Some(7)), Reach::Offline);
         assert_eq!(reach_from_code(Some(1)), Reach::Offline);

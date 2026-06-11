@@ -67,8 +67,10 @@ async fn run_backfill(app: AppHandle) {
             continue;
         }
         let p = path.clone();
-        let accent =
-            tokio::task::spawn_blocking(move || extract_vibrant_color(&p)).await.ok().flatten();
+        let accent = tokio::task::spawn_blocking(move || extract_vibrant_color(&p))
+            .await
+            .ok()
+            .flatten();
         if let Some(a) = accent {
             results.push((id, a));
         }

@@ -265,11 +265,7 @@ async fn announce_loop(
     loop {
         // Read current game count fresh each tick so peers see growth as
         // the user adds games.
-        let game_count = app
-            .state::<SharedLibrary>()
-            .count()
-            .await
-            .unwrap_or(0) as u32;
+        let game_count = app.state::<SharedLibrary>().count().await.unwrap_or(0) as u32;
         // Advertise the file-server port only while sharing is currently enabled,
         // read fresh each tick so a Settings toggle takes effect within one
         // announce interval (the server itself is always bound). Peers treat

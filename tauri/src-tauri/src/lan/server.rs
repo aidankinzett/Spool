@@ -96,7 +96,8 @@ pub enum ManifestStatus {
 /// `Arc` because `Shared` hands a clone to each awaiter; `String` error
 /// because `io::Error` isn't `Clone`.
 type WalkOutput = Result<(Arc<Vec<PeerFile>>, bool), String>;
-type SharedWalk = futures_util::future::Shared<futures_util::future::BoxFuture<'static, WalkOutput>>;
+type SharedWalk =
+    futures_util::future::Shared<futures_util::future::BoxFuture<'static, WalkOutput>>;
 
 #[derive(Clone)]
 pub struct LanManifests {
@@ -277,12 +278,13 @@ async fn get_games_handler(
     // can re-associate the size to the right game and preserve response order.
     const SIZE_WALK_CONCURRENCY: usize = 6;
     let walks = pending.into_iter().map(|(idx, id, path)| async move {
-        let bytes = tokio::task::spawn_blocking(move || crate::size_backfill::directory_size(&path))
-            .await
-            .unwrap_or_else(|e| {
-                tracing::warn!(game_id = %id, error = %e, "directory size walk task failed");
-                0
-            });
+        let bytes =
+            tokio::task::spawn_blocking(move || crate::size_backfill::directory_size(&path))
+                .await
+                .unwrap_or_else(|e| {
+                    tracing::warn!(game_id = %id, error = %e, "directory size walk task failed");
+                    0
+                });
         (idx, id, bytes)
     });
     let results: Vec<(usize, String, u64)> = futures_util::stream::iter(walks)
@@ -919,10 +921,7 @@ fn start_or_join_walk(
     use futures_util::FutureExt as _;
 
     let manifests = app.state::<LanManifests>();
-    let mut inflight = manifests
-        .inflight
-        .lock()
-        .unwrap_or_else(|p| p.into_inner());
+    let mut inflight = manifests.inflight.lock().unwrap_or_else(|p| p.into_inner());
     if let Some(walk) = inflight.get(game_id) {
         return walk.clone();
     }
@@ -1073,22 +1072,18 @@ pub fn cancel_upload(
 }
 
 #[tauri::command]
-pub fn get_manifest_status(
-    manifests: State<'_, LanManifests>,
-    game_id: String,
-) -> ManifestStatus {
+pub fn get_manifest_status(manifests: State<'_, LanManifests>, game_id: String) -> ManifestStatus {
     let lock = match manifests.statuses.lock() {
         Ok(l) => l,
         Err(_) => return ManifestStatus::NoManifest,
     };
-    lock.get(&game_id).copied().unwrap_or(ManifestStatus::NoManifest)
+    lock.get(&game_id)
+        .copied()
+        .unwrap_or(ManifestStatus::NoManifest)
 }
 
 #[tauri::command]
-pub async fn prepare_manifest(
-    app: AppHandle,
-    game_id: String,
-) -> Result<ManifestStatus, AppError> {
+pub async fn prepare_manifest(app: AppHandle, game_id: String) -> Result<ManifestStatus, AppError> {
     prepare_manifest_for(&app, &game_id).await
 }
 
@@ -1102,7 +1097,9 @@ pub(crate) async fn prepare_manifest_for(
     app: &AppHandle,
     game_id: &str,
 ) -> Result<ManifestStatus, AppError> {
-    prepare_manifest_inner(app, game_id, true).await.map(|(s, _)| s)
+    prepare_manifest_inner(app, game_id, true)
+        .await
+        .map(|(s, _)| s)
 }
 
 /// Sets (or, with `None`, clears) a game's manifest status and notifies
@@ -1235,10 +1232,7 @@ pub fn spawn_manifest_warm(app: AppHandle) {
         let ids: Vec<String> = entries
             .iter()
             .filter(|g| {
-                g.lan_shared
-                    && g.game_folder_path
-                        .as_deref()
-                        .is_some_and(|p| !p.is_empty())
+                g.lan_shared && g.game_folder_path.as_deref().is_some_and(|p| !p.is_empty())
             })
             .map(|g| g.id.clone())
             .collect();
@@ -1257,10 +1251,12 @@ pub fn spawn_manifest_warm(app: AppHandle) {
             .filter(|p| !p.is_empty())
             .map(PathBuf::from)
             .collect();
-        let pruned =
-            prune_orphaned_hash_entries(&app.state::<LanManifests>().hash_cache, &roots);
+        let pruned = prune_orphaned_hash_entries(&app.state::<LanManifests>().hash_cache, &roots);
         if pruned > 0 {
-            tracing::info!(pruned, "lan manifest warm: dropped orphaned hash cache entries");
+            tracing::info!(
+                pruned,
+                "lan manifest warm: dropped orphaned hash cache entries"
+            );
         }
 
         let mut warmed = 0usize;

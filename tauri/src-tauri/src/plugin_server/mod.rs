@@ -133,7 +133,10 @@ pub async fn serve() -> AppResult<()> {
         // Steam-shortcut launch info: the UI uses this to create a non-Steam
         // shortcut live (via SteamClient.Apps) and launch it, reusing the
         // exact exe/launch-options the desktop "Add to Steam" would write.
-        .route("/games/{id}/steam-launch-info", get(steam::get_steam_launch_info))
+        .route(
+            "/games/{id}/steam-launch-info",
+            get(steam::get_steam_launch_info),
+        )
         // SteamGridDB art for a library game, transcoded to PNG/JPEG for the
         // live `SteamClient.Apps.SetCustomArtworkForApp` call.
         .route("/games/{id}/steam-art/{kind}", get(steam::get_steam_art))
@@ -150,7 +153,10 @@ pub async fn serve() -> AppResult<()> {
         // covers server-side (the UI can't reach a peer's non-loopback http
         // directly — mixed content). See `lan/server.rs` for the peer API.
         .route("/lan/peers", get(lan::get_lan_peers))
-        .route("/lan/peers/{addr}/{port}/games", get(lan::get_lan_peer_games))
+        .route(
+            "/lan/peers/{addr}/{port}/games",
+            get(lan::get_lan_peer_games),
+        )
         .route(
             "/lan/peers/{addr}/{port}/games/{id}/cover",
             get(lan::get_lan_peer_cover),

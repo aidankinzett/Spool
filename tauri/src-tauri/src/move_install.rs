@@ -79,7 +79,9 @@ impl MoveState {
         }
         self.cancel_flag.store(false, Ordering::Relaxed);
         *guard = Some(progress);
-        Ok(MoveGuard { state: self.clone() })
+        Ok(MoveGuard {
+            state: self.clone(),
+        })
     }
 
     /// Requests cancellation iff `game_id` matches the in-flight move. The copy
@@ -232,7 +234,9 @@ pub async fn move_game_install(
 
     // Reject no-op / colliding destinations.
     if paths_equal(&src, &dest) {
-        return Err(AppError::Other("The game is already in that folder.".into()));
+        return Err(AppError::Other(
+            "The game is already in that folder.".into(),
+        ));
     }
     if dest.exists() {
         return Err(AppError::Other(format!(
@@ -447,10 +451,16 @@ pub(crate) async fn run_move(
         Ok(()) => {
             tracing::info!(src = %src.display(), dest = %dest.display(), "run_move: same-filesystem rename succeeded");
             emit(app, state, |p| p.copied_bytes = p.total_bytes);
-            return Ok(MoveOutcome { total_bytes: None, source_to_delete: None });
+            return Ok(MoveOutcome {
+                total_bytes: None,
+                source_to_delete: None,
+            });
         }
         Err(e) if e.raw_os_error() == Some(CROSS_DEVICE_ERRNO) => {
-            tracing::info!("run_move: cross-device rename (errno {}), falling back to copy + delete", CROSS_DEVICE_ERRNO);
+            tracing::info!(
+                "run_move: cross-device rename (errno {}), falling back to copy + delete",
+                CROSS_DEVICE_ERRNO
+            );
         }
         Err(e) => return Err(AppError::Other(format!("move (rename): {e}"))),
     }
@@ -483,7 +493,11 @@ pub(crate) async fn run_move(
     // directory metadata make the on-disk footprint larger, so an exact fit
     // would run for the whole copy and then die with "no space left on device".
     let needed = total_bytes.saturating_add((total_bytes / 100).max(256 * 1024 * 1024));
-    tracing::info!(free_bytes = free, needed_bytes = needed, "run_move: free-space check");
+    tracing::info!(
+        free_bytes = free,
+        needed_bytes = needed,
+        "run_move: free-space check"
+    );
     if free > 0 && free < needed {
         return Err(AppError::Other(format!(
             "Not enough free space at the destination ({} free, {} needed).",
@@ -518,32 +532,38 @@ pub(crate) async fn run_move(
         let last_emit = Mutex::new(Instant::now() - PROGRESS_EMIT_INTERVAL);
         let last_log = Mutex::new(Instant::now() - PROGRESS_LOG_INTERVAL);
         let mut copied: u64 = 0;
-        copy_dir_recursive(&src_copy, &partial_copy, &mut copied, &state_for_copy, &|done| {
-            let now = Instant::now();
-            // Throttled progress emit (200 ms) for the UI.
-            let should_emit = match last_emit.lock() {
-                Ok(mut le) if now.duration_since(*le) >= PROGRESS_EMIT_INTERVAL => {
-                    *le = now;
-                    true
+        copy_dir_recursive(
+            &src_copy,
+            &partial_copy,
+            &mut copied,
+            &state_for_copy,
+            &|done| {
+                let now = Instant::now();
+                // Throttled progress emit (200 ms) for the UI.
+                let should_emit = match last_emit.lock() {
+                    Ok(mut le) if now.duration_since(*le) >= PROGRESS_EMIT_INTERVAL => {
+                        *le = now;
+                        true
+                    }
+                    _ => false,
+                };
+                if should_emit {
+                    emit(&app_for_copy, &state_for_copy, |p| p.copied_bytes = done);
                 }
-                _ => false,
-            };
-            if should_emit {
-                emit(&app_for_copy, &state_for_copy, |p| p.copied_bytes = done);
-            }
-            // Throttled log line (5 s) so the log shows the copy is still alive.
-            let should_log = match last_log.lock() {
-                Ok(mut ll) if now.duration_since(*ll) >= PROGRESS_LOG_INTERVAL => {
-                    *ll = now;
-                    true
+                // Throttled log line (5 s) so the log shows the copy is still alive.
+                let should_log = match last_log.lock() {
+                    Ok(mut ll) if now.duration_since(*ll) >= PROGRESS_LOG_INTERVAL => {
+                        *ll = now;
+                        true
+                    }
+                    _ => false,
+                };
+                if should_log {
+                    let pct = (done * 100).checked_div(total_bytes).unwrap_or(0);
+                    tracing::info!(copied_bytes = done, total_bytes, pct, "run_move: copying…");
                 }
-                _ => false,
-            };
-            if should_log {
-                let pct = (done * 100).checked_div(total_bytes).unwrap_or(0);
-                tracing::info!(copied_bytes = done, total_bytes, pct, "run_move: copying…");
-            }
-        })
+            },
+        )
     })
     .await
     .map_err(|e| AppError::Other(format!("copy task join failed: {e}")))?;
@@ -601,9 +621,10 @@ fn copy_dir_recursive(
     cancel: &MoveState,
     on_progress: &dyn Fn(u64),
 ) -> AppResult<()> {
-    std::fs::create_dir_all(dst)
-        .map_err(|e| AppError::Other(format!("mkdir {dst:?}: {e}")))?;
-    for entry in std::fs::read_dir(src).map_err(|e| AppError::Other(format!("readdir {src:?}: {e}")))? {
+    std::fs::create_dir_all(dst).map_err(|e| AppError::Other(format!("mkdir {dst:?}: {e}")))?;
+    for entry in
+        std::fs::read_dir(src).map_err(|e| AppError::Other(format!("readdir {src:?}: {e}")))?
+    {
         if cancel.is_canceled() {
             return Err(AppError::Canceled);
         }
@@ -654,7 +675,9 @@ async fn regenerate_shortcuts(
             // A poisoned config lock: skip the re-stamp rather than write a
             // stub with an empty spool path (the original launcher command
             // errors out in this state too).
-            None => tracing::warn!("move: config lock poisoned; skipping Armoury launcher re-stamp"),
+            None => {
+                tracing::warn!("move: config lock poisoned; skipping Armoury launcher re-stamp")
+            }
         }
     }
 
@@ -757,13 +780,19 @@ mod tests {
     fn relative_inside_strips_folder_prefix() {
         let folder = Path::new("/games/MyGame");
         let exe = Path::new("/games/MyGame/bin/game.exe");
-        assert_eq!(relative_inside(exe, folder), Some(PathBuf::from("bin/game.exe")));
+        assert_eq!(
+            relative_inside(exe, folder),
+            Some(PathBuf::from("bin/game.exe"))
+        );
     }
 
     #[test]
     fn relative_inside_rejects_outside_and_self() {
         let folder = Path::new("/games/MyGame");
-        assert_eq!(relative_inside(Path::new("/games/Other/game.exe"), folder), None);
+        assert_eq!(
+            relative_inside(Path::new("/games/Other/game.exe"), folder),
+            None
+        );
         // The folder itself has no relative remainder.
         assert_eq!(relative_inside(folder, folder), None);
     }
@@ -818,8 +847,14 @@ mod tests {
         let state = MoveState::default();
         state.cancel_flag.store(true, Ordering::Relaxed);
         let mut copied = 0u64;
-        let err = copy_dir_recursive(src.path(), &dst.path().join("c"), &mut copied, &state, &|_| {})
-            .unwrap_err();
+        let err = copy_dir_recursive(
+            src.path(),
+            &dst.path().join("c"),
+            &mut copied,
+            &state,
+            &|_| {},
+        )
+        .unwrap_err();
         assert!(err.is_canceled());
     }
 
@@ -829,12 +864,21 @@ mod tests {
         // Stored exe casing differs from the install folder's — still inside.
         let folder = Path::new(r"C:\Games\MyGame");
         let exe = Path::new(r"c:\games\mygame\bin\game.exe");
-        assert_eq!(relative_inside(exe, folder), Some(PathBuf::from(r"bin\game.exe")));
+        assert_eq!(
+            relative_inside(exe, folder),
+            Some(PathBuf::from(r"bin\game.exe"))
+        );
         // A genuinely different folder is still rejected.
-        assert_eq!(relative_inside(Path::new(r"C:\Other\game.exe"), folder), None);
+        assert_eq!(
+            relative_inside(Path::new(r"C:\Other\game.exe"), folder),
+            None
+        );
         // A sibling folder sharing a name prefix is not "inside".
         assert_eq!(
-            relative_inside(Path::new(r"c:\games\mygamedeluxe\game.exe"), Path::new(r"C:\Games\MyGame")),
+            relative_inside(
+                Path::new(r"c:\games\mygamedeluxe\game.exe"),
+                Path::new(r"C:\Games\MyGame")
+            ),
             None
         );
     }

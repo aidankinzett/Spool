@@ -100,7 +100,12 @@ pub fn compute_steam_appid(spool_exe: &str, game_name: &str) -> u32 {
     crate::steam::compute_shortcut_app_id(game_name, spool_exe)
 }
 
-fn write_start_at(path: &Path, game: &str, steam_appid: u32, started_at: DateTime<Utc>) -> AppResult<String> {
+fn write_start_at(
+    path: &Path,
+    game: &str,
+    steam_appid: u32,
+    started_at: DateTime<Utc>,
+) -> AppResult<String> {
     let session_id = format!("{steam_appid}-{}", started_at.timestamp_millis());
     let rec = ActiveSession {
         game: game.to_string(),
@@ -124,7 +129,12 @@ fn read_at(path: &Path) -> Option<ActiveSession> {
 /// launches call this, so it also flags this process as the record's owner so
 /// the play-session recorder will adopt its `started_at` (see [`WROTE_START`]).
 pub fn write_start(game: &str, steam_appid: u32) -> AppResult<String> {
-    let id = write_start_at(&crate::paths::active_session_file(), game, steam_appid, Utc::now())?;
+    let id = write_start_at(
+        &crate::paths::active_session_file(),
+        game,
+        steam_appid,
+        Utc::now(),
+    )?;
     WROTE_START.store(true, Ordering::Relaxed);
     Ok(id)
 }
@@ -319,9 +329,14 @@ mod tests {
     #[test]
     fn appid_matches_steam_shortcut_formula() {
         let quoted = format!("\"{}\"", "/home/u/spool-launcher.sh");
-        let expected =
-            steam_shortcuts_util::app_id_generator::calculate_app_id(&quoted, "Hades");
-        assert_eq!(compute_steam_appid("/home/u/spool-launcher.sh", "Hades"), expected);
-        assert_eq!(crate::steam::compute_shortcut_app_id("Hades", "/home/u/spool-launcher.sh"), expected);
+        let expected = steam_shortcuts_util::app_id_generator::calculate_app_id(&quoted, "Hades");
+        assert_eq!(
+            compute_steam_appid("/home/u/spool-launcher.sh", "Hades"),
+            expected
+        );
+        assert_eq!(
+            crate::steam::compute_shortcut_app_id("Hades", "/home/u/spool-launcher.sh"),
+            expected
+        );
     }
 }

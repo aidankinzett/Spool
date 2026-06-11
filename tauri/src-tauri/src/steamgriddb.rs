@@ -94,10 +94,7 @@ pub async fn fetch_and_save_cover(
 /// colour) in one library save + `library:changed` emit. Used by add_game so
 /// the two assets don't each pay for their own id resolution. Each download is
 /// best-effort — one failing doesn't discard the other.
-pub async fn fetch_and_save_cover_and_hero(
-    app: &AppHandle,
-    game_entry_id: &str,
-) -> AppResult<()> {
+pub async fn fetch_and_save_cover_and_hero(app: &AppHandle, game_entry_id: &str) -> AppResult<()> {
     let FetchedArt { cover, hero } = fetch_art(app, game_entry_id, true, true).await?;
     if cover.is_none() && hero.is_none() {
         return Ok(());
@@ -226,12 +223,7 @@ pub fn extract_vibrant_color(path: &std::path::Path) -> Option<String> {
     use std::collections::HashMap;
 
     let img = image::open(path).ok()?.to_rgb8();
-    let resized = image::imageops::resize(
-        &img,
-        32,
-        32,
-        image::imageops::FilterType::Lanczos3,
-    );
+    let resized = image::imageops::resize(&img, 32, 32, image::imageops::FilterType::Lanczos3);
 
     let mut buckets: HashMap<(u8, u8, u8), u32> = HashMap::new();
     for px in resized.pixels() {
@@ -478,7 +470,10 @@ pub async fn resolve_art_bytes(
         return Ok(None);
     };
     let bytes = download_bytes(http, &asset.url).await?;
-    Ok(Some(ArtBytes { bytes, mime: asset.mime }))
+    Ok(Some(ArtBytes {
+        bytes,
+        mime: asset.mime,
+    }))
 }
 
 /// Fetches the first asset of `kind` (hero / grid / logo) for a game.
@@ -610,7 +605,14 @@ async fn download_hero(
         return Ok(None);
     };
     Ok(Some(
-        save_art_to(http, paths::heroes_dir(), safe_name, &asset.url, &asset.mime).await?,
+        save_art_to(
+            http,
+            paths::heroes_dir(),
+            safe_name,
+            &asset.url,
+            &asset.mime,
+        )
+        .await?,
     ))
 }
 
@@ -642,7 +644,10 @@ async fn apply_art(
         .set_art(game_entry_id, cover, hero, accent)
         .await?;
     if !updated {
-        tracing::warn!(game_entry_id, "art downloaded but library entry gone; skipping update");
+        tracing::warn!(
+            game_entry_id,
+            "art downloaded but library entry gone; skipping update"
+        );
         return Ok(());
     }
     if let Err(e) = app.emit("library:changed", &game_entry_id.to_string()) {
@@ -792,7 +797,10 @@ mod tests {
 
     #[test]
     fn url_ext_sniffs_path() {
-        assert_eq!(url_ext("https://cdn.example.com/a/b/cover.png"), Some("png"));
+        assert_eq!(
+            url_ext("https://cdn.example.com/a/b/cover.png"),
+            Some("png")
+        );
         assert_eq!(
             url_ext("https://cdn.example.com/cover.jpg?v=1"),
             Some("jpg")

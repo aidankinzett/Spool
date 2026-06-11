@@ -60,7 +60,9 @@ pub(super) async fn post_uninstall_game(
     AxPath(id): AxPath<String>,
 ) -> Result<Json<Value>, StatusCode> {
     if !state.library_available {
-        return Ok(Json(json!({ "ok": false, "reason": "library unavailable" })));
+        return Ok(Json(
+            json!({ "ok": false, "reason": "library unavailable" }),
+        ));
     }
     let (ludusavi_exe, config_dir) = match super::ludusavi_prep("plugin uninstall") {
         Ok(pair) => pair,
@@ -96,7 +98,9 @@ pub(super) async fn post_forget_game(
     }
     match state.library.remove(&id).await {
         Ok(true) => Ok(Json(json!({ "ok": true }))),
-        Ok(false) => Ok(Json(json!({ "ok": false, "reason": "game not in library" }))),
+        Ok(false) => Ok(Json(
+            json!({ "ok": false, "reason": "game not in library" }),
+        )),
         Err(e) => {
             tracing::warn!(game_id = %id, error = %e, "plugin: forget_game failed");
             Err(StatusCode::INTERNAL_SERVER_ERROR)

@@ -458,7 +458,12 @@ impl LudusaviClient {
         config_dir: &Path,
         game_name: &str,
     ) -> AppResult<ApiOutput> {
-        run_api(ludusavi_exe, config_dir, &["restore", "--api", "--cloud-sync", "--force", game_name]).await
+        run_api(
+            ludusavi_exe,
+            config_dir,
+            &["restore", "--api", "--cloud-sync", "--force", game_name],
+        )
+        .await
     }
 
     /// Runs `ludusavi restore --api --backup <id> --force <name>` — a restore
@@ -477,7 +482,14 @@ impl LudusaviClient {
         run_api(
             ludusavi_exe,
             config_dir,
-            &["restore", "--api", "--backup", backup_name, "--force", game_name],
+            &[
+                "restore",
+                "--api",
+                "--backup",
+                backup_name,
+                "--force",
+                game_name,
+            ],
         )
         .await
     }
@@ -493,7 +505,8 @@ impl LudusaviClient {
         game_name: &str,
         wine_prefix: Option<&Path>,
     ) -> AppResult<ApiOutput> {
-        self.run_backup(ludusavi_exe, config_dir, game_name, wine_prefix, true).await
+        self.run_backup(ludusavi_exe, config_dir, game_name, wine_prefix, true)
+            .await
     }
 
     /// Runs `ludusavi backup --api --force <name>` *without* `--cloud-sync`, so
@@ -509,7 +522,8 @@ impl LudusaviClient {
         game_name: &str,
         wine_prefix: Option<&Path>,
     ) -> AppResult<ApiOutput> {
-        self.run_backup(ludusavi_exe, config_dir, game_name, wine_prefix, false).await
+        self.run_backup(ludusavi_exe, config_dir, game_name, wine_prefix, false)
+            .await
     }
 
     /// Shared backup invocation. `cloud_sync` toggles the `--cloud-sync` flag
@@ -720,7 +734,9 @@ async fn run_find(ludusavi_exe: &Path, config_dir: &Path, query: &str) -> AppRes
     }
     if stdout.trim().is_empty() {
         // ludusavi exits non-zero on no matches; surface an empty set.
-        return Ok(FindOutput { games: HashMap::new() });
+        return Ok(FindOutput {
+            games: HashMap::new(),
+        });
     }
     crate::util::parse_json(stdout.as_bytes(), "ludusavi find output")
 }
@@ -812,9 +828,13 @@ async fn run_blocking(mut cmd: std::process::Command, op: &str) -> AppResult<std
                 // connection/retry timeouts bound how long it stays alive.
                 #[cfg(unix)]
                 // SAFETY: killpg is async-signal-safe; PGID was recorded at spawn.
-                unsafe { libc::killpg(child_pgid as libc::pid_t, libc::SIGKILL); }
+                unsafe {
+                    libc::killpg(child_pgid as libc::pid_t, libc::SIGKILL);
+                }
                 #[cfg(not(unix))]
-                { let _ = c.kill(); }
+                {
+                    let _ = c.kill();
+                }
                 let _ = c.wait();
             }
             return Err(AppError::Other(format!(
@@ -962,7 +982,10 @@ pub async fn validate_config(ludusavi_exe: &Path, config_dir: &Path) -> Result<(
             let stderr = String::from_utf8_lossy(&out.stderr);
             let msg = stderr.trim();
             Err(if msg.is_empty() {
-                format!("ludusavi config show exited {}", out.status.code().unwrap_or(-1))
+                format!(
+                    "ludusavi config show exited {}",
+                    out.status.code().unwrap_or(-1)
+                )
             } else {
                 msg.to_string()
             })
@@ -1002,11 +1025,7 @@ async fn load_manifest(ludusavi_exe: &Path) -> AppResult<HashMap<String, Manifes
 
 // ── Enrichment + helpers ────────────────────────────────────────────────────
 
-fn enrich(
-    name: String,
-    score: f64,
-    entry: Option<&ManifestEntry>,
-) -> SearchCandidate {
+fn enrich(name: String, score: f64, entry: Option<&ManifestEntry>) -> SearchCandidate {
     let Some(entry) = entry else {
         return SearchCandidate {
             name,
@@ -1343,7 +1362,9 @@ pub async fn search_games(
 ) -> AppResult<Vec<SearchCandidate>> {
     let ludusavi_exe = ludusavi_path_or_err(&config)?;
     let config_dir = crate::paths::ludusavi_config_dir();
-    ludusavi.search(&ludusavi_exe, &config_dir, query.trim()).await
+    ludusavi
+        .search(&ludusavi_exe, &config_dir, query.trim())
+        .await
 }
 
 /// Every manifest-declared save location for an already-added game, tagged and
@@ -1427,7 +1448,10 @@ pub async fn apply_webdav_remote(
             .map_err(|e| AppError::Other(format!("failed to run rclone obscure: {e}")))?;
         if !out.status.success() {
             let stderr = String::from_utf8_lossy(&out.stderr);
-            return Err(AppError::Other(format!("rclone obscure failed: {}", stderr.trim())));
+            return Err(AppError::Other(format!(
+                "rclone obscure failed: {}",
+                stderr.trim()
+            )));
         }
         String::from_utf8_lossy(&out.stdout).trim().to_string()
     } else {
@@ -1435,7 +1459,11 @@ pub async fn apply_webdav_remote(
     };
 
     let config_dir = crate::paths::ludusavi_config_dir();
-    let provider = if provider.trim().is_empty() { "other" } else { provider.trim() };
+    let provider = if provider.trim().is_empty() {
+        "other"
+    } else {
+        provider.trim()
+    };
     let output = Command::new(&ludusavi_exe)
         .args([
             "--config",
@@ -1511,12 +1539,11 @@ pub async fn search_by_exe(
 
     // Read PE metadata off the async executor — file IO can block.
     let exe_path_clone = exe_path.clone();
-    let pe_name = tokio::task::spawn_blocking(move || {
-        read_exe_product_name(Path::new(&exe_path_clone))
-    })
-    .await
-    .ok()
-    .flatten();
+    let pe_name =
+        tokio::task::spawn_blocking(move || read_exe_product_name(Path::new(&exe_path_clone)))
+            .await
+            .ok()
+            .flatten();
 
     // Build the query list: PE name first (highest confidence), then the
     // path-based heuristics, de-duped throughout.
@@ -1545,9 +1572,8 @@ pub async fn search_by_exe(
 }
 
 fn ludusavi_path_or_err(_config: &State<'_, SharedConfig>) -> AppResult<PathBuf> {
-    crate::paths::resolve_ludusavi_path().ok_or_else(|| {
-        AppError::Other("Ludusavi sidecar not found — reinstall Spool.".to_string())
-    })
+    crate::paths::resolve_ludusavi_path()
+        .ok_or_else(|| AppError::Other("Ludusavi sidecar not found — reinstall Spool.".to_string()))
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────────
@@ -1561,7 +1587,10 @@ mod tests {
             tags: tags.iter().map(|s| s.to_string()).collect(),
             when: when_os
                 .iter()
-                .map(|os| ManifestWhen { os: os.map(|s| s.to_string()), store: None })
+                .map(|os| ManifestWhen {
+                    os: os.map(|s| s.to_string()),
+                    store: None,
+                })
                 .collect(),
         }
     }
@@ -1640,7 +1669,10 @@ mod tests {
         // Spool doesn't filter by store, so it applies on every OS.
         let e = ManifestFileEntry {
             tags: vec!["config".into()],
-            when: vec![ManifestWhen { os: None, store: Some("steam".into()) }],
+            when: vec![ManifestWhen {
+                os: None,
+                store: Some("steam".into()),
+            }],
         };
         assert!(manifest_path_applies(&e, "windows"));
         assert!(manifest_path_applies(&e, "linux"));
@@ -1654,15 +1686,15 @@ mod tests {
 
     #[test]
     fn infer_name_basic() {
-        assert_eq!(infer_name_from_exe(Path::new("nightreign.exe")), "Nightreign");
+        assert_eq!(
+            infer_name_from_exe(Path::new("nightreign.exe")),
+            "Nightreign"
+        );
         assert_eq!(
             infer_name_from_exe(Path::new("D:/Games/EldenRing/elden_ring.exe")),
             "Elden Ring"
         );
-        assert_eq!(
-            infer_name_from_exe(Path::new("hades-2.exe")),
-            "Hades 2"
-        );
+        assert_eq!(infer_name_from_exe(Path::new("hades-2.exe")), "Hades 2");
         assert_eq!(infer_name_from_exe(Path::new("")), "");
         // All-caps exe names normalise to title case so fuzzy scores are good.
         assert_eq!(infer_name_from_exe(Path::new("PRAGMATA.exe")), "Pragmata");
@@ -1842,10 +1874,7 @@ mod tests {
             "%LOCALAPPDATA%/Foo/Saved"
         );
         // Unknown tokens pass through.
-        assert_eq!(
-            prettify_save_template("<base>/saves"),
-            "<base>/saves"
-        );
+        assert_eq!(prettify_save_template("<base>/saves"), "<base>/saves");
     }
 
     #[test]
@@ -1871,7 +1900,10 @@ mod tests {
                 let mut m = HashMap::new();
                 m.insert(
                     "<winAppData>/Hades/save".to_string(),
-                    ManifestFileEntry { tags: vec!["save".to_string()], when: vec![] },
+                    ManifestFileEntry {
+                        tags: vec!["save".to_string()],
+                        when: vec![],
+                    },
                 );
                 m
             },

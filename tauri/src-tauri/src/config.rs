@@ -246,7 +246,10 @@ impl Config {
         let path = paths::config_file();
         // Keep the raw JSON so the onboarding migration can tell a key that
         // was absent (legacy file) from one explicitly set to false.
-        let raw_json = path.exists().then(|| std::fs::read_to_string(&path).ok()).flatten();
+        let raw_json = path
+            .exists()
+            .then(|| std::fs::read_to_string(&path).ok())
+            .flatten();
         let mut data = if let Some(json) = raw_json.as_deref() {
             match serde_json::from_str::<ConfigData>(json) {
                 Ok(d) => d,
@@ -459,7 +462,10 @@ fn migrate_onboarding_completed(raw_json: Option<&str>, data: &mut ConfigData) -
     };
     let key_present = serde_json::from_str::<serde_json::Value>(json)
         .ok()
-        .and_then(|v| v.as_object().map(|o| o.contains_key("onboarding_completed")))
+        .and_then(|v| {
+            v.as_object()
+                .map(|o| o.contains_key("onboarding_completed"))
+        })
         .unwrap_or(false);
     if key_present {
         return false;
@@ -538,7 +544,10 @@ fn hostname() -> String {
     // to land on the fallback every time. %COMPUTERNAME% is a real process env
     // var on Windows, kept as a secondary path. Final fallback is a literal so
     // device identity is never empty.
-    let from_os = gethostname::gethostname().to_string_lossy().trim().to_string();
+    let from_os = gethostname::gethostname()
+        .to_string_lossy()
+        .trim()
+        .to_string();
     if !from_os.is_empty() {
         return from_os;
     }
@@ -596,8 +605,7 @@ pub fn update_config(
     let retention_changed = cfg.data.save_retention_full != data.save_retention_full;
 
     if cloud_changed {
-        let ludusavi_remote_path =
-            format!("{}/ludusavi-backup", crate::rclone::base_path(&data));
+        let ludusavi_remote_path = format!("{}/ludusavi-backup", crate::rclone::base_path(&data));
         crate::ludusavi_config::set_cloud(
             Some(&data.cloud.provider),
             Some(&data.cloud.remote),
@@ -686,10 +694,19 @@ mod tests {
         let json = serde_json::to_value(ConfigData::default()).unwrap();
         let obj = json.as_object().unwrap();
         for key in [
-            "cloud_provider", "cloud_remote", "cloud_base_path", "cloud_path",
-            "rclone_args", "cloud_webdav_url", "cloud_webdav_username",
-            "lan_share_enabled", "lan_share_port", "lan_install_dir",
-            "lan_download_max_mbps", "umu_run_path", "default_proton_path",
+            "cloud_provider",
+            "cloud_remote",
+            "cloud_base_path",
+            "cloud_path",
+            "rclone_args",
+            "cloud_webdav_url",
+            "cloud_webdav_username",
+            "lan_share_enabled",
+            "lan_share_port",
+            "lan_install_dir",
+            "lan_download_max_mbps",
+            "umu_run_path",
+            "default_proton_path",
         ] {
             assert!(obj.contains_key(key), "missing flat key: {key}");
         }
@@ -732,18 +749,30 @@ mod tests {
         // Pre-existing configs at 1 or 2 (incl. the old in-place `full == 1`
         // mode) get raised to the safe floor of 3 on load.
         for low in [0u32, 1, 2] {
-            let mut data = ConfigData { save_retention_full: low, ..Default::default() };
+            let mut data = ConfigData {
+                save_retention_full: low,
+                ..Default::default()
+            };
             assert!(migrate_retention_floor(&mut data), "{low} should migrate");
             assert_eq!(data.save_retention_full, 3);
         }
         // A stray high value is pulled down to the ceiling.
-        let mut high = ConfigData { save_retention_full: 50, ..Default::default() };
+        let mut high = ConfigData {
+            save_retention_full: 50,
+            ..Default::default()
+        };
         assert!(migrate_retention_floor(&mut high));
         assert_eq!(high.save_retention_full, 10);
         // Values already in range (including the default 5) are left alone.
         for ok in [3u32, 5, 10] {
-            let mut data = ConfigData { save_retention_full: ok, ..Default::default() };
-            assert!(!migrate_retention_floor(&mut data), "{ok} should not migrate");
+            let mut data = ConfigData {
+                save_retention_full: ok,
+                ..Default::default()
+            };
+            assert!(
+                !migrate_retention_floor(&mut data),
+                "{ok} should not migrate"
+            );
             assert_eq!(data.save_retention_full, ok);
         }
     }
@@ -753,7 +782,10 @@ mod tests {
         // A custom lan_install_dir becomes a default-install library folder
         // and the legacy field is cleared so the migration never re-fires.
         let mut data = ConfigData {
-            lan: LanConfig { install_dir: "/mnt/sd/lan".to_string(), ..LanConfig::default() },
+            lan: LanConfig {
+                install_dir: "/mnt/sd/lan".to_string(),
+                ..LanConfig::default()
+            },
             ..Default::default()
         };
         assert!(migrate_lan_install_dir(&mut data));
@@ -773,7 +805,10 @@ mod tests {
                 path: "/mnt/sd/lan".to_string(),
                 ..Default::default()
             }],
-            lan: LanConfig { install_dir: "/mnt/sd/lan".to_string(), ..LanConfig::default() },
+            lan: LanConfig {
+                install_dir: "/mnt/sd/lan".to_string(),
+                ..LanConfig::default()
+            },
             ..Default::default()
         };
         assert!(migrate_lan_install_dir(&mut data));
@@ -795,7 +830,10 @@ mod tests {
     fn install_root_resolution_prefers_flagged_then_first_folder() {
         let mut data = ConfigData {
             library_folders: vec![
-                LibraryFolder { path: "/a".to_string(), ..Default::default() },
+                LibraryFolder {
+                    path: "/a".to_string(),
+                    ..Default::default()
+                },
                 LibraryFolder {
                     path: "/b".to_string(),
                     default_install: true,
@@ -810,7 +848,10 @@ mod tests {
         assert_eq!(data.lan_install_root(), PathBuf::from("/a"));
         // No folders at all → the app-data fallback.
         data.library_folders.clear();
-        assert_eq!(data.lan_install_root(), paths::app_data_dir().join("lan-games"));
+        assert_eq!(
+            data.lan_install_root(),
+            paths::app_data_dir().join("lan-games")
+        );
     }
 
     #[test]
