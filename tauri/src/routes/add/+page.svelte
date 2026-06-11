@@ -106,8 +106,8 @@
 
   function safeFolderName(name: string): string {
     const invalid = new Set(['<', '>', ':', '"', '/', '\\', '|', '?', '*']);
-    const cleaned = Array.from(name)
-      .map((c) => (c.charCodeAt(0) > 127 ? '' : invalid.has(c) || c.charCodeAt(0) < 32 ? ' ' : c))
+    const cleaned = Array.from(name.normalize('NFC'))
+      .map((c) => (invalid.has(c) || (c.codePointAt(0) ?? 0) < 32 ? ' ' : c))
       .join('')
       .replace(/\s+/g, ' ')
       .trim()

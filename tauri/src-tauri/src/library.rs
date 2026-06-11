@@ -1265,16 +1265,13 @@ pub type SharedLibrary = Arc<Library>;
 ///
 /// Invalid path characters are replaced with spaces (not stripped) so word
 /// boundaries are preserved — `"A: B/C"` becomes `"A B C"` rather than
-/// `"A BC"`. Non-ASCII characters are dropped to avoid codepage issues in
-/// legacy non-Unicode tools (some launchers / Inno Setup scripts).
-/// Whitespace runs are then collapsed.
+/// `"A BC"`. Unicode is preserved; whitespace runs are then collapsed.
 pub fn make_safe_filename(name: &str) -> String {
     const INVALID: &[char] = &['<', '>', ':', '"', '/', '\\', '|', '?', '*'];
 
-    // Pass 1: ASCII-only, invalid-or-control chars become spaces.
+    // Pass 1: invalid-or-control chars become spaces.
     let stage: String = name
         .chars()
-        .filter(|c| c.is_ascii())
         .map(|c| {
             if INVALID.contains(&c) || c.is_control() {
                 ' '
@@ -2107,10 +2104,8 @@ mod tests {
     }
 
     #[test]
-    fn make_safe_filename_strips_non_ascii() {
-        // Non-ASCII characters get dropped — same behaviour as the C#
-        // version, intended to keep legacy non-Unicode tools happy.
-        assert_eq!(make_safe_filename("Tëst Gämé"), "Tst Gm");
+    fn make_safe_filename_preserves_unicode() {
+        assert_eq!(make_safe_filename("Tëst Gämé 旅"), "Tëst Gämé 旅");
     }
 
     #[test]
