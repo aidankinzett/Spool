@@ -28,6 +28,10 @@
     folders,
     onClose,
     onDone,
+    importMode = false,
+    renameTo = '',
+    showDontAskAgain = false,
+    onDontAskAgain,
   }: {
     /** The game whose install folder is being moved. */
     game: GameEntry;
@@ -37,6 +41,14 @@
     onClose: () => void;
     /** Run after a successful move (e.g. close the edit window). */
     onDone?: () => void;
+    /** Whether the modal is in post-add import mode. */
+    importMode?: boolean;
+    /** The name of the game to rename the folder to (backend sanitizes). */
+    renameTo?: string;
+    /** Whether to show the "Don't ask again" action. */
+    showDontAskAgain?: boolean;
+    /** Callback when the user clicks "Don't ask again". */
+    onDontAskAgain?: () => void | Promise<void>;
   } = $props();
 
   const acc = $derived(game.accent_color ?? BRAND_SPOOL);
@@ -77,7 +89,7 @@
           label: f.label,
           free,
           tooSmall: free > 0 && sizeBytes > 0 && free < neededBytes(sizeBytes),
-          isCurrent: isCurrentRoot(f.path),
+          isCurrent: importMode ? false : isCurrentRoot(f.path),
         };
       }),
     );
@@ -135,7 +147,7 @@
       unlisten = await listen<MoveProgress>('move:progress', (e) => {
         if (e.payload.game_id === game.id) progress = e.payload;
       });
-      await api.moveGameInstall(game.id, selected);
+      await api.moveGameInstall(game.id, selected, importMode && renameTo ? renameTo : undefined);
       phase = 'done';
       onDone?.();
       // Brief beat on the "done" state so the bar reads 100% before close.
@@ -217,7 +229,9 @@
       <HardDrive size={15} />
     </span>
     <div class="min-w-0 flex-1">
-      <div class="truncate font-mono text-[12.5px] text-ink-0">{r.label || r.path}</div>
+      <div class="truncate font-mono text-[12.5px] text-ink-0">
+        {importMode && renameTo ? `${r.label || r.path}/${renameTo}` : (r.label || r.path)}
+      </div>
       <div class="text-[11.5px]" style:color={r.tooSmall ? 'var(--color-bad)' : 'var(--color-ink-2)'}>
         {rowSubtitle(r)}
       </div>
@@ -247,21 +261,27 @@
         style:letter-spacing="-0.02em"
         style:line-height="1.05"
       >
-        Move install
+        {importMode ? 'Import game' : 'Move install'}
       </h1>
-      <div style:margin-top="6px" style:font-size="13.5px" style:color="var(--color-ink-1)" style:font-weight="500">
-        {game.game_name}
-      </div>
-      <div
-        class="mt-2 flex items-center gap-1.5 truncate font-mono"
-        style:font-size="10.5px"
-        style:color="var(--color-ink-3)"
-        title={currentFolder}
-      >
-        <HardDrive size={11} class="shrink-0" />
-        <span class="truncate">{currentFolder || 'No install folder'}</span>
-        <span class="shrink-0" style:color="var(--color-ink-2)">· {fmtSize(game.install_size_mb)}</span>
-      </div>
+      {#if importMode}
+        <div style:margin-top="8px" style:font-size="13px" style:color="var(--color-ink-1)" style:font-weight="500" style:line-height="1.4">
+          This game is stored outside your library folders. Move it in and rename the folder to <strong>{game.game_name}</strong>?
+        </div>
+      {:else}
+        <div style:margin-top="6px" style:font-size="13.5px" style:color="var(--color-ink-1)" style:font-weight="500">
+          {game.game_name}
+        </div>
+        <div
+          class="mt-2 flex items-center gap-1.5 truncate font-mono"
+          style:font-size="10.5px"
+          style:color="var(--color-ink-3)"
+          title={currentFolder}
+        >
+          <HardDrive size={11} class="shrink-0" />
+          <span class="truncate">{currentFolder || 'No install folder'}</span>
+          <span class="shrink-0" style:color="var(--color-ink-2)">· {fmtSize(game.install_size_mb)}</span>
+        </div>
+      {/if}
     </div>
   </div>
 
@@ -311,7 +331,24 @@
     {/if}
 
     <div class="flex items-center gap-2.5">
-      <div class="flex-1"></div>
+      <div class="flex-1 min-w-0">
+        {#if importMode && showDontAskAgain}
+          <button
+            type="button"
+            onclick={async () => {
+              await onDontAskAgain?.();
+              onClose();
+            }}
+            class="text-[12.5px] font-medium transition-colors duration-100 text-ink-2 hover:text-ink-1 hover:underline"
+            style:background="transparent"
+            style:border="none"
+            style:cursor="pointer"
+            style:padding="0"
+          >
+            Don't ask again
+          </button>
+        {/if}
+      </div>
       <button
         type="button"
         onclick={cancelOrClose}
@@ -345,7 +382,7 @@
         onmouseleave={() => (hover['confirm'] = false)}
       >
         {#if phase !== 'moving'}<FolderInput size={14} />{/if}
-        {phase === 'moving' ? 'Moving…' : phase === 'done' ? 'Moved' : 'Move here'}
+        {phase === 'moving' ? (importMode ? 'Importing…' : 'Moving…') : phase === 'done' ? (importMode ? 'Imported' : 'Moved') : (importMode ? 'Import' : 'Move here')}
       </button>
     </div>
   </div>

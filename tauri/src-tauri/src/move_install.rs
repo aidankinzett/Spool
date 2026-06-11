@@ -172,6 +172,7 @@ pub async fn move_game_install(
     uploads: State<'_, crate::lan::LanUploadsState>,
     id: String,
     dest_folder: String,
+    dest_name: Option<String>,
 ) -> AppResult<GameEntry> {
     let library: SharedLibrary = (*library).clone();
     let move_state: Arc<MoveState> = (*move_state).clone();
@@ -214,13 +215,35 @@ pub async fn move_game_install(
         }
     };
 
-    // Destination = <library folder>/<source folder name>, preserving the
-    // on-disk folder name so the relative exe path stays valid.
-    let base = src
-        .file_name()
-        .ok_or_else(|| AppError::Other("Couldn't read the install folder name.".into()))?;
+    // Destination root.
     let dest_root = PathBuf::from(dest_folder.trim());
-    let dest = dest_root.join(base);
+
+    // If dest_name is provided and not empty, sanitize it and use it as the base folder name.
+    // Otherwise, use the source folder name.
+    let base = if let Some(ref name) = dest_name.as_ref().map(|n| n.trim()).filter(|n| !n.is_empty()) {
+        std::ffi::OsString::from(sanitize_folder_name(name))
+    } else {
+        src.file_name()
+            .ok_or_else(|| AppError::Other("Couldn't read the install folder name.".into()))?
+            .to_os_string()
+    };
+
+    let mut dest = dest_root.join(&base);
+
+    // Collision safety: if the computed dest already exists and is not the same path as src,
+    // append " (2)", " (3)", etc. until a free path is found.
+    if dest.exists() && !paths_equal(&src, &dest) {
+        let base_lossy = base.to_string_lossy();
+        let mut count = 2;
+        loop {
+            let candidate = dest_root.join(format!("{base_lossy} ({count})"));
+            if !candidate.exists() || paths_equal(&src, &candidate) {
+                dest = candidate;
+                break;
+            }
+            count += 1;
+        }
+    }
 
     tracing::info!(
         game_id = %id,
@@ -237,7 +260,7 @@ pub async fn move_game_install(
     if dest.exists() {
         return Err(AppError::Other(format!(
             "A folder named '{}' already exists in the destination.",
-            base.to_string_lossy()
+            dest.file_name().unwrap_or(&base).to_string_lossy()
         )));
     }
 
@@ -749,9 +772,41 @@ fn human_bytes(n: u64) -> String {
     }
 }
 
+fn sanitize_folder_name(name: &str) -> String {
+    let mut sanitized: String = name
+        .chars()
+        .filter(|&c| !matches!(c, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*'))
+        .collect();
+
+    sanitized = sanitized
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    sanitized = sanitized
+        .trim_end_matches(|c: char| c == '.' || c.is_whitespace())
+        .to_string();
+
+    if sanitized.is_empty() {
+        "Game".to_string()
+    } else {
+        sanitized
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_sanitize_folder_name() {
+        assert_eq!(sanitize_folder_name("Super Mario Bros."), "Super Mario Bros");
+        assert_eq!(sanitize_folder_name("Game: Subtitle"), "Game Subtitle");
+        assert_eq!(sanitize_folder_name("  Space  Out  "), "Space Out");
+        assert_eq!(sanitize_folder_name("Invalid<?>*Characters"), "InvalidCharacters");
+        assert_eq!(sanitize_folder_name("..."), "Game");
+        assert_eq!(sanitize_folder_name(""), "Game");
+    }
 
     #[test]
     fn relative_inside_strips_folder_prefix() {

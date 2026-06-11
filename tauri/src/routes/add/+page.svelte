@@ -27,11 +27,13 @@
   } from '@lucide/svelte';
   import { api } from '$lib/api';
   import { parentDir } from '$lib/format';
-  import type { SearchCandidate } from '$lib/types';
+  import type { GameEntry, LibraryFolder, SearchCandidate } from '$lib/types';
   import AppChrome from '$lib/components/AppChrome.svelte';
   import MonoLabel from '$lib/components/MonoLabel.svelte';
   import Btn from '$lib/components/Btn.svelte';
   import CandidateRow from '$lib/components/CandidateRow.svelte';
+  import MoveInstallModal from '$lib/components/MoveInstallModal.svelte';
+  import { isCurrentRoot as isCurrentRootOf } from '$lib/pathMatch';
   import { gamepadScope } from '$lib/gamepad';
 
   // ── State ──────────────────────────────────────────────────────────────
@@ -65,6 +67,10 @@
   // and artwork carry over — instead of a duplicate being created.
   let reinstallTargetId = $state<string | null>(null);
   let reinstallName = $state<string | null>(null);
+
+  let importGame = $state<GameEntry | null>(null);
+  let importFolders = $state<LibraryFolder[]>([]);
+  let importAsk = $state(false);
 
 
 
@@ -259,7 +265,7 @@
   async function addWithCandidate() {
     if (!exePath || !picked) return;
     try {
-      await api.addGame({
+      const entry = await api.addGame({
         game_name: picked.name,
         exe_path: exePath,
         steam_id: picked.steam_id,
@@ -270,7 +276,7 @@
         game_folder_path: gameFolder,
         reinstall_target_id: reinstallTargetId,
       });
-      await getCurrentWindow().close();
+      await afterAdd(entry);
     } catch (e) {
       error = String(e);
     }
@@ -284,17 +290,41 @@
       // clicked, and freely editable, so a wrong auto-highlighted match never
       // names the entry. Fall back to the cleaned filename if it's been cleared.
       const name = untrackedName.trim() || cleanFileName(exePath);
-      await api.addGame({
+      const entry = await api.addGame({
         game_name: name,
         exe_path: exePath,
         save_paths: [],
         game_folder_path: gameFolder,
         reinstall_target_id: reinstallTargetId,
       });
-      await getCurrentWindow().close();
+      await afterAdd(entry);
     } catch (e) {
       error = String(e);
     }
+  }
+
+  async function closeAfterImport() {
+    await getCurrentWindow().close();
+  }
+
+  async function setImportPrompt(mode: 'always' | 'ask' | 'never') {
+    const c = await api.getConfig();
+    c.library_import_prompt = mode;
+    await api.updateConfig(c);
+  }
+
+  async function afterAdd(entry: GameEntry) {
+    const cfg = await api.getConfig();
+    const mode = cfg.library_import_prompt;
+    const folders = cfg.library_folders;
+    const inLibrary = folders.some((f) => isCurrentRootOf(f.path, entry.game_folder_path ?? ''));
+    if (mode === 'never' || folders.length === 0 || !entry.game_folder_path || inLibrary) {
+      await getCurrentWindow().close();
+      return;
+    }
+    importGame = entry;
+    importFolders = folders;
+    importAsk = mode === 'ask';
   }
 
   async function cancel() {
@@ -587,4 +617,19 @@
     </footer>
   </main>
 </div>
+
+{#if importGame}
+  <MoveInstallModal
+    game={importGame}
+    folders={importFolders}
+    importMode
+    renameTo={importGame.game_name}
+    showDontAskAgain={importAsk}
+    onClose={closeAfterImport}
+    onDone={closeAfterImport}
+    onDontAskAgain={async () => {
+      await setImportPrompt('never');
+    }}
+  />
+{/if}
 

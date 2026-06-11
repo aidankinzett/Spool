@@ -89,6 +89,7 @@ export function makeConfig(over: Partial<ConfigData> = {}): ConfigData {
     umu_run_path: '',
     default_proton_path: '',
     ui_mode: 'auto',
+    library_import_prompt: 'ask',
     tray_intro_seen: true,
     onboarding_completed: true,
     decky_update_notified_version: '',

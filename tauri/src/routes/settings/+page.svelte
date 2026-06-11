@@ -798,13 +798,44 @@
 
           <!-- ════ LIBRARY ════ -->
           {:else if activeGroup === 'library'}
-            <LibraryStorage
-              folders={config!.library_folders}
-              capacity={libFolderCapacity}
-              onAddFolder={addLibraryFolder}
-              onRemoveFolder={removeLibFolder}
-              onSetDefaultFolder={setDefaultLibFolder}
-            />
+            <div class="flex flex-col gap-4">
+              <LibraryStorage
+                folders={config!.library_folders}
+                capacity={libFolderCapacity}
+                onAddFolder={addLibraryFolder}
+                onRemoveFolder={removeLibFolder}
+                onSetDefaultFolder={setDefaultLibFolder}
+              />
+
+              <SettingsCard
+                title="Importing games"
+                helper="When you add a game stored outside your library folders, Spool can move it into one and rename the folder to the game's name."
+              >
+                {#snippet icon()}<Folder size={14} />{/snippet}
+                <SettingsRow
+                  label="Import prompt"
+                  helper="Control what happens when a newly-added game is outside your library folders."
+                >
+                  {#snippet control()}
+                    <div class="flex justify-end">
+                      <Segmented
+                        value={config!.library_import_prompt}
+                        onchange={(v) => {
+                          if (!config) return;
+                          config.library_import_prompt = v as ConfigData['library_import_prompt'];
+                          persist();
+                        }}
+                        options={[
+                          { value: 'always', label: 'Always' },
+                          { value: 'ask', label: 'Ask each time' },
+                          { value: 'never', label: 'Never' },
+                        ]}
+                      />
+                    </div>
+                  {/snippet}
+                </SettingsRow>
+              </SettingsCard>
+            </div>
 
           <!-- ════ SAVES ════ -->
           {:else if activeGroup === 'saves'}

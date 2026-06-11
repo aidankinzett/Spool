@@ -27,6 +27,16 @@ pub enum UiMode {
     Touch,
 }
 
+/// Prompt mode for importing games into library folders when added.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ImportPromptMode {
+    #[default]
+    Ask,
+    Always,
+    Never,
+}
+
 /// On-disk shape. Every field has a default so older config.json files
 /// without newer fields parse cleanly via `#[serde(default)]`.
 ///
@@ -100,6 +110,9 @@ pub struct ConfigData {
     /// Proton / Linux launch settings (flattened; field names match their keys).
     #[serde(flatten)]
     pub launch: LaunchConfig,
+
+    /// Action/prompt setting for consolidating newly-added games into library folders.
+    pub library_import_prompt: ImportPromptMode,
 }
 
 impl Default for ConfigData {
@@ -119,6 +132,7 @@ impl Default for ConfigData {
             cloud: CloudConfig::default(),
             lan: LanConfig::default(),
             launch: LaunchConfig::default(),
+            library_import_prompt: ImportPromptMode::default(),
         }
     }
 }

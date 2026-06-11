@@ -25,6 +25,7 @@ export type ConfigData = {
   default_proton_path: string;
 
   ui_mode: UiMode;
+  library_import_prompt: 'always' | 'ask' | 'never';
 
   /** True after the close-to-tray intro toast has been shown once. */
   tray_intro_seen: boolean;
