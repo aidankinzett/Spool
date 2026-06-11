@@ -611,13 +611,17 @@ export function createLibrary() {
       const target = path ?? (await api.defaultLanInstallDir());
       const canonical = await api.prepareLibraryFolder(target);
       const cfg = await api.getConfig();
+      cfg.library_folders = cfg.library_folders.map((f) => ({
+        ...f,
+        default_install: f.path === canonical,
+      }));
       if (!cfg.library_folders.some((f) => f.path === canonical)) {
         cfg.library_folders = [
           ...cfg.library_folders,
           { path: canonical, label: null, default_install: true },
         ];
-        await api.updateConfig(cfg);
       }
+      await api.updateConfig(cfg);
     } catch (e) {
       toasts.show({
         kind: 'bad',

@@ -509,7 +509,9 @@ fn migrate_retention_floor(data: &mut ConfigData) -> bool {
 fn migrate_lan_install_dir(data: &mut ConfigData) -> bool {
     let dir = data.lan.install_dir.trim().to_string();
     if dir.is_empty() {
-        return false;
+        let changed = !data.lan.install_dir.is_empty();
+        data.lan.install_dir = String::new();
+        return changed;
     }
     let no_default_yet = !data.library_folders.iter().any(|f| f.default_install);
     if let Some(existing) = data.library_folders.iter_mut().find(|f| f.path == dir) {
