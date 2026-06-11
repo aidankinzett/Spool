@@ -21,7 +21,6 @@
   import { goto } from '$app/navigation';
   import { getVersion } from '@tauri-apps/api/app';
   import { appLocalDataDir } from '@tauri-apps/api/path';
-  import { open as openDialog } from '@tauri-apps/plugin-dialog';
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import { emit, listen } from '@tauri-apps/api/event';
   import { api, type DeckyPluginInfo } from '$lib/api';
@@ -372,14 +371,6 @@
     }
   }
 
-  async function browseLanInstallDir() {
-    const picked = await openDialog({ title: 'Pick the LAN install folder', directory: true, multiple: false });
-    if (typeof picked === 'string' && config) {
-      config.lan_install_dir = picked;
-      await persist();
-    }
-  }
-
   // ── Library folders (per-drive install roots) ──────────────────────────────
   // path → total/available bytes for the folder's drive, refreshed when the
   // configured folder list changes. Drives the capacity bars in LibraryStorage.
@@ -427,7 +418,7 @@
       // Restore the prior list if the save fails, so the UI doesn't drift from
       // what's on disk (persist() toasts the error and returns false).
       const prev = config.library_folders;
-      config.library_folders = [...prev, { path: canonical, label: null }];
+      config.library_folders = [...prev, { path: canonical, label: null, default_install: false }];
       if (!(await persist())) {
         config.library_folders = prev;
         return false;
@@ -444,6 +435,19 @@
     if (!config) return;
     const prev = config.library_folders;
     config.library_folders = prev.filter((f) => f.path !== path);
+    if (!(await persist())) config.library_folders = prev;
+  }
+
+  /** The folder new installs (LAN downloads) land in — the flagged one, else
+   * the first. Mirrors `ConfigData::default_install_folder` in Rust. */
+  const defaultInstallFolder = $derived(
+    config?.library_folders.find((f) => f.default_install) ?? config?.library_folders[0] ?? null,
+  );
+
+  async function setDefaultLibFolder(path: string) {
+    if (!config) return;
+    const prev = config.library_folders;
+    config.library_folders = prev.map((f) => ({ ...f, default_install: f.path === path }));
     if (!(await persist())) config.library_folders = prev;
   }
 
@@ -799,6 +803,7 @@
               capacity={libFolderCapacity}
               onAddFolder={addLibraryFolder}
               onRemoveFolder={removeLibFolder}
+              onSetDefaultFolder={setDefaultLibFolder}
             />
 
           <!-- ════ SAVES ════ -->
@@ -1214,15 +1219,17 @@
                         {/snippet}
                       </SettingsRow>
 
-                      <SettingsRow label="Default install dir" helper="Where downloads from peers land.">
+                      <SettingsRow
+                        label="Install location"
+                        helper={defaultInstallFolder
+                          ? `Downloads from peers install into ${defaultInstallFolder.path}.`
+                          : 'Downloads from peers install into Spool’s data folder. Add a library folder to choose a drive.'}
+                      >
                         {#snippet control()}
-                          <div class="flex items-center gap-2 min-w-0">
-                            <TextField bind:value={config!.lan_install_dir} placeholder="(default · lan-games inside Spool app data)" mono full oncommit={persist} />
-                            <Btn variant="ghost" onclick={browseLanInstallDir}>
-                              {#snippet icon()}<Folder size={14} />{/snippet}
-                              Browse
-                            </Btn>
-                          </div>
+                          <Btn variant="ghost" onclick={() => (activeGroup = 'library')}>
+                            {#snippet icon()}<HardDrive size={14} />{/snippet}
+                            Library folders
+                          </Btn>
                         {/snippet}
                       </SettingsRow>
 

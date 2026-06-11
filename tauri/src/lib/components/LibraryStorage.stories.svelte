@@ -37,8 +37,8 @@
   );
 
   const FOLDERS: LibraryFolder[] = [
-    { path: 'C:/Games', label: 'System drive' },
-    { path: 'D:/Games', label: 'Games SSD' },
+    { path: 'C:/Games', label: 'System drive', default_install: false },
+    { path: 'D:/Games', label: 'Games SSD', default_install: true },
   ];
 
   // Per-folder drive capacity (total + available bytes + the drive's mount
@@ -70,6 +70,7 @@
       capacity: CAPACITY,
       onAddFolder: async () => true,
       onRemoveFolder: async () => {},
+      onSetDefaultFolder: async () => {},
     },
     render: template,
   });
@@ -96,7 +97,7 @@
 <Story
   name="One folder, rest stray"
   args={{
-    folders: [{ path: 'C:/Games', label: 'System drive' }],
+    folders: [{ path: 'C:/Games', label: 'System drive', default_install: false }],
     capacity: { 'C:/Games': { total_bytes: 500 * 1024 * 1048576, available_bytes: 40 * 1024 * 1048576, mount_point: 'C:\\' } },
   }}
 />

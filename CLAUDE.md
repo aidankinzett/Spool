@@ -78,7 +78,7 @@ External integrations:
 * **`lan/`** — LAN game-sharing subsystem (`mod.rs`, `discovery.rs`, `server.rs`, `install.rs`):
   * **`discovery.rs`** — every 5 s sends a JSON announce over **UDP broadcast** (`255.255.255.255:47631`, *not* multicast — consumer mesh routers filter admin-scoped multicast but flood limited broadcasts). Peers stale out after 30 s. Announce carries the live `file_server_port`. Emits `lan:peers-changed`.
   * **`server.rs`** — in-process axum HTTP server exposing `/games`, `/manifest` (walks a game folder and **blake3-hashes** every file; cached), per-file `/file` downloads (HTTP range for resume), and artwork. Binds `lan_share_port` (default 47632) or an ephemeral fallback. Tracks `UploadSession`s (reaped when idle), exposed via `list_active_uploads` / `cancel_upload` (`lan:uploads-changed`).
-  * **`install.rs`** — receiver side (`start_peer_install` → `run_install`): downloads up to `LAN_PARALLEL_FILES` (4) files concurrently into `<name>.partial`, verifies each file's blake3 hash, resumes interrupted transfers, then renames to final and adds to the library. Single in-flight slot with a cancel flag; throttled `lan:download` events. Honours `lan_download_max_mbps` (0 = unlimited). Installs land in `lan_install_dir` (default `lan-games/`).
+  * **`install.rs`** — receiver side (`start_peer_install` → `run_install`): downloads up to `LAN_PARALLEL_FILES` (4) files concurrently into `<name>.partial`, verifies each file's blake3 hash, resumes interrupted transfers, then renames to final and adds to the library. Single in-flight slot with a cancel flag; throttled `lan:download` events. Honours `lan_download_max_mbps` (0 = unlimited). Installs land in the default-install library folder (`ConfigData::lan_install_root`: the folder flagged `default_install`, else the first; `lan-games/` under app data when none are configured). The first GUI download with no library folders prompts for one (`InstallLocationModal`); legacy `lan_install_dir` configs are migrated into a library folder on load.
 
 Windows-only (`#[cfg(windows)]`-gated or no-op on Linux — the runner, library, LAN, sync, and download flows are all cross-platform):
 * **`launcher.rs`** — extracts `launcher_stub.exe` to `launchers/<safe_name>.exe` and appends a config payload bracketed by marker strings. At runtime the stub reads its own bytes and exec's `spool.exe --run`.
@@ -136,7 +136,7 @@ Paths below use `%LOCALAPPDATA%\Spool\` (Windows). The root resolves cross-platf
 | `library.json` | Legacy library (pre-SQLite). Imported once on first run, then renamed `library.json.migrated` |
 | `covers/` | Downloaded covers (Steam CDN first, SteamGridDB fallback) |
 | `launchers/` | Per-game `.exe` launcher stubs (Armoury Crate, Windows) |
-| `lan-games/` | Default install root for LAN downloads (overridable via `lan_install_dir`) |
+| `lan-games/` | Fallback install root for LAN downloads when no library folders are configured |
 | ludusavi `config.yaml` + `ludusavi-backup/` | Spool-owned, managed by `ludusavi_config.rs`; backup/restore paths must match for cloud sync |
 | `prefixes/` *(Linux)* | Per-game Proton/Wine prefixes (`proton.rs`) |
 | `debug.log` | App log |

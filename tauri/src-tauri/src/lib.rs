@@ -298,6 +298,7 @@ pub fn run() {
             drives::folder_free_space,
             drives::folder_capacity,
             drives::prepare_library_folder,
+            drives::default_lan_install_dir,
             move_install::move_game_install,
             move_install::cancel_move,
             move_install::current_move,

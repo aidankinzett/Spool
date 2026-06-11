@@ -7,6 +7,7 @@
   import SuspendedLockModal from '$lib/components/SuspendedLockModal.svelte';
   import OnboardingModal from '$lib/components/OnboardingModal.svelte';
   import PeerSourceModal from '$lib/components/PeerSourceModal.svelte';
+  import InstallLocationModal from '$lib/components/InstallLocationModal.svelte';
   import { api, assetUrl, peerAssetUrl } from '$lib/api';
   import { openView } from '$lib/nav';
   import { toasts } from '$lib/toasts.svelte';
@@ -248,6 +249,31 @@
     }}
     onClose={() => {
       lib.peerChoice = null;
+    }}
+  />
+{/if}
+
+{#if lib.installLocationAsk}
+  {@const ask = lib.installLocationAsk}
+  <InstallLocationModal
+    gameName={ask.game.game_name}
+    coverUrl={peerAssetUrl(
+      {
+        device_id: ask.peer.device_id,
+        device_name: ask.peer.device_name,
+        addr: ask.peer.addr,
+        file_server_port: ask.peer.file_server_port,
+        source_game_id: ask.game.id,
+        shareable: true,
+      },
+      'cover',
+    )}
+    context={uiMode.resolved === 'touch' ? 'gamemode' : 'desktop'}
+    onConfirm={(path) => {
+      void lib.confirmInstallLocation(path);
+    }}
+    onClose={() => {
+      lib.installLocationAsk = null;
     }}
   />
 {/if}

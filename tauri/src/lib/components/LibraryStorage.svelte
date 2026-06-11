@@ -40,6 +40,7 @@
     capacity,
     onAddFolder,
     onRemoveFolder,
+    onSetDefaultFolder,
   }: {
     /** Configured library folders from app config. */
     folders: LibraryFolder[];
@@ -50,7 +51,15 @@
     onAddFolder: (rawPath: string) => Promise<boolean>;
     /** Removes a configured library folder (its installs become "outside"). */
     onRemoveFolder: (path: string) => Promise<void>;
+    /** Flags a folder as the default-install destination (LAN downloads). */
+    onSetDefaultFolder: (path: string) => Promise<void>;
   } = $props();
+
+  /** The folder new installs (LAN downloads) land in — the flagged one, else
+   * the first. Mirrors `ConfigData::default_install_folder` in Rust. */
+  const defaultInstallPath = $derived(
+    (folders.find((f) => f.default_install) ?? folders[0])?.path ?? null,
+  );
 
   const MB = 1048576; // bytes per MB — matches install_size_mb / fmtSize scaling
 
@@ -484,6 +493,21 @@
           <span class="min-w-0 truncate font-mono text-[13px] text-ink-0" title={grp.path}>{grp.path}</span>
           {#if grp.chip}
             <span class="shrink-0 rounded-[3px] border border-line-2 px-1.5 py-px font-mono text-[9px] uppercase tracking-[0.1em] text-ink-3">{grp.chip}</span>
+          {/if}
+          {#if grp.path === defaultInstallPath}
+            <span
+              class="shrink-0 rounded-[3px] border px-1.5 py-px font-mono text-[9px] uppercase tracking-[0.1em]"
+              style:border-color="color-mix(in srgb, var(--color-spool) 45%, transparent)"
+              style:color="var(--color-spool)"
+              title="New installs (LAN downloads) land here"
+            >Default</span>
+          {:else}
+            <button
+              type="button"
+              onclick={() => onSetDefaultFolder(grp.path)}
+              title="Make this the default folder for new installs (LAN downloads)"
+              class="shrink-0 cursor-pointer rounded-[3px] border border-line-2 px-1.5 py-px font-mono text-[9px] uppercase tracking-[0.1em] text-ink-3 transition-colors hover:border-line-1 hover:text-ink-1"
+            >Set default</button>
           {/if}
           <div class="flex-1"></div>
           {#if seg}
