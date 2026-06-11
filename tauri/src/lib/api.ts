@@ -89,7 +89,7 @@ export const api = {
   /** Moves game `id`'s install into `destFolder`; resolves with the updated
    *  entry. Progress streams via the `move:progress` event. */
   moveGameInstall: (id: string, destFolder: string, destName?: string): Promise<GameEntry> =>
-    invoke('move_game_install', { id, destFolder, destName: destName ?? null }),
+    invoke('move_game_install', { request: { id, destFolder, destName: destName ?? null } }),
   /** Requests cancellation of the in-flight move for `gameId`. */
   cancelMove: (gameId: string): Promise<boolean> =>
     invoke('cancel_move', { gameId }),

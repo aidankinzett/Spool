@@ -33,7 +33,7 @@
   import Btn from '$lib/components/Btn.svelte';
   import CandidateRow from '$lib/components/CandidateRow.svelte';
   import MoveInstallModal from '$lib/components/MoveInstallModal.svelte';
-  import { isCurrentRoot as isCurrentRootOf } from '$lib/pathMatch';
+  import { isInsideRoot } from '$lib/pathMatch';
   import { gamepadScope } from '$lib/gamepad';
 
   // ── State ──────────────────────────────────────────────────────────────
@@ -317,7 +317,7 @@
     const cfg = await api.getConfig();
     const mode = cfg.library_import_prompt;
     const folders = cfg.library_folders;
-    const inLibrary = folders.some((f) => isCurrentRootOf(f.path, entry.game_folder_path ?? ''));
+    const inLibrary = folders.some((f) => isInsideRoot(f.path, entry.game_folder_path));
     if (mode === 'never' || folders.length === 0 || !entry.game_folder_path || inLibrary) {
       await getCurrentWindow().close();
       return;
@@ -632,4 +632,3 @@
     }}
   />
 {/if}
-

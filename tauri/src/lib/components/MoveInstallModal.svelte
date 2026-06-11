@@ -336,13 +336,15 @@
           <button
             type="button"
             onclick={async () => {
+              if (locked) return;
               await onDontAskAgain?.();
               onClose();
             }}
-            class="text-[12.5px] font-medium transition-colors duration-100 text-ink-2 hover:text-ink-1 hover:underline"
+            disabled={locked}
+            class="text-[12.5px] font-medium transition-colors duration-100 text-ink-2 hover:text-ink-1 hover:underline disabled:opacity-50 disabled:hover:text-ink-2 disabled:hover:no-underline"
             style:background="transparent"
             style:border="none"
-            style:cursor="pointer"
+            style:cursor={locked ? 'not-allowed' : 'pointer'}
             style:padding="0"
           >
             Don't ask again

@@ -3,6 +3,7 @@ import {
   normPath,
   parentOf,
   canonPath,
+  isInsideRoot,
   isCurrentRoot,
   neededBytes,
 } from "$lib/pathMatch";
@@ -54,6 +55,23 @@ describe("isCurrentRoot", () => {
     expect(isCurrentRoot("/mnt/games", null)).toBe(false);
     expect(isCurrentRoot("/mnt/games", undefined)).toBe(false);
     expect(isCurrentRoot("/mnt/games", "")).toBe(false);
+  });
+});
+
+describe("isInsideRoot", () => {
+  it("matches a folder at or below the root", () => {
+    expect(isInsideRoot("/mnt/games", "/mnt/games")).toBe(true);
+    expect(isInsideRoot("/mnt/games", "/mnt/games/Hades")).toBe(true);
+    expect(isInsideRoot("/mnt/games", "/mnt/games/collection/Hades")).toBe(true);
+  });
+
+  it("rejects siblings with the same prefix", () => {
+    expect(isInsideRoot("/mnt/games", "/mnt/games-old/Hades")).toBe(false);
+    expect(isInsideRoot("/mnt/games", "/mnt/other/Hades")).toBe(false);
+  });
+
+  it("folds Windows paths before matching", () => {
+    expect(isInsideRoot("D:\\Games", "d:/games/Collection/Hades")).toBe(true);
   });
 });
 

@@ -21,8 +21,9 @@
           // Plenty of room everywhere, so no folder is disabled as too small.
           return 800 * 1024 * 1048576;
         case 'move_game_install': {
-          const id = String((args as Record<string, unknown>)?.id ?? '');
-          const dest = String((args as Record<string, unknown>)?.destFolder ?? '');
+          const request = ((args as Record<string, unknown>)?.request ?? {}) as Record<string, unknown>;
+          const id = String(request.id ?? '');
+          const dest = String(request.destFolder ?? '');
           // Stream a few progress ticks for the active game, then resolve.
           return (async () => {
             for (const frac of [0.25, 0.6, 0.9, 1]) {

@@ -21,7 +21,7 @@
 use crate::config::SharedConfig;
 use crate::error::{AppError, AppResult};
 use crate::library::{GameEntry, SharedLibrary};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -57,6 +57,14 @@ pub struct MoveProgress {
     pub message: Option<String>,
     /// Destination install folder once known, for display.
     pub dest_folder: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MoveGameInstallRequest {
+    id: String,
+    dest_folder: String,
+    dest_name: Option<String>,
 }
 
 /// Single-slot in-flight move tracker. One move at a time keeps the UX and disk
@@ -170,10 +178,14 @@ pub async fn move_game_install(
     config: State<'_, SharedConfig>,
     move_state: State<'_, Arc<MoveState>>,
     uploads: State<'_, crate::lan::LanUploadsState>,
-    id: String,
-    dest_folder: String,
-    dest_name: Option<String>,
+    request: MoveGameInstallRequest,
 ) -> AppResult<GameEntry> {
+    let MoveGameInstallRequest {
+        id,
+        dest_folder,
+        dest_name,
+    } = request;
+
     let library: SharedLibrary = (*library).clone();
     let move_state: Arc<MoveState> = (*move_state).clone();
 
@@ -220,7 +232,7 @@ pub async fn move_game_install(
 
     // If dest_name is provided and not empty, sanitize it and use it as the base folder name.
     // Otherwise, use the source folder name.
-    let base = if let Some(ref name) = dest_name.as_ref().map(|n| n.trim()).filter(|n| !n.is_empty()) {
+    let base = if let Some(name) = dest_name.as_ref().map(|n| n.trim()).filter(|n| !n.is_empty()) {
         std::ffi::OsString::from(sanitize_folder_name(name))
     } else {
         src.file_name()

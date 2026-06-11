@@ -43,6 +43,18 @@ export function isCurrentRoot(root: string, gameFolderPath: string | null | unde
   return canonPath(parentOf(gameFolderPath)) === canonPath(root);
 }
 
+/** Whether `gameFolderPath` is equal to or nested anywhere under `root`. */
+export function isInsideRoot(root: string, gameFolderPath: string | null | undefined): boolean {
+  if (!root || !gameFolderPath) return false;
+  const foldedRoot = canonPath(root);
+  const foldedGameFolder = canonPath(gameFolderPath);
+  return (
+    foldedGameFolder === foldedRoot ||
+    foldedGameFolder.startsWith(`${foldedRoot}/`) ||
+    foldedGameFolder.startsWith(`${foldedRoot}\\`)
+  );
+}
+
 /**
  * Mirror the backend's headroom rule: the on-disk footprint exceeds the file
  * byte total (cluster rounding, directory metadata), so an exact fit would fail
