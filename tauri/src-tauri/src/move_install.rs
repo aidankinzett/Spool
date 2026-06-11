@@ -413,18 +413,18 @@ pub async fn move_game_install(
 }
 
 /// Outcome of [`run_move`].
-struct MoveOutcome {
+pub(crate) struct MoveOutcome {
     /// `Some(bytes)` when the cross-device copy path ran (the tree was walked);
     /// `None` for the same-filesystem rename fast path.
     total_bytes: Option<u64>,
     /// The source folder to delete once the entry is repointed — `Some` only for
     /// the copy path (the rename already consumed the source).
-    source_to_delete: Option<PathBuf>,
+    pub(crate) source_to_delete: Option<PathBuf>,
 }
 
 /// Performs the actual relocation, leaving the source in place for the caller to
 /// delete after the library entry is repointed. Errors leave the source intact.
-async fn run_move(
+pub(crate) async fn run_move(
     app: &AppHandle,
     state: &Arc<MoveState>,
     src: &Path,
@@ -680,7 +680,7 @@ async fn regenerate_shortcuts(
 /// ASCII-lowercased copies and slice the matching tail off the *original* exe
 /// (ASCII-lowercasing never changes byte length, so the offsets line up) to keep
 /// the real on-disk casing in the result.
-fn relative_inside(exe: &Path, folder: &Path) -> Option<PathBuf> {
+pub(crate) fn relative_inside(exe: &Path, folder: &Path) -> Option<PathBuf> {
     if let Ok(rel) = exe.strip_prefix(folder) {
         return collect_normal(rel);
     }
@@ -726,7 +726,7 @@ fn collect_normal(rel: &Path) -> Option<PathBuf> {
 
 /// True when two paths refer to the same location, comparing canonical forms
 /// when both exist and falling back to a literal comparison otherwise.
-fn paths_equal(a: &Path, b: &Path) -> bool {
+pub(crate) fn paths_equal(a: &Path, b: &Path) -> bool {
     match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
         (Ok(ca), Ok(cb)) => ca == cb,
         _ => a == b,
