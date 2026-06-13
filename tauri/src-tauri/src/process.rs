@@ -45,7 +45,10 @@ pub struct GameExitResult {
 ///   - `PYTHONHOME=$APPDIR/usr` / `PYTHONPATH` — **fatal to umu-run** (a Python
 ///     app): the interpreter aborts with "Failed to import encodings module".
 ///   - `LD_LIBRARY_PATH` prepended with `$APPDIR/...` — breaks the Steam Linux
-///     Runtime container's dynamic linking.
+///     Runtime container's dynamic linking (and leaks the AppImage's bundled
+///     libs, e.g. an old libzstd, into the child's host Python). Entries from
+///     *any* AppImage mount are dropped, not just the current `$APPDIR` — see
+///     the path-var loop for why stale mounts pile up.
 ///   - `PATH`, `XDG_DATA_DIRS`, `QT_PLUGIN_PATH`, `GST_PLUGIN_SYSTEM_PATH*`,
 ///     `PERLLIB`, `GSETTINGS_SCHEMA_DIR`, and `GDK_*`/`GTK_*`/`GIO_*` — all
 ///     pointed at the AppImage, wrong for any host tool we spawn.
@@ -102,8 +105,20 @@ fn appimage_env_ops() -> Vec<EnvOp> {
     }
 
     // Colon-separated path vars: the AppImage prepends `$APPDIR/...` entries and
-    // keeps the host original after them. Drop only the `$APPDIR` entries so the
-    // child still sees the host paths.
+    // keeps the host original after them. Drop the `$APPDIR` entries so the child
+    // still sees the host paths.
+    //
+    // We also drop entries from *other* AppImage mounts (`/.mount_<App><rand>`).
+    // When one Spool AppImage process relaunches/spawns another (single-instance
+    // forwarding, the updater's `current_app.AppImage` copy-relaunch, the headless
+    // server), AppRun prepends the new mount's lib dirs to the inherited
+    // `LD_LIBRARY_PATH` but only overwrites `$APPDIR` with its own mount — so the
+    // var accumulates lib dirs from several mounts while `$APPDIR` names just the
+    // newest. A `starts_with($APPDIR)`-only filter would leave the stale mounts'
+    // `usr/lib` on the path, and the child (e.g. umu-run's host Python) would load
+    // the bundled libs from there instead of the host's — the libzstd 1.4.8 the
+    // AppImage ships lacks `ZSTD_defaultCLevel`, which crashed umu-run's `_zstd`
+    // import. Matching the AppImage mount-dir convention strips every generation.
     for var in [
         "PATH",
         "LD_LIBRARY_PATH",
@@ -118,7 +133,9 @@ fn appimage_env_ops() -> Vec<EnvOp> {
             let val = val.to_string_lossy();
             let cleaned: Vec<&str> = val
                 .split(':')
-                .filter(|p| !p.is_empty() && !p.starts_with(&appdir))
+                .filter(|p| {
+                    !p.is_empty() && !p.starts_with(&appdir) && !p.contains("/.mount_")
+                })
                 .collect();
             if cleaned.is_empty() {
                 ops.push(EnvOp::Remove(var));
@@ -455,9 +472,12 @@ mod tests {
         // ── Phase 2: AppImage env → sanitised ──
         std::env::set_var("APPDIR", "/tmp/.mount_SpoolXYZ");
         std::env::set_var("PYTHONHOME", "/tmp/.mount_SpoolXYZ/usr");
+        // A stale mount from an earlier AppImage generation (.mount_SpoolOLD)
+        // is left on the path: `$APPDIR` only names the newest mount, but the
+        // var accumulates lib dirs from every generation. Both must be dropped.
         std::env::set_var(
             "LD_LIBRARY_PATH",
-            "/tmp/.mount_SpoolXYZ/usr/lib:/usr/lib:/usr/lib32",
+            "/tmp/.mount_SpoolXYZ/usr/lib:/tmp/.mount_SpoolOLD/usr/lib:/usr/lib:/usr/lib32",
         );
 
         let mut cmd = Command::new("true");
@@ -466,7 +486,9 @@ mod tests {
 
         // PYTHONHOME removed entirely (would otherwise crash umu-run's Python).
         assert_eq!(mods.get("PYTHONHOME"), Some(&None));
-        // LD_LIBRARY_PATH keeps host entries, drops the $APPDIR one.
+        // LD_LIBRARY_PATH keeps host entries, drops the current $APPDIR mount
+        // AND any stale AppImage mount (else the child loads the AppImage's
+        // bundled libs, e.g. the old libzstd that crashes umu-run's _zstd).
         assert_eq!(
             mods.get("LD_LIBRARY_PATH"),
             Some(&Some("/usr/lib:/usr/lib32".to_string()))
