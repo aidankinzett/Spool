@@ -1709,10 +1709,19 @@ fn build_launch_plan(
         let umu_run = crate::proton::resolve_umu_run(Some(umu_run_path))?;
         // `None` when the user hasn't pinned a Proton — we then leave
         // PROTONPATH unset and let umu-run pick its own default.
-        let proton_path = crate::proton::resolve_proton_path(
+        let mut proton_path = crate::proton::resolve_proton_path(
             proton_version_path.as_deref(),
             Some(default_proton_path),
         );
+        // Offline, umu-run can't resolve its own default Proton: with
+        // PROTONPATH unset it tries to fetch/verify UMU-Proton and, when the
+        // network is unreachable, errors out instead of using an installed
+        // build — the game exits immediately. Pin the build that created the
+        // prefix (or newest installed) so the launch needs no network. Online
+        // we still let umu-run choose, preserving the #80 invariant.
+        if proton_path.is_none() && crate::config::offline_mode_enabled() {
+            proton_path = crate::proton::resolve_offline_proton_path(&prefix_root);
+        }
         return Ok(LaunchPlan {
             use_proton: true,
             umu_run: Some(umu_run),

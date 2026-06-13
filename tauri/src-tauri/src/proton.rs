@@ -231,6 +231,57 @@ fn name_is_umu_or_ge(name: &str) -> bool {
     l.contains("umu-proton") || l.contains("ge-proton")
 }
 
+/// Resolve a concrete, already-installed Proton build for an **offline** launch
+/// when the user hasn't pinned one.
+///
+/// With `PROTONPATH` unset, umu-run resolves its own default Proton by calling
+/// out to fetch/verify UMU-Proton; when the network is unreachable it raises
+/// `FileNotFoundError` rather than falling back to an installed build, so the
+/// game exits immediately. Pointing `PROTONPATH` at a build that's already on
+/// disk sidesteps that — umu sees a valid dir and never touches the network.
+///
+/// Prefer the build that *created this prefix* (recorded as the first line of
+/// the prefix's `config_info`) so runtime and prefix stay matched — the same
+/// invariant that kept [`resolve_proton_path`] from forcing a "newest installed"
+/// guess online (the #80 regression). Only when there's no usable prefix record
+/// (a never-launched game) do we fall back to the newest installed UMU/GE build.
+///
+/// Returns `None` when nothing suitable is installed — the caller then leaves
+/// `PROTONPATH` unset and umu-run fails with its own (now accurate) message.
+/// Offline-only: online launches keep letting umu-run choose.
+pub fn resolve_offline_proton_path(prefix_root: &Path) -> Option<PathBuf> {
+    if let Some(p) = proton_from_prefix(prefix_root) {
+        return Some(p);
+    }
+    installed_proton_versions()
+        .into_iter()
+        .find(|v| name_is_umu_or_ge(&v.name))
+        .map(|v| PathBuf::from(v.path))
+}
+
+/// Read the Proton build that created a prefix (the first line of its
+/// `config_info`, e.g. `UMU-Proton-10.0-4`) and resolve it to an installed
+/// Proton dir, matched by name against [`installed_proton_versions`]. `None`
+/// when the prefix has no `config_info` (never launched) or the recorded build
+/// is no longer installed.
+fn proton_from_prefix(prefix_root: &Path) -> Option<PathBuf> {
+    let recorded = recorded_proton_name(prefix_root)?;
+    installed_proton_versions()
+        .into_iter()
+        .find(|v| v.name.eq_ignore_ascii_case(&recorded))
+        .map(|v| PathBuf::from(v.path))
+}
+
+/// The Proton build name recorded in a prefix's `config_info` (its first line,
+/// e.g. `UMU-Proton-10.0-4`). `None` when the file is missing or the line is
+/// blank. Split out from [`proton_from_prefix`] so the parse is unit-testable
+/// without a live Proton install.
+fn recorded_proton_name(prefix_root: &Path) -> Option<String> {
+    let contents = std::fs::read_to_string(prefix_root.join("config_info")).ok()?;
+    let recorded = contents.lines().next()?.trim();
+    (!recorded.is_empty()).then(|| recorded.to_string())
+}
+
 /// Resolve a Proton build capable of driving umu's `winetricks` (UMU-Proton or
 /// GE-Proton — stock Steam Proton can't). Prefers the game's explicit override
 /// if it qualifies, then the config default, then any installed UMU/GE build.
@@ -750,6 +801,31 @@ mod tests {
     fn prefix_path_is_under_prefixes_dir() {
         let p = game_prefix_path("xyz");
         assert!(p.ends_with("prefixes/xyz"));
+    }
+
+    #[test]
+    fn recorded_proton_name_reads_config_info_first_line() {
+        let dir = tempfile::tempdir().unwrap();
+        // umu writes the build dir name on line 1, then paths under it.
+        std::fs::write(
+            dir.path().join("config_info"),
+            "UMU-Proton-10.0-4\n/path/to/UMU-Proton-10.0-4/files/share/fonts/\n0\n",
+        )
+        .unwrap();
+        assert_eq!(
+            recorded_proton_name(dir.path()).as_deref(),
+            Some("UMU-Proton-10.0-4")
+        );
+    }
+
+    #[test]
+    fn recorded_proton_name_none_when_missing_or_blank() {
+        // No config_info at all (a never-launched prefix).
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(recorded_proton_name(dir.path()), None);
+        // Present but the first line is blank.
+        std::fs::write(dir.path().join("config_info"), "\nUMU-Proton-10.0-4\n").unwrap();
+        assert_eq!(recorded_proton_name(dir.path()), None);
     }
 
     #[test]
