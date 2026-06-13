@@ -89,6 +89,15 @@ pub struct ConfigData {
     /// drive. A flat top-level `library_folders` array on disk.
     pub library_folders: Vec<LibraryFolder>,
 
+    /// "Offline mode": all cloud/network work is paused — ludusavi cloud sync,
+    /// the rclone control plane (session markers, folds, probes), the umu
+    /// runtime-update check, and the metadata backfill. Toggled by the
+    /// `go_offline` / `go_online` commands (Settings → Cloud sync), which also
+    /// run the prepare/reconcile steps around the flip. Read across processes
+    /// via [`offline_mode_enabled`] since the headless server and attached
+    /// `--run` workflows each load their own config.
+    pub offline_mode: bool,
+
     /// Cloud-save / rclone settings (flattened to the flat `cloud_*` JSON keys).
     #[serde(flatten)]
     pub cloud: CloudConfig,
@@ -116,6 +125,7 @@ impl Default for ConfigData {
             decky_update_notified_version: String::new(),
             save_retention_full: 5,
             library_folders: Vec::new(),
+            offline_mode: false,
             cloud: CloudConfig::default(),
             lan: LanConfig::default(),
             launch: LaunchConfig::default(),
@@ -566,6 +576,23 @@ fn hostname() -> String {
 pub fn get_config(state: State<'_, SharedConfig>) -> AppResult<ConfigData> {
     let cfg = state.lock().map_err(|_| AppError::LockPoisoned)?;
     Ok(cfg.data.clone())
+}
+
+/// Whether offline mode is currently on, read fresh from `config.json`.
+///
+/// A disk read rather than Tauri state so every Spool process (tray GUI,
+/// attached `--run`, headless Decky server) sees the same answer — the same
+/// pattern as `ludusavi_config::cloud_remote_is_configured()`, which the
+/// callers of this typically pair it with. Every flip of the flag saves the
+/// config immediately, so the file is never stale. `false` on any read/parse
+/// failure (no config yet ⇒ not offline).
+pub fn offline_mode_enabled() -> bool {
+    let Ok(raw) = std::fs::read_to_string(paths::config_file()) else {
+        return false;
+    };
+    serde_json::from_str::<ConfigData>(&raw)
+        .map(|d| d.offline_mode)
+        .unwrap_or(false)
 }
 
 /// Replaces the in-memory config with `data` and persists to disk. The

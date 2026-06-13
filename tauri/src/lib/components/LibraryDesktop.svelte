@@ -178,10 +178,12 @@
             ? 'var(--color-ok)'
             : lib.syncOff
               ? 'var(--color-bad)'
-              : 'var(--color-ink-3)'}
+              : lib.syncPaused
+                ? 'var(--color-warn)'
+                : 'var(--color-ink-3)'}
           data-tauri-drag-region="false"
         >
-          {#if lib.syncOff}
+          {#if lib.syncOff || lib.syncPaused}
             <CloudOff size={14} />
           {:else}
             <Cloud size={14} />

@@ -45,6 +45,7 @@ mod ludusavi_config;
 mod metadata;
 mod metadata_backfill;
 mod move_install;
+mod offline;
 mod paths;
 mod plugin_server;
 mod proc_lock;
@@ -293,6 +294,9 @@ pub fn run() {
             config::update_config,
             config::detect_umu_run,
             config::app_platform,
+            // offline mode
+            offline::go_offline,
+            offline::go_online,
             // drives / library folders + move install
             drives::list_drives,
             drives::folder_free_space,
@@ -766,8 +770,12 @@ fn spawn_startup_tasks(app: &AppHandle) {
 
     // Backfill Steam Store metadata (description, developer, publisher, genres,
     // release date) for entries that have a steam_id but empty metadata fields.
-    // Throttled to respect the store endpoint's rate limit.
-    metadata_backfill::spawn_backfill(app.clone());
+    // Throttled to respect the store endpoint's rate limit. Skipped in offline
+    // mode — every fetch would just wait out its timeout; the backfill re-runs
+    // on the next online boot.
+    if !config::offline_mode_enabled() {
+        metadata_backfill::spawn_backfill(app.clone());
+    }
 
     // Register the health sink so real control-plane ops can report cloud
     // reachability passively, then run a single startup probe. After this there's

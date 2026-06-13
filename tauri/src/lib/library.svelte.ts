@@ -384,12 +384,15 @@ export function createLibrary() {
   });
   const syncOk = $derived(syncStatus.reachability === 'online');
   const syncOff = $derived(syncStatus.reachability === 'offline');
+  const syncPaused = $derived(syncStatus.reachability === 'offline_mode');
   const syncTitle = $derived(
     syncStatus.reachability === 'unconfigured'
       ? 'Cloud remote not configured — open Settings to set it up'
-      : syncOk
-        ? 'Cloud remote reachable'
-        : `Cloud remote unreachable${syncStatus.error ? ` · ${syncStatus.error}` : ''}`,
+      : syncPaused
+        ? 'Offline mode — cloud sync paused. Go back online in Settings → Cloud sync'
+        : syncOk
+          ? 'Cloud remote reachable'
+          : `Cloud remote unreachable${syncStatus.error ? ` · ${syncStatus.error}` : ''}`,
   );
   const downloadActive = $derived(downloadIsActive(activeDownload));
   const downloadCount = $derived(downloadActive ? 1 : 0);
@@ -1066,6 +1069,7 @@ export function createLibrary() {
     get selectedGame() { return selectedGame; },
     get syncOk() { return syncOk; },
     get syncOff() { return syncOff; },
+    get syncPaused() { return syncPaused; },
     get syncTitle() { return syncTitle; },
     get downloadActive() { return downloadActive; },
     get downloadCount() { return downloadCount; },

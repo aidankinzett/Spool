@@ -64,6 +64,13 @@ export type ConfigData = {
    * flow lists these as destinations, LAN downloads land in the
    * default-install one; Settings → Library folders manages them. */
   library_folders: LibraryFolder[];
+
+  /** Offline mode: all cloud/network work is paused (ludusavi cloud sync, the
+   * rclone control plane, umu's runtime-update check, metadata backfill).
+   * Flip via `api.goOffline()` / `api.goOnline()` — which run the prepare /
+   * reconcile sweeps around the flag — never by writing it through
+   * `updateConfig` directly. */
+  offline_mode: boolean;
 };
 
 /** Mirror of the Rust `LibraryFolder` struct in src-tauri/src/config.rs. */
@@ -465,8 +472,9 @@ export type UploadSnapshot = {
  *   unconfigured → no cloud remote set → icon dimmed
  *   online       → `rclone lsd` succeeded within timeout → green
  *   offline      → rclone error or timeout → red
+ *   offline_mode → sync deliberately paused by the user (offline mode) → amber
  */
-export type SyncReachability = 'unconfigured' | 'online' | 'offline';
+export type SyncReachability = 'unconfigured' | 'online' | 'offline' | 'offline_mode';
 
 /**
  * Snapshot of the cloud-remote reachability poll. Mirrors `SyncStatus` in
@@ -479,6 +487,58 @@ export type SyncStatus = {
   server_version: string | null;
   error: string | null;
   last_ok_ago_secs: number | null;
+};
+
+/** One per-game problem from an offline-mode prepare/reconcile sweep.
+ * Mirrors `GameIssue` in offline.rs. */
+export type OfflineGameIssue = {
+  game_name: string;
+  error: string;
+};
+
+/** What `go_offline` did. Mirrors `GoOfflineReport` in offline.rs. */
+export type GoOfflineReport = {
+  /** Games whose saves were pulled down (cloud was ahead). */
+  pulled: string[];
+  /** Games already matching the cloud. */
+  up_to_date: number;
+  /** Games whose local saves were already ahead of the cloud — left as-is. */
+  local_newer: string[];
+  /** Games with a true local-vs-cloud divergence — not refreshed. */
+  conflicts: string[];
+  /** Games whose pull failed outright. */
+  errors: OfflineGameIssue[];
+  /** Whether the ludusavi manifest cache was freshened. */
+  manifest_refreshed: boolean;
+  /** Linux Proton runtime warm-up: "ready", "skipped", or "failed: <reason>". */
+  proton_runtime: string;
+  /** False when no cloud remote is configured (nothing to pull). */
+  cloud_configured: boolean;
+};
+
+/** What `go_online` did. Mirrors `GoOnlineReport` in offline.rs. */
+export type GoOnlineReport = {
+  /** Whether the remote answered the re-probe; false ⇒ reconcile deferred. */
+  reachable: boolean;
+  /** Games whose offline saves were uploaded to the cloud. */
+  uploaded: string[];
+  /** Games where the cloud had moved ahead instead — pulled down. */
+  pulled: string[];
+  /** Games where both sides moved — left for the conflict UI. */
+  conflicts: string[];
+  /** Games whose reconcile failed outright. */
+  errors: OfflineGameIssue[];
+};
+
+/** Progress payload of the `offline:prep` event emitted during both
+ * offline-mode transitions. Mirrors `PrepProgress` in offline.rs. */
+export type OfflinePrepProgress = {
+  /** 'saves' | 'manifest' | 'proton' | 'probe' | 'reconcile' */
+  stage: string;
+  detail: string;
+  /** Per-stage counter; 0/0 for stages without one. */
+  current: number;
+  total: number;
 };
 
 /** Result returned by `add_to_steam`. Mirrors `AddToSteamResult` in steam.rs. */

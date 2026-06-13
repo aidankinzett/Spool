@@ -355,6 +355,7 @@ pub fn build_umu_launch(
     prefix_root: &Path,
     proton_path: Option<&Path>,
     game_id: &str,
+    offline_mode: bool,
 ) -> UmuLaunch {
     let mut args = Vec::with_capacity(1 + extra_args.len());
     args.push(exe_path.to_string_lossy().to_string());
@@ -372,6 +373,13 @@ pub fn build_umu_launch(
             "PROTONPATH".to_string(),
             proton_path.to_string_lossy().to_string(),
         ));
+    }
+    // Offline mode: skip umu's Steam Runtime update check entirely rather than
+    // letting it time out (the HTTP caps below bound it, but skipping is both
+    // faster and quieter). The cached runtime — warmed by `go_offline` — is
+    // used as-is. Defers to an explicit user override like the caps do.
+    if offline_mode && std::env::var_os("UMU_RUNTIME_UPDATE").is_none() {
+        env.push(("UMU_RUNTIME_UPDATE".to_string(), "0".to_string()));
     }
 
     // Bound umu-run's network touches so an offline launch fails fast instead
@@ -560,6 +568,87 @@ pub async fn install_proton_deps_core(
     }
 }
 
+/// Overall ceiling on the offline-preparation runtime warm-up. First run on a
+/// machine downloads the Steam Linux Runtime container (and UMU-Proton when no
+/// Proton is pinned) — hundreds of MB — so the budget is generous; when
+/// everything is already cached the invocation exits in seconds.
+const WARM_RUNTIME_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+
+/// Pre-download everything umu-run needs so a later launch works with no
+/// network: the Steam Linux Runtime container and, when the user hasn't pinned
+/// a Proton build, umu's bundled UMU-Proton. Part of the go-offline
+/// preparation (Linux only — errors on Windows, where games launch natively).
+///
+/// Uses umu's documented no-op invocation — `umu-run ""` (empty exe) — which
+/// performs the full runtime/Proton setup and creates a prefix without
+/// launching anything. The prefix lands in a dedicated `_offline-warmup` dir
+/// under the prefixes root (kept between runs; later warm-ups reuse it), so no
+/// real game prefix is touched. Unlike launches, the umu HTTP fail-fast caps
+/// are NOT applied: this call exists to download, so it gets umu's stock
+/// timeout/retry behaviour.
+pub async fn warm_offline_runtime(
+    umu_run_override: &str,
+    default_proton_path: &str,
+) -> AppResult<()> {
+    if cfg!(windows) {
+        return Err(AppError::Other(
+            "Proton runtime warm-up is Linux-only.".into(),
+        ));
+    }
+    let umu_run = resolve_umu_run(Some(umu_run_override))?;
+    let proton_path = resolve_proton_path(None, Some(default_proton_path));
+    let prefix_root = paths::proton_prefixes_dir().join("_offline-warmup");
+    std::fs::create_dir_all(&prefix_root)
+        .map_err(|e| AppError::Other(format!("failed to create warm-up prefix dir: {e}")))?;
+
+    tracing::info!(?umu_run, ?proton_path, "offline prep: warming umu runtime");
+
+    let mut cmd = Command::new(&umu_run);
+    cmd.arg("") // documented no-op exe: set up runtime + prefix, run nothing
+        .env("GAMEID", "umu-default")
+        .env("WINEPREFIX", &prefix_root);
+    if let Some(p) = &proton_path {
+        cmd.env("PROTONPATH", p);
+    }
+    // Same AppImage-env hygiene as every other umu invocation (see
+    // install_proton_deps_core) so umu-run's Python sees the host runtime.
+    crate::process::strip_appimage_env(&mut cmd);
+    crate::capture_stdio!(cmd);
+    cmd.kill_on_drop(true);
+    let child = cmd
+        .spawn()
+        .map_err(|e| AppError::Other(format!("failed to run umu-run: {e}")))?;
+    let output = match tokio::time::timeout(WARM_RUNTIME_TIMEOUT, child.wait_with_output()).await {
+        Ok(res) => res.map_err(|e| AppError::Other(format!("failed to run umu-run: {e}")))?,
+        Err(_) => {
+            tracing::warn!("offline prep: umu runtime warm-up timed out");
+            return Err(AppError::Other(format!(
+                "Proton runtime download timed out after {} minutes — check your network and try again.",
+                WARM_RUNTIME_TIMEOUT.as_secs() / 60
+            )));
+        }
+    };
+    if output.status.success() {
+        tracing::info!("offline prep: umu runtime ready");
+        Ok(())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let tail = stderr
+            .lines()
+            .rev()
+            .take(8)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect::<Vec<_>>()
+            .join("\n");
+        tracing::error!(status = ?output.status.code(), %tail, "offline prep: umu warm-up failed");
+        Err(AppError::Other(format!(
+            "Proton runtime download failed:\n{tail}"
+        )))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -573,6 +662,7 @@ mod tests {
             Path::new("/prefixes/abc"),
             Some(Path::new("/proton/Experimental")),
             "abc",
+            false,
         );
         assert_eq!(l.program, PathBuf::from("/usr/bin/umu-run"));
         assert_eq!(
@@ -606,8 +696,39 @@ mod tests {
             Path::new("/prefixes/abc"),
             None,
             "abc",
+            false,
         );
         assert!(l.env.iter().all(|(n, _)| n != "PROTONPATH"));
+    }
+
+    #[test]
+    fn umu_launch_offline_disables_runtime_update() {
+        let online = build_umu_launch(
+            Path::new("/usr/bin/umu-run"),
+            Path::new("/games/Hades/Hades.exe"),
+            &[],
+            Path::new("/prefixes/abc"),
+            None,
+            "abc",
+            false,
+        );
+        let offline = build_umu_launch(
+            Path::new("/usr/bin/umu-run"),
+            Path::new("/games/Hades/Hades.exe"),
+            &[],
+            Path::new("/prefixes/abc"),
+            None,
+            "abc",
+            true,
+        );
+        let get =
+            |l: &UmuLaunch, k: &str| l.env.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone());
+        // Online launches leave umu's runtime-update check enabled.
+        assert_eq!(get(&online, "UMU_RUNTIME_UPDATE"), None);
+        // Offline mode skips it (unless the user overrode it in the env).
+        if std::env::var_os("UMU_RUNTIME_UPDATE").is_none() {
+            assert_eq!(get(&offline, "UMU_RUNTIME_UPDATE"), Some("0".to_string()));
+        }
     }
 
     #[test]
