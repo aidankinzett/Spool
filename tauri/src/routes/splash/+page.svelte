@@ -85,11 +85,20 @@
   // capped so a tall display (where `s` climbs toward 2) can't push it off the
   // edges of the screen.
   let modalZoom = $derived(Math.min(Math.max(s, 1), 1.4));
-  // `offline_mode` (the deliberate Settings toggle) is NOT rendered as
-  // "offline" here — the session is local-only by choice, not broken.
   let syncStatus = $state<SyncReachability>('online');
-  // Cloud upload failure (local backup ok, remote upload failed) also renders as offline.
-  let net = $derived(syncStatus === 'offline' || cloudUploadFailed ? 'offline' : 'online');
+  // Three-way net state: 'offline' is a broken/unreachable remote (warn
+  // tones), 'paused' is the deliberate offline-mode toggle (local-only by
+  // choice — calm copy, no warnings). A cloud upload failure also renders as
+  // offline. The cloud chip/sync rows are additionally gated on `cloudUsed`,
+  // which the workflow already reports false while offline mode is on.
+  type NetState = 'online' | 'offline' | 'paused';
+  let net = $derived<NetState>(
+    cloudUploadFailed || syncStatus === 'offline'
+      ? 'offline'
+      : syncStatus === 'offline_mode'
+        ? 'paused'
+        : 'online',
+  );
 
   // Determine flow from phase. Error can occur in either flow; we track
   // which flow was active when the error hit via a separate flag.
@@ -181,7 +190,9 @@
     const offline = net === 'offline';
     const restoreDetail = offline
       ? `Latest copy on this device · ${game ? fmtSize(game.save_backup_size_mb) : '…'} · cloud remote unreachable`
-      : `Newest revision · ${game ? fmtSize(game.save_backup_size_mb) : '…'} · pulled from your cloud remote`;
+      : net === 'paused'
+        ? `Latest copy on this device · ${game ? fmtSize(game.save_backup_size_mb) : '…'} · offline mode`
+        : `Newest revision · ${game ? fmtSize(game.save_backup_size_mb) : '…'} · pulled from your cloud remote`;
 
     return [
       {

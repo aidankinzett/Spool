@@ -908,6 +908,15 @@ pub async fn resolve_cloud_conflict(
     game_id: String,
     side: String,
 ) -> AppResult<ManualRestoreResult> {
+    // A conflict resolution is forced cloud traffic both ways (mirror one
+    // side, then a cloud-syncing restore). In offline mode a stale conflict
+    // modal could otherwise still hit the network — fail fast with the way
+    // out instead.
+    if !cloud_sync_active() {
+        return Err(AppError::Other(
+            "Offline mode is on — go back online (Settings → Cloud sync) before resolving cloud conflicts.".into(),
+        ));
+    }
     let op = crate::ludusavi::CloudOp::from_side(&side)?;
     let (game_name, ludusavi_exe, config_dir, wine_prefix) = manual_prep(&app, &game_id).await?;
     let game_folder = app
@@ -1845,13 +1854,12 @@ struct WorkflowCtx<'a> {
     ludusavi_client: &'a LudusaviClient,
     config_dir: PathBuf,
     wine_prefix: Option<PathBuf>,
-    cloud_configured: bool,
-    /// A cloud remote IS configured but offline mode suspends it. Distinct
-    /// from `cloud_configured == false` with no remote at all: a suspended
-    /// session must end on the `local-newer` badge (so `go_online` knows to
-    /// upload it), while a genuinely local-only library has no cloud to be
-    /// newer than.
-    cloud_suspended: bool,
+    /// A cloud remote is configured in ludusavi's config.yaml — durable for
+    /// the session. Whether cloud sync actually RUNS also depends on the
+    /// offline-mode flag, which the user can flip mid-session, so each phase
+    /// derives the live split via [`Self::cloud_split`] instead of trusting a
+    /// launch-time snapshot.
+    remote_configured: bool,
     game_folder: Option<PathBuf>,
 }
 
@@ -1871,15 +1879,11 @@ impl<'a> WorkflowCtx<'a> {
         } else {
             None
         };
-        // Check once whether a cloud remote is configured so phase messages can
-        // tell the user whether saves are cloud-synced or local-only. Offline
-        // mode suspends a configured remote for the whole workflow: restore
-        // skips `--cloud-sync`, the upload leg is skipped, and the session ends
-        // on the `local-newer` badge (see `cloud_suspended`).
+        // Check once whether a cloud remote is configured. The offline-mode
+        // flag is deliberately NOT snapshotted here — each phase re-derives it
+        // (see `cloud_split`) so a toggle made while the game is running is
+        // honoured by the post-session backup.
         let remote_configured = ludusavi_config::cloud_remote_is_configured();
-        let offline = crate::config::offline_mode_enabled();
-        let cloud_configured = remote_configured && !offline;
-        let cloud_suspended = remote_configured && offline;
         // Snapshot the install folder path for the install-dir save redirect.
         let game_folder = app
             .state::<SharedLibrary>()
@@ -1895,10 +1899,25 @@ impl<'a> WorkflowCtx<'a> {
             ludusavi_client,
             config_dir,
             wine_prefix,
-            cloud_configured,
-            cloud_suspended,
+            remote_configured,
             game_folder,
         })
+    }
+
+    /// The live `(cloud_configured, cloud_suspended)` split:
+    /// *configured* = a remote is set AND offline mode is off (cloud sync
+    /// runs); *suspended* = a remote is set but offline mode pauses it — the
+    /// session must end on the `local-newer` badge so `go_online` knows to
+    /// upload it, while a genuinely remote-less library has no cloud to be
+    /// newer than. Reads the offline flag fresh from disk so a mid-session
+    /// toggle is honoured; call ONCE per phase so the steps within a phase
+    /// can't disagree with each other.
+    fn cloud_split(&self) -> (bool, bool) {
+        let offline = crate::config::offline_mode_enabled();
+        (
+            self.remote_configured && !offline,
+            self.remote_configured && offline,
+        )
     }
 
     fn wine_prefix(&self) -> Option<&Path> {
@@ -1947,7 +1966,8 @@ async fn run_workflow(
     // it. Without this the UI (desktop overlay + Game-Mode splash) shows nothing
     // until that returns, so the Play button looks dead. The splash already
     // defaults to `restoring`; phase_restore re-emits with its own message.
-    let prep_msg = if ctx.cloud_configured {
+    let (cloud_configured, _) = ctx.cloud_split();
+    let prep_msg = if cloud_configured {
         "Syncing + restoring saves…"
     } else {
         "Restoring local saves…"
@@ -1957,7 +1977,7 @@ async fn run_workflow(
         ctx.game_id,
         "restoring",
         Some(prep_msg),
-        ctx.cloud_configured,
+        cloud_configured,
         None,
         false,
     );
@@ -2043,6 +2063,9 @@ async fn preflight(ctx: &WorkflowCtx<'_>, exe_pathbuf: &Path, steal_lock: bool) 
 /// saves to restore (a fresh game, fine). Any failure after the session claim
 /// releases our marker so peers aren't blocked by a session that never started.
 async fn phase_restore(ctx: &WorkflowCtx<'_>) -> AppResult<bool> {
+    // One offline-mode read for the whole phase: the restore flag, the phase
+    // messages, and the baseline advance must all agree.
+    let (cloud_configured, _) = ctx.cloud_split();
     let restore_phase: AppResult<bool> = async {
         // Coordinate with any backup in flight on this machine before touching
         // saves. Restore runs `ludusavi restore --cloud-sync`, which reads the
@@ -2067,7 +2090,7 @@ async fn phase_restore(ctx: &WorkflowCtx<'_>) -> AppResult<bool> {
                         ctx.game_id,
                         "restoring",
                         Some("Waiting for a backup to finish…"),
-                        ctx.cloud_configured,
+                        cloud_configured,
                         None,
                         false,
                     );
@@ -2091,12 +2114,12 @@ async fn phase_restore(ctx: &WorkflowCtx<'_>) -> AppResult<bool> {
                 }
             };
 
-        let restore_msg = if ctx.cloud_configured {
+        let restore_msg = if cloud_configured {
             "Syncing + restoring saves…"
         } else {
             "Restoring local saves…"
         };
-        emit_phase(ctx.app, ctx.game_id, "restoring", Some(restore_msg), ctx.cloud_configured, None, false);
+        emit_phase(ctx.app, ctx.game_id, "restoring", Some(restore_msg), cloud_configured, None, false);
         os_toast_if_hidden(
             ctx.app,
             "Restoring saves",
@@ -2111,7 +2134,7 @@ async fn phase_restore(ctx: &WorkflowCtx<'_>) -> AppResult<bool> {
             ctx.wine_prefix(),
             ctx.game_folder(),
             None,
-            ctx.cloud_configured,
+            cloud_configured,
         ).await?;
         if restore
             .errors
@@ -2122,7 +2145,7 @@ async fn phase_restore(ctx: &WorkflowCtx<'_>) -> AppResult<bool> {
             // ludusavi saw local ≠ cloud and refused to sync. Reconcile before
             // continuing (fast-forward one side, or prompt on true divergence).
             reconcile_cloud_conflict(ctx).await?;
-        } else if ctx.cloud_configured {
+        } else if cloud_configured {
             // Clean restore with cloud configured — record the current local tip as
             // the synced baseline so the next conflict check is exact.
             let backup_dir = ludusavi_config::backup_dir();
@@ -2195,6 +2218,8 @@ async fn reconcile_cloud_conflict(ctx: &WorkflowCtx<'_>) -> AppResult<()> {
                     ctx.game_name,
                 )
                 .await?;
+            // Only reachable when the pass-1 restore ran with cloud sync
+            // on (it reported the conflict), so the re-restore keeps it on.
             let out = restore_with_redirects(
                 ctx.ludusavi_client,
                 ctx.ludusavi_exe,
@@ -2203,7 +2228,7 @@ async fn reconcile_cloud_conflict(ctx: &WorkflowCtx<'_>) -> AppResult<()> {
                 ctx.wine_prefix(),
                 ctx.game_folder(),
                 None,
-                ctx.cloud_configured,
+                true,
             )
             .await?;
             if out
@@ -2255,12 +2280,13 @@ async fn reconcile_cloud_conflict(ctx: &WorkflowCtx<'_>) -> AppResult<()> {
 /// session heartbeat + suspend-watcher lifecycle, flips the marker to
 /// `pending-backup` on exit, and records playtime / last-played.
 async fn phase_launch(ctx: &WorkflowCtx<'_>, exe_pathbuf: &Path) -> AppResult<SessionTiming> {
+    let (cloud_configured, _) = ctx.cloud_split();
     emit_phase(
         ctx.app,
         ctx.game_id,
         "launching",
         Some("Launching game…"),
-        ctx.cloud_configured,
+        cloud_configured,
         None,
         false,
     );
@@ -2269,7 +2295,7 @@ async fn phase_launch(ctx: &WorkflowCtx<'_>, exe_pathbuf: &Path) -> AppResult<Se
         ctx.game_id,
         "playing",
         None,
-        ctx.cloud_configured,
+        cloud_configured,
         None,
         false,
     );
@@ -2634,13 +2660,19 @@ async fn phase_backup(
 ) -> AppResult<bool> {
     let session_minutes = timing.minutes;
     let mut cloud_upload_failed = false;
+    // Re-derive the offline split NOW rather than trusting the launch-time
+    // value: the user may have gone offline while the game was running, and
+    // a session that ends in offline mode must skip the upload and land on
+    // `local-newer` (so `go_online` knows to push it). One read for the whole
+    // phase so the skip/upload/baseline/badge steps below can't disagree.
+    let (cloud_configured, cloud_suspended) = ctx.cloud_split();
     if !no_saves {
         emit_phase(
             ctx.app,
             ctx.game_id,
             "backing-up",
             Some("Backing up saves…"),
-            ctx.cloud_configured,
+            cloud_configured,
             Some(session_minutes),
             false,
         );
@@ -2776,7 +2808,7 @@ async fn phase_backup(
                 // tip before skipping — otherwise we still owe the cloud an
                 // upload even though nothing changed this time. Only meaningful
                 // when a remote is configured.
-                let skip_upload = ctx.cloud_configured && !out.saves_changed() && {
+                let skip_upload = cloud_configured && !out.saves_changed() && {
                     // A failed baseline read is not a reason to abort the real
                     // upload — treat an unreadable/absent baseline as "not
                     // current" and upload to be safe.
@@ -2809,7 +2841,7 @@ async fn phase_backup(
                 // forced `cloud upload` overwrites the remote (the same
                 // resolution the old combined path applied on a cloud conflict),
                 // so a remote that advanced under us still fast-forwards cleanly.
-                if ctx.cloud_configured && !skip_upload {
+                if cloud_configured && !skip_upload {
                     emit_phase(
                         ctx.app,
                         ctx.game_id,
@@ -2869,7 +2901,7 @@ async fn phase_backup(
                 // but only when the upload actually reached the cloud — otherwise
                 // local and cloud genuinely differ and the next launch should
                 // re-evaluate rather than assume we're synced.
-                if ctx.cloud_configured && !cloud_upload_failed {
+                if cloud_configured && !cloud_upload_failed {
                     if let Some(tip) = local_tip.as_ref() {
                         let _ = set_cloud_baseline(ctx.app, ctx.game_id, &tip.name).await;
                     }
@@ -2881,7 +2913,7 @@ async fn phase_backup(
                 // cloud yet (a flaky network / unreachable remote — or offline
                 // mode, where the configured remote is deliberately suspended
                 // and `go_online` will pick the badge up to upload).
-                let target_badge = if cloud_upload_failed || ctx.cloud_suspended {
+                let target_badge = if cloud_upload_failed || cloud_suspended {
                     "local-newer"
                 } else {
                     "synced"
@@ -2920,6 +2952,7 @@ async fn phase_backup(
 /// `done` phase carries a warning so the frontend shows a sticky toast instead
 /// of a clean "synced".
 fn finish(ctx: &WorkflowCtx<'_>, no_saves: bool, cloud_upload_failed: bool, session_minutes: i32) {
+    let (cloud_configured, _) = ctx.cloud_split();
     // Game Mode: reconcile the active-session record for THIS game. On full
     // success (saves reached the cloud, or no cloud configured) the record has
     // done its job — clear it so a later "Back up now" / game-stop can't act on a
@@ -2947,7 +2980,7 @@ fn finish(ctx: &WorkflowCtx<'_>, no_saves: bool, cloud_upload_failed: bool, sess
             ctx.game_id,
             "done",
             None,
-            ctx.cloud_configured,
+            cloud_configured,
             Some(session_minutes),
             false,
         );
@@ -2964,7 +2997,7 @@ fn finish(ctx: &WorkflowCtx<'_>, no_saves: bool, cloud_upload_failed: bool, sess
             ctx.game_id,
             "done",
             Some(warning),
-            ctx.cloud_configured,
+            cloud_configured,
             Some(session_minutes),
             true,
         );
@@ -2982,7 +3015,7 @@ fn finish(ctx: &WorkflowCtx<'_>, no_saves: bool, cloud_upload_failed: bool, sess
             ctx.game_id,
             "done",
             None,
-            ctx.cloud_configured,
+            cloud_configured,
             Some(session_minutes),
             false,
         );

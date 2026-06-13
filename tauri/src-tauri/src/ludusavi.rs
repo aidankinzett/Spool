@@ -596,6 +596,11 @@ impl LudusaviClient {
         cmd.args(["manifest", "update"]);
         let output = run_blocking(cmd, "manifest update").await?;
         if output.status.success() {
+            // Drop the in-memory parsed copy so the next manifest_or_load()
+            // re-reads the freshly-updated file — otherwise Add Game search
+            // and manifest-path lookups keep serving the old data until
+            // restart.
+            *self.manifest.write().await = None;
             Ok(())
         } else {
             Err(AppError::Other(format!(
