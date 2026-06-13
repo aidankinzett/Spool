@@ -643,9 +643,17 @@ pub async fn warm_offline_runtime(
             .collect::<Vec<_>>()
             .join("\n");
         tracing::error!(status = ?output.status.code(), %tail, "offline prep: umu warm-up failed");
-        Err(AppError::Other(format!(
-            "Proton runtime download failed:\n{tail}"
-        )))
+        // umu-run exiting non-zero isn't necessarily a failed download — a
+        // Python traceback means umu itself crashed before (or instead of)
+        // fetching anything (e.g. a host/runtime mismatch). Word the message
+        // for what actually happened so it doesn't read as "no network".
+        let crashed = tail.contains("Traceback") || tail.contains("Error:");
+        let headline = if crashed {
+            "umu-run failed to start while preparing the Proton runtime"
+        } else {
+            "Proton runtime download failed"
+        };
+        Err(AppError::Other(format!("{headline}:\n{tail}")))
     }
 }
 
