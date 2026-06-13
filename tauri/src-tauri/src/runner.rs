@@ -206,6 +206,14 @@ async fn persist_backup_stats(
     Ok(())
 }
 
+/// Whether ludusavi cloud sync should actually run right now: a remote is
+/// configured AND offline mode isn't suspending it. The manual restore/backup
+/// paths use this to decide `--cloud-sync`; the play workflow computes the
+/// same split once in `WorkflowCtx::new`.
+pub(crate) fn cloud_sync_active() -> bool {
+    ludusavi_config::cloud_remote_is_configured() && !crate::config::offline_mode_enabled()
+}
+
 /// AppHandle-free backup core. Resolves the game's name + wine prefix from the
 /// library, runs `ludusavi backup`, and persists the entry's backup stats.
 /// Returns the bundle count + total bytes. Callers handle event emission and
@@ -241,22 +249,35 @@ pub async fn backup_game_core(
     let _backup_lock =
         crate::proc_lock::acquire_backup(std::time::Duration::from_secs(180)).await?;
 
-    let out = ludusavi_client
-        .backup(ludusavi_exe, config_dir, &game_name, wine_prefix.as_deref())
-        .await
-        .map_err(|e| AppError::Other(format!("ludusavi backup: {e}")))?;
+    // Offline mode with a remote configured: write the local revision only —
+    // no `--cloud-sync` network attempt — and report it as not cloud-synced so
+    // the badge lands on `local-newer` and `go_online` knows to upload it.
+    let cloud_suspended =
+        ludusavi_config::cloud_remote_is_configured() && crate::config::offline_mode_enabled();
+    let out = if cloud_suspended {
+        ludusavi_client
+            .backup_local(ludusavi_exe, config_dir, &game_name, wine_prefix.as_deref())
+            .await
+    } else {
+        ludusavi_client
+            .backup(ludusavi_exe, config_dir, &game_name, wine_prefix.as_deref())
+            .await
+    }
+    .map_err(|e| AppError::Other(format!("ludusavi backup: {e}")))?;
 
-    // A backup only counts as "in the cloud" when ludusavi reported neither a
-    // failed cloud sync NOR a cloud conflict. A conflict means the upload was
-    // skipped (local and cloud genuinely diverged), so the saves did NOT reach
-    // the remote — treat it the same as an outright failure here. The full play
-    // workflow force-resolves conflicts (local is authoritative post-play); the
-    // headless/manual callers of this core instead leave the unsynced-session
-    // marker in place so the next real launch resolves the divergence.
-    let cloud_synced = out
-        .errors
-        .as_ref()
-        .is_none_or(|e| e.cloud_sync_failed.is_none() && e.cloud_conflict.is_none());
+    // A backup only counts as "in the cloud" when the cloud leg actually ran
+    // and ludusavi reported neither a failed cloud sync NOR a cloud conflict.
+    // A conflict means the upload was skipped (local and cloud genuinely
+    // diverged), so the saves did NOT reach the remote — treat it the same as
+    // an outright failure here. The full play workflow force-resolves
+    // conflicts (local is authoritative post-play); the headless/manual
+    // callers of this core instead leave the unsynced-session marker in place
+    // so the next real launch resolves the divergence.
+    let cloud_synced = !cloud_suspended
+        && out
+            .errors
+            .as_ref()
+            .is_none_or(|e| e.cloud_sync_failed.is_none() && e.cloud_conflict.is_none());
 
     let (game_count, bytes_total) = out
         .overall
@@ -443,6 +464,7 @@ pub async fn manual_restore(app: AppHandle, game_id: String) -> AppResult<Manual
         wine_prefix.as_deref(),
         game_folder.as_deref(),
         None,
+        cloud_sync_active(),
     )
     .await
     .map_err(|e| AppError::Other(format!("ludusavi restore: {e}")))?;
@@ -557,8 +579,11 @@ pub async fn pull_cloud_saves_core(
 
     // Without a remote there is nothing to pull — report it so the UI can hint
     // the user to configure cloud saves rather than showing a misleading
-    // "up to date".
-    if !ludusavi_config::cloud_remote_is_configured() {
+    // "up to date". Offline mode counts as unconfigured here: a pull is a
+    // network op by definition, so it cleanly no-ops (this also covers the
+    // Decky "Sync now" while offline). `go_offline` runs its pulls BEFORE
+    // flipping the flag, so the prepare pass is unaffected.
+    if !cloud_sync_active() {
         return Ok(PullResult {
             outcome: PullOutcome::Unconfigured,
             game_count: 0,
@@ -590,6 +615,7 @@ pub async fn pull_cloud_saves_core(
         wine_prefix.as_deref(),
         game_folder.as_deref(),
         None,
+        true,
     )
     .await
     .map_err(|e| AppError::Other(format!("ludusavi restore: {e}")))?;
@@ -659,6 +685,7 @@ pub async fn pull_cloud_saves_core(
                 wine_prefix.as_deref(),
                 game_folder.as_deref(),
                 None,
+                true,
             )
             .await
             .map_err(|e| AppError::Other(format!("ludusavi restore: {e}")))?;
@@ -698,7 +725,7 @@ pub async fn pull_cloud_saves_core(
 
 /// Set a game's `sync_badge` to `synced` and persist (only writes on a change).
 /// Best-effort: a poisoned/failed library lock leaves the badge untouched.
-async fn mark_synced_badge(library: &SharedLibrary, game_id: &str) {
+pub(crate) async fn mark_synced_badge(library: &SharedLibrary, game_id: &str) {
     let _ = library.set_sync_badge(game_id, "synced").await;
 }
 
@@ -773,6 +800,8 @@ pub async fn restore_save_revision_core(
         crate::proton::resolve_prefix_root(uses_proton, prefix_override.as_deref(), game_id);
 
     // ── Step 1: restore the chosen revision into the live save location ───
+    // `Some(backup)` takes the no-cloud-sync rollback path, so the flag is
+    // inert here — pass false for clarity.
     let out = restore_with_redirects(
         ludusavi_client,
         ludusavi_exe,
@@ -781,6 +810,7 @@ pub async fn restore_save_revision_core(
         wine_prefix.as_deref(),
         game_folder.as_deref(),
         Some(backup_name),
+        false,
     )
     .await
     .map_err(|e| AppError::Other(format!("ludusavi restore: {e}")))?;
@@ -903,6 +933,7 @@ pub async fn resolve_cloud_conflict(
         wine_prefix.as_deref(),
         game_folder.as_deref(),
         None,
+        true,
     )
     .await
     .map_err(|e| AppError::Other(format!("ludusavi restore: {e}")))?;
@@ -1126,7 +1157,7 @@ fn resolve_rclone_remote() -> Option<(PathBuf, String, String)> {
 /// reconciler can push silently in the first case but stay conservative in the
 /// second.
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum CloudTip {
+pub(crate) enum CloudTip {
     /// A readable cloud backup tip.
     Present(redirects::BackupTip),
     /// Remote reachable, no cloud backup for this game — safe to push.
@@ -1137,7 +1168,7 @@ enum CloudTip {
 
 impl CloudTip {
     /// The tip when present, else `None` — for callers that only need the tip.
-    fn tip(&self) -> Option<&redirects::BackupTip> {
+    pub(crate) fn tip(&self) -> Option<&redirects::BackupTip> {
         match self {
             CloudTip::Present(t) => Some(t),
             _ => None,
@@ -1151,7 +1182,7 @@ impl CloudTip {
 /// candidate is definitively not found (remote reachable); any unreachable or
 /// unparseable result yields [`CloudTip::Unknown`]. Uses `rclone::cat_outcome`
 /// (which applies FAST_FLAGS) so unreachable remotes fail quickly.
-async fn fetch_cloud_backup_tip(game_name: &str) -> CloudTip {
+pub(crate) async fn fetch_cloud_backup_tip(game_name: &str) -> CloudTip {
     let Some((rclone_exe, remote_name, remote_path)) = resolve_rclone_remote() else {
         return CloudTip::Unknown;
     };
@@ -1186,7 +1217,7 @@ async fn fetch_cloud_backup_tip(game_name: &str) -> CloudTip {
 
 /// How to reconcile a ludusavi-reported cloud conflict.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CloudSyncDecision {
+pub(crate) enum CloudSyncDecision {
     /// Local and cloud already match — nothing to do, proceed.
     InSync,
     /// Cloud is cleanly ahead — pull it down (download + re-restore).
@@ -1215,7 +1246,7 @@ enum CloudSyncDecision {
 /// an *unreadable* cloud ([`CloudTip::Unknown`]) is treated as divergence: the
 /// conflict ludusavi reported means the cloud may have something we couldn't
 /// read, so we must not clobber it.
-fn decide_cloud_sync(
+pub(crate) fn decide_cloud_sync(
     base: Option<&str>,
     local: Option<&redirects::BackupTip>,
     cloud: &CloudTip,
@@ -1261,7 +1292,11 @@ async fn set_cloud_baseline(app: &AppHandle, game_id: &str, tip_name: &str) -> A
 /// Library-based variant of [`set_cloud_baseline`] for callers that hold the
 /// `SharedLibrary` directly rather than an `AppHandle` (e.g. the headless
 /// plugin server).
-async fn set_baseline_in(library: &SharedLibrary, game_id: &str, tip_name: &str) -> AppResult<()> {
+pub(crate) async fn set_baseline_in(
+    library: &SharedLibrary,
+    game_id: &str,
+    tip_name: &str,
+) -> AppResult<()> {
     library.set_cloud_baseline(game_id, tip_name).await?;
     Ok(())
 }
@@ -1718,11 +1753,13 @@ async fn restore_with_redirects(
     prefix_root: Option<&Path>,
     game_folder: Option<&Path>,
     backup: Option<&str>,
+    cloud_sync: bool,
 ) -> AppResult<crate::ludusavi::ApiOutput> {
     // Restore the requested revision, or the tip. `Some(id)` is a local
-    // rollback (no cloud sync — see `restore_backup`); `None` is the normal
-    // cloud-syncing restore of the latest backup. Both passes restore the
-    // same selection.
+    // rollback (no cloud sync — see `restore_backup`); `None` restores the
+    // latest backup, pulling the cloud first when `cloud_sync` is set (callers
+    // pass false when no remote is configured or offline mode is on). Both
+    // passes restore the same selection.
     macro_rules! do_restore {
         () => {
             match backup {
@@ -1733,7 +1770,7 @@ async fn restore_with_redirects(
                 }
                 None => {
                     ludusavi_client
-                        .restore(ludusavi_exe, config_dir, game_name)
+                        .restore(ludusavi_exe, config_dir, game_name, cloud_sync)
                         .await
                 }
             }
@@ -1809,6 +1846,12 @@ struct WorkflowCtx<'a> {
     config_dir: PathBuf,
     wine_prefix: Option<PathBuf>,
     cloud_configured: bool,
+    /// A cloud remote IS configured but offline mode suspends it. Distinct
+    /// from `cloud_configured == false` with no remote at all: a suspended
+    /// session must end on the `local-newer` badge (so `go_online` knows to
+    /// upload it), while a genuinely local-only library has no cloud to be
+    /// newer than.
+    cloud_suspended: bool,
     game_folder: Option<PathBuf>,
 }
 
@@ -1829,8 +1872,14 @@ impl<'a> WorkflowCtx<'a> {
             None
         };
         // Check once whether a cloud remote is configured so phase messages can
-        // tell the user whether saves are cloud-synced or local-only.
-        let cloud_configured = ludusavi_config::cloud_remote_is_configured();
+        // tell the user whether saves are cloud-synced or local-only. Offline
+        // mode suspends a configured remote for the whole workflow: restore
+        // skips `--cloud-sync`, the upload leg is skipped, and the session ends
+        // on the `local-newer` badge (see `cloud_suspended`).
+        let remote_configured = ludusavi_config::cloud_remote_is_configured();
+        let offline = crate::config::offline_mode_enabled();
+        let cloud_configured = remote_configured && !offline;
+        let cloud_suspended = remote_configured && offline;
         // Snapshot the install folder path for the install-dir save redirect.
         let game_folder = app
             .state::<SharedLibrary>()
@@ -1847,6 +1896,7 @@ impl<'a> WorkflowCtx<'a> {
             config_dir,
             wine_prefix,
             cloud_configured,
+            cloud_suspended,
             game_folder,
         })
     }
@@ -2061,6 +2111,7 @@ async fn phase_restore(ctx: &WorkflowCtx<'_>) -> AppResult<bool> {
             ctx.wine_prefix(),
             ctx.game_folder(),
             None,
+            ctx.cloud_configured,
         ).await?;
         if restore
             .errors
@@ -2152,6 +2203,7 @@ async fn reconcile_cloud_conflict(ctx: &WorkflowCtx<'_>) -> AppResult<()> {
                 ctx.wine_prefix(),
                 ctx.game_folder(),
                 None,
+                ctx.cloud_configured,
             )
             .await?;
             if out
@@ -2826,8 +2878,10 @@ async fn phase_backup(
                 // Set the badge to match the real cloud state: "synced" only
                 // when the upload reached the remote, otherwise "local-newer"
                 // so the user sees the local save hasn't been backed up to the
-                // cloud yet (a flaky network / unreachable remote).
-                let target_badge = if cloud_upload_failed {
+                // cloud yet (a flaky network / unreachable remote — or offline
+                // mode, where the configured remote is deliberately suspended
+                // and `go_online` will pick the badge up to upload).
+                let target_badge = if cloud_upload_failed || ctx.cloud_suspended {
                     "local-newer"
                 } else {
                     "synced"

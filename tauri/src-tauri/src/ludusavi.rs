@@ -448,8 +448,11 @@ impl LudusaviClient {
         Ok(candidates)
     }
 
-    /// Runs `ludusavi restore --api --cloud-sync --force <name>` and parses
-    /// the JSON output. Empty stdout (which ludusavi sometimes produces for
+    /// Runs `ludusavi restore --api [--cloud-sync] --force <name>` and parses
+    /// the JSON output. `cloud_sync` pulls the remote into the local backup
+    /// store before restoring; callers pass `false` when no remote is
+    /// configured or offline mode is on, so the restore never makes a network
+    /// attempt. Empty stdout (which ludusavi sometimes produces for
     /// unknown-game errors) deserialises to an empty `ApiOutput` rather
     /// than failing.
     pub async fn restore(
@@ -457,13 +460,15 @@ impl LudusaviClient {
         ludusavi_exe: &Path,
         config_dir: &Path,
         game_name: &str,
+        cloud_sync: bool,
     ) -> AppResult<ApiOutput> {
-        run_api(
-            ludusavi_exe,
-            config_dir,
-            &["restore", "--api", "--cloud-sync", "--force", game_name],
-        )
-        .await
+        let mut args = vec!["restore", "--api"];
+        if cloud_sync {
+            args.push("--cloud-sync");
+        }
+        args.push("--force");
+        args.push(game_name);
+        run_api(ludusavi_exe, config_dir, &args).await
     }
 
     /// Runs `ludusavi restore --api --backup <id> --force <name>` — a restore
@@ -578,6 +583,26 @@ impl LudusaviClient {
             &["cloud", op.subcommand(), "--api", "--force", game_name],
         )
         .await
+    }
+
+    /// Runs `ludusavi manifest update` so the on-disk manifest cache is fresh.
+    /// Used by the go-offline preparation: ludusavi's backup scans read the
+    /// cached manifest, so freshening it while the network is still up means
+    /// offline sessions back up against current save-path data. Best-effort —
+    /// callers treat a failure as a warning, since a stale cached manifest
+    /// still works.
+    pub async fn manifest_update(&self, ludusavi_exe: &Path, config_dir: &Path) -> AppResult<()> {
+        let mut cmd = blocking_command(ludusavi_exe, config_dir);
+        cmd.args(["manifest", "update"]);
+        let output = run_blocking(cmd, "manifest update").await?;
+        if output.status.success() {
+            Ok(())
+        } else {
+            Err(AppError::Other(format!(
+                "ludusavi manifest update failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            )))
+        }
     }
 
     /// Runs `ludusavi backups --api <name>` and reduces it to authoritative

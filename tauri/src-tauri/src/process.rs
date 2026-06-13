@@ -226,6 +226,7 @@ pub async fn run_game(exe_path: &Path, spec: LaunchSpec<'_>) -> AppResult<GameEx
                 prefix_root,
                 proton_path,
                 game_id,
+                crate::config::offline_mode_enabled(),
             );
 
             // Block until the game exits — the run workflow's backup phase

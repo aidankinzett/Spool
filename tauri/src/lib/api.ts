@@ -20,6 +20,8 @@ import type {
   PlaySession,
   ProtonVersion,
   GuidedInstallResult,
+  GoOfflineReport,
+  GoOnlineReport,
   SyncStatus,
   UploadSnapshot,
   SearchCandidate,
@@ -174,6 +176,14 @@ export const api = {
   // Cloud control-plane reachability (rclone remote probe)
   currentSyncStatus: (): Promise<SyncStatus> => invoke('current_sync_status'),
   refreshSyncStatus: (): Promise<SyncStatus> => invoke('refresh_sync_status'),
+
+  /** Prepare for offline play (pull every game's cloud saves, freshen the
+   *  ludusavi manifest, pre-download the Proton runtime on Linux), then turn
+   *  offline mode ON. Long-running; progress streams via `offline:prep`. */
+  goOffline: (): Promise<GoOfflineReport> => invoke('go_offline'),
+  /** Turn offline mode OFF, re-probe the remote, and upload/reconcile the
+   *  saves from offline sessions. Progress streams via `offline:prep`. */
+  goOnline: (): Promise<GoOnlineReport> => invoke('go_online'),
 
   // Cloud OAuth authentication
   checkCloudRemoteExists: (provider: string): Promise<boolean> =>

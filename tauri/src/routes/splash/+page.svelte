@@ -2,7 +2,7 @@
   import { onMount } from 'svelte';
   import { listen } from '@tauri-apps/api/event';
   import { api, assetUrl } from '$lib/api';
-  import type { RunPhaseEvent, GameEntry, SyncStatus, RawConflictDetails } from '$lib/types';
+  import type { RunPhaseEvent, GameEntry, SyncStatus, SyncReachability, RawConflictDetails } from '$lib/types';
   import SpoolMark from '$lib/components/SpoolMark.svelte';
   import CloudConflictModal from '$lib/components/CloudConflictModal.svelte';
   import { exit } from '@tauri-apps/plugin-process';
@@ -85,7 +85,9 @@
   // capped so a tall display (where `s` climbs toward 2) can't push it off the
   // edges of the screen.
   let modalZoom = $derived(Math.min(Math.max(s, 1), 1.4));
-  let syncStatus = $state<'online' | 'offline' | 'unconfigured'>('online');
+  // `offline_mode` (the deliberate Settings toggle) is NOT rendered as
+  // "offline" here — the session is local-only by choice, not broken.
+  let syncStatus = $state<SyncReachability>('online');
   // Cloud upload failure (local backup ok, remote upload failed) also renders as offline.
   let net = $derived(syncStatus === 'offline' || cloudUploadFailed ? 'offline' : 'online');
 

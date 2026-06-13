@@ -101,6 +101,7 @@ export function makeConfig(over: Partial<ConfigData> = {}): ConfigData {
     cloud_webdav_username: '',
     save_retention_full: 3,
     library_folders: [],
+    offline_mode: false,
     ...over,
   };
 }

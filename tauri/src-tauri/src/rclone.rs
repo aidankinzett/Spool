@@ -96,6 +96,9 @@ pub enum SyncReachability {
     Online,
     /// Network error, missing remote, or timeout.
     Offline,
+    /// The user turned on offline mode — sync is deliberately paused, not
+    /// broken. No probes run while this is set.
+    OfflineMode,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -131,7 +134,7 @@ pub struct SyncStatusState {
 }
 
 impl SyncStatusState {
-    fn snapshot(&self) -> SyncStatus {
+    pub(crate) fn snapshot(&self) -> SyncStatus {
         let mut s = self.inner.lock().map(|g| g.clone()).unwrap_or_default();
         if let Ok(g) = self.last_ok.lock() {
             s.last_ok_ago_secs = g.map(|i| i.elapsed().as_secs());
@@ -293,19 +296,28 @@ pub fn remote_name_from_yaml(config: &serde_yaml::Value) -> Option<String> {
 }
 
 /// Resolve the remote from app state. `None` when cloud isn't configured (no
-/// `cloud.remote` in ludusavi's config) or the rclone binary can't be found.
+/// `cloud.remote` in ludusavi's config), the rclone binary can't be found, or
+/// offline mode is on — the `None` is what makes every control-plane op
+/// (markers, heartbeats, folds, publishes) no-op while the user is offline.
 pub fn resolve_remote(app: &AppHandle) -> Option<RcloneRemote> {
     let base = {
         let cfg = app.state::<SharedConfig>();
         let g = cfg.lock().ok()?;
+        if g.data.offline_mode {
+            return None;
+        }
         base_path(&g.data)
     };
     resolve_remote_inner(base)
 }
 
 /// Resolve the remote from a plain [`ConfigData`] — for the headless plugin
-/// server, which has no Tauri-managed state.
+/// server, which has no Tauri-managed state. Same offline-mode gate as
+/// [`resolve_remote`].
 pub fn resolve_remote_from_config(cfg: &ConfigData) -> Option<RcloneRemote> {
+    if cfg.offline_mode {
+        return None;
+    }
     resolve_remote_inner(base_path(cfg))
 }
 
@@ -1782,10 +1794,34 @@ pub fn spawn_initial_sync_probe(app: AppHandle) {
     });
 }
 
-/// Explicit `rclone lsd` probe — the startup check and the Settings refresh
-/// button. The passive path (`report_reach`) keeps the status current between
-/// these without spending a request per minute on an idle remote.
-async fn poll_once(app: &AppHandle) {
+/// Publish the deliberate offline-mode status (no probe — there's nothing to
+/// check while sync is paused). Called by `go_offline` after the flag flips so
+/// the chrome cloud icon and Settings pill switch immediately.
+pub fn publish_offline_mode_status(app: &AppHandle) {
+    apply_status(
+        app,
+        SyncStatus {
+            reachability: SyncReachability::OfflineMode,
+            ..Default::default()
+        },
+    );
+}
+
+/// Explicit `rclone lsd` probe — the startup check, the Settings refresh
+/// button, and the `go_online` re-check. The passive path (`report_reach`)
+/// keeps the status current between these without spending a request per
+/// minute on an idle remote.
+pub(crate) async fn poll_once(app: &AppHandle) {
+    // Offline mode: deliberately paused. Don't probe (it would fail and paint
+    // the icon red as if something were broken) — report the paused state.
+    let offline_mode = {
+        let cfg = app.state::<SharedConfig>();
+        cfg.lock().map(|g| g.data.offline_mode).unwrap_or(false)
+    };
+    if offline_mode {
+        publish_offline_mode_status(app);
+        return;
+    }
     let new_status = match resolve_remote(app) {
         None => {
             tracing::info!("sync probe: no remote configured (resolve_remote returned None)");

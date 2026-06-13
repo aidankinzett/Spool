@@ -3,6 +3,7 @@
   import {
     Check,
     Cloud,
+    CloudOff,
     Cpu,
     Download,
     Folder,
@@ -28,7 +29,7 @@
   import { confirmSteamRestart } from '$lib/steamRestart';
   import { isNewerVersion } from '$lib/format';
   import { checkForUpdateInteractive } from '$lib/updater';
-  import type { ConfigData, DepStatus, FolderCapacity, LanPeer, ProtonVersion, SyncStatus } from '$lib/types';
+  import type { ConfigData, DepStatus, FolderCapacity, LanPeer, OfflinePrepProgress, ProtonVersion, SyncStatus } from '$lib/types';
   import AppChrome from '$lib/components/AppChrome.svelte';
   import MonoLabel from '$lib/components/MonoLabel.svelte';
   import Btn from '$lib/components/Btn.svelte';
@@ -85,6 +86,76 @@
   let webdavPassword = $state('');
   let webdavConnecting = $state(false);
 
+  // Offline mode: the toggle drives the long-running go_offline / go_online
+  // sweeps (save pulls, Proton runtime download, reconcile uploads), with live
+  // progress from the `offline:prep` event. Disabled while one is in flight.
+  let offlineBusy = $state<'idle' | 'going-offline' | 'going-online'>('idle');
+  let offlinePrep = $state<OfflinePrepProgress | null>(null);
+
+  async function setOfflineMode(on: boolean) {
+    if (!config || offlineBusy !== 'idle') return;
+    offlineBusy = on ? 'going-offline' : 'going-online';
+    offlinePrep = null;
+    try {
+      if (on) {
+        const r = await api.goOffline();
+        config.offline_mode = true;
+        const synced = r.pulled.length + r.up_to_date + r.local_newer.length;
+        const issues = [
+          r.conflicts.length &&
+            `${r.conflicts.length} cloud conflict${r.conflicts.length === 1 ? '' : 's'} (${r.conflicts.join(', ')})`,
+          r.errors.length && `${r.errors.length} game${r.errors.length === 1 ? '' : 's'} failed to sync`,
+          r.proton_runtime.startsWith('failed') && `Proton runtime download failed`,
+        ].filter(Boolean);
+        toasts.show({
+          kind: issues.length ? 'warn' : 'ok',
+          label: 'OFFLINE MODE',
+          title: issues.length ? 'Offline, with warnings' : 'Ready to play offline',
+          sub: issues.length
+            ? issues.join(' · ')
+            : r.cloud_configured
+              ? `Saves are current for ${synced} game${synced === 1 ? '' : 's'}${r.proton_runtime === 'ready' ? ' · Proton runtime downloaded' : ''}.`
+              : 'Cloud sync is off — saves keep backing up locally.',
+        });
+      } else {
+        const r = await api.goOnline();
+        config.offline_mode = false;
+        const issues = [
+          r.conflicts.length &&
+            `${r.conflicts.length} cloud conflict${r.conflicts.length === 1 ? '' : 's'} (${r.conflicts.join(', ')})`,
+          r.errors.length && `${r.errors.length} game${r.errors.length === 1 ? '' : 's'} failed to sync`,
+        ].filter(Boolean);
+        toasts.show({
+          kind: issues.length ? 'warn' : 'ok',
+          label: 'OFFLINE MODE',
+          title: issues.length ? 'Back online, with warnings' : 'Back online',
+          sub: issues.length
+            ? issues.join(' · ')
+            : !r.reachable
+              ? 'Cloud remote not reachable yet — saves will sync on the next launch.'
+              : r.uploaded.length
+                ? `Uploaded saves for ${r.uploaded.join(', ')}.`
+                : 'Everything was already in sync.',
+        });
+      }
+    } catch (e) {
+      toasts.show({
+        kind: 'bad',
+        label: 'OFFLINE MODE',
+        title: on ? "Couldn't go offline" : "Couldn't go back online",
+        sub: String(e),
+      });
+    } finally {
+      offlineBusy = 'idle';
+      offlinePrep = null;
+      try {
+        syncStatus = await api.currentSyncStatus();
+      } catch (e) {
+        console.error('[settings] currentSyncStatus failed:', e);
+      }
+    }
+  }
+
   let isLinux = $state(false);
   let protonVersions = $state<ProtonVersion[]>([]);
   let deps = $state<DepStatus[]>([]);
@@ -117,6 +188,7 @@
   onMount(() => {
     let unlisten: (() => void) | undefined;
     let unlistenPeers: (() => void) | undefined;
+    let unlistenOfflinePrep: (() => void) | undefined;
     let destroyed = false;
 
     // Register the live-status listener up front, independent of the slow data
@@ -151,6 +223,17 @@
         else unlistenPeers = fn;
       })
       .catch((e) => console.error('[settings] peers listener failed:', e));
+
+    // Live progress for the offline-mode prepare/reconcile sweeps. Same
+    // destroyed-guard as the sync listener above.
+    listen<OfflinePrepProgress>('offline:prep', (ev) => {
+      if (offlineBusy !== 'idle') offlinePrep = ev.payload;
+    })
+      .then((fn) => {
+        if (destroyed) fn();
+        else unlistenOfflinePrep = fn;
+      })
+      .catch((e) => console.error('[settings] offline prep listener failed:', e));
 
     const setup = async () => {
       // Only the core config is fatal — the whole page is bound to it. Loading
@@ -228,6 +311,7 @@
       destroyed = true;
       unlisten?.();
       unlistenPeers?.();
+      unlistenOfflinePrep?.();
     };
   });
 
@@ -985,6 +1069,51 @@
 
                     </div>
                   {/if}
+                </div>
+              </SettingsCard>
+
+              <!-- Offline mode -->
+              <SettingsCard
+                title="Offline mode"
+                helper="For travel or a spotty connection. Going offline gets everything ready first, then pauses all cloud sync so game launches never wait on the network."
+              >
+                {#snippet icon()}<CloudOff size={14} />{/snippet}
+                {#snippet right()}
+                  {#if offlineBusy !== 'idle'}
+                    <Pill kind="warn">{offlineBusy === 'going-offline' ? 'Preparing…' : 'Syncing…'}</Pill>
+                  {:else if config?.offline_mode}
+                    <Pill kind="warn">Offline</Pill>
+                  {:else}
+                    <Pill kind="off">Online</Pill>
+                  {/if}
+                {/snippet}
+
+                <div class="flex items-center gap-[14px] px-[18px] py-[14px]">
+                  <div class="flex-1">
+                    <div class="text-[13px] font-medium text-ink-0">
+                      {config.offline_mode ? 'Offline — cloud sync paused' : 'Prepare for offline play'}
+                    </div>
+                    <div class="mt-[3px] text-[11.5px] text-ink-2">
+                      {#if offlineBusy !== 'idle'}
+                        <span class="animate-pulse">
+                          {offlinePrep
+                            ? `${offlinePrep.detail}${offlinePrep.total ? ` (${offlinePrep.current}/${offlinePrep.total})` : ''}`
+                            : offlineBusy === 'going-offline'
+                              ? 'Preparing…'
+                              : 'Checking the cloud remote…'}
+                        </span>
+                      {:else if config.offline_mode}
+                        Saves keep backing up locally. Turn off to upload them and resume syncing.
+                      {:else}
+                        Downloads the latest cloud saves for every game{isLinux ? ' and the Proton runtime' : ''} before switching.
+                      {/if}
+                    </div>
+                  </div>
+                  <Toggle
+                    checked={config.offline_mode}
+                    disabled={offlineBusy !== 'idle'}
+                    onchange={(v) => setOfflineMode(v)}
+                  />
                 </div>
               </SettingsCard>
 
