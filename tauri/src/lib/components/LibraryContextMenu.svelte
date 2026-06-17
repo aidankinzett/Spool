@@ -14,7 +14,7 @@
    * non-danger rows, red hover for Remove.
    */
   import { onMount, onDestroy } from 'svelte';
-  import { ArrowDownToLine, ArrowUpFromLine, Folder, FolderInput, HardDriveDownload, Package, Pencil, Play, Trash2 } from '@lucide/svelte';
+  import { ArrowDownToLine, ArrowUpFromLine, ChevronRight, Folder, FolderInput, HardDriveDownload, Layers, Package, Pencil, Play, Trash2 } from '@lucide/svelte';
   import { openView } from '$lib/nav';
   import { api, assetUrl } from '$lib/api';
   import { fmtCatalog, folderForGame, parentDir } from '$lib/format';
@@ -24,19 +24,29 @@
   import { removeGameDialog } from '$lib/removeGame.svelte';
   import { moveInstallDialog } from '$lib/moveInstall.svelte';
   import { gamepadScope } from '$lib/gamepad';
-  import type { GameEntry } from '$lib/types';
+  import AddToCollectionList from '$lib/components/AddToCollectionList.svelte';
+  import type { Collection, GameEntry } from '$lib/types';
 
   let {
     game,
     x,
     y,
+    collections = [],
+    onToggleCollection,
+    onCreateCollection,
     onclose,
   }: {
     game: GameEntry;
     x: number;
     y: number;
+    collections?: Collection[];
+    onToggleCollection?: (collectionId: string, gameId: string) => void;
+    onCreateCollection?: (name: string, seedGameId: string) => string;
     onclose: () => void;
   } = $props();
+
+  // The "Add to collection" row expands an inline checkable list in place.
+  let collOpen = $state(false);
 
   let menuEl: HTMLDivElement | undefined = $state();
   let isWindows = $state(false);
@@ -403,6 +413,34 @@
     {@render item('Back up saves now', backupIcon, manualBackup, !game.installed)}
     {@render item('Restore saves…', restoreIcon, manualRestore, !game.installed)}
   </div>
+
+  {#if onToggleCollection && onCreateCollection}
+    {@const toggleColl = onToggleCollection}
+    {@const createColl = onCreateCollection}
+    <div class="border-t border-dashed border-line-1 py-1">
+      <button
+        type="button"
+        onclick={() => (collOpen = !collOpen)}
+        class="menu-item flex h-7 w-full items-center gap-2.5 px-3 text-left text-[12px] text-ink-1 transition-colors"
+      >
+        <span class="flex" style:color="var(--color-ink-2)"><Layers size={13} /></span>
+        <span class="flex-1">Add to collection</span>
+        <span class="flex transition-transform" style:transform={collOpen ? 'rotate(90deg)' : 'rotate(0deg)'}>
+          <ChevronRight size={13} />
+        </span>
+      </button>
+      {#if collOpen}
+        <div class="px-1.5 pb-1 pt-0.5">
+          <AddToCollectionList
+            {collections}
+            gameId={game.id}
+            onToggle={toggleColl}
+            onCreate={createColl}
+          />
+        </div>
+      {/if}
+    </div>
+  {/if}
 
   {#snippet playIcon()}<Play size={13} fill="currentColor" />{/snippet}
   {#snippet folderIcon()}<Folder size={13} />{/snippet}

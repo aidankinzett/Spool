@@ -6,6 +6,7 @@
 import { invoke, convertFileSrc } from '@tauri-apps/api/core';
 import type {
   AddToSteamResult,
+  Collection,
   ConfigData,
   DownloadProgress,
   DriveInfo,
@@ -102,6 +103,12 @@ export const api = {
   getConfig: (): Promise<ConfigData> => invoke('get_config'),
   updateConfig: (data: ConfigData): Promise<ConfigData> => invoke('update_config', { data }),
   detectUmuRun: (): Promise<string> => invoke('detect_umu_run'),
+  /** Current library collections (sidebar). */
+  listCollections: (): Promise<Collection[]> => invoke('list_collections'),
+  /** Persist the full collections array; returns the saved list and broadcasts
+   *  `collections:changed` to other windows. */
+  setCollections: (collections: Collection[]): Promise<Collection[]> =>
+    invoke('set_collections', { collections }),
   appPlatform: (): Promise<string> => invoke('app_platform'),
   checkDependencies: (): Promise<DepStatus[]> => invoke('check_dependencies'),
 

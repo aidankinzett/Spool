@@ -25,6 +25,12 @@ function defaultHandlers(): TauriHandlers {
     app_platform: 'windows',
     list_games: [makeGame()],
     get_config: makeConfig(),
+    // Collections default to none so every screen renders the (empty) sidebar
+    // section without erroring; the Library story overrides with sample data.
+    // `set_collections` echoes the array back, matching the real command's
+    // "frontend sends the whole list, gets it back" contract.
+    list_collections: [],
+    set_collections: (args: Record<string, unknown>) => args.collections ?? [],
     refresh_save_metadata: undefined,
     // Fills the cross-device activity card in any screen story with a detail
     // pane. Keyed off the requested game name so each game's chart is consistent.
