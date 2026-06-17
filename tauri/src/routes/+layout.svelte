@@ -10,6 +10,8 @@
   import { api } from '$lib/api';
   import { uiMode } from '$lib/uiMode.svelte';
   import { startGamepadNav } from '$lib/gamepad';
+  import { startVirtualKeyboard } from '$lib/virtualKeyboard';
+  import { platform } from '@tauri-apps/plugin-os';
 
   let { children } = $props();
 
@@ -37,6 +39,12 @@
     // and self-disabling when the Tauri event bridge isn't present.
     startGamepadNav();
 
+    // Pop KDE's on-screen keyboard when a text field is focused — WebKitGTK
+    // won't do it itself. Linux-only; the backend commands no-op off KDE, but
+    // gate here too so other platforms fire no IPC on every focus change.
+    let stopVk: (() => void) | undefined;
+    if (platform() === 'linux') stopVk = startVirtualKeyboard();
+
     let unlisten: (() => void) | undefined;
     (async () => {
       try {
@@ -53,7 +61,10 @@
         );
       });
     })();
-    return () => unlisten?.();
+    return () => {
+      unlisten?.();
+      stopVk?.();
+    };
   });
 </script>
 

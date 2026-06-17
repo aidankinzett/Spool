@@ -67,6 +67,7 @@ mod suspend;
 mod system_open;
 mod tray;
 mod util;
+mod virtual_keyboard;
 
 use cli::CliMode;
 use config::{Config, SharedConfig};
@@ -281,6 +282,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             take_pending_run,
             notify_splash_ready,
+            virtual_keyboard::show_virtual_keyboard,
+            virtual_keyboard::hide_virtual_keyboard,
             // library
             library::list_games,
             library::list_play_sessions,
