@@ -54,18 +54,25 @@
   const accent = $derived(game.accent_color ?? BRAND_SPOOL);
   const cover = $derived(assetUrl(game.cover_image_path));
 
-  // Clamp menu to viewport so it never opens partially off-screen.
-  // Measure the rendered menu once mounted; until we have dimensions we
-  // place the menu at the raw mouse coords. Derive the final position
-  // from the measurements so changes to x/y (e.g. from a re-trigger)
-  // propagate.
+  // Clamp menu to viewport so it never opens partially off-screen. A
+  // ResizeObserver tracks the menu's live size — not just the initial render —
+  // so when the "Add to collection" submenu expands (growing the menu), the
+  // clamp below repositions instead of letting the taller menu run off the
+  // bottom edge. Until we have dimensions we place the menu at the raw mouse
+  // coords; pos also re-derives when x/y change (e.g. a re-trigger).
   let measured = $state({ w: 0, h: 0 });
   $effect(() => {
     if (!menuEl) return;
-    const r = menuEl.getBoundingClientRect();
-    if (r.width !== measured.w || r.height !== measured.h) {
-      measured = { w: r.width, h: r.height };
-    }
+    const el = menuEl;
+    const remeasure = () => {
+      const r = el.getBoundingClientRect();
+      if (r.width !== measured.w || r.height !== measured.h) {
+        measured = { w: r.width, h: r.height };
+      }
+    };
+    const ro = new ResizeObserver(remeasure);
+    ro.observe(el); // fires once with the current size, then on every resize
+    return () => ro.disconnect();
   });
   const pos = $derived.by(() => {
     if (!measured.w || !measured.h) return { x, y };
@@ -335,9 +342,10 @@
   bind:this={menuEl}
   role="menu"
   use:gamepadScope={{ onBack: onclose }}
-  class="fixed z-50 w-[260px] overflow-hidden rounded-md border border-line-2 bg-bg-1 py-1.5 text-ink-0"
+  class="fixed z-50 w-[260px] overflow-y-auto rounded-md border border-line-2 bg-bg-1 py-1.5 text-ink-0"
   style:left="{pos.x}px"
   style:top="{pos.y}px"
+  style:max-height="calc(100vh - 16px)"
   style:--gp-focus={accent}
   style:box-shadow="0 18px 48px rgb(0 0 0 / 0.6)"
 >
