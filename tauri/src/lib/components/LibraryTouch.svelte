@@ -134,13 +134,19 @@
   // including collection tabs) can leave `lib.selectedId` pointing at a game
   // that isn't in the new rail, so the banner/actions would act on a tile that
   // isn't visible. When the current selection isn't in `shelfGames`, fall to the
-  // first visible tile (or clear when the rail is empty) — this also seeds the
-  // initial highlight on load, which matters most for controller use.
+  // first visible tile — this also seeds the initial highlight on load, which
+  // matters most for controller use.
   $effect(() => {
     if (!lib.loaded) return;
-    const inShelf = lib.selectedId != null && shelfGames.some((g) => g.id === lib.selectedId);
-    if (inShelf) return;
-    lib.selectedId = shelfGames[0]?.id ?? null;
+    // Don't retarget the selection out from under an open detail overlay — that
+    // would swap the game the user is looking at.
+    if (detailOpen) return;
+    // Empty shelf (LAN with no peers, an empty collection tab): keep the prior
+    // selection so cycling back to a populated tab restores it, rather than
+    // clearing it here and losing it.
+    if (shelfGames.length === 0) return;
+    if (lib.selectedId != null && shelfGames.some((g) => g.id === lib.selectedId)) return;
+    lib.selectedId = shelfGames[0].id;
   });
 
   // Gamepad/keyboard nav selects the focused tile so the banner previews it

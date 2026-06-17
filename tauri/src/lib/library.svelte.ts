@@ -412,12 +412,27 @@ export function createLibrary() {
   const selectedGame = $derived(
     selectedId ? displayGames.find((g) => g.id === selectedId) ?? null : null,
   );
-  // Sidebar filter-tab counts, computed once per displayGames change rather than
+  // Sidebar filter-tab counts. Computed over the collection-scoped list (not the
+  // whole library) so the pill counts match the rows actually shown when a
+  // collection is active; with no collection active `scopedGames === displayGames`,
+  // so this is unchanged. Computed once per scopedGames change rather than
   // re-filtering three times on every render.
   const tabCounts = $derived({
-    all: displayGames.length,
-    recent: displayGames.filter((g) => g.last_played_at || g.added_at).length,
-    played: displayGames.filter((g) => g.playtime_minutes > 0).length,
+    all: scopedGames.length,
+    recent: scopedGames.filter((g) => g.last_played_at || g.added_at).length,
+    played: scopedGames.filter((g) => g.playtime_minutes > 0).length,
+  });
+  // Game id → the collections it belongs to, built once per collections change.
+  // The sidebar rows and the detail strip both look membership up by game, so a
+  // shared map keeps that an O(1) lookup instead of each row re-scanning every
+  // collection on every render. Plain object (not a Map) to satisfy the repo's
+  // prefer-svelte-reactivity lint and because it's a derived value, not state.
+  const membershipByGame = $derived.by(() => {
+    const m: Record<string, Collection[]> = {};
+    for (const c of collections) {
+      for (const gid of c.games) (m[gid] ??= []).push(c);
+    }
+    return m;
   });
   const syncOk = $derived(syncStatus.reachability === 'online');
   const syncOff = $derived(syncStatus.reachability === 'offline');
@@ -785,16 +800,25 @@ export function createLibrary() {
   // is chained after the previous one resolves, so an earlier (smaller) payload
   // can't land after a later one and resurrect deleted state.
   let collectionsWriteChain: Promise<void> = Promise.resolve();
+  // Number of our own writes still in flight. While > 0 the local optimistic
+  // state is newer than anything the backend can echo back, so we ignore
+  // `collections:changed` (which `set_collections` broadcasts to *every* window
+  // including this one) — otherwise an earlier write's echo could clobber a later
+  // optimistic edit. Drops to 0 once our writes drain, after which echoes from
+  // other windows are adopted normally.
+  let pendingCollectionWrites = 0;
 
   /**
    * Commit a new collections array: assign it optimistically (so the UI updates
    * instantly), then persist the whole list. Writes are serialised through
-   * `collectionsWriteChain` to avoid out-of-order saves. On failure, toast and
-   * reload from the backend so the view snaps back to the persisted truth rather
-   * than lingering on an edit that didn't stick.
+   * `collectionsWriteChain` to avoid out-of-order saves. On failure, toast and —
+   * only when no newer edit is already queued — reload from the backend so the
+   * view snaps back to the persisted truth (a newer queued edit is authoritative
+   * and its own write will reconcile, so reloading under it would clobber it).
    */
   function commitCollections(next: Collection[]) {
     collections = next;
+    pendingCollectionWrites += 1;
     collectionsWriteChain = collectionsWriteChain
       .then(() => api.setCollections(next).then(() => undefined))
       .catch((e) => {
@@ -804,15 +828,23 @@ export function createLibrary() {
           title: "Couldn't save collections",
           sub: String(e),
         });
-        return loadCollections();
+        if (pendingCollectionWrites <= 1) return loadCollections();
+      })
+      .finally(() => {
+        pendingCollectionWrites -= 1;
       });
   }
 
   /** Create a collection (optionally seeded with one game) and return its id so
-   *  the caller can select it / add the dragged game. Accent cycles the palette. */
+   *  the caller can select it / add the dragged game. Picks the first palette
+   *  colour not already in use so collections stay visually distinct (cycling by
+   *  count alone repeats a colour as soon as one is deleted); falls back to the
+   *  count-based cycle once every palette entry is taken. */
   function createCollection(name: string, seedGameId?: string): string {
     const id = crypto.randomUUID();
-    const accent = COLLECTION_ACCENTS[collections.length % COLLECTION_ACCENTS.length];
+    const accent =
+      COLLECTION_ACCENTS.find((a) => !collections.some((c) => c.accent === a)) ??
+      COLLECTION_ACCENTS[collections.length % COLLECTION_ACCENTS.length];
     const clean = name.trim() || 'New collection';
     commitCollections([
       ...collections,
@@ -868,9 +900,10 @@ export function createLibrary() {
     commitCollections(arr);
   }
 
-  /** The collections a given game belongs to (membership dots / detail strip). */
+  /** The collections a given game belongs to (membership dots / detail strip).
+   *  O(1) lookup into the precomputed `membershipByGame` map. */
   function collectionsForGame(gameId: string): Collection[] {
-    return collections.filter((c) => c.games.includes(gameId));
+    return membershipByGame[gameId] ?? [];
   }
 
   function showRunErrorToast(gameId: string, message: string) {
@@ -933,9 +966,13 @@ export function createLibrary() {
       })
       .catch((e) => console.error('[library] listener failed:', e));
 
-    // Another window (or this one's own write echo) changed the collections —
-    // adopt the persisted list. Payload is the full saved array.
+    // Another window changed the collections — adopt the persisted list. Ignore
+    // the echo while our own writes are still in flight: our optimistic state is
+    // newer than anything the backend can broadcast back, and adopting an earlier
+    // write's payload here would revert a later local edit (the event fires on
+    // every set_collections, including ours). Payload is the full saved array.
     listen<Collection[]>('collections:changed', (event) => {
+      if (pendingCollectionWrites > 0) return;
       collections = event.payload;
       reconcileActiveCollection();
     })

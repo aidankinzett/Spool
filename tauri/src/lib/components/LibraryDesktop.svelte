@@ -481,6 +481,10 @@
             <MonoLabel>Empty shelf</MonoLabel>
             <p class="text-[12px] text-ink-2">No games yet.</p>
           </div>
+        {:else if lib.filteredGames.length === 0 && lib.activeCollection && !lib.searchQuery.trim() && lib.filter === 'all'}
+          <p class="px-4 py-3 text-[12px] text-ink-3">
+            This collection is empty. Drag a game here, or use a game's “Add to collection”.
+          </p>
         {:else if lib.filteredGames.length === 0}
           <p class="px-4 py-3 text-[12px] text-ink-3">No matches.</p>
         {:else}

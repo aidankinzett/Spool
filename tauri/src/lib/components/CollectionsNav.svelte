@@ -40,6 +40,12 @@
     queueMicrotask(() => addInputEl?.focus());
   }
   function commitAdd() {
+    // Empty/whitespace name → just dismiss the input rather than create a junk
+    // "New collection" the user didn't intend.
+    if (!draft.trim()) {
+      adding = false;
+      return;
+    }
     const id = lib.createCollection(draft);
     lib.activeCollection = id;
     draft = '';

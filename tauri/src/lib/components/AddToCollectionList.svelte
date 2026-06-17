@@ -36,6 +36,12 @@
   }
 
   function commit() {
+    // Ignore an empty/whitespace name so an accidental Enter doesn't create a
+    // junk "New collection" (the controller would otherwise substitute that).
+    if (!draft.trim()) {
+      adding = false;
+      return;
+    }
     onCreate(draft, gameId);
     draft = '';
     adding = false;
