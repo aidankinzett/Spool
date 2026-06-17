@@ -7,6 +7,7 @@ import { downloadIsActive, downloadPercent, liveUploads } from '$lib/transfers';
 import { toasts } from '$lib/toasts.svelte';
 import { startUpdateChecks } from '$lib/updater';
 import type {
+  Collection,
   DisplayGame,
   DownloadProgress,
   GameEntry,
@@ -19,6 +20,32 @@ import type {
   SyncStatus,
   UploadSnapshot,
 } from '$lib/types';
+
+// Palette new collections cycle through (matches the design's accent set).
+// Exported so the nav's colour picker and the create flow agree on the swatches.
+export const COLLECTION_ACCENTS = [
+  '#4cc2ff',
+  '#21d07a',
+  '#ff8a3d',
+  '#ff5d8f',
+  '#7c5cff',
+  '#ffd23f',
+];
+
+/** Narrow a display list to one collection's members. Pure so the controller's
+ *  derived can reuse it and tests can call it without a component. A null/unknown
+ *  collection id is "no scope" — the full list passes through. Synthetic peer
+ *  rows are never collection members, so they only appear under "All games". */
+export function scopeToCollection(
+  games: DisplayGame[],
+  collections: Collection[],
+  activeCollection: string | null,
+): DisplayGame[] {
+  if (!activeCollection) return games;
+  const c = collections.find((x) => x.id === activeCollection);
+  if (!c) return games;
+  return games.filter((g) => c.games.includes(g.id));
+}
 
 // ── Pure filter helper — exported so tests can call it without a component ──
 /** Filter and sort the game list by the current filter + search query.
@@ -310,6 +337,12 @@ export function createLibrary() {
   let selectedId = $state<string | null>(null);
   let searchQuery = $state('');
   let filter = $state<'all' | 'recent' | 'played'>('all');
+  // User-defined collections + the one currently scoping the sidebar (null = all
+  // games). Loaded from the backend on mount and kept in sync across windows via
+  // the `collections:changed` event. Mutations update this optimistically and
+  // persist the whole array (see the collection methods below).
+  let collections = $state<Collection[]>([]);
+  let activeCollection = $state<string | null>(null);
   let conflictGameId = $state<string | null>(null);
   // Set when a launch is blocked by another device that's *suspended*
   // mid-session — drives the "Play here instead" override modal.
@@ -371,16 +404,35 @@ export function createLibrary() {
   // Everything downstream — filtering, selection — reads this so peer rows are
   // first-class sidebar entries.
   const displayGames = $derived(mergeDisplayGames(games, peerCatalogs));
-  const filteredGames = $derived(filterGames(displayGames, filter, searchQuery));
+  // Collection scope first (narrow to the active collection's members), then the
+  // search/filter pipeline runs over that narrowed list. Selection is unaffected
+  // — it reads `displayGames`, so a selected game stays shown even when scoped out.
+  const scopedGames = $derived(scopeToCollection(displayGames, collections, activeCollection));
+  const filteredGames = $derived(filterGames(scopedGames, filter, searchQuery));
   const selectedGame = $derived(
     selectedId ? displayGames.find((g) => g.id === selectedId) ?? null : null,
   );
-  // Sidebar filter-tab counts, computed once per displayGames change rather than
+  // Sidebar filter-tab counts. Computed over the collection-scoped list (not the
+  // whole library) so the pill counts match the rows actually shown when a
+  // collection is active; with no collection active `scopedGames === displayGames`,
+  // so this is unchanged. Computed once per scopedGames change rather than
   // re-filtering three times on every render.
   const tabCounts = $derived({
-    all: displayGames.length,
-    recent: displayGames.filter((g) => g.last_played_at || g.added_at).length,
-    played: displayGames.filter((g) => g.playtime_minutes > 0).length,
+    all: scopedGames.length,
+    recent: scopedGames.filter((g) => g.last_played_at || g.added_at).length,
+    played: scopedGames.filter((g) => g.playtime_minutes > 0).length,
+  });
+  // Game id → the collections it belongs to, built once per collections change.
+  // The sidebar rows and the detail strip both look membership up by game, so a
+  // shared map keeps that an O(1) lookup instead of each row re-scanning every
+  // collection on every render. Plain object (not a Map) to satisfy the repo's
+  // prefer-svelte-reactivity lint and because it's a derived value, not state.
+  const membershipByGame = $derived.by(() => {
+    const m: Record<string, Collection[]> = {};
+    for (const c of collections) {
+      for (const gid of c.games) (m[gid] ??= []).push(c);
+    }
+    return m;
   });
   const syncOk = $derived(syncStatus.reachability === 'online');
   const syncOff = $derived(syncStatus.reachability === 'offline');
@@ -724,6 +776,136 @@ export function createLibrary() {
     await installFromSource(choice.game, ps);
   }
 
+  // ── Collections ───────────────────────────────────────────────────────────
+
+  // After collections are replaced from outside the optimistic edit path
+  // (initial load, or another window's `collections:changed`), drop a scope that
+  // points at a now-deleted collection so the sidebar doesn't sit on a stale id.
+  function reconcileActiveCollection() {
+    if (activeCollection && !collections.some((c) => c.id === activeCollection)) {
+      activeCollection = null;
+    }
+  }
+
+  async function loadCollections() {
+    try {
+      collections = await api.listCollections();
+      reconcileActiveCollection();
+    } catch (e) {
+      console.error('[collections] load failed:', e);
+    }
+  }
+
+  // Serialises persistence so rapid edits can't race: each setCollections call
+  // is chained after the previous one resolves, so an earlier (smaller) payload
+  // can't land after a later one and resurrect deleted state.
+  let collectionsWriteChain: Promise<void> = Promise.resolve();
+  // Number of our own writes still in flight. While > 0 the local optimistic
+  // state is newer than anything the backend can echo back, so we ignore
+  // `collections:changed` (which `set_collections` broadcasts to *every* window
+  // including this one) — otherwise an earlier write's echo could clobber a later
+  // optimistic edit. Drops to 0 once our writes drain, after which echoes from
+  // other windows are adopted normally.
+  let pendingCollectionWrites = 0;
+
+  /**
+   * Commit a new collections array: assign it optimistically (so the UI updates
+   * instantly), then persist the whole list. Writes are serialised through
+   * `collectionsWriteChain` to avoid out-of-order saves. On failure, toast and —
+   * only when no newer edit is already queued — reload from the backend so the
+   * view snaps back to the persisted truth (a newer queued edit is authoritative
+   * and its own write will reconcile, so reloading under it would clobber it).
+   */
+  function commitCollections(next: Collection[]) {
+    collections = next;
+    pendingCollectionWrites += 1;
+    collectionsWriteChain = collectionsWriteChain
+      .then(() => api.setCollections(next).then(() => undefined))
+      .catch((e) => {
+        toasts.show({
+          kind: 'bad',
+          label: 'COLLECTIONS',
+          title: "Couldn't save collections",
+          sub: String(e),
+        });
+        if (pendingCollectionWrites <= 1) return loadCollections();
+      })
+      .finally(() => {
+        pendingCollectionWrites -= 1;
+      });
+  }
+
+  /** Create a collection (optionally seeded with one game) and return its id so
+   *  the caller can select it / add the dragged game. Picks the first palette
+   *  colour not already in use so collections stay visually distinct (cycling by
+   *  count alone repeats a colour as soon as one is deleted); falls back to the
+   *  count-based cycle once every palette entry is taken. */
+  function createCollection(name: string, seedGameId?: string): string {
+    const id = crypto.randomUUID();
+    const accent =
+      COLLECTION_ACCENTS.find((a) => !collections.some((c) => c.accent === a)) ??
+      COLLECTION_ACCENTS[collections.length % COLLECTION_ACCENTS.length];
+    const clean = name.trim() || 'New collection';
+    commitCollections([
+      ...collections,
+      { id, name: clean, accent, games: seedGameId ? [seedGameId] : [] },
+    ]);
+    return id;
+  }
+
+  function renameCollection(id: string, name: string) {
+    const clean = name.trim();
+    commitCollections(
+      collections.map((c) => (c.id === id ? { ...c, name: clean || c.name } : c)),
+    );
+  }
+
+  function setCollectionAccent(id: string, accent: string) {
+    commitCollections(collections.map((c) => (c.id === id ? { ...c, accent } : c)));
+  }
+
+  function deleteCollection(id: string) {
+    if (activeCollection === id) activeCollection = null;
+    commitCollections(collections.filter((c) => c.id !== id));
+  }
+
+  /** Add or remove a game from a collection (idempotent toggle). */
+  function toggleMembership(collectionId: string, gameId: string) {
+    commitCollections(
+      collections.map((c) => {
+        if (c.id !== collectionId) return c;
+        const has = c.games.includes(gameId);
+        return {
+          ...c,
+          games: has ? c.games.filter((g) => g !== gameId) : [...c.games, gameId],
+        };
+      }),
+    );
+  }
+
+  /** Move the dragged collection to the dropped-on collection's position. */
+  function reorderCollections(draggedId: string, targetId: string) {
+    if (draggedId === targetId) return;
+    const arr = collections.slice();
+    const from = arr.findIndex((c) => c.id === draggedId);
+    const to = arr.findIndex((c) => c.id === targetId);
+    if (from < 0 || to < 0) return;
+    const [moved] = arr.splice(from, 1);
+    // Removing the dragged item shifts every later index down by one, so when it
+    // moved down (from < to) the target now sits one slot earlier. Insert there
+    // so the item lands *at* the target's position (above it — matching the
+    // row's top-border drop indicator), not after it.
+    const insertAt = from < to ? to - 1 : to;
+    arr.splice(insertAt, 0, moved);
+    commitCollections(arr);
+  }
+
+  /** The collections a given game belongs to (membership dots / detail strip).
+   *  O(1) lookup into the precomputed `membershipByGame` map. */
+  function collectionsForGame(gameId: string): Collection[] {
+    return membershipByGame[gameId] ?? [];
+  }
+
   function showRunErrorToast(gameId: string, message: string) {
     const game = games.find((g) => g.id === gameId);
     const catalog = game ? fmtCatalog(game.catalog_number) : undefined;
@@ -756,6 +938,7 @@ export function createLibrary() {
   // onMount: initial fetch + Tauri event subscriptions
   onMount(() => {
     refresh();
+    loadCollections();
     // Spool hides to tray instead of quitting, so this webview can stay
     // mounted for days — poll for updates on an interval, not just once.
     const stopUpdateChecks = startUpdateChecks();
@@ -769,6 +952,7 @@ export function createLibrary() {
     let unlistenLanUploads: (() => void) | undefined;
     let unlistenSyncStatus: (() => void) | undefined;
     let unlistenSavesBackup: (() => void) | undefined;
+    let unlistenCollections: (() => void) | undefined;
     // Guards against a leaked subscription when the component unmounts before a
     // listen() promise resolves: the teardown sets this, and each handler below
     // immediately unlistens a late-resolving handle instead of storing it on a
@@ -781,6 +965,22 @@ export function createLibrary() {
         else unlistenLibraryChanged = fn;
       })
       .catch((e) => console.error('[library] listener failed:', e));
+
+    // Another window changed the collections — adopt the persisted list. Ignore
+    // the echo while our own writes are still in flight: our optimistic state is
+    // newer than anything the backend can broadcast back, and adopting an earlier
+    // write's payload here would revert a later local edit (the event fires on
+    // every set_collections, including ours). Payload is the full saved array.
+    listen<Collection[]>('collections:changed', (event) => {
+      if (pendingCollectionWrites > 0) return;
+      collections = event.payload;
+      reconcileActiveCollection();
+    })
+      .then((fn) => {
+        if (disposed) fn();
+        else unlistenCollections = fn;
+      })
+      .catch((e) => console.error('[collections] listener failed:', e));
 
     listen<RunPhaseEvent>('run:phase', (event) => {
       const { game_id, phase, message, cloud_used } = event.payload;
@@ -1026,6 +1226,7 @@ export function createLibrary() {
       unlistenLanUploads?.();
       unlistenSyncStatus?.();
       unlistenSavesBackup?.();
+      unlistenCollections?.();
     };
   });
 
@@ -1054,6 +1255,9 @@ export function createLibrary() {
     set searchQuery(v: string) { searchQuery = v; },
     get filter() { return filter; },
     set filter(v: 'all' | 'recent' | 'played') { filter = v; },
+    get collections() { return collections; },
+    get activeCollection() { return activeCollection; },
+    set activeCollection(v: string | null) { activeCollection = v; },
     get conflictGameId() { return conflictGameId; },
     set conflictGameId(v: string | null) { conflictGameId = v; },
     get peerChoice() { return peerChoice; },
@@ -1091,6 +1295,15 @@ export function createLibrary() {
     confirmInstallLocation,
     downloadGame,
     chooseDownloadSource,
+    // Collections
+    loadCollections,
+    createCollection,
+    renameCollection,
+    setCollectionAccent,
+    deleteCollection,
+    toggleMembership,
+    reorderCollections,
+    collectionsForGame,
   };
 }
 

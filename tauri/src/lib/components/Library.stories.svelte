@@ -4,6 +4,7 @@
   import {
     makeConfig,
     makeDownload,
+    SAMPLE_COLLECTIONS,
     SAMPLE_LIBRARY,
     SAMPLE_PEERS,
     SAMPLE_UPLOADS,
@@ -21,7 +22,7 @@
     tags: ['!autodocs'],
     parameters: {
       layout: 'fullscreen',
-      tauri: { list_games: SAMPLE_LIBRARY, get_config: makeConfig(), current_sync_status: ONLINE },
+      tauri: { list_games: SAMPLE_LIBRARY, get_config: makeConfig(), current_sync_status: ONLINE, list_collections: SAMPLE_COLLECTIONS },
     },
     decorators: [tauriDecorator()],
     argTypes: { layout: { control: 'inline-radio', options: ['desktop', 'touch'] } },
@@ -35,7 +36,7 @@
 <Story
   name="Desktop · with peers"
   args={{ layout: 'desktop' }}
-  parameters={{ tauri: { list_games: SAMPLE_LIBRARY, get_config: makeConfig(), current_sync_status: ONLINE, list_lan_peers: SAMPLE_PEERS } }}
+  parameters={{ tauri: { list_games: SAMPLE_LIBRARY, get_config: makeConfig(), current_sync_status: ONLINE, list_lan_peers: SAMPLE_PEERS, list_collections: SAMPLE_COLLECTIONS } }}
 />
 
 <!-- Desktop with the transfers panel populated (1 download + 2 uploads). The
@@ -51,6 +52,7 @@
       current_sync_status: ONLINE,
       list_active_uploads: SAMPLE_UPLOADS,
       current_peer_download: makeDownload(),
+      list_collections: SAMPLE_COLLECTIONS,
     },
   }}
 />
@@ -59,7 +61,7 @@
 <Story
   name="Desktop · empty"
   args={{ layout: 'desktop' }}
-  parameters={{ tauri: { list_games: [], get_config: makeConfig(), current_sync_status: ONLINE } }}
+  parameters={{ tauri: { list_games: [], get_config: makeConfig(), current_sync_status: ONLINE, list_collections: [] } }}
 />
 
 <!-- Touch: big-target shelf layout for handhelds. -->
@@ -69,5 +71,5 @@
 <Story
   name="Touch · with peers"
   args={{ layout: 'touch' }}
-  parameters={{ tauri: { list_games: SAMPLE_LIBRARY, get_config: makeConfig(), current_sync_status: ONLINE, list_lan_peers: SAMPLE_PEERS } }}
+  parameters={{ tauri: { list_games: SAMPLE_LIBRARY, get_config: makeConfig(), current_sync_status: ONLINE, list_lan_peers: SAMPLE_PEERS, list_collections: SAMPLE_COLLECTIONS } }}
 />

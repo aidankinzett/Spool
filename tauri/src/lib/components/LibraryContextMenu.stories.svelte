@@ -3,7 +3,7 @@
   import { defineMeta } from '@storybook/addon-svelte-csf';
   import { fn } from 'storybook/test';
   import { tauriDecorator } from '../../../.storybook/tauri-mock';
-  import { makeGame } from '../../../.storybook/fixtures';
+  import { makeGame, SAMPLE_COLLECTIONS } from '../../../.storybook/fixtures';
   import LibraryContextMenu from './LibraryContextMenu.svelte';
 
   // Right-click menu for a library entry. Positioned at (x, y); its actions call
@@ -13,7 +13,15 @@
     component: LibraryContextMenu,
     tags: ['!autodocs'],
     parameters: { layout: 'fullscreen' },
-    args: { game: makeGame(), x: 80, y: 80, onclose: fn() },
+    args: {
+      game: makeGame(),
+      x: 80,
+      y: 80,
+      collections: SAMPLE_COLLECTIONS,
+      onToggleCollection: fn(),
+      onCreateCollection: fn(() => 'col-new'),
+      onclose: fn(),
+    },
     decorators: [tauriDecorator()],
     render: template,
   });

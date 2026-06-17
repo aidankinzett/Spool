@@ -29,9 +29,10 @@
   let searchOpen = $state(false);
   let ctxMenu = $state<{ game: DisplayGame; x: number; y: number } | null>(null);
 
-  // Shelf category
-  type ShelfCat = 'continue' | 'all' | 'lan';
-  let shelfCat = $state<ShelfCat>('continue');
+  // Shelf category — the three built-ins plus one entry per collection (keyed by
+  // its id). A plain string so collection ids slot in beside the built-in
+  // literals; the bumpers cycle through all of them.
+  let shelfCat = $state<string>('continue');
 
   // Long-press detection
   let pressTimer: ReturnType<typeof setTimeout> | undefined;
@@ -72,10 +73,27 @@
       .sort((a, b) => a.game_name.localeCompare(b.game_name)),
   );
 
+  // A collection's games (members of the active collection tab), in catalog
+  // order. Reads `lib.games` — collections only reference local entries, so a
+  // synthetic peer row is never a member.
+  const collectionGames = $derived.by(() => {
+    const c = lib.collections.find((x) => x.id === shelfCat);
+    if (!c) return [] as DisplayGame[];
+    return lib.games
+      .filter((g) => c.games.includes(g.id))
+      .sort((a, b) => a.catalog_number - b.catalog_number);
+  });
+
   const shelfGames = $derived<DisplayGame[]>(
     shelfCat === 'continue' ? continueCat :
     shelfCat === 'lan' ? lanCat :
-    allCat,
+    shelfCat === 'all' ? allCat :
+    collectionGames,
+  );
+
+  // True when the active tab is a collection (not one of the three built-ins).
+  const onCollectionTab = $derived(
+    shelfCat !== 'continue' && shelfCat !== 'all' && shelfCat !== 'lan',
   );
 
   const selectedGame = $derived(lib.selectedGame);
@@ -112,15 +130,23 @@
       : 0,
   );
 
-  // Default-select the first visible tile once the shelf loads, so there's an
-  // immediate highlight (and the banner is populated) before the first input —
-  // matters most for controller use, where focus lands on a tile at mount.
-  // Only fills an empty selection; never overrides an existing one, and re-runs
-  // if the category change leaves nothing selected.
+  // Keep the selection inside the active shelf. Switching category (now
+  // including collection tabs) can leave `lib.selectedId` pointing at a game
+  // that isn't in the new rail, so the banner/actions would act on a tile that
+  // isn't visible. When the current selection isn't in `shelfGames`, fall to the
+  // first visible tile — this also seeds the initial highlight on load, which
+  // matters most for controller use.
   $effect(() => {
-    if (lib.loaded && !lib.selectedId && shelfGames.length > 0) {
-      lib.selectedId = shelfGames[0].id;
-    }
+    if (!lib.loaded) return;
+    // Don't retarget the selection out from under an open detail overlay — that
+    // would swap the game the user is looking at.
+    if (detailOpen) return;
+    // Empty shelf (LAN with no peers, an empty collection tab): keep the prior
+    // selection so cycling back to a populated tab restores it, rather than
+    // clearing it here and losing it.
+    if (shelfGames.length === 0) return;
+    if (lib.selectedId != null && shelfGames.some((g) => g.id === lib.selectedId)) return;
+    lib.selectedId = shelfGames[0].id;
   });
 
   // Gamepad/keyboard nav selects the focused tile so the banner previews it
@@ -176,11 +202,24 @@
     else if (selectedGame) openView('add', { reinstall: selectedGame.id });
   }
 
-  const cats = $derived<{ id: ShelfCat; label: string }[]>([
-    { id: 'continue', label: 'Continue' },
-    { id: 'all', label: 'All games' },
-    { id: 'lan', label: `LAN · ${lanCat.length}` },
+  const cats = $derived<{ id: string; label: string; accent: string | null; count: number | null }[]>([
+    { id: 'continue', label: 'Continue', accent: null, count: null },
+    { id: 'all', label: 'All games', accent: null, count: null },
+    { id: 'lan', label: `LAN · ${lanCat.length}`, accent: null, count: null },
+    // One tab per collection, in sidebar order, with its accent dot + count.
+    ...lib.collections.map((c) => ({
+      id: c.id,
+      label: c.name,
+      accent: c.accent,
+      count: c.games.length,
+    })),
   ]);
+
+  // If the active collection tab disappears (deleted from another window), fall
+  // back to All games so the rail isn't stranded on a tab that no longer exists.
+  $effect(() => {
+    if (!cats.some((c) => c.id === shelfCat)) shelfCat = 'all';
+  });
 
   // Cycle the shelf category with the bumpers (LB/RB).
   function cycleShelf(dir: -1 | 1) {
@@ -466,19 +505,28 @@
       <!-- Category tabs -->
       <div class="flex flex-wrap items-center gap-2 px-4 pb-2 pt-3">
         {#each cats as cat (cat.id)}
+          {@const on = shelfCat === cat.id}
           <button
             type="button"
             onclick={() => (shelfCat = cat.id)}
-            class="cursor-pointer whitespace-nowrap rounded-full border transition-colors"
+            class="inline-flex cursor-pointer items-center gap-2 whitespace-nowrap rounded-full border transition-colors"
             style:height="var(--control-h)"
             style:padding-inline="calc(var(--space-unit) * 4)"
             style:font-size="var(--text-base)"
-            style:font-weight={shelfCat === cat.id ? 600 : 500}
-            style:background={shelfCat === cat.id ? 'rgba(255,255,255,0.08)' : 'transparent'}
-            style:border-color={shelfCat === cat.id ? 'var(--color-line-2)' : 'transparent'}
-            style:color={shelfCat === cat.id ? 'var(--color-ink-0)' : 'var(--color-ink-2)'}
+            style:font-weight={on ? 600 : 500}
+            style:background={on ? 'rgba(255,255,255,0.08)' : 'transparent'}
+            style:border-color={on ? 'var(--color-line-2)' : 'transparent'}
+            style:color={on ? 'var(--color-ink-0)' : 'var(--color-ink-2)'}
           >
+            {#if cat.accent}
+              <span class="h-2.5 w-2.5 shrink-0 rounded-full" style:background={cat.accent}></span>
+            {/if}
             {cat.label}
+            {#if cat.count != null}
+              <span class="font-mono text-[0.78em]" style:color={on ? 'var(--color-ink-2)' : 'var(--color-ink-3)'}>
+                {cat.count}
+              </span>
+            {/if}
           </button>
         {/each}
       </div>
@@ -491,7 +539,13 @@
       >
         {#if shelfGames.length === 0}
           <p class="py-4 text-ink-3" style:font-size="var(--text-sm)">
-            {shelfCat === 'continue' ? 'No recently played games.' : shelfCat === 'lan' ? 'No games shared by other devices on the network.' : 'No games.'}
+            {shelfCat === 'continue'
+              ? 'No recently played games.'
+              : shelfCat === 'lan'
+                ? 'No games shared by other devices on the network.'
+                : onCollectionTab
+                  ? 'No games in this collection yet. Long-press a game → Add to collection.'
+                  : 'No games.'}
           </p>
         {:else}
           {#each shelfGames as game, i (game.id)}
@@ -572,6 +626,9 @@
     game={ctxMenu.game}
     x={ctxMenu.x}
     y={ctxMenu.y}
+    collections={lib.collections}
+    onToggleCollection={lib.toggleMembership}
+    onCreateCollection={lib.createCollection}
     onclose={() => (ctxMenu = null)}
   />
 {/if}

@@ -294,6 +294,8 @@ pub fn run() {
             config::update_config,
             config::detect_umu_run,
             config::app_platform,
+            config::list_collections,
+            config::set_collections,
             // offline mode
             offline::go_offline,
             offline::go_online,

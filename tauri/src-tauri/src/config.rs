@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use std::env;
 use std::path::PathBuf;
 use std::sync::Mutex;
-use tauri::State;
+use tauri::{AppHandle, Emitter, State};
 
 /// UI density / layout mode. `Auto` resolves at runtime (frontend) to
 /// `desktop` or `touch` from pointer + panel size; `Desktop`/`Touch` force
@@ -89,6 +89,16 @@ pub struct ConfigData {
     /// drive. A flat top-level `library_folders` array on disk.
     pub library_folders: Vec<LibraryFolder>,
 
+    /// User-defined game collections (Library sidebar). Manual collections, a
+    /// game can belong to many, each carries its own accent colour. Membership
+    /// is stored on the collection (a list of game ids) rather than per-game so
+    /// it mirrors the sidebar's data model directly and adding a field to a game
+    /// never touches collections. Edited only by the library window; persisted
+    /// here (GUI-owned, single-writer) alongside the rest of the config. Game
+    /// ids that no longer exist are inert — membership filtering simply matches
+    /// nothing for them.
+    pub collections: Vec<Collection>,
+
     /// "Offline mode": all cloud/network work is paused — ludusavi cloud sync,
     /// the rclone control plane (session markers, folds, probes), the umu
     /// runtime-update check, and the metadata backfill. Toggled by the
@@ -125,6 +135,7 @@ impl Default for ConfigData {
             decky_update_notified_version: String::new(),
             save_retention_full: 5,
             library_folders: Vec::new(),
+            collections: Vec::new(),
             offline_mode: false,
             cloud: CloudConfig::default(),
             lan: LanConfig::default(),
@@ -145,6 +156,21 @@ pub struct LibraryFolder {
     pub path: String,
     pub label: Option<String>,
     pub default_install: bool,
+}
+
+/// One user-defined game collection. `id` is a stable client-minted id, `name`
+/// the display label, `accent` a hex colour (`#rrggbb`) used for the collection's
+/// dot/highlight, and `games` the ids of its member games. A game can appear in
+/// any number of collections; the same game id may therefore live in several
+/// `games` lists. Stored as-is — the library window owns all validation
+/// (non-empty name, palette colours), so this round-trips the frontend shape.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Collection {
+    pub id: String,
+    pub name: String,
+    pub accent: String,
+    pub games: Vec<String>,
 }
 
 /// Cloud-save + rclone settings. Flattened into [`ConfigData`], so each field
@@ -605,6 +631,12 @@ pub fn update_config(
 ) -> AppResult<ConfigData> {
     let mut cfg = state.lock().map_err(|_| AppError::LockPoisoned)?;
 
+    // Collections are owned by the dedicated collections API (set_collections).
+    // The Settings UI sends back a full ConfigData snapshot it loaded earlier, so
+    // a collection edit made in between would be clobbered by this wholesale
+    // replace — keep the current collections regardless of what the payload says.
+    data.collections = cfg.data.collections.clone();
+
     // Normalize the retention knob up front (same range as the clamp in
     // ludusavi_config::apply_retention) so config.json, the change detection
     // below, and the set_retention call all agree on one value instead of
@@ -664,6 +696,42 @@ pub fn update_config(
         return Err(e);
     }
     Ok(cfg.data.clone())
+}
+
+/// The current set of library collections. Read on the library window's mount
+/// to seed the sidebar; a thin wrapper over the config so the window doesn't
+/// have to pull the whole `ConfigData` just for collections.
+#[tauri::command]
+pub fn list_collections(state: State<'_, SharedConfig>) -> AppResult<Vec<Collection>> {
+    let cfg = state.lock().map_err(|_| AppError::LockPoisoned)?;
+    Ok(cfg.data.collections.clone())
+}
+
+/// Replaces the stored collections with `collections` and persists. The library
+/// window computes the new array (toggle membership, create/rename/recolor,
+/// delete, reorder) and sends the whole thing back — same "frontend owns the
+/// shape, send it all" approach as `update_config`, which keeps the backend a
+/// single setter instead of a per-operation surface. Broadcasts
+/// `collections:changed` (with the saved list) so any other open window stays in
+/// sync; the invoking window also updates optimistically from the return value.
+#[tauri::command]
+pub fn set_collections(
+    app: AppHandle,
+    state: State<'_, SharedConfig>,
+    collections: Vec<Collection>,
+) -> AppResult<Vec<Collection>> {
+    let saved = {
+        let mut cfg = state.lock().map_err(|_| AppError::LockPoisoned)?;
+        let prev = std::mem::replace(&mut cfg.data.collections, collections);
+        if let Err(e) = cfg.save() {
+            // Roll memory back so it can't drift from disk on a write failure.
+            cfg.data.collections = prev;
+            return Err(e);
+        }
+        cfg.data.collections.clone()
+    };
+    let _ = app.emit("collections:changed", &saved);
+    Ok(saved)
 }
 
 /// The host OS, so the frontend can gate Linux-only UI (Proton settings).
@@ -879,6 +947,38 @@ mod tests {
             data.lan_install_root(),
             paths::app_data_dir().join("lan-games")
         );
+    }
+
+    #[test]
+    fn collections_default_empty_and_round_trip() {
+        // Absent from a legacy config → empty vec (container-level serde default).
+        let data: ConfigData = serde_json::from_str(r#"{ "device_id": "x" }"#).unwrap();
+        assert!(data.collections.is_empty());
+
+        // A populated list (multi-membership, per-collection accent) round-trips.
+        let original = ConfigData {
+            collections: vec![
+                Collection {
+                    id: "a".to_string(),
+                    name: "Currently playing".to_string(),
+                    accent: "#4cc2ff".to_string(),
+                    games: vec!["g1".to_string(), "g2".to_string()],
+                },
+                Collection {
+                    id: "b".to_string(),
+                    name: "Cozy".to_string(),
+                    accent: "#ff8a3d".to_string(),
+                    games: vec!["g2".to_string()],
+                },
+            ],
+            ..ConfigData::default()
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        let parsed: ConfigData = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.collections.len(), 2);
+        assert_eq!(parsed.collections[0].name, "Currently playing");
+        assert_eq!(parsed.collections[0].games, vec!["g1", "g2"]);
+        assert_eq!(parsed.collections[1].accent, "#ff8a3d");
     }
 
     #[test]

@@ -65,12 +65,27 @@ export type ConfigData = {
    * default-install one; Settings → Library folders manages them. */
   library_folders: LibraryFolder[];
 
+  /** User-defined game collections (library sidebar). Manual, multi-membership,
+   * each with its own accent colour. Edited by the library window and persisted
+   * here; mutate via `api.setCollections()`, not `updateConfig`. */
+  collections: Collection[];
+
   /** Offline mode: all cloud/network work is paused (ludusavi cloud sync, the
    * rclone control plane, umu's runtime-update check, metadata backfill).
    * Flip via `api.goOffline()` / `api.goOnline()` — which run the prepare /
    * reconcile sweeps around the flag — never by writing it through
    * `updateConfig` directly. */
   offline_mode: boolean;
+};
+
+/** Mirror of the Rust `Collection` struct in src-tauri/src/config.rs. A manual
+ * game collection: stable id, display name, accent colour (`#rrggbb`), and the
+ * ids of its member games. A game can belong to many collections. */
+export type Collection = {
+  id: string;
+  name: string;
+  accent: string;
+  games: string[];
 };
 
 /** Mirror of the Rust `LibraryFolder` struct in src-tauri/src/config.rs. */

@@ -24,6 +24,8 @@
   import MonoLabel from '$lib/components/MonoLabel.svelte';
   import GameDetail from '$lib/components/GameDetail.svelte';
   import LibraryContextMenu from '$lib/components/LibraryContextMenu.svelte';
+  import CollectionsNav from '$lib/components/CollectionsNav.svelte';
+  import CollectionsStrip from '$lib/components/CollectionsStrip.svelte';
   import TransferPill from '$lib/components/TransferPill.svelte';
   import TransfersPanel from '$lib/components/TransfersPanel.svelte';
   import LanDownloadProgress from '$lib/components/LanDownloadProgress.svelte';
@@ -415,8 +417,8 @@
   <div class="grid min-h-0 flex-1" style:grid-template-columns="320px 1fr">
     <!-- ── Sidebar ────────────────────────────────────────────────── -->
     <aside class="flex min-h-0 flex-col border-r border-line-1 bg-bg-1">
-      <!-- Search + filters -->
-      <div class="flex flex-col gap-2.5 px-3 py-3">
+      <!-- Search -->
+      <div class="px-3 pb-2 pt-3">
         <div
           class="flex items-center gap-2 rounded-sm border border-line-1 bg-bg-2 px-2.5"
           style:height="var(--control-h)"
@@ -428,27 +430,32 @@
             class="font-sans min-w-0 flex-1 bg-transparent text-[length:var(--text-base)] text-ink-0 outline-none placeholder:text-ink-3"
           />
         </div>
-        <div class="flex gap-1">
-          {#each filters as f (f.id)}
-            {@const active = lib.filter === f.id}
-            <button
-              type="button"
-              onclick={() => (lib.filter = f.id)}
-              class="inline-flex items-center gap-1.5 rounded-sm border px-2 py-1 text-[11.5px] font-medium transition-colors"
-              style:background={active ? 'var(--color-bg-3)' : 'transparent'}
-              style:border-color={active ? 'var(--color-line-2)' : 'transparent'}
-              style:color={active ? 'var(--color-ink-0)' : 'var(--color-ink-2)'}
+      </div>
+
+      <!-- Collections nav -->
+      <CollectionsNav {lib} />
+
+      <!-- Filter pills -->
+      <div class="flex gap-1 px-3 pb-2.5">
+        {#each filters as f (f.id)}
+          {@const active = lib.filter === f.id}
+          <button
+            type="button"
+            onclick={() => (lib.filter = f.id)}
+            class="inline-flex items-center gap-1.5 rounded-sm border px-2 py-1 text-[11.5px] font-medium transition-colors"
+            style:background={active ? 'var(--color-bg-3)' : 'transparent'}
+            style:border-color={active ? 'var(--color-line-2)' : 'transparent'}
+            style:color={active ? 'var(--color-ink-0)' : 'var(--color-ink-2)'}
+          >
+            {f.label}
+            <span
+              class="font-mono text-[9.5px]"
+              style:color={active ? 'var(--color-ink-2)' : 'var(--color-ink-3)'}
             >
-              {f.label}
-              <span
-                class="font-mono text-[9.5px]"
-                style:color={active ? 'var(--color-ink-2)' : 'var(--color-ink-3)'}
-              >
-                {lib.tabCounts[f.id]}
-              </span>
-            </button>
-          {/each}
-        </div>
+              {lib.tabCounts[f.id]}
+            </span>
+          </button>
+        {/each}
       </div>
 
       <!-- Section header -->
@@ -474,6 +481,10 @@
             <MonoLabel>Empty shelf</MonoLabel>
             <p class="text-[12px] text-ink-2">No games yet.</p>
           </div>
+        {:else if lib.filteredGames.length === 0 && lib.activeCollection && !lib.searchQuery.trim() && lib.filter === 'all'}
+          <p class="px-4 py-3 text-[12px] text-ink-3">
+            This collection is empty. Drag a game here, or use a game's “Add to collection”.
+          </p>
         {:else if lib.filteredGames.length === 0}
           <p class="px-4 py-3 text-[12px] text-ink-3">No matches.</p>
         {:else}
@@ -481,6 +492,7 @@
             {@const selected = lib.selectedId === g.id}
             {@const peer = g.peer_source ?? null}
             {@const peerOnly = isSyntheticPeerId(g.id)}
+            {@const memberOf = lib.collectionsForGame(g.id)}
             {@const cover =
               assetUrl(g.cover_image_path) ??
               (peer && !coverErrors.has(g.id) ? peerAssetUrl(peer, 'cover') : null)}
@@ -509,6 +521,11 @@
               data-gp-autofocus={(lib.selectedId ? selected : i === 0) ? '' : undefined}
               onclick={() => (lib.selectedId = g.id)}
               oncontextmenu={(e) => openContextMenu(e, g)}
+              draggable={!peerOnly}
+              ondragstart={(e) => {
+                e.dataTransfer?.setData('text/game-id', g.id);
+                if (e.dataTransfer) e.dataTransfer.effectAllowed = 'copy';
+              }}
               class="flex w-full items-center gap-2.5 border-l-2 px-3 py-2 text-left transition-colors"
               style:background={selected
                 ? `color-mix(in srgb, ${rowAccent} 12%, transparent)`
@@ -574,6 +591,17 @@
                   {/if}
                 </div>
               </div>
+              {#if memberOf.length > 0}
+                <!-- Collection membership dots (up to 4, then +N). -->
+                <span class="flex shrink-0 items-center gap-[3px]" title={memberOf.map((c) => c.name).join(', ')}>
+                  {#each memberOf.slice(0, 4) as mc (mc.id)}
+                    <span class="h-1.5 w-1.5 rounded-full" style:background={mc.accent}></span>
+                  {/each}
+                  {#if memberOf.length > 4}
+                    <span class="text-[9px] text-ink-3">+{memberOf.length - 4}</span>
+                  {/if}
+                </span>
+              {/if}
               {#if peer}
                 <!-- Downloadable from a LAN peer — prominent download glyph in
                      the row's accent so it reads as "fetch", not "play". -->
@@ -609,17 +637,30 @@
 
     <!-- ── Detail pane ──────────────────────────────────────────────── -->
     {#if lib.selectedGame}
-      <GameDetail
-        game={lib.selectedGame}
-        runPhase={lib.runningId === lib.selectedGame.id ? lib.runningPhase : null}
-        backingUp={lib.isBackingUp(lib.selectedGame.id)}
-        cloudConfigured={lib.syncStatus.reachability !== 'unconfigured'}
-        onPullConflict={(id) => (lib.conflictGameId = id)}
-        download={lib.activeDownload}
-        startingGameId={lib.startingGameId}
-        onDownload={(g) => lib.downloadGame(g)}
-        onCancelDownload={lib.cancelActiveInstall}
-      />
+      <div class="flex min-h-0 min-w-0 flex-col">
+        <!-- Collections membership strip (real entries only; a peer-only row has
+             no local game to add to a collection). -->
+        {#if !isSyntheticPeerId(lib.selectedGame.id)}
+          <CollectionsStrip
+            collections={lib.collections}
+            gameId={lib.selectedGame.id}
+            onToggle={lib.toggleMembership}
+            onCreate={lib.createCollection}
+            onSelectCollection={(id) => (lib.activeCollection = id)}
+          />
+        {/if}
+        <GameDetail
+          game={lib.selectedGame}
+          runPhase={lib.runningId === lib.selectedGame.id ? lib.runningPhase : null}
+          backingUp={lib.isBackingUp(lib.selectedGame.id)}
+          cloudConfigured={lib.syncStatus.reachability !== 'unconfigured'}
+          onPullConflict={(id) => (lib.conflictGameId = id)}
+          download={lib.activeDownload}
+          startingGameId={lib.startingGameId}
+          onDownload={(g) => lib.downloadGame(g)}
+          onCancelDownload={lib.cancelActiveInstall}
+        />
+      </div>
     {:else if lib.loaded && lib.games.length === 0}
       <div class="flex flex-col items-center justify-center gap-3 text-center">
         <MonoLabel>Empty library</MonoLabel>
@@ -660,6 +701,9 @@
     game={ctxMenu.game}
     x={ctxMenu.x}
     y={ctxMenu.y}
+    collections={lib.collections}
+    onToggleCollection={lib.toggleMembership}
+    onCreateCollection={lib.createCollection}
     onclose={() => (ctxMenu = null)}
   />
 {/if}

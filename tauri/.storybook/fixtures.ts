@@ -6,6 +6,7 @@
  * fields they care about.
  */
 import type {
+  Collection,
   ConfigData,
   GameEntry,
   PlaySession,
@@ -101,6 +102,7 @@ export function makeConfig(over: Partial<ConfigData> = {}): ConfigData {
     cloud_webdav_username: '',
     save_retention_full: 3,
     library_folders: [],
+    collections: [],
     offline_mode: false,
     ...over,
   };
@@ -377,6 +379,20 @@ export const SAMPLE_LIBRARY: GameEntry[] = [
     cover_image_path: cover(1145360),
     hero_image_path: hero(1145360),
   }),
+];
+
+/**
+ * Sample collections for the Library screen stories. Membership overlaps on
+ * purpose (Stardew is in three, Witcher in two) so the "a game can belong to
+ * many collections" rule shows in the sidebar membership dots and the detail
+ * strip. Each carries its own accent from the collections palette. Game ids
+ * reference `SAMPLE_LIBRARY` (g1–g6).
+ */
+export const SAMPLE_COLLECTIONS: Collection[] = [
+  { id: 'col-playing', name: 'Currently playing', accent: '#4cc2ff', games: ['g1', 'g2', 'g4'] },
+  { id: 'col-cozy', name: 'Cozy & calm', accent: '#21d07a', games: ['g2', 'g5'] },
+  { id: 'col-rpgs', name: 'Story-rich RPGs', accent: '#ff8a3d', games: ['g1', 'g2', 'g3'] },
+  { id: 'col-finish', name: 'Finish these', accent: '#7c5cff', games: ['g3', 'g6'] },
 ];
 
 /**
