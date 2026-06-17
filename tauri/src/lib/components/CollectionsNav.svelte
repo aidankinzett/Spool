@@ -180,10 +180,12 @@
               />
             </div>
           {:else}
-            <button
-              type="button"
-              onclick={() => (lib.activeCollection = c.id)}
-              class="group relative flex w-full items-center gap-2.5 rounded-sm py-1.5 pl-3 pr-2 text-left transition-colors hover:bg-white/[0.025]"
+            <!-- Row select and the ⋯ menu trigger are siblings (not nested) so
+                 each is its own focusable control with consistent keyboard /
+                 screen-reader behaviour; the wrapper carries the shared hover,
+                 active, and drop-target styling. -->
+            <div
+              class="group relative flex w-full items-center gap-2.5 rounded-sm py-1.5 pl-3 pr-2 transition-colors hover:bg-white/[0.025]"
               style:background={isDropAdd
                 ? `${c.accent}1f`
                 : active
@@ -197,12 +199,18 @@
                   style:background={c.accent}
                 ></span>
               {/if}
-              <span
-                class="h-2.5 w-2.5 shrink-0 rounded-full"
-                style:background={c.accent}
-                style:box-shadow="0 0 0 3px {c.accent}22"
-              ></span>
-              <span class="min-w-0 flex-1 truncate text-[12.5px] text-ink-0">{c.name}</span>
+              <button
+                type="button"
+                onclick={() => (lib.activeCollection = c.id)}
+                class="flex min-w-0 flex-1 cursor-pointer items-center gap-2.5 border-none bg-transparent p-0 text-left text-inherit"
+              >
+                <span
+                  class="h-2.5 w-2.5 shrink-0 rounded-full"
+                  style:background={c.accent}
+                  style:box-shadow="0 0 0 3px {c.accent}22"
+                ></span>
+                <span class="min-w-0 flex-1 truncate text-[12.5px] text-ink-0">{c.name}</span>
+              </button>
               <!-- Member count by default; swaps to the ⋯ menu button on hover
                    (or while this row's menu is open). -->
               <span
@@ -211,28 +219,19 @@
               >
                 {c.games.length}
               </span>
-              <span
-                role="button"
-                tabindex="0"
+              <button
+                type="button"
                 data-coll-menu-btn
-                onclick={(e) => {
-                  e.stopPropagation();
-                  menuId = menuId === c.id ? null : c.id;
-                }}
-                onkeydown={(e) => {
-                  if (e.key === 'Enter' || e.key === ' ') {
-                    e.stopPropagation();
-                    menuId = menuId === c.id ? null : c.id;
-                  }
-                }}
+                onclick={() => (menuId = menuId === c.id ? null : c.id)}
                 title="Collection options"
-                class="hidden h-5 w-5 shrink-0 items-center justify-center rounded-sm text-ink-2 hover:text-ink-0 group-hover:flex"
+                aria-label="Collection options"
+                class="hidden h-5 w-5 shrink-0 cursor-pointer items-center justify-center rounded-sm border-none text-ink-2 hover:text-ink-0 group-hover:flex"
                 style:display={menuId === c.id ? 'flex' : undefined}
                 style:background={menuId === c.id ? 'rgba(255,255,255,0.1)' : 'transparent'}
               >
                 <MoreHorizontal size={15} />
-              </span>
-            </button>
+              </button>
+            </div>
           {/if}
 
           {#if menuId === c.id}

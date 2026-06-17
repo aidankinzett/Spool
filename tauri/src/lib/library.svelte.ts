@@ -763,31 +763,49 @@ export function createLibrary() {
 
   // ── Collections ───────────────────────────────────────────────────────────
 
+  // After collections are replaced from outside the optimistic edit path
+  // (initial load, or another window's `collections:changed`), drop a scope that
+  // points at a now-deleted collection so the sidebar doesn't sit on a stale id.
+  function reconcileActiveCollection() {
+    if (activeCollection && !collections.some((c) => c.id === activeCollection)) {
+      activeCollection = null;
+    }
+  }
+
   async function loadCollections() {
     try {
       collections = await api.listCollections();
+      reconcileActiveCollection();
     } catch (e) {
       console.error('[collections] load failed:', e);
     }
   }
 
+  // Serialises persistence so rapid edits can't race: each setCollections call
+  // is chained after the previous one resolves, so an earlier (smaller) payload
+  // can't land after a later one and resurrect deleted state.
+  let collectionsWriteChain: Promise<void> = Promise.resolve();
+
   /**
    * Commit a new collections array: assign it optimistically (so the UI updates
-   * instantly), then persist the whole list. On failure, toast and reload from
-   * the backend so the view snaps back to the persisted truth rather than
-   * lingering on an edit that didn't stick.
+   * instantly), then persist the whole list. Writes are serialised through
+   * `collectionsWriteChain` to avoid out-of-order saves. On failure, toast and
+   * reload from the backend so the view snaps back to the persisted truth rather
+   * than lingering on an edit that didn't stick.
    */
   function commitCollections(next: Collection[]) {
     collections = next;
-    api.setCollections(next).catch((e) => {
-      toasts.show({
-        kind: 'bad',
-        label: 'COLLECTIONS',
-        title: "Couldn't save collections",
-        sub: String(e),
+    collectionsWriteChain = collectionsWriteChain
+      .then(() => api.setCollections(next).then(() => undefined))
+      .catch((e) => {
+        toasts.show({
+          kind: 'bad',
+          label: 'COLLECTIONS',
+          title: "Couldn't save collections",
+          sub: String(e),
+        });
+        return loadCollections();
       });
-      loadCollections();
-    });
   }
 
   /** Create a collection (optionally seeded with one game) and return its id so
@@ -841,7 +859,12 @@ export function createLibrary() {
     const to = arr.findIndex((c) => c.id === targetId);
     if (from < 0 || to < 0) return;
     const [moved] = arr.splice(from, 1);
-    arr.splice(to, 0, moved);
+    // Removing the dragged item shifts every later index down by one, so when it
+    // moved down (from < to) the target now sits one slot earlier. Insert there
+    // so the item lands *at* the target's position (above it — matching the
+    // row's top-border drop indicator), not after it.
+    const insertAt = from < to ? to - 1 : to;
+    arr.splice(insertAt, 0, moved);
     commitCollections(arr);
   }
 
@@ -914,6 +937,7 @@ export function createLibrary() {
     // adopt the persisted list. Payload is the full saved array.
     listen<Collection[]>('collections:changed', (event) => {
       collections = event.payload;
+      reconcileActiveCollection();
     })
       .then((fn) => {
         if (disposed) fn();

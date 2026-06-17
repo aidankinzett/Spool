@@ -130,15 +130,17 @@
       : 0,
   );
 
-  // Default-select the first visible tile once the shelf loads, so there's an
-  // immediate highlight (and the banner is populated) before the first input —
-  // matters most for controller use, where focus lands on a tile at mount.
-  // Only fills an empty selection; never overrides an existing one, and re-runs
-  // if the category change leaves nothing selected.
+  // Keep the selection inside the active shelf. Switching category (now
+  // including collection tabs) can leave `lib.selectedId` pointing at a game
+  // that isn't in the new rail, so the banner/actions would act on a tile that
+  // isn't visible. When the current selection isn't in `shelfGames`, fall to the
+  // first visible tile (or clear when the rail is empty) — this also seeds the
+  // initial highlight on load, which matters most for controller use.
   $effect(() => {
-    if (lib.loaded && !lib.selectedId && shelfGames.length > 0) {
-      lib.selectedId = shelfGames[0].id;
-    }
+    if (!lib.loaded) return;
+    const inShelf = lib.selectedId != null && shelfGames.some((g) => g.id === lib.selectedId);
+    if (inShelf) return;
+    lib.selectedId = shelfGames[0]?.id ?? null;
   });
 
   // Gamepad/keyboard nav selects the focused tile so the banner previews it

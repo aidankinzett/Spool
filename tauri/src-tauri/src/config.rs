@@ -631,6 +631,12 @@ pub fn update_config(
 ) -> AppResult<ConfigData> {
     let mut cfg = state.lock().map_err(|_| AppError::LockPoisoned)?;
 
+    // Collections are owned by the dedicated collections API (set_collections).
+    // The Settings UI sends back a full ConfigData snapshot it loaded earlier, so
+    // a collection edit made in between would be clobbered by this wholesale
+    // replace — keep the current collections regardless of what the payload says.
+    data.collections = cfg.data.collections.clone();
+
     // Normalize the retention knob up front (same range as the clamp in
     // ludusavi_config::apply_retention) so config.json, the change detection
     // below, and the set_retention call all agree on one value instead of
