@@ -91,6 +91,8 @@
     <button
       type="button"
       onclick={() => (open = !open)}
+      aria-expanded={open}
+      aria-controls="collections-add-popover"
       class="inline-flex h-[30px] items-center gap-1.5 rounded-sm px-3 text-[12.5px] font-medium text-ink-0 transition-colors"
       style:background={open ? 'var(--color-bg-3)' : 'var(--color-bg-2)'}
       style:border="1px solid {open ? 'var(--color-line-3)' : 'var(--color-line-2)'}"
@@ -100,6 +102,9 @@
     {#if open}
       <div
         bind:this={popoverEl}
+        id="collections-add-popover"
+        role="dialog"
+        aria-label="Add to collection"
         class="absolute right-0 z-50 mt-1.5 w-[250px] rounded-md border border-line-2 bg-bg-1 p-1.5"
         style:box-shadow="0 16px 40px rgb(0 0 0 / 0.5)"
       >

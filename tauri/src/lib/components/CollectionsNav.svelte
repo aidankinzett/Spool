@@ -62,7 +62,9 @@
     });
   }
   function commitRename() {
-    if (renamingId) lib.renameCollection(renamingId, renameDraft);
+    // Skip a blank/whitespace rename: the controller would keep the old name
+    // anyway, so calling it would only trigger a redundant no-op persist.
+    if (renamingId && renameDraft.trim()) lib.renameCollection(renamingId, renameDraft);
     renamingId = null;
   }
 
@@ -114,7 +116,7 @@
   </div>
 
   {#if open}
-    <div class="mt-0.5 flex flex-col gap-px">
+    <div role="list" class="mt-0.5 flex flex-col gap-px">
       <!-- All games -->
       <button
         type="button"
