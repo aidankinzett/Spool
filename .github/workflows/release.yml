@@ -22,7 +22,7 @@ jobs:
         shell: pwsh
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
@@ -30,7 +30,7 @@ jobs:
           bun-version: "1.x"
 
       - name: Bun cache
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ${{ github.workspace }}/.bun-cache
           key: bun-${{ runner.os }}-${{ hashFiles('tauri/bun.lock') }}
@@ -60,7 +60,7 @@ jobs:
         uses: mozilla-actions/sccache-action@v0.0.10
 
       - name: Sccache cache
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ${{ github.workspace }}/.sccache
           key: sccache-${{ runner.os }}-${{ github.ref_name }}-${{ github.sha }}
@@ -106,7 +106,7 @@ jobs:
 
       - name: Cache sidecars
         id: cache-sidecars
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: tauri/src-tauri/binaries
           key: sidecars-${{ runner.os }}-${{ hashFiles('tauri/scripts/download-sidecars.js') }}
@@ -158,7 +158,7 @@ jobs:
       BUN_INSTALL_CACHE_DIR: "${{ github.workspace }}/.bun-cache"
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
@@ -172,7 +172,7 @@ jobs:
         uses: mozilla-actions/sccache-action@v0.0.10
 
       - name: Sccache cache
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ${{ github.workspace }}/.sccache
           key: sccache-${{ runner.os }}-${{ github.ref_name }}-${{ github.sha }}
@@ -210,7 +210,7 @@ jobs:
           bun run build
 
       - name: Bun cache
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ${{ github.workspace }}/.bun-cache
           key: bun-${{ runner.os }}-${{ hashFiles('tauri/bun.lock') }}
@@ -223,7 +223,7 @@ jobs:
 
       - name: Cache sidecars
         id: cache-sidecars
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: tauri/src-tauri/binaries
           key: sidecars-${{ runner.os }}-${{ hashFiles('tauri/scripts/download-sidecars.js') }}
@@ -327,7 +327,7 @@ jobs:
       contents: write
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           # Full history + tags so the changelog can diff against the
           # previous release tag.
