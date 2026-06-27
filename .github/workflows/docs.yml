@@ -26,7 +26,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
       - name: Build with Astro
         # Auto-detects the package manager from docs-site/bun.lock and runs
         # install + astro build, then uploads the Pages artifact.
