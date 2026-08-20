@@ -2244,6 +2244,33 @@ async fn phase_restore(ctx: &WorkflowCtx<'_>) -> AppResult<bool> {
     }
 }
 
+/// Land the local backup store's tip in the live save location after a conflict
+/// was reconciled in favour of local.
+///
+/// The restore that reported the conflict stopped after pass 1, which only
+/// writes files at the paths the backup recorded — steering a foreign-origin
+/// backup into the local Proton prefix is pass 2's job. So on a cross-platform
+/// game nothing has actually reached the live save location yet, and the game
+/// would launch on whatever the prefix happened to be holding.
+///
+/// Runs *without* cloud sync: reconciliation already decided local is the copy
+/// to keep, so re-checking the remote would only risk reporting the same
+/// conflict again and skipping the redirect pass a second time.
+async fn land_local_saves(ctx: &WorkflowCtx<'_>) -> AppResult<()> {
+    restore_with_redirects(
+        ctx.ludusavi_client,
+        ctx.ludusavi_exe,
+        &ctx.config_dir,
+        ctx.game_name,
+        ctx.wine_prefix(),
+        ctx.game_folder(),
+        None,
+        false,
+    )
+    .await?;
+    Ok(())
+}
+
 /// Handles a restore that ludusavi refused because local ≠ cloud. The baseline
 /// (last-synced tip) distinguishes a clean fast-forward — one side cleanly
 /// ahead, auto-resolved — from a true divergence where both changed since the
@@ -2310,8 +2337,8 @@ async fn reconcile_cloud_conflict(ctx: &WorkflowCtx<'_>) -> AppResult<()> {
             emit_cloud_notice(ctx.app, ctx.game_id, "Restored newer saves from the cloud");
         }
         CloudSyncDecision::FastForwardUpload => {
-            // Local is cleanly ahead — push it up. Pass-1 restore already
-            // landed the local saves, so no re-restore is needed.
+            // Local is cleanly ahead — push it up, then land it in the live
+            // save location, which the conflicting restore stopped short of.
             ctx.ludusavi_client
                 .cloud_resolve(
                     ctx.ludusavi_exe,
@@ -2320,6 +2347,7 @@ async fn reconcile_cloud_conflict(ctx: &WorkflowCtx<'_>) -> AppResult<()> {
                     ctx.game_name,
                 )
                 .await?;
+            land_local_saves(ctx).await?;
             if let Some(tip) = local_tip.as_ref() {
                 let _ = set_cloud_baseline(ctx.app, ctx.game_id, &tip.name).await;
             }
@@ -2333,7 +2361,12 @@ async fn reconcile_cloud_conflict(ctx: &WorkflowCtx<'_>) -> AppResult<()> {
                 );
             }
         }
-        CloudSyncDecision::InSync => {}
+        CloudSyncDecision::InSync => {
+            // Both sides already hold the same tip, so ludusavi's conflict was
+            // spurious — but the restore still stopped after pass 1, so land
+            // the saves before launching.
+            land_local_saves(ctx).await?;
+        }
     }
     Ok(())
 }
