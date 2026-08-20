@@ -56,13 +56,13 @@ axum = { version = "0.8", default-features = false, features = ["json", "tokio",
 hyper = { version = "1", features = ["http1", "server"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 tower-service = "0.3"
-tower-http = { version = "0.6", features = ["fs", "cors"] }
+tower-http = { version = "0.7", features = ["fs", "cors"] }
 walkdir = "2"
 tokio-util = { version = "0.7", features = ["io"] }
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 urlencoding = "2"
 blake3 = "1"
-base64 = "0.22"
+base64 = "0.23"
 filetime = "0.2"
 serde_yaml = "0.9"
 pelite = "0.10"
