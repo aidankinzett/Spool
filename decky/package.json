@@ -34,7 +34,7 @@
     "react-dom": "^19.2.7",
     "rollup": "^4.61.1",
     "storybook": "^10.4.2",
-    "typescript": "^6.0.3",
+    "typescript": "^7.0.2",
     "vite": "^8.0.16",
     "@storybook/addon-docs": "^10.4.2"
   }
