@@ -469,12 +469,17 @@ pub async fn manual_restore(app: AppHandle, game_id: String) -> AppResult<Manual
     .await
     .map_err(|e| AppError::Other(format!("ludusavi restore: {e}")))?;
 
-    if out
-        .errors
-        .as_ref()
-        .and_then(|e| e.cloud_conflict.as_ref())
-        .is_some()
-    {
+    if cloud_sync_failed(&out) {
+        // The local backup restored, but we never got to see the cloud — say so
+        // rather than let "Restore" imply the newest save just landed.
+        return Err(AppError::Other(
+            "Couldn't reach the cloud to check for newer saves — the restore used the local \
+             backup only."
+                .into(),
+        ));
+    }
+
+    if cloud_conflicted(&out) {
         return Err(AppError::Other(
             "Cloud sync conflict — open Ludusavi to resolve before restoring.".into(),
         ));
@@ -620,13 +625,16 @@ pub async fn pull_cloud_saves_core(
     .await
     .map_err(|e| AppError::Other(format!("ludusavi restore: {e}")))?;
 
-    let conflict = out
-        .errors
-        .as_ref()
-        .and_then(|e| e.cloud_conflict.as_ref())
-        .is_some();
+    if cloud_sync_failed(&out) {
+        // Nothing was pulled — the remote was unreachable. Fail rather than
+        // record a synced baseline / badge off a restore that never saw the
+        // cloud (which would make the next launch trust a stale local tip).
+        return Err(AppError::Other(
+            "Couldn't reach the cloud to pull saves.".into(),
+        ));
+    }
 
-    if !conflict {
+    if !cloud_conflicted(&out) {
         // Clean pull — local now reflects the cloud tip. Record it as the synced
         // baseline so the next conflict check is exact, then mark the badge.
         let backup_dir = ludusavi_config::backup_dir();
@@ -689,12 +697,12 @@ pub async fn pull_cloud_saves_core(
             )
             .await
             .map_err(|e| AppError::Other(format!("ludusavi restore: {e}")))?;
-            if out
-                .errors
-                .as_ref()
-                .and_then(|e| e.cloud_conflict.as_ref())
-                .is_some()
-            {
+            if cloud_sync_failed(&out) {
+                return Err(AppError::Other(
+                    "Couldn't reach the cloud to pull saves.".into(),
+                ));
+            }
+            if cloud_conflicted(&out) {
                 return Err(AppError::Other(
                     "Cloud sync conflict — local and cloud saves both changed.".into(),
                 ));
@@ -947,14 +955,14 @@ pub async fn resolve_cloud_conflict(
     .await
     .map_err(|e| AppError::Other(format!("ludusavi restore: {e}")))?;
 
-    // A conflict here would mean the mirror didn't take — surface it rather
-    // than silently launching with mismatched saves.
-    if out
-        .errors
-        .as_ref()
-        .and_then(|e| e.cloud_conflict.as_ref())
-        .is_some()
-    {
+    // A conflict (or an unreachable remote) here would mean the mirror didn't
+    // take — surface it rather than silently launching with mismatched saves.
+    if cloud_sync_failed(&out) {
+        return Err(AppError::Other(
+            "Couldn't reach the cloud after resolving — the saves may not match yet.".into(),
+        ));
+    }
+    if cloud_conflicted(&out) {
         return Err(AppError::Other(
             "Cloud sync conflict persisted after resolving — open Ludusavi to inspect.".into(),
         ));
@@ -1745,6 +1753,23 @@ fn build_launch_plan(
     })
 }
 
+/// ludusavi saw local ≠ cloud and skipped the sync rather than pick a side.
+fn cloud_conflicted(out: &crate::ludusavi::ApiOutput) -> bool {
+    out.errors
+        .as_ref()
+        .is_some_and(|e| e.cloud_conflict.is_some())
+}
+
+/// ludusavi couldn't reach the remote, so the cloud leg of the op didn't run.
+/// It reports this as a non-fatal field on an otherwise-successful restore: the
+/// local backup store still restored, but it may be behind the cloud, so a
+/// restore that reports this has *not* proven the live save is current.
+fn cloud_sync_failed(out: &crate::ludusavi::ApiOutput) -> bool {
+    out.errors
+        .as_ref()
+        .is_some_and(|e| e.cloud_sync_failed.is_some())
+}
+
 /// Run a ludusavi restore with automatic cross-platform redirect generation.
 ///
 /// Flow:
@@ -1761,7 +1786,11 @@ fn build_launch_plan(
 /// the single-launch lock ensures nothing else is touching the prefix.
 ///
 /// Returns the `ApiOutput` from the effective (second) restore, or the first
-/// restore's output if no redirect was needed.
+/// restore's output if no redirect was needed. When pass 1 reports that cloud
+/// sync didn't complete (conflict or failure) the redirect pass is skipped and
+/// pass 1's output is returned as-is, so callers see the cloud error and can
+/// reconcile before a possibly-stale backup is steered into the live save
+/// location.
 #[allow(clippy::too_many_arguments)]
 async fn restore_with_redirects(
     ludusavi_client: &LudusaviClient,
@@ -1797,6 +1826,26 @@ async fn restore_with_redirects(
 
     // ── Pass 1: restore (pulls cloud unless rolling back to an id) ─────────
     let first = do_restore!()?;
+
+    // The cloud leg didn't land: ludusavi either found local and cloud in
+    // conflict (sync skipped) or couldn't reach the remote. Either way pass 1
+    // restored whatever was already in the local backup store, which may be
+    // older than the cloud. Return now, errors intact, so the caller reconciles
+    // against the remote before anything reaches the live save location —
+    // returning the *second* pass's output here dropped these fields, and the
+    // caller then launched the game off the stale local backup with no conflict
+    // reported anywhere.
+    if let Some(errors) = first.errors.as_ref() {
+        if errors.cloud_conflict.is_some() || errors.cloud_sync_failed.is_some() {
+            tracing::warn!(
+                game_name,
+                conflict = errors.cloud_conflict.is_some(),
+                sync_failed = errors.cloud_sync_failed.is_some(),
+                "restore: cloud sync did not complete — skipping the redirect pass"
+            );
+            return Ok(first);
+        }
+    }
 
     // ── Read mapping.yaml to detect origin ────────────────────────────────
     let backup_dir = ludusavi_config::backup_dir();
@@ -2145,12 +2194,22 @@ async fn phase_restore(ctx: &WorkflowCtx<'_>) -> AppResult<bool> {
             None,
             cloud_configured,
         ).await?;
-        if restore
-            .errors
-            .as_ref()
-            .and_then(|e| e.cloud_conflict.as_ref())
-            .is_some()
-        {
+        if cloud_sync_failed(&restore) {
+            // The remote is configured but ludusavi couldn't reach it, so the
+            // restore used whatever was in the local backup store. Another
+            // device may have played since — launching now would load an older
+            // save and the post-session backup would then overwrite the newer
+            // cloud copy with it. Stop instead, and name the way to play anyway.
+            tracing::warn!(
+                game_name = ctx.game_name,
+                "restore: cloud sync failed — aborting launch rather than restoring a possibly-stale save"
+            );
+            return Err(AppError::Other(
+                "Couldn't reach the cloud to check for newer saves. Fix the connection and try \
+                 again, or turn on offline mode in Settings to play with the local save."
+                    .into(),
+            ));
+        } else if cloud_conflicted(&restore) {
             // ludusavi saw local ≠ cloud and refused to sync. Reconcile before
             // continuing (fast-forward one side, or prompt on true divergence).
             reconcile_cloud_conflict(ctx).await?;
@@ -2183,6 +2242,33 @@ async fn phase_restore(ctx: &WorkflowCtx<'_>) -> AppResult<bool> {
             Err(e)
         }
     }
+}
+
+/// Land the local backup store's tip in the live save location after a conflict
+/// was reconciled in favour of local.
+///
+/// The restore that reported the conflict stopped after pass 1, which only
+/// writes files at the paths the backup recorded — steering a foreign-origin
+/// backup into the local Proton prefix is pass 2's job. So on a cross-platform
+/// game nothing has actually reached the live save location yet, and the game
+/// would launch on whatever the prefix happened to be holding.
+///
+/// Runs *without* cloud sync: reconciliation already decided local is the copy
+/// to keep, so re-checking the remote would only risk reporting the same
+/// conflict again and skipping the redirect pass a second time.
+async fn land_local_saves(ctx: &WorkflowCtx<'_>) -> AppResult<()> {
+    restore_with_redirects(
+        ctx.ludusavi_client,
+        ctx.ludusavi_exe,
+        &ctx.config_dir,
+        ctx.game_name,
+        ctx.wine_prefix(),
+        ctx.game_folder(),
+        None,
+        false,
+    )
+    .await?;
+    Ok(())
 }
 
 /// Handles a restore that ludusavi refused because local ≠ cloud. The baseline
@@ -2240,12 +2326,7 @@ async fn reconcile_cloud_conflict(ctx: &WorkflowCtx<'_>) -> AppResult<()> {
                 true,
             )
             .await?;
-            if out
-                .errors
-                .as_ref()
-                .and_then(|e| e.cloud_conflict.as_ref())
-                .is_some()
-            {
+            if cloud_sync_failed(&out) || cloud_conflicted(&out) {
                 return Err(AppError::Other(
                     "Cloud sync conflict — open Ludusavi to resolve before launching.".into(),
                 ));
@@ -2256,8 +2337,8 @@ async fn reconcile_cloud_conflict(ctx: &WorkflowCtx<'_>) -> AppResult<()> {
             emit_cloud_notice(ctx.app, ctx.game_id, "Restored newer saves from the cloud");
         }
         CloudSyncDecision::FastForwardUpload => {
-            // Local is cleanly ahead — push it up. Pass-1 restore already
-            // landed the local saves, so no re-restore is needed.
+            // Local is cleanly ahead — push it up, then land it in the live
+            // save location, which the conflicting restore stopped short of.
             ctx.ludusavi_client
                 .cloud_resolve(
                     ctx.ludusavi_exe,
@@ -2266,6 +2347,7 @@ async fn reconcile_cloud_conflict(ctx: &WorkflowCtx<'_>) -> AppResult<()> {
                     ctx.game_name,
                 )
                 .await?;
+            land_local_saves(ctx).await?;
             if let Some(tip) = local_tip.as_ref() {
                 let _ = set_cloud_baseline(ctx.app, ctx.game_id, &tip.name).await;
             }
@@ -2279,7 +2361,12 @@ async fn reconcile_cloud_conflict(ctx: &WorkflowCtx<'_>) -> AppResult<()> {
                 );
             }
         }
-        CloudSyncDecision::InSync => {}
+        CloudSyncDecision::InSync => {
+            // Both sides already hold the same tip, so ludusavi's conflict was
+            // spurious — but the restore still stopped after pass 1, so land
+            // the saves before launching.
+            land_local_saves(ctx).await?;
+        }
     }
     Ok(())
 }

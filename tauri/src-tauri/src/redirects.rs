@@ -106,16 +106,17 @@ impl BackupOs {
 #[derive(Debug)]
 pub struct BackupOrigin {
     pub os: BackupOs,
-    /// All absolute source paths recorded in the backup (union of top-level
-    /// backup + all differential children).
+    /// All absolute source paths recorded in the *newest* full backup (union of
+    /// that backup + its differential children). See [`newest_full`] for why
+    /// the newest and not the first entry.
     pub paths: Vec<String>,
 }
 
 // ── Parser ───────────────────────────────────────────────────────────────────
 
 /// Read `<backup_dir>/<game_name>/mapping.yaml` and return the origin OS +
-/// every recorded absolute path. Returns `None` when the file doesn't exist
-/// (game has no backup yet — caller skips redirect logic).
+/// every recorded absolute path of the newest backup. Returns `None` when the
+/// file doesn't exist (game has no backup yet — caller skips redirect logic).
 ///
 /// Windows can't create folders with colons in their names, so a backup made
 /// on Windows for a game like "Lego Batman: Legacy of the Dark Knight" will
@@ -203,16 +204,11 @@ pub fn read_backup_tip_from_str(yaml: &str) -> Option<BackupTip> {
 
     let mut tip: Option<BackupTip> = None;
     let mut consider = |node: &Value| {
-        let (Some(name), Some(when_str)) = (
-            node.get("name").and_then(|v| v.as_str()),
-            node.get("when").and_then(|v| v.as_str()),
-        ) else {
+        let (Some(name), Some(when)) =
+            (node.get("name").and_then(|v| v.as_str()), parse_when(node))
+        else {
             return;
         };
-        let Ok(when) = chrono::DateTime::parse_from_rfc3339(when_str) else {
-            return;
-        };
-        let when = when.with_timezone(&chrono::Utc);
         if tip.as_ref().is_none_or(|t| when > t.when) {
             tip = Some(BackupTip {
                 name: name.to_string(),
@@ -251,7 +247,7 @@ pub fn windows_safe_name(name: &str) -> String {
 
 fn parse_origin(doc: &Value) -> Option<BackupOrigin> {
     let backups = doc.get("backups")?.as_sequence()?;
-    let top = backups.first()?;
+    let top = newest_full(backups)?;
 
     let os = top
         .get("os")
@@ -271,6 +267,59 @@ fn parse_origin(doc: &Value) -> Option<BackupOrigin> {
     }
 
     Some(BackupOrigin { os, paths })
+}
+
+/// The full backup that `ludusavi restore` will actually restore: the newest
+/// one. Retention keeps `backup.retention.full` (3–10) self-contained full
+/// backups, and on a cross-device library those revisions come from different
+/// machines — a Windows desktop and a Proton prefix record completely different
+/// paths for the same save. Deriving redirects from the wrong revision writes
+/// the restored save somewhere the game never reads, leaving the stale local
+/// save in place.
+///
+/// ludusavi appends new backups with `push_back` and prunes from the front, so
+/// list order is oldest-first, but that's an implementation detail — pick by
+/// `when` and fall back to list position for entries with a missing or
+/// unparseable date. A differential child can be newer than its parent, so the
+/// comparison runs over each full backup's whole subtree (matching
+/// [`read_backup_tip_from_str`]); the returned value is still the *full*
+/// backup, since restoring a child also restores its parent's files.
+fn newest_full(backups: &[Value]) -> Option<&Value> {
+    let mut best: Option<(&Value, Option<chrono::DateTime<chrono::Utc>>)> = None;
+    for full in backups {
+        let when = subtree_max_when(full);
+        // `None < Some(_)` under `Option`'s ordering, so an undated entry loses
+        // to any dated one. Ties keep the later list position.
+        if best
+            .as_ref()
+            .is_none_or(|(_, best_when)| when >= *best_when)
+        {
+            best = Some((full, when));
+        }
+    }
+    best.map(|(node, _)| node)
+}
+
+/// The latest `when` across a full backup and its differential children.
+fn subtree_max_when(full: &Value) -> Option<chrono::DateTime<chrono::Utc>> {
+    let mut max = parse_when(full);
+    if let Some(children) = full.get("children").and_then(|v| v.as_sequence()) {
+        for child in children {
+            let when = parse_when(child);
+            if when > max {
+                max = when;
+            }
+        }
+    }
+    max
+}
+
+/// Parse a backup entry's RFC 3339 `when` field.
+fn parse_when(node: &Value) -> Option<chrono::DateTime<chrono::Utc>> {
+    let raw = node.get("when")?.as_str()?;
+    chrono::DateTime::parse_from_rfc3339(raw)
+        .ok()
+        .map(|t| t.with_timezone(&chrono::Utc))
 }
 
 fn collect_files(node: &Value, out: &mut Vec<String>) {
@@ -1040,6 +1089,133 @@ mod tests {
         );
         assert_eq!(windows_safe_name("Normal Name"), "Normal Name");
         assert_eq!(windows_safe_name("File*Name?"), "File_Name_");
+    }
+
+    // ── mapping.yaml revision selection ────────────────────────────────────
+
+    /// Two retained full backups from two devices: an older Proton-prefix one
+    /// and a newer Windows one. `ludusavi restore` restores the newest, so the
+    /// origin must come from that revision — reading the first entry produced
+    /// prefix paths, no redirects, and a stale save left in the prefix.
+    const TWO_DEVICE_MAPPING: &str = r#"
+name: Stellar Blade
+drives:
+  drive-0: ""
+  drive-C: "C:"
+backups:
+  - name: backup-20260701T010000Z
+    when: "2026-07-01T01:00:00.000000Z"
+    os: linux
+    files:
+      "/home/deck/.local/share/Spool/prefixes/abc/drive_c/users/steamuser/AppData/Local/SB/Saved/deck.sav": { size: 1 }
+    children: []
+  - name: backup-20260731T025130Z
+    when: "2026-07-31T02:51:30.200865Z"
+    os: windows
+    files:
+      "C:/Users/akinz/AppData/Local/SB/Saved/pc.sav": { size: 1 }
+    children: []
+"#;
+
+    #[test]
+    fn origin_comes_from_newest_backup_not_first() {
+        let doc: Value = serde_yaml::from_str(TWO_DEVICE_MAPPING).unwrap();
+        let origin = parse_origin(&doc).unwrap();
+        assert_eq!(origin.os, BackupOs::Windows);
+        assert_eq!(
+            origin.paths,
+            vec!["C:/Users/akinz/AppData/Local/SB/Saved/pc.sav"]
+        );
+    }
+
+    /// The newest revision drives the redirect, so a Windows tip lands in the
+    /// local prefix even when an older Proton-origin revision is still retained.
+    #[test]
+    fn newest_windows_backup_redirects_into_prefix() {
+        let doc: Value = serde_yaml::from_str(TWO_DEVICE_MAPPING).unwrap();
+        let origin = parse_origin(&doc).unwrap();
+        let rules = derive_redirects(&origin, Some(&pfx()), None, None, false);
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].source, "C:/Users/akinz");
+        assert_eq!(
+            rules[0].target,
+            "/home/deck/.local/share/Spool/prefixes/abc/drive_c/users/steamuser"
+        );
+    }
+
+    /// A differential child can carry a later timestamp than any full backup's
+    /// own `when`; the subtree comparison has to see it.
+    #[test]
+    fn newest_full_uses_child_timestamps() {
+        let yaml = r#"
+name: Game
+drives: {}
+backups:
+  - name: backup-a
+    when: "2026-01-01T00:00:00.000000Z"
+    os: windows
+    files:
+      "C:/Users/a/save.sav": { size: 1 }
+    children:
+      - name: backup-a-diff
+        when: "2026-09-01T00:00:00.000000Z"
+        os: windows
+        files:
+          "C:/Users/a/later.sav": { size: 1 }
+  - name: backup-b
+    when: "2026-02-01T00:00:00.000000Z"
+    os: linux
+    files:
+      "/home/deck/save.sav": { size: 1 }
+    children: []
+"#;
+        let doc: Value = serde_yaml::from_str(yaml).unwrap();
+        let origin = parse_origin(&doc).unwrap();
+        assert_eq!(origin.os, BackupOs::Windows);
+        // Parent files plus the child's — restoring a child restores both.
+        assert_eq!(origin.paths.len(), 2);
+        assert!(origin.paths.iter().all(|p| p.starts_with("C:/")));
+    }
+
+    /// Undated entries fall back to list position (ludusavi appends), so the
+    /// last one still wins rather than the first.
+    #[test]
+    fn undated_backups_fall_back_to_last_entry() {
+        let yaml = r#"
+name: Game
+drives: {}
+backups:
+  - os: linux
+    files:
+      "/home/deck/save.sav": { size: 1 }
+  - os: windows
+    files:
+      "C:/Users/a/save.sav": { size: 1 }
+"#;
+        let doc: Value = serde_yaml::from_str(yaml).unwrap();
+        let origin = parse_origin(&doc).unwrap();
+        assert_eq!(origin.os, BackupOs::Windows);
+    }
+
+    /// A dated revision beats an undated one regardless of position.
+    #[test]
+    fn dated_backup_beats_undated() {
+        let yaml = r#"
+name: Game
+drives: {}
+backups:
+  - name: backup-a
+    when: "2026-01-01T00:00:00.000000Z"
+    os: windows
+    files:
+      "C:/Users/a/save.sav": { size: 1 }
+  - os: linux
+    files:
+      "/home/deck/save.sav": { size: 1 }
+"#;
+        let doc: Value = serde_yaml::from_str(yaml).unwrap();
+        let origin = parse_origin(&doc).unwrap();
+        assert_eq!(origin.os, BackupOs::Windows);
     }
 
     // ── Real-backup parsing (skipped when files absent in CI) ──────────────
