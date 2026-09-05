@@ -23,9 +23,33 @@
 
 use crate::error::{AppError, AppResult};
 use crate::proton;
+use std::collections::VecDeque;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use tokio::process::Command;
+
+/// How many lines of a Proton child's output reach `debug.log` per launch.
+///
+/// A healthy umu launch prints on the order of a hundred lines, so this keeps
+/// the diagnostics while capping a child that never stops talking: umu's
+/// accessibility layer can throw in a loop, printing a .NET stack trace each
+/// time, which is how one session produced ~1.2M lines and a 220 MB log (#512).
+/// Past the cap the lines are counted, and the count is logged when the stream
+/// ends.
+const UMU_RELAY_LINE_CAP: usize = 500;
+
+/// Trailing stderr lines kept in memory for the crash hint. The hint itself
+/// shows the last 15; the rest are headroom for reading a little further back
+/// without the buffer tracking a whole session's output.
+const UMU_STDERR_TAIL_LINES: usize = 50;
+
+/// Append to the crash-hint tail, dropping the oldest line once it's full.
+fn push_tail(buf: &mut VecDeque<String>, line: String) {
+    if buf.len() == UMU_STDERR_TAIL_LINES {
+        buf.pop_front();
+    }
+    buf.push_back(line);
+}
 
 /// Result of spawning and waiting for a game process.
 pub struct GameExitResult {
@@ -277,25 +301,62 @@ pub async fn run_game(exe_path: &Path, spec: LaunchSpec<'_>) -> AppResult<GameEx
                 tokio::spawn(async move {
                     use tokio::io::{AsyncBufReadExt, BufReader};
                     let mut lines = BufReader::new(s).lines();
+                    let mut relayed = 0usize;
+                    let mut suppressed = 0usize;
                     while let Ok(Some(line)) = lines.next_line().await {
-                        tracing::info!(target: "umu", "{}", line);
+                        if relayed < UMU_RELAY_LINE_CAP {
+                            tracing::info!(target: "umu", "{}", line);
+                            relayed += 1;
+                        } else {
+                            suppressed += 1;
+                        }
+                    }
+                    if suppressed > 0 {
+                        tracing::info!(
+                            target: "umu",
+                            suppressed,
+                            cap = UMU_RELAY_LINE_CAP,
+                            "further umu stdout not relayed"
+                        );
                     }
                 })
             });
 
-            // Collect stderr into a buffer (for crash diagnosis) while still
-            // piping every line to debug.log via tracing.
-            let stderr_buf: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+            // Relay stderr to debug.log and keep the tail for crash diagnosis.
+            //
+            // Both are bounded. umu's accessibility layer can throw in a loop and
+            // print a full .NET stack trace each time — one session wrote ~1.2M
+            // lines and left a 220 MB debug.log, and retaining every line to serve
+            // the 15 the crash hint reads grew the buffer to match (#512). The
+            // opening lines carry the launch diagnostics worth having, so the
+            // relay keeps those and counts the rest; the ring keeps the tail, which
+            // is the half a crash hint needs.
+            let stderr_buf: Arc<Mutex<VecDeque<String>>> = Arc::new(Mutex::new(VecDeque::new()));
             let stderr_buf_clone = Arc::clone(&stderr_buf);
             let stderr_handle = child.stderr.take().map(|s| {
                 tokio::spawn(async move {
                     use tokio::io::{AsyncBufReadExt, BufReader};
                     let mut lines = BufReader::new(s).lines();
+                    let mut relayed = 0usize;
+                    let mut suppressed = 0usize;
                     while let Ok(Some(line)) = lines.next_line().await {
-                        tracing::warn!(target: "umu", "{}", line);
-                        if let Ok(mut buf) = stderr_buf_clone.lock() {
-                            buf.push(line);
+                        if relayed < UMU_RELAY_LINE_CAP {
+                            tracing::warn!(target: "umu", "{}", line);
+                            relayed += 1;
+                        } else {
+                            suppressed += 1;
                         }
+                        if let Ok(mut buf) = stderr_buf_clone.lock() {
+                            push_tail(&mut buf, line);
+                        }
+                    }
+                    if suppressed > 0 {
+                        tracing::warn!(
+                            target: "umu",
+                            suppressed,
+                            cap = UMU_RELAY_LINE_CAP,
+                            "further umu stderr not relayed — the tail is kept for the crash hint"
+                        );
                     }
                 })
             });
@@ -442,6 +503,35 @@ async fn run_elevated(_exe_path: &Path) -> AppResult<i32> {
 mod tests {
     use super::*;
     use std::collections::HashMap;
+
+    #[test]
+    fn push_tail_keeps_the_newest_lines_and_stays_bounded() {
+        // The crash hint reads the end of the stream, so a child that never
+        // stops printing must cost a fixed amount of memory, not a growing one
+        // (#512).
+        let mut buf: VecDeque<String> = VecDeque::new();
+        for i in 0..(UMU_STDERR_TAIL_LINES * 40) {
+            push_tail(&mut buf, format!("line {i}"));
+        }
+        assert_eq!(buf.len(), UMU_STDERR_TAIL_LINES);
+        assert_eq!(
+            buf.back().map(String::as_str),
+            Some(format!("line {}", UMU_STDERR_TAIL_LINES * 40 - 1).as_str())
+        );
+        assert_eq!(
+            buf.front().map(String::as_str),
+            Some(format!("line {}", UMU_STDERR_TAIL_LINES * 39).as_str())
+        );
+    }
+
+    #[test]
+    fn push_tail_below_the_cap_keeps_everything() {
+        let mut buf: VecDeque<String> = VecDeque::new();
+        push_tail(&mut buf, "a".to_string());
+        push_tail(&mut buf, "b".to_string());
+        assert_eq!(buf.len(), 2);
+        assert_eq!(buf.front().map(String::as_str), Some("a"));
+    }
 
     fn env_mods(cmd: &Command) -> HashMap<String, Option<String>> {
         cmd.as_std()

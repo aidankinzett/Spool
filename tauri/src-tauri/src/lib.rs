@@ -463,7 +463,8 @@ fn restamp_rclone(app: &AppHandle) {
 ///   * **stderr** — what `cargo run` / `tauri dev` show in the terminal
 ///   * **file**   — appended to `%LOCALAPPDATA%\Spool\debug.log`, the same
 ///     path the C# app used, so existing support workflows
-///     ("send me your debug.log") still work.
+///     ("send me your debug.log") still work. Rotated at startup once it
+///     passes [`LOG_ROTATE_BYTES`] — see [`rotate_log_if_oversized`].
 ///
 /// Default verbosity: `info`, with the noisy crates (tauri / hyper /
 /// reqwest / h2) clamped to `warn`. Override with `SPOOL_LOG=debug` (or
@@ -471,12 +472,46 @@ fn restamp_rclone(app: &AppHandle) {
 ///
 /// Returns the non-blocking worker guard; binding it to the call frame
 /// keeps the writer alive and flushes buffered lines at shutdown.
+/// Size past which `debug.log` is rotated at startup. Two files are kept, so
+/// the pair stays under roughly twice this.
+const LOG_ROTATE_BYTES: u64 = 8 * 1024 * 1024;
+
+/// Move an oversized `debug.log` aside so the new run starts clean, keeping one
+/// previous file as `debug.log.1`.
+///
+/// Rotation happens here rather than through `tracing-appender`'s rolling
+/// appenders because those name the live file after its date. The fixed name is
+/// load-bearing: `paths::log_file()` is shown to the user in a launch-crash
+/// message, and support asks for `debug.log` by name.
+///
+/// Best-effort throughout. Several Spool processes share this file (tray GUI,
+/// attached `spool --run`, headless Decky server), so a rename can lose to a
+/// concurrent one, and on Windows it fails outright while another process holds
+/// the file open. None of that is worth refusing to start over — and a process
+/// already holding the old handle keeps writing to the renamed inode on Unix,
+/// which loses nothing.
+fn rotate_log_if_oversized(log: &std::path::Path) {
+    let Ok(meta) = std::fs::metadata(log) else {
+        return; // no log yet — nothing to rotate
+    };
+    if meta.len() <= LOG_ROTATE_BYTES {
+        return;
+    }
+    let previous = log.with_extension("log.1");
+    if let Err(e) = std::fs::rename(log, &previous) {
+        // Can't rotate (locked on Windows, or another process just did it).
+        // Carry on appending — a large log beats no logging.
+        eprintln!("spool: could not rotate {}: {e}", log.display());
+    }
+}
+
 fn init_tracing() -> tracing_appender::non_blocking::WorkerGuard {
     use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
     let log_dir = paths::app_data_dir();
     let _ = std::fs::create_dir_all(&log_dir);
 
+    rotate_log_if_oversized(&paths::log_file());
     let file_appender = tracing_appender::rolling::never(&log_dir, "debug.log");
     let (file_writer, guard) = tracing_appender::non_blocking(file_appender);
 
@@ -828,4 +863,60 @@ fn spawn_library_change_poll(app: AppHandle) {
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rotate_moves_an_oversized_log_aside() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("debug.log");
+        std::fs::write(&log, vec![b'x'; (LOG_ROTATE_BYTES + 1) as usize]).unwrap();
+
+        rotate_log_if_oversized(&log);
+
+        assert!(!log.exists(), "oversized log should be moved aside");
+        assert!(dir.path().join("debug.log.1").exists());
+    }
+
+    #[test]
+    fn rotate_leaves_a_log_under_the_cap_alone() {
+        // Rotating on every start would throw away the history support asks for.
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("debug.log");
+        std::fs::write(&log, b"a few lines").unwrap();
+
+        rotate_log_if_oversized(&log);
+
+        assert!(log.exists());
+        assert!(!dir.path().join("debug.log.1").exists());
+    }
+
+    #[test]
+    fn rotate_replaces_the_previous_rotation() {
+        // Two files, not an ever-growing pile of them.
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("debug.log");
+        let previous = dir.path().join("debug.log.1");
+        std::fs::write(&previous, b"older run").unwrap();
+        std::fs::write(&log, vec![b'x'; (LOG_ROTATE_BYTES + 1) as usize]).unwrap();
+
+        rotate_log_if_oversized(&log);
+
+        assert_eq!(
+            std::fs::metadata(&previous).unwrap().len(),
+            LOG_ROTATE_BYTES + 1,
+            "the previous rotation should be replaced, not kept alongside"
+        );
+        assert!(!dir.path().join("debug.log.2").exists());
+    }
+
+    #[test]
+    fn rotate_is_a_no_op_when_there_is_no_log_yet() {
+        let dir = tempfile::tempdir().unwrap();
+        rotate_log_if_oversized(&dir.path().join("debug.log"));
+        assert!(!dir.path().join("debug.log.1").exists());
+    }
 }
