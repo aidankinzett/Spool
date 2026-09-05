@@ -1030,10 +1030,25 @@ async fn load_manifest(ludusavi_exe: &Path) -> AppResult<HashMap<String, Manifes
     // over the network. On a flaky network that download can hang indefinitely,
     // freezing the first Add-Game search's spinner forever. Bound it with the
     // same blocking-spawn + RUN_API_TIMEOUT + kill-on-expiry as run_api, so it
-    // fails cleanly instead. No `--config` (so the raw manifest isn't filtered by
-    // Spool's customGames) — built inline rather than via blocking_command.
+    // fails cleanly instead. Built inline rather than via blocking_command.
+    //
+    // `--config` is required: ludusavi resolves manifest.yaml relative to its
+    // config directory, not its executable, and Spool keeps the manifest in the
+    // config dir it owns. Without the flag ludusavi looks in the user's default
+    // config dir, finds no manifest, and prints `{}` with exit 0 — which parses
+    // cleanly into an empty map (every field of ManifestEntry defaults), so every
+    // lookup silently missed and Add Game lost save paths, store ids and install
+    // dirs for every candidate (#508). The cost of passing it is that
+    // `manifest show` merges the config's `customGames:` in; those are stripped
+    // below so the raw manifest stays raw.
     let mut cmd = std::process::Command::new(ludusavi_exe);
-    cmd.args(["manifest", "show", "--api"]);
+    cmd.args([
+        "--config",
+        &crate::paths::ludusavi_config_dir().to_string_lossy(),
+        "manifest",
+        "show",
+        "--api",
+    ]);
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt as _;
@@ -1050,7 +1065,34 @@ async fn load_manifest(ludusavi_exe: &Path) -> AppResult<HashMap<String, Manifes
     }
     let stdout = String::from_utf8(output.stdout)
         .map_err(|e| AppError::Other(format!("ludusavi manifest output not utf-8: {e}")))?;
-    crate::util::parse_json(stdout.as_bytes(), "ludusavi manifest")
+    let mut manifest: HashMap<String, ManifestEntry> =
+        crate::util::parse_json(stdout.as_bytes(), "ludusavi manifest")?;
+    strip_custom_games(&mut manifest, &crate::ludusavi_config::custom_game_names());
+
+    // An empty manifest is the shape #508 shipped as: a clean parse, a zero exit
+    // and no data. It's never legitimate — ludusavi's manifest has tens of
+    // thousands of games — so say so rather than caching the emptiness and
+    // degrading every lookup in silence.
+    if manifest.is_empty() {
+        tracing::warn!(
+            "ludusavi returned an empty manifest — Add Game will have no save paths, store ids or install dirs"
+        );
+    } else {
+        tracing::info!(games = manifest.len(), "ludusavi manifest loaded");
+    }
+    Ok(manifest)
+}
+
+/// Remove Spool's own `customGames:` projections from a parsed manifest.
+///
+/// `manifest show` merges the config's custom games into its output, but callers
+/// want the raw manifest: a custom game is a *reduced* stand-in Spool generated
+/// from a user's picked folder, so letting it shadow the real entry would hand
+/// Add Game a narrower path set than ludusavi actually knows.
+fn strip_custom_games(manifest: &mut HashMap<String, ManifestEntry>, custom: &[String]) {
+    for name in custom {
+        manifest.remove(name);
+    }
 }
 
 // ── Enrichment + helpers ────────────────────────────────────────────────────
@@ -1611,6 +1653,48 @@ fn ludusavi_path_or_err(_config: &State<'_, SharedConfig>) -> AppResult<PathBuf>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn strip_custom_games_removes_only_spools_projections() {
+        // `manifest show --api` merges the config's customGames into its output.
+        // Those are Spool's own reduced stand-ins, so a custom entry must not
+        // shadow the real manifest entry the search wants (#508).
+        let mut manifest: HashMap<String, ManifestEntry> = HashMap::new();
+        manifest.insert("Hades".to_string(), ManifestEntry::default());
+        manifest.insert("My Weird Game".to_string(), ManifestEntry::default());
+
+        strip_custom_games(&mut manifest, &["My Weird Game".to_string()]);
+
+        assert!(manifest.contains_key("Hades"));
+        assert!(!manifest.contains_key("My Weird Game"));
+    }
+
+    #[test]
+    fn strip_custom_games_ignores_names_not_in_the_manifest() {
+        // A custom game for a title ludusavi doesn't know is the common case —
+        // that's why it's a custom game — so the removal must be a no-op, not
+        // an assumption that every name is present.
+        let mut manifest: HashMap<String, ManifestEntry> = HashMap::new();
+        manifest.insert("Hades".to_string(), ManifestEntry::default());
+
+        strip_custom_games(&mut manifest, &["Never Heard Of It".to_string()]);
+
+        assert_eq!(manifest.len(), 1);
+        assert!(manifest.contains_key("Hades"));
+    }
+
+    #[test]
+    fn enrich_without_a_manifest_entry_loses_every_derived_field() {
+        // Documents what an empty manifest cost: #508's `{}` meant this branch
+        // ran for every candidate, so the missing save path the issue reported
+        // came with missing store ids and install dirs too.
+        let c = enrich("Hades".to_string(), 0.9, None);
+        assert_eq!(c.save_path, None);
+        assert!(c.save_paths.is_empty());
+        assert_eq!(c.steam_id, None);
+        assert_eq!(c.manifest_install_dir, None);
+        assert!(c.manifest_install_dirs.is_empty());
+    }
 
     fn file_entry(tags: &[&str], when_os: &[Option<&str>]) -> ManifestFileEntry {
         ManifestFileEntry {
