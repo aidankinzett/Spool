@@ -2847,9 +2847,6 @@ async fn phase_backup(
 ) -> AppResult<BackupResult> {
     let session_minutes = timing.minutes;
     let mut cloud_upload_failed = false;
-    // Starts from the restore phase's verdict (game not in the manifest) and is
-    // upgraded below if the backup ran but captured nothing.
-    let mut no_save_data = no_saves;
     // Re-derive the offline split NOW rather than trusting the launch-time
     // value: the user may have gone offline while the game was running, and
     // a session that ends in offline mode must skip the upload and land on
@@ -2903,7 +2900,7 @@ async fn phase_backup(
                 }
                 return Ok(BackupResult {
                     cloud_upload_failed: true,
-                    no_saves: no_save_data,
+                    no_saves,
                 });
             }
         };
@@ -2981,13 +2978,29 @@ async fn phase_backup(
                         // ludusavi recognised the game but its scan matched no
                         // save files here — a custom save location pointing at
                         // an empty/wrong folder, or a game that writes its saves
-                        // somewhere the manifest entry doesn't cover. No revision
-                        // was written, so don't let `done` claim one was.
-                        no_save_data = true;
+                        // somewhere the manifest entry doesn't cover.
+                        //
+                        // Stop before the upload and the cross-device writes
+                        // below. No revision exists, so `complete_session_backup`
+                        // would stamp this device as the newest backer for this
+                        // game and every peer's `fold_blobs` would then badge the
+                        // game "cloud-newer" pointing at us — hiding whichever
+                        // device really does hold the latest saves. The badge
+                        // write would likewise flip us to "synced" over a
+                        // legitimate "cloud-newer".
+                        //
+                        // Drop the session marker for the reason the unknown-game
+                        // branch below does: no backup is coming to clear it, and
+                        // peers stay blocked from launching while it's there.
                         tracing::info!(
                             game_name = ctx.game_name,
                             "post-session backup captured no save files"
                         );
+                        rclone::delete_session_marker(ctx.app, ctx.game_name).await;
+                        return Ok(BackupResult {
+                            cloud_upload_failed: false,
+                            no_saves: true,
+                        });
                     }
                 }
 
@@ -3148,7 +3161,7 @@ async fn phase_backup(
     }
     Ok(BackupResult {
         cloud_upload_failed,
-        no_saves: no_save_data,
+        no_saves,
     })
 }
 
