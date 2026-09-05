@@ -266,7 +266,15 @@
 
     return [
       { id: 'ended',  label: 'Session ended', detail: `Closed by game`, state: 'done' },
-      { id: 'backup', label: 'Back up saves · this device', detail: backupDetail, state: backupState },
+      // Without an explicit badge a 'warn' state resolves to OFFLINE, which
+      // would blame the network for a session that simply had nothing to save.
+      {
+        id: 'backup',
+        label: 'Back up saves · this device',
+        detail: backupDetail,
+        state: backupState,
+        badge: noSaves ? 'NO SAVES' : undefined,
+      },
       { id: 'sync',   label: 'Sync to cloud', detail: syncDetail, state: syncState },
     ];
   }
