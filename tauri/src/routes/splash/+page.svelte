@@ -14,6 +14,9 @@
   let message = $state<string | null>(null);
   let cloudUsed = $state(false);
   let cloudUploadFailed = $state(false);
+  // True on `done` when the session captured no save data at all — no revision
+  // was written, so the exit flow must not read as "all saved".
+  let noSaves = $state(false);
   let sessionMinutes = $state<number | null>(null);
   let game = $state<GameEntry | null>(null);
   let progress = $state(0);
@@ -151,6 +154,14 @@
     const base = baseFn
       ? { kicker: baseFn.kicker, sub: baseFn.sub(game), tone: baseFn.tone }
       : { kicker: phase.toUpperCase(), sub: '', tone: 'accent' };
+    if (phase === 'done' && noSaves) {
+      // Nothing was captured — "ALL SAVED" here would be a flat lie.
+      return {
+        kicker: 'NO SAVES FOUND',
+        sub: 'Spool found no save data for this game — nothing was backed up',
+        tone: 'warn',
+      };
+    }
     if (phase === 'error') {
       return {
         ...base,
@@ -221,7 +232,9 @@
 
   function exitSteps(): Step[] {
     const isErr = phase === 'error';
-    const backupState = isErr ? 'error' : phase === 'backing-up' ? 'active' : 'done';
+    // No save data means the backup step never wrote anything — mark it 'warn'
+    // rather than 'done' so the exit flow doesn't show a completed backup.
+    const backupState = isErr ? 'error' : noSaves ? 'warn' : phase === 'backing-up' ? 'active' : 'done';
     
     const offline = net === 'offline';
     // During the dedicated upload phase the cloud step is genuinely in flight —
@@ -229,6 +242,7 @@
     // so the user sees the upload actually happening rather than a stale warn.
     const syncState = !cloudUsed ? 'skipped'
       : isErr ? 'pending'
+      : noSaves ? 'skipped'
       : phase === 'uploading' ? 'active'
       : offline ? 'warn'
       : phase === 'backing-up' ? 'pending'
@@ -237,10 +251,14 @@
 
     const backupDetail = isErr
       ? 'ludusavi error · last good revision kept, nothing lost'
-      : 'New revision written to this device';
+      : noSaves
+        ? 'No save data found · this game isn\'t tracked, or its save folder is empty'
+        : 'New revision written to this device';
     const syncDetail = !cloudUsed
       ? 'No cloud remote configured'
-      : syncState === 'warn'
+      : noSaves
+        ? 'Nothing to upload'
+        : syncState === 'warn'
         ? 'Couldn\'t reach your cloud remote · 1 revision queued · retries automatically'
         : phase === 'uploading' ? 'Uploading this revision to your cloud remote…'
         : phase === 'done' ? 'Mirrors to your cloud remote · all devices in step'
@@ -308,6 +326,7 @@
     message = ev.message ?? null;
     cloudUsed = ev.cloud_used;
     cloudUploadFailed = ev.cloud_upload_failed;
+    noSaves = ev.no_saves;
     if (ev.session_minutes != null) sessionMinutes = ev.session_minutes;
 
     // Hydrate game entry on first event if not yet loaded.
@@ -549,12 +568,14 @@
       {@const offline = net === 'offline'}
       {@const uploading = phase === 'uploading'}
       {@const cloudTone = uploading ? '#7ec6ff'
+        : noSaves ? 'rgba(244,244,245,0.36)'
         : offline ? '#f4b66c'
         : phase === 'error' ? '#ff7a7a'
         : phase === 'done' ? '#7ee2a4'
         : phase === 'backing-up' || phase === 'restoring' ? '#7ec6ff'
         : 'rgba(244,244,245,0.36)'}
       {@const cloudLabel = uploading ? 'CLOUD SYNC · UPLOADING'
+        : noSaves ? 'CLOUD SYNC · NOTHING TO SYNC'
         : offline ? 'CLOUD SYNC · OFFLINE'
         : phase === 'done' ? 'CLOUD SYNC · UP TO DATE'
         : phase === 'backing-up' ? 'CLOUD SYNC · WAITING'
@@ -563,6 +584,8 @@
         : 'CLOUD SYNC'}
       {@const cloudNote = uploading
         ? 'Mirroring this revision to your cloud remote — your other devices pick it up next launch.'
+        : noSaves
+        ? 'No save data was captured, so there was nothing to send to your cloud remote.'
         : offline
         ? (flow === 'exit'
             ? 'Backup saved on this device. Spool will push it to your cloud remote the moment you reconnect.'

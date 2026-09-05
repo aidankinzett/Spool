@@ -600,6 +600,13 @@ export type RunPhaseEvent = {
   session_minutes: number | null;
   /** True when local backup succeeded but cloud upload failed. Only ever true on the done phase. */
   cloud_upload_failed: boolean;
+  /**
+   * True when the session backed up nothing — ludusavi doesn't recognise the game
+   * and it has no custom save location, or the scan matched no save files on disk.
+   * Only ever true on the done phase. No revision exists and nothing reached the
+   * cloud, so the UI must not report a backup.
+   */
+  no_saves: boolean;
 };
 
 /**
