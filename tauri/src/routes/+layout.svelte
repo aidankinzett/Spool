@@ -11,6 +11,7 @@
   import { uiMode } from '$lib/uiMode.svelte';
   import { startGamepadNav } from '$lib/gamepad';
   import { startVirtualKeyboard } from '$lib/virtualKeyboard';
+  import { startExternalLinks } from '$lib/externalLinks';
   import { platform } from '@tauri-apps/plugin-os';
 
   let { children } = $props();
@@ -39,6 +40,11 @@
     // and self-disabling when the Tauri event bridge isn't present.
     startGamepadNav();
 
+    // Send `target="_blank"` / off-origin links to the OS browser. WebKitGTK
+    // drops new-window navigations, so without this they do nothing on Linux
+    // (issue #493). Every window runs this layout, so every window is covered.
+    const stopExternalLinks = startExternalLinks();
+
     // Pop KDE's on-screen keyboard when a text field is focused — WebKitGTK
     // won't do it itself. Linux-only; the backend commands no-op off KDE, but
     // gate here too so other platforms fire no IPC on every focus change.
@@ -64,6 +70,7 @@
     return () => {
       unlisten?.();
       stopVk?.();
+      stopExternalLinks();
     };
   });
 </script>
