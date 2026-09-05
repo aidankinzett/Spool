@@ -12,6 +12,7 @@
 // handling in-app navigation and fragment links.
 
 import { api } from './api';
+import { toasts } from './toasts.svelte';
 
 /**
  * Decide whether a click on `anchor` should leave the app.
@@ -50,8 +51,11 @@ export function externalUrlFor(
  */
 export function startExternalLinks(): () => void {
   const onClick = (e: MouseEvent) => {
-    // Something closer to the link already handled it (a component that calls
-    // preventDefault, a drag, …) — don't open a second time.
+    // Only an earlier capture-phase listener can have set this: we run on
+    // document capture, ahead of every target- and bubble-phase handler, so a
+    // component's own preventDefault() has not happened yet when this is read.
+    // A component that wants to keep an external anchor to itself therefore has
+    // to claim it in capture too — bubbling is too late.
     if (e.defaultPrevented) return;
     // Left button only. Middle-click arrives as `auxclick`, and right-click
     // opens the context menu; neither reaches this listener.
@@ -69,9 +73,20 @@ export function startExternalLinks(): () => void {
     // Modifier-clicks are handled the same way: there are no tabs or extra
     // windows in this app, so ctrl/shift/alt-click still means "open the link",
     // and the browser it lands in decides where to put it.
+    // From here the navigation is ours: the webview won't act on this click, so
+    // a failure has to be reported or the link is indistinguishable from the
+    // dead one this replaced (#493). `openUrl` rejects when the opener binary is
+    // missing or refuses the URL — likeliest on a Deck in Game Mode, where there
+    // is no browser to land in.
     e.preventDefault();
     api.openUrl(url).catch((err) => {
       console.error('[externalLinks] failed to open', url, err);
+      toasts.show({
+        kind: 'bad',
+        label: 'LINK',
+        title: "Couldn't open link",
+        sub: `${url} · ${String(err)}`,
+      });
     });
   };
 
