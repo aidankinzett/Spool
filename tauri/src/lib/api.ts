@@ -170,6 +170,11 @@ export const api = {
   // the opener plugin) so it can strip the AppImage environment before
   // spawning the host file manager on Linux — see system_open.rs / issue #95.
   openPath: (path: string): Promise<void> => invoke('open_path', { path }),
+  // Open an external link in the default browser. WebKitGTK has no handler for
+  // a link that asks for a new window, so `<a target="_blank">` clicks are
+  // routed here instead (issue #493); the backend accepts http/https only and
+  // rejects anything else. See externalLinks.ts for the click interception.
+  openUrl: (url: string): Promise<void> => invoke('open_url', { url }),
 
   // Armoury Crate launcher
   generateArmouryLauncher: (gameId: string): Promise<string> =>

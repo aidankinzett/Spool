@@ -61,6 +61,9 @@ walkdir = "2"
 tokio-util = { version = "0.7", features = ["io"] }
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 urlencoding = "2"
+# URL parsing for the external-link opener, so `open_url` checks a real parsed
+# scheme/host instead of matching on the string (see system_open.rs).
+url = "2"
 blake3 = "1"
 base64 = "0.23"
 filetime = "0.2"

@@ -373,8 +373,9 @@ pub fn run() {
             // decky plugin installer (Linux / SteamOS)
             decky_install::decky_plugin_status,
             decky_install::install_decky_plugin,
-            // open a path with the OS default handler (AppImage-safe)
+            // open a path / external URL with the OS default handler (AppImage-safe)
             system_open::open_path,
+            system_open::open_url,
             // gamepad presence (drives the "switch to Gamepad layout?" prompt)
             gamepad::any_gamepad_connected,
         ])

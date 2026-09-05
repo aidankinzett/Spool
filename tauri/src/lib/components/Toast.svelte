@@ -17,12 +17,11 @@
   let { toast }: { toast: Toast } = $props();
 
   // Opens a prefilled GitHub issue in the default browser, then dismisses.
-  // `openPath` routes through the OS handler, which opens URLs too.
   async function openReport() {
     if (!toast.report) return;
     try {
       const url = await buildIssueUrl(toast.report);
-      await api.openPath(url);
+      await api.openUrl(url);
     } catch (e) {
       console.error('[toast] failed to open issue report:', e);
     }
