@@ -651,11 +651,10 @@ impl LudusaviClient {
                 return Ok(Arc::clone(m));
             }
         }
-        // Slow path: load the manifest from ludusavi WITHOUT --config so that
-        // Spool's customGames entries (which replace manifest entries with a
-        // reduced path set for the active overrides) don't leak into the raw
-        // manifest lookup. The global manifest.yaml is found relative to the
-        // executable regardless of the config location.
+        // Slow path: read the manifest through a scratch config dir, so Spool's
+        // customGames entries (which replace or extend manifest entries for the
+        // games the user has touched) can't leak into the raw lookup — see
+        // `load_manifest`.
         let mut guard = self.manifest.write().await;
         // Double-checked locking: another caller may have populated the cache
         // between us dropping the read guard and acquiring the write guard, so
@@ -1025,37 +1024,37 @@ pub async fn validate_config(ludusavi_exe: &Path, config_dir: &Path) -> Result<(
     }
 }
 
+/// Load ludusavi's manifest, with none of Spool's own `customGames:` merged in.
+///
+/// `manifest show` prints "the manifest, including any custom entries" and has
+/// no flag to suppress them, and they can't be filtered out of the result by
+/// name either: an override, or a custom save on a manifest-covered game, is
+/// written under that game's own name, so dropping it would delete the real
+/// entry along with the projection (#513).
+///
+/// So the read runs against a scratch config dir holding nothing but
+/// `customGames: []` and a link to the real manifest file. Nothing can leak,
+/// and the entry a caller gets back is the one ludusavi actually ships — which
+/// `custom_saves` depends on, since it re-derives each override from it.
+///
+/// The dir it's pointed at is the whole point: ludusavi resolves manifest.yaml
+/// relative to its config dir, not its executable. Reading with no `--config`
+/// at all sent it to the user's default dir, where Spool keeps no manifest, so
+/// it printed `{}` and exited 0 — which parsed cleanly into an empty map and
+/// silently cost every candidate its save paths, store ids and install dirs
+/// (#508).
 async fn load_manifest(ludusavi_exe: &Path) -> AppResult<HashMap<String, ManifestEntry>> {
-    // `manifest show` (no `--no-manifest-update`) fetches/refreshes the manifest
-    // over the network. On a flaky network that download can hang indefinitely,
-    // freezing the first Add-Game search's spinner forever. Bound it with the
-    // same blocking-spawn + RUN_API_TIMEOUT + kill-on-expiry as run_api, so it
-    // fails cleanly instead. Built inline rather than via blocking_command.
-    //
-    // `--config` is required: ludusavi resolves manifest.yaml relative to its
-    // config directory, not its executable, and Spool keeps the manifest in the
-    // config dir it owns. Without the flag ludusavi looks in the user's default
-    // config dir, finds no manifest, and prints `{}` with exit 0 — which parses
-    // cleanly into an empty map (every field of ManifestEntry defaults), so every
-    // lookup silently missed and Add Game lost save paths, store ids and install
-    // dirs for every candidate (#508). The cost of passing it is that
-    // `manifest show` merges the config's `customGames:` in; those are stripped
-    // below so the raw manifest stays raw.
-    let mut cmd = std::process::Command::new(ludusavi_exe);
-    cmd.args([
-        "--config",
-        &crate::paths::ludusavi_config_dir().to_string_lossy(),
-        "manifest",
-        "show",
-        "--api",
-    ]);
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt as _;
-        cmd.process_group(0);
-    }
-    crate::process::strip_appimage_env_blocking(&mut cmd);
-    crate::capture_stdio!(cmd);
+    // The read below passes --no-manifest-update, so this is the only thing
+    // keeping the data current. Best-effort: a device that can't reach the
+    // network should still get the manifest it already has.
+    refresh_manifest(ludusavi_exe).await;
+
+    let raw_dir = prepare_raw_manifest_dir()?;
+    // A cold manifest fetch can hang on a flaky connection, freezing the first
+    // Add-Game search's spinner. run_blocking bounds it with RUN_API_TIMEOUT and
+    // kills the child on expiry.
+    let mut cmd = blocking_command(ludusavi_exe, &raw_dir);
+    cmd.args(["--no-manifest-update", "manifest", "show", "--api"]);
     let output = run_blocking(cmd, "manifest").await?;
     if !output.status.success() {
         return Err(AppError::Other(format!(
@@ -1065,34 +1064,73 @@ async fn load_manifest(ludusavi_exe: &Path) -> AppResult<HashMap<String, Manifes
     }
     let stdout = String::from_utf8(output.stdout)
         .map_err(|e| AppError::Other(format!("ludusavi manifest output not utf-8: {e}")))?;
-    let mut manifest: HashMap<String, ManifestEntry> =
+    let manifest: HashMap<String, ManifestEntry> =
         crate::util::parse_json(stdout.as_bytes(), "ludusavi manifest")?;
-    strip_custom_games(&mut manifest, &crate::ludusavi_config::custom_game_names());
 
     // An empty manifest is the shape #508 shipped as: a clean parse, a zero exit
-    // and no data. It's never legitimate — ludusavi's manifest has tens of
-    // thousands of games — so say so rather than caching the emptiness and
-    // degrading every lookup in silence.
+    // and no data, then cached for the life of the process so every lookup after
+    // it silently missed. ludusavi ships tens of thousands of games, so treat
+    // empty as the failure it is — the caller surfaces it, and nothing caches it,
+    // so the next search tries again.
     if manifest.is_empty() {
-        tracing::warn!(
-            "ludusavi returned an empty manifest — Add Game will have no save paths, store ids or install dirs"
-        );
-    } else {
-        tracing::info!(games = manifest.len(), "ludusavi manifest loaded");
+        return Err(AppError::Other(
+            "ludusavi returned an empty manifest — game identification is unavailable".into(),
+        ));
     }
+    tracing::info!(games = manifest.len(), "ludusavi manifest loaded");
     Ok(manifest)
 }
 
-/// Remove Spool's own `customGames:` projections from a parsed manifest.
-///
-/// `manifest show` merges the config's custom games into its output, but callers
-/// want the raw manifest: a custom game is a *reduced* stand-in Spool generated
-/// from a user's picked folder, so letting it shadow the real entry would hand
-/// Add Game a narrower path set than ludusavi actually knows.
-fn strip_custom_games(manifest: &mut HashMap<String, ManifestEntry>, custom: &[String]) {
-    for name in custom {
-        manifest.remove(name);
+/// Bring the real manifest up to date, in the config dir Spool owns. Failures
+/// are logged and swallowed: [`load_manifest`] can still read what's already on
+/// disk, and an offline device would rather search a stale manifest than none.
+async fn refresh_manifest(ludusavi_exe: &Path) {
+    let mut cmd = blocking_command(ludusavi_exe, &crate::paths::ludusavi_config_dir());
+    cmd.args(["manifest", "update"]);
+    match run_blocking(cmd, "manifest update").await {
+        Ok(out) if out.status.success() => {}
+        Ok(out) => tracing::warn!(
+            exit = out.status.code().unwrap_or(-1),
+            "ludusavi manifest update failed — reading whatever manifest is on disk"
+        ),
+        Err(e) => tracing::warn!(error = %e, "ludusavi manifest update failed"),
     }
+}
+
+/// Build the scratch config dir [`load_manifest`] reads through, and return it.
+///
+/// It holds a `config.yaml` with an empty `customGames:` and the real
+/// `manifest.yaml`. The manifest is re-linked on every cold load so it can't go
+/// stale behind an update, and is attempted as a hard link first — both dirs
+/// live under the app data dir, so they're normally on one filesystem and the
+/// link costs no space. A filesystem that refuses links falls back to a copy.
+fn prepare_raw_manifest_dir() -> AppResult<std::path::PathBuf> {
+    let dir = crate::paths::ludusavi_raw_config_dir();
+    let real = crate::paths::ludusavi_config_dir().join("manifest.yaml");
+    prepare_raw_manifest_dir_at(&dir, &real)?;
+    Ok(dir)
+}
+
+/// Path-taking half of [`prepare_raw_manifest_dir`], so the layout it produces
+/// can be checked without writing into the real app data dir.
+fn prepare_raw_manifest_dir_at(dir: &Path, real_manifest: &Path) -> AppResult<()> {
+    std::fs::create_dir_all(dir)?;
+    std::fs::write(
+        dir.join("config.yaml"),
+        "manifest:\n  enable: true\ncustomGames: []\n",
+    )?;
+
+    // Nothing is written when the real manifest is absent (a fresh install
+    // whose first update hasn't landed): ludusavi fetches one into this dir on
+    // its own, and an empty result is reported rather than cached.
+    let scratch = dir.join("manifest.yaml");
+    if real_manifest.exists() {
+        let _ = std::fs::remove_file(&scratch);
+        if std::fs::hard_link(real_manifest, &scratch).is_err() {
+            std::fs::copy(real_manifest, &scratch)?;
+        }
+    }
+    Ok(())
 }
 
 // ── Enrichment + helpers ────────────────────────────────────────────────────
@@ -1655,35 +1693,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn strip_custom_games_removes_only_spools_projections() {
-        // `manifest show --api` merges the config's customGames into its output.
-        // Those are Spool's own reduced stand-ins, so a custom entry must not
-        // shadow the real manifest entry the search wants (#508).
-        let mut manifest: HashMap<String, ManifestEntry> = HashMap::new();
-        manifest.insert("Hades".to_string(), ManifestEntry::default());
-        manifest.insert("My Weird Game".to_string(), ManifestEntry::default());
-
-        strip_custom_games(&mut manifest, &["My Weird Game".to_string()]);
-
-        assert!(manifest.contains_key("Hades"));
-        assert!(!manifest.contains_key("My Weird Game"));
-    }
-
-    #[test]
-    fn strip_custom_games_ignores_names_not_in_the_manifest() {
-        // A custom game for a title ludusavi doesn't know is the common case —
-        // that's why it's a custom game — so the removal must be a no-op, not
-        // an assumption that every name is present.
-        let mut manifest: HashMap<String, ManifestEntry> = HashMap::new();
-        manifest.insert("Hades".to_string(), ManifestEntry::default());
-
-        strip_custom_games(&mut manifest, &["Never Heard Of It".to_string()]);
-
-        assert_eq!(manifest.len(), 1);
-        assert!(manifest.contains_key("Hades"));
-    }
-
-    #[test]
     fn enrich_without_a_manifest_entry_loses_every_derived_field() {
         // Documents what an empty manifest cost: #508's `{}` meant this branch
         // ran for every candidate, so the missing save path the issue reported
@@ -1694,6 +1703,56 @@ mod tests {
         assert_eq!(c.steam_id, None);
         assert_eq!(c.manifest_install_dir, None);
         assert!(c.manifest_install_dirs.is_empty());
+    }
+
+    #[test]
+    fn raw_manifest_dir_isolates_the_manifest_from_custom_games() {
+        // The scratch config exists to make leaking impossible: `manifest show`
+        // merges customGames, and they can't be filtered back out by name
+        // without deleting real entries (#513).
+        let tmp = tempfile::tempdir().unwrap();
+        let real = tmp.path().join("manifest.yaml");
+        std::fs::write(&real, "Hades:\n  files: {}\n").unwrap();
+        let raw = tmp.path().join("raw");
+
+        prepare_raw_manifest_dir_at(&raw, &real).unwrap();
+
+        let cfg = std::fs::read_to_string(raw.join("config.yaml")).unwrap();
+        assert!(cfg.contains("customGames: []"));
+        assert_eq!(
+            std::fs::read_to_string(raw.join("manifest.yaml")).unwrap(),
+            "Hades:\n  files: {}\n"
+        );
+    }
+
+    #[test]
+    fn raw_manifest_dir_refreshes_a_stale_copy() {
+        // Re-linked on every cold load, so an updated manifest can't be shadowed
+        // by whatever the previous run left behind.
+        let tmp = tempfile::tempdir().unwrap();
+        let real = tmp.path().join("manifest.yaml");
+        let raw = tmp.path().join("raw");
+        std::fs::create_dir_all(&raw).unwrap();
+        std::fs::write(raw.join("manifest.yaml"), "stale").unwrap();
+        std::fs::write(&real, "fresh").unwrap();
+
+        prepare_raw_manifest_dir_at(&raw, &real).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(raw.join("manifest.yaml")).unwrap(),
+            "fresh"
+        );
+    }
+
+    #[test]
+    fn raw_manifest_dir_tolerates_a_missing_manifest() {
+        let tmp = tempfile::tempdir().unwrap();
+        let raw = tmp.path().join("raw");
+
+        prepare_raw_manifest_dir_at(&raw, &tmp.path().join("nope.yaml")).unwrap();
+
+        assert!(raw.join("config.yaml").exists());
+        assert!(!raw.join("manifest.yaml").exists());
     }
 
     fn file_entry(tags: &[&str], when_os: &[Option<&str>]) -> ManifestFileEntry {

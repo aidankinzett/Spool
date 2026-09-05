@@ -286,6 +286,13 @@ pub fn ludusavi_config_dir() -> PathBuf {
     app_data_dir().join("ludusavi")
 }
 
+/// Scratch config dir used only for reading the raw manifest — see
+/// `ludusavi::load_manifest`. Deliberately separate from the owned config so
+/// its `customGames:` block stays empty.
+pub fn ludusavi_raw_config_dir() -> PathBuf {
+    app_data_dir().join("ludusavi-raw")
+}
+
 #[allow(dead_code)]
 pub fn ludusavi_config_file() -> PathBuf {
     ludusavi_config_dir().join("config.yaml")

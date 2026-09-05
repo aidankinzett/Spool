@@ -392,34 +392,6 @@ pub fn set_custom_games(games: &[CustomGameDef]) -> AppResult<()> {
     write_value(&v)
 }
 
-/// The names currently in the owned config's `customGames:` block.
-///
-/// `ludusavi manifest show` merges these into its output alongside the real
-/// manifest, so the manifest cache subtracts them to keep the raw lookup free of
-/// Spool's own projections (see `ludusavi::load_manifest`). Returns empty when
-/// the config or the block is absent, and on a parse error — a failed read here
-/// must not fail the search, it just means nothing gets subtracted.
-pub fn custom_game_names() -> Vec<String> {
-    let Ok(v) = read_value_or_default() else {
-        return Vec::new();
-    };
-    custom_game_names_from(&v)
-}
-
-/// Pure half of [`custom_game_names`], so the extraction is testable without
-/// touching the real config file.
-fn custom_game_names_from(root: &Value) -> Vec<String> {
-    root.get("customGames")
-        .and_then(Value::as_sequence)
-        .map(|seq| {
-            seq.iter()
-                .filter_map(|g| g.get("name").and_then(Value::as_str))
-                .map(str::to_string)
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
 /// Pure value-construction half of [`set_custom_games`] — builds the YAML
 /// sequence so it can be unit-tested without touching the real config file.
 /// `registry` is omitted when empty so the common (files-only) entry stays
@@ -1016,28 +988,6 @@ mod tests {
         assert!(out.contains("--retries=5"));
         assert!(out.contains("--timeout 45s"));
         assert!(out.contains("--low-level-retries 1"));
-    }
-
-    #[test]
-    fn custom_game_names_reads_the_block() {
-        let v: Value = serde_yaml::from_str(
-            "customGames:\n  - name: My Weird Game\n    files:\n      - /tmp/x\n  - name: Another\n    files: []\n",
-        )
-        .unwrap();
-        assert_eq!(
-            custom_game_names_from(&v),
-            vec!["My Weird Game".to_string(), "Another".to_string()]
-        );
-    }
-
-    #[test]
-    fn custom_game_names_is_empty_when_the_block_is_absent_or_empty() {
-        // Nothing to subtract is the normal state; it must not look like an error.
-        let none: Value = serde_yaml::from_str("backup:\n  path: /tmp\n").unwrap();
-        assert!(custom_game_names_from(&none).is_empty());
-
-        let empty: Value = serde_yaml::from_str("customGames: []\n").unwrap();
-        assert!(custom_game_names_from(&empty).is_empty());
     }
 
     #[test]
