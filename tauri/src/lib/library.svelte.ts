@@ -983,7 +983,7 @@ export function createLibrary() {
       .catch((e) => console.error('[collections] listener failed:', e));
 
     listen<RunPhaseEvent>('run:phase', (event) => {
-      const { game_id, phase, message, cloud_used } = event.payload;
+      const { game_id, phase, message, cloud_used, no_saves } = event.payload;
       if (phase === 'done' || phase === 'error') {
         runningId = null;
         runningPhase = null;
@@ -1027,6 +1027,18 @@ export function createLibrary() {
             label: 'LUDUSAVI',
             title: 'Cloud upload failed',
             sub: game ? `${game.game_name} · ${message}` : message,
+            catalog: game ? fmtCatalog(game.catalog_number) : undefined,
+          });
+        } else if (no_saves) {
+          // Nothing was captured — saying "backed up" here would tell the user
+          // their saves are safe when no revision was written at all.
+          toasts.show({
+            kind: 'warn',
+            label: 'LUDUSAVI',
+            title: 'No saves backed up',
+            sub: game
+              ? `${game.game_name} · no save data found for this game`
+              : 'No save data found for this game',
             catalog: game ? fmtCatalog(game.catalog_number) : undefined,
           });
         } else if (!cloud_used) {

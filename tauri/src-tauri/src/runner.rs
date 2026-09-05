@@ -91,8 +91,28 @@ struct RunPhaseEvent {
     /// Only ever true on the `done` phase. The save is safe on disk —
     /// the UI should show the cloud leg as amber, not red.
     cloud_upload_failed: bool,
+    /// True when the session backed up nothing: ludusavi doesn't recognise the
+    /// game and it has no custom save location, or the scan matched no files on
+    /// disk. Only ever true on the `done` phase. The UI must not claim a backup
+    /// happened — there is no revision and nothing reached the cloud.
+    no_saves: bool,
 }
 
+/// How a session's saves ended up. Drives the terminal `done` phase's wire
+/// flags and its native toast, so the three outcomes can't drift apart.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DoneOutcome {
+    /// A revision was written locally, and mirrored to the cloud when one is
+    /// configured.
+    Saved,
+    /// The local revision was written but the cloud upload didn't land.
+    UploadFailed,
+    /// Nothing was backed up — there was no save data to capture.
+    NoSaveData,
+}
+
+/// Emit a non-terminal phase. The `done`-only flags are always false here;
+/// [`emit_done`] is the only path that sets them.
 fn emit_phase(
     app: &AppHandle,
     game_id: &str,
@@ -100,7 +120,6 @@ fn emit_phase(
     message: Option<&str>,
     cloud_used: bool,
     session_minutes: Option<i32>,
-    cloud_upload_failed: bool,
 ) {
     let payload = RunPhaseEvent {
         game_id: game_id.to_string(),
@@ -108,7 +127,8 @@ fn emit_phase(
         message: message.map(String::from),
         cloud_used,
         session_minutes,
-        cloud_upload_failed,
+        cloud_upload_failed: false,
+        no_saves: false,
     };
     // Log every transition so a Game-Mode launch is diagnosable from
     // debug.log alone — confirms the workflow advanced past "restoring"
@@ -117,6 +137,53 @@ fn emit_phase(
     if let Err(e) = app.emit("run:phase", &payload) {
         tracing::warn!(phase = phase, error = %e, "failed to emit run:phase");
     }
+}
+
+/// Emit the terminal `done` phase plus its native toast. Both are derived from
+/// one [`DoneOutcome`] so the in-app toast, the splash and the OS notification
+/// can't disagree about whether anything was actually backed up.
+fn emit_done(ctx: &WorkflowCtx<'_>, outcome: DoneOutcome, cloud_used: bool, session_minutes: i32) {
+    let (message, toast_title, toast_body) = match outcome {
+        DoneOutcome::Saved => (
+            None,
+            "Saves backed up",
+            format!("{} — session complete", ctx.game_name),
+        ),
+        DoneOutcome::UploadFailed => (
+            Some(
+                "Saves backed up locally, but cloud upload failed. Check your cloud save settings.",
+            ),
+            "Cloud upload failed",
+            format!(
+                "{} — saves are safe locally but didn't reach the cloud",
+                ctx.game_name
+            ),
+        ),
+        DoneOutcome::NoSaveData => (
+            None,
+            "Session complete",
+            format!("{} — no save data tracked", ctx.game_name),
+        ),
+    };
+    let payload = RunPhaseEvent {
+        game_id: ctx.game_id.to_string(),
+        phase: "done".to_string(),
+        message: message.map(String::from),
+        cloud_used,
+        session_minutes: Some(session_minutes),
+        cloud_upload_failed: matches!(outcome, DoneOutcome::UploadFailed),
+        no_saves: matches!(outcome, DoneOutcome::NoSaveData),
+    };
+    tracing::info!(
+        game_id = ctx.game_id,
+        phase = "done",
+        ?message,
+        "run:phase"
+    );
+    if let Err(e) = ctx.app.emit("run:phase", &payload) {
+        tracing::warn!(phase = "done", error = %e, "failed to emit run:phase");
+    }
+    os_toast_if_hidden(ctx.app, toast_title, &toast_body);
 }
 
 /// Surfaces an informational note about an automatic cloud-sync resolution
@@ -1663,7 +1730,6 @@ pub async fn launch_game_inner_steal(app: &AppHandle, game_id: &str, steal: bool
             Some(&e.to_string()),
             false,
             None,
-            false,
         );
         // Surface the failure via the OS notification centre too —
         // most workflow errors happen while the user is mid-launch
@@ -2037,14 +2103,13 @@ async fn run_workflow(
         Some(prep_msg),
         cloud_configured,
         None,
-        false,
     );
 
     preflight(&ctx, &exe_pathbuf, steal_lock).await?;
     let no_saves = phase_restore(&ctx).await?;
     let timing = phase_launch(&ctx, &exe_pathbuf).await?;
-    let cloud_upload_failed = phase_backup(&ctx, no_saves, &timing).await?;
-    finish(&ctx, no_saves, cloud_upload_failed, timing.minutes);
+    let backup = phase_backup(&ctx, no_saves, &timing).await?;
+    finish(&ctx, &backup, timing.minutes);
 
     tracing::info!(game_name, "run workflow complete");
     Ok(())
@@ -2150,7 +2215,6 @@ async fn phase_restore(ctx: &WorkflowCtx<'_>) -> AppResult<bool> {
                         Some("Waiting for a backup to finish…"),
                         cloud_configured,
                         None,
-                        false,
                     );
                     os_toast_if_hidden(
                         ctx.app,
@@ -2177,7 +2241,7 @@ async fn phase_restore(ctx: &WorkflowCtx<'_>) -> AppResult<bool> {
         } else {
             "Restoring local saves…"
         };
-        emit_phase(ctx.app, ctx.game_id, "restoring", Some(restore_msg), cloud_configured, None, false);
+        emit_phase(ctx.app, ctx.game_id, "restoring", Some(restore_msg), cloud_configured, None);
         os_toast_if_hidden(
             ctx.app,
             "Restoring saves",
@@ -2384,7 +2448,6 @@ async fn phase_launch(ctx: &WorkflowCtx<'_>, exe_pathbuf: &Path) -> AppResult<Se
         Some("Launching game…"),
         cloud_configured,
         None,
-        false,
     );
     emit_phase(
         ctx.app,
@@ -2393,7 +2456,6 @@ async fn phase_launch(ctx: &WorkflowCtx<'_>, exe_pathbuf: &Path) -> AppResult<Se
         None,
         cloud_configured,
         None,
-        false,
     );
     if ctx.launch.use_proton {
         tracing::info!(
@@ -2744,16 +2806,45 @@ pub async fn record_session_headless(
     Some(minutes)
 }
 
+/// What the post-session backup established about this session's saves.
+struct BackupResult {
+    /// The local revision was written but the cloud upload didn't land.
+    cloud_upload_failed: bool,
+    /// Nothing was captured: ludusavi never recognised the game (and it has no
+    /// custom save location), or it did but the scan matched no save files on
+    /// this device. Either way no revision exists and nothing reached the
+    /// cloud, so the terminal phase must not report a backup.
+    no_saves: bool,
+}
+
+impl BackupResult {
+    /// Which terminal outcome the `done` phase should report.
+    ///
+    /// "Nothing was captured" outranks "the upload failed": with no revision
+    /// there was never anything to upload, so reporting a cloud failure would
+    /// point the user at their remote when the real gap is that this game has
+    /// no tracked save location.
+    fn outcome(&self) -> DoneOutcome {
+        if self.no_saves {
+            DoneOutcome::NoSaveData
+        } else if self.cloud_upload_failed {
+            DoneOutcome::UploadFailed
+        } else {
+            DoneOutcome::Saved
+        }
+    }
+}
+
 /// Phase 3: back up saves after the session (skipped when ludusavi didn't
-/// recognise the game). Returns whether the local backup succeeded but the
-/// cloud upload (`--cloud-sync`) failed — the workflow still finishes (the save
-/// is safe on disk) but the caller warns the user rather than claiming a clean
-/// sync.
+/// recognise the game). The workflow always finishes — the live save is on
+/// local disk either way — so the result reports what actually happened rather
+/// than failing: whether the cloud upload (`--cloud-sync`) fell short of a
+/// written revision, and whether there was any save data to capture at all.
 async fn phase_backup(
     ctx: &WorkflowCtx<'_>,
     no_saves: bool,
     timing: &SessionTiming,
-) -> AppResult<bool> {
+) -> AppResult<BackupResult> {
     let session_minutes = timing.minutes;
     let mut cloud_upload_failed = false;
     // Re-derive the offline split NOW rather than trusting the launch-time
@@ -2770,7 +2861,6 @@ async fn phase_backup(
             Some("Backing up saves…"),
             cloud_configured,
             Some(session_minutes),
-            false,
         );
         os_toast_if_hidden(
             ctx.app,
@@ -2808,7 +2898,10 @@ async fn phase_backup(
                 {
                     let _ = ctx.app.emit("library:changed", &ctx.game_id.to_string());
                 }
-                return Ok(true);
+                return Ok(BackupResult {
+                    cloud_upload_failed: true,
+                    no_saves,
+                });
             }
         };
 
@@ -2881,6 +2974,33 @@ async fn phase_backup(
                         )
                         .await?;
                         let _ = ctx.app.emit("library:changed", &ctx.game_id.to_string());
+                    } else {
+                        // ludusavi recognised the game but its scan matched no
+                        // save files here — a custom save location pointing at
+                        // an empty/wrong folder, or a game that writes its saves
+                        // somewhere the manifest entry doesn't cover.
+                        //
+                        // Stop before the upload and the cross-device writes
+                        // below. No revision exists, so `complete_session_backup`
+                        // would stamp this device as the newest backer for this
+                        // game and every peer's `fold_blobs` would then badge the
+                        // game "cloud-newer" pointing at us — hiding whichever
+                        // device really does hold the latest saves. The badge
+                        // write would likewise flip us to "synced" over a
+                        // legitimate "cloud-newer".
+                        //
+                        // Drop the session marker for the reason the unknown-game
+                        // branch below does: no backup is coming to clear it, and
+                        // peers stay blocked from launching while it's there.
+                        tracing::info!(
+                            game_name = ctx.game_name,
+                            "post-session backup captured no save files"
+                        );
+                        rclone::delete_session_marker(ctx.app, ctx.game_name).await;
+                        return Ok(BackupResult {
+                            cloud_upload_failed: false,
+                            no_saves: true,
+                        });
                     }
                 }
 
@@ -2945,7 +3065,6 @@ async fn phase_backup(
                         Some("Uploading saves to your cloud remote…"),
                         true,
                         Some(session_minutes),
-                        false,
                     );
                     tracing::info!(game_name = ctx.game_name, "ludusavi cloud upload");
                     match ctx
@@ -3040,14 +3159,18 @@ async fn phase_backup(
         // pushed at record time in phase_launch.)
         rclone::delete_session_marker(ctx.app, ctx.game_name).await;
     }
-    Ok(cloud_upload_failed)
+    Ok(BackupResult {
+        cloud_upload_failed,
+        no_saves,
+    })
 }
 
 /// Completion: flag the Game-Mode session record as backed up and emit the
-/// terminal `done` phase + native toast. When the cloud upload failed the
-/// `done` phase carries a warning so the frontend shows a sticky toast instead
-/// of a clean "synced".
-fn finish(ctx: &WorkflowCtx<'_>, no_saves: bool, cloud_upload_failed: bool, session_minutes: i32) {
+/// terminal `done` phase + native toast. The phase carries the backup's real
+/// outcome (see [`BackupResult::outcome`]) so the frontend can show a warning
+/// rather than a clean "synced" when the upload fell short — or when there was
+/// no save data to back up in the first place.
+fn finish(ctx: &WorkflowCtx<'_>, backup: &BackupResult, session_minutes: i32) {
     let (cloud_configured, _) = ctx.cloud_split();
     // Game Mode: reconcile the active-session record for THIS game. On full
     // success (saves reached the cloud, or no cloud configured) the record has
@@ -3059,7 +3182,7 @@ fn finish(ctx: &WorkflowCtx<'_>, no_saves: bool, cloud_upload_failed: bool, sess
     // since this one can't be clobbered (#273). No-op off Game Mode (no record).
     if let Some(rec) = crate::session::read() {
         if rec.game == ctx.game_name {
-            if cloud_upload_failed {
+            if backup.cloud_upload_failed {
                 crate::session::mark_backed_up_if(&rec.session_id);
             } else {
                 crate::session::clear_if(&rec.session_id);
@@ -3067,65 +3190,61 @@ fn finish(ctx: &WorkflowCtx<'_>, no_saves: bool, cloud_upload_failed: bool, sess
         }
     }
 
-    // Final completion ping — the most useful native toast since the
-    // user may have closed the game and walked away from the PC.
-    if no_saves {
-        // Ludusavi doesn't track saves for this game — don't claim a backup happened.
-        emit_phase(
-            ctx.app,
-            ctx.game_id,
-            "done",
-            None,
-            cloud_configured,
-            Some(session_minutes),
-            false,
-        );
-        os_toast_if_hidden(
-            ctx.app,
-            "Session complete",
-            &format!("{} — no save data tracked", ctx.game_name),
-        );
-    } else if cloud_upload_failed {
-        let warning =
-            "Saves backed up locally, but cloud upload failed. Check your cloud save settings.";
-        emit_phase(
-            ctx.app,
-            ctx.game_id,
-            "done",
-            Some(warning),
-            cloud_configured,
-            Some(session_minutes),
-            true,
-        );
-        os_toast_if_hidden(
-            ctx.app,
-            "Cloud upload failed",
-            &format!(
-                "{} — saves are safe locally but didn't reach the cloud",
-                ctx.game_name
-            ),
-        );
-    } else {
-        emit_phase(
-            ctx.app,
-            ctx.game_id,
-            "done",
-            None,
-            cloud_configured,
-            Some(session_minutes),
-            false,
-        );
-        os_toast_if_hidden(
-            ctx.app,
-            "Saves backed up",
-            &format!("{} — session complete", ctx.game_name),
-        );
-    }
+    // Final completion ping — the most useful native toast since the user may
+    // have closed the game and walked away from the PC.
+    emit_done(ctx, backup.outcome(), cloud_configured, session_minutes);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn done_outcome_reports_no_save_data_over_a_failed_upload() {
+        // A session that captured nothing must never report a backup — this is
+        // the case where ludusavi doesn't know the game and it has no custom
+        // save location, so "Saves backed up" would claim the user's progress
+        // is safe when no revision exists at all (#490).
+        assert_eq!(
+            BackupResult {
+                cloud_upload_failed: false,
+                no_saves: true,
+            }
+            .outcome(),
+            DoneOutcome::NoSaveData,
+        );
+        // Nothing captured also outranks an upload failure: with no revision
+        // there was never anything to upload, so pointing at the remote would
+        // send the user after the wrong problem.
+        assert_eq!(
+            BackupResult {
+                cloud_upload_failed: true,
+                no_saves: true,
+            }
+            .outcome(),
+            DoneOutcome::NoSaveData,
+        );
+    }
+
+    #[test]
+    fn done_outcome_distinguishes_a_written_revision_from_a_failed_upload() {
+        assert_eq!(
+            BackupResult {
+                cloud_upload_failed: false,
+                no_saves: false,
+            }
+            .outcome(),
+            DoneOutcome::Saved,
+        );
+        assert_eq!(
+            BackupResult {
+                cloud_upload_failed: true,
+                no_saves: false,
+            }
+            .outcome(),
+            DoneOutcome::UploadFailed,
+        );
+    }
 
     fn tip(name: &str, secs: i64) -> redirects::BackupTip {
         redirects::BackupTip {
