@@ -111,6 +111,11 @@
    * `ctxMenu.game` against `null` and throws — which killed every action in this
    * menu (#488). Handlers start here so they hold the entry before it goes, and
    * keep working across an await.
+   *
+   * This covers the `accent` / `cover` deriveds too: they read `game`, so they
+   * throw the same way once the menu is dismissed. Handlers take what they need
+   * off the returned entry; only the markup, which renders while the menu is
+   * open, may use them directly.
    */
   function dismiss(): GameEntry {
     const g = game;
@@ -230,7 +235,7 @@
         title: 'Restore saves from backup?',
         body: `This overwrites your current local saves for "${g.game_name}" with the most recent backup.`,
         confirmLabel: 'Restore saves',
-        accent,
+        accent: g.accent_color ?? BRAND_SPOOL,
         catalog: fmtCatalog(g.catalog_number),
       }))
     ) {
