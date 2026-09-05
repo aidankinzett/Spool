@@ -458,6 +458,51 @@ fn restamp_rclone(app: &AppHandle) {
     }
 }
 
+/// Size past which `debug.log` is rotated at startup. One previous file is
+/// kept, so the pair stays under roughly twice this.
+const LOG_ROTATE_BYTES: u64 = 8 * 1024 * 1024;
+
+/// Copy an oversized `debug.log` to `debug.log.1` and empty the original, so a
+/// new run starts clean with one previous run still readable.
+///
+/// Rotation is done here rather than with `tracing-appender`'s rolling
+/// appenders because those name the live file after its date. The fixed name is
+/// load-bearing: `paths::log_file()` is shown to the user in a launch-crash
+/// message, and support asks for `debug.log` by name.
+///
+/// It copies and truncates rather than renaming, because every Spool process
+/// runs this — it happens before the single-instance plugin, so a secondary
+/// `spool --run` forwarding argv does it too — and several may hold the file
+/// open at once (tray GUI, attached `--run`, headless Decky server). A rename
+/// would leave the long-lived GUI writing to the renamed inode: `debug.log.1`
+/// would then grow unbounded for the rest of its session while `debug.log` held
+/// a couple of startup lines, and the next start would see a small file and
+/// never reclaim it. Truncating keeps the inode, and the appender opens with
+/// `O_APPEND`, so every writer seeks to the end on its next write — which is
+/// now zero. They all carry on into the same file.
+///
+/// Best-effort: if the copy fails the original is left alone rather than
+/// emptied, and a large log beats no logging.
+fn rotate_log_if_oversized(log: &std::path::Path) {
+    let Ok(meta) = std::fs::metadata(log) else {
+        return; // no log yet — nothing to rotate
+    };
+    if meta.len() <= LOG_ROTATE_BYTES {
+        return;
+    }
+    if let Err(e) = std::fs::copy(log, log.with_extension("log.1")) {
+        eprintln!("spool: could not copy {} aside: {e}", log.display());
+        return;
+    }
+    if let Err(e) = std::fs::OpenOptions::new()
+        .write(true)
+        .truncate(true)
+        .open(log)
+    {
+        eprintln!("spool: could not truncate {}: {e}", log.display());
+    }
+}
+
 /// Initialises the global `tracing` subscriber. Two layers:
 ///
 ///   * **stderr** — what `cargo run` / `tauri dev` show in the terminal
@@ -472,39 +517,6 @@ fn restamp_rclone(app: &AppHandle) {
 ///
 /// Returns the non-blocking worker guard; binding it to the call frame
 /// keeps the writer alive and flushes buffered lines at shutdown.
-/// Size past which `debug.log` is rotated at startup. Two files are kept, so
-/// the pair stays under roughly twice this.
-const LOG_ROTATE_BYTES: u64 = 8 * 1024 * 1024;
-
-/// Move an oversized `debug.log` aside so the new run starts clean, keeping one
-/// previous file as `debug.log.1`.
-///
-/// Rotation happens here rather than through `tracing-appender`'s rolling
-/// appenders because those name the live file after its date. The fixed name is
-/// load-bearing: `paths::log_file()` is shown to the user in a launch-crash
-/// message, and support asks for `debug.log` by name.
-///
-/// Best-effort throughout. Several Spool processes share this file (tray GUI,
-/// attached `spool --run`, headless Decky server), so a rename can lose to a
-/// concurrent one, and on Windows it fails outright while another process holds
-/// the file open. None of that is worth refusing to start over — and a process
-/// already holding the old handle keeps writing to the renamed inode on Unix,
-/// which loses nothing.
-fn rotate_log_if_oversized(log: &std::path::Path) {
-    let Ok(meta) = std::fs::metadata(log) else {
-        return; // no log yet — nothing to rotate
-    };
-    if meta.len() <= LOG_ROTATE_BYTES {
-        return;
-    }
-    let previous = log.with_extension("log.1");
-    if let Err(e) = std::fs::rename(log, &previous) {
-        // Can't rotate (locked on Windows, or another process just did it).
-        // Carry on appending — a large log beats no logging.
-        eprintln!("spool: could not rotate {}: {e}", log.display());
-    }
-}
-
 fn init_tracing() -> tracing_appender::non_blocking::WorkerGuard {
     use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
@@ -870,15 +882,39 @@ mod tests {
     use super::*;
 
     #[test]
-    fn rotate_moves_an_oversized_log_aside() {
+    fn rotate_empties_the_log_in_place_and_keeps_a_copy() {
         let dir = tempfile::tempdir().unwrap();
         let log = dir.path().join("debug.log");
         std::fs::write(&log, vec![b'x'; (LOG_ROTATE_BYTES + 1) as usize]).unwrap();
 
         rotate_log_if_oversized(&log);
 
-        assert!(!log.exists(), "oversized log should be moved aside");
-        assert!(dir.path().join("debug.log.1").exists());
+        // The live file keeps its name and stays present — support asks for
+        // debug.log, and the launch-crash message points at it.
+        assert!(log.exists());
+        assert_eq!(std::fs::metadata(&log).unwrap().len(), 0);
+        assert_eq!(
+            std::fs::metadata(dir.path().join("debug.log.1")).unwrap().len(),
+            LOG_ROTATE_BYTES + 1
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rotate_keeps_the_same_inode() {
+        // The property the whole approach rests on: every Spool process runs
+        // this, and others may already hold the file open. Truncating in place
+        // means their O_APPEND writes continue into this same file, where a
+        // rename would strand them on the renamed inode.
+        use std::os::unix::fs::MetadataExt;
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("debug.log");
+        std::fs::write(&log, vec![b'x'; (LOG_ROTATE_BYTES + 1) as usize]).unwrap();
+        let before = std::fs::metadata(&log).unwrap().ino();
+
+        rotate_log_if_oversized(&log);
+
+        assert_eq!(std::fs::metadata(&log).unwrap().ino(), before);
     }
 
     #[test]
@@ -890,7 +926,7 @@ mod tests {
 
         rotate_log_if_oversized(&log);
 
-        assert!(log.exists());
+        assert_eq!(std::fs::read(&log).unwrap(), b"a few lines");
         assert!(!dir.path().join("debug.log.1").exists());
     }
 
