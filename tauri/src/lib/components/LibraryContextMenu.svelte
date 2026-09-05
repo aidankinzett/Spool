@@ -102,11 +102,27 @@
 
   // ── Action handlers — same logic as GameDetail's toolbar buttons ───────
 
+  /**
+   * Dismiss the menu and hand back the game it was opened for.
+   *
+   * `game` is a prop whose source is the parent's context-menu state
+   * (`ctxMenu.game` in LibraryDesktop), and `onclose()` clears that state. Props
+   * are lazy getters, so reading `game` after dismissing re-evaluates
+   * `ctxMenu.game` against `null` and throws — which killed every action in this
+   * menu (#488). Handlers start here so they hold the entry before it goes, and
+   * keep working across an await.
+   */
+  function dismiss(): GameEntry {
+    const g = game;
+    onclose();
+    return g;
+  }
+
 
   async function play() {
-    onclose();
+    const g = dismiss();
     try {
-      await api.launchGame(game.id);
+      await api.launchGame(g.id);
     } catch (e) {
       const msg = String(e);
       if (!/cloud sync conflict/i.test(msg)) {
@@ -115,22 +131,22 @@
           label: 'LAUNCH · FAILED',
           title: "Couldn't launch game",
           sub: msg,
-          catalog: fmtCatalog(game.catalog_number),
+          catalog: fmtCatalog(g.catalog_number),
         });
       }
     }
   }
 
   async function openFolder() {
-    onclose();
-    const f = folderForGame(game);
+    const g = dismiss();
+    const f = folderForGame(g);
     if (f) await api.openPath(f);
   }
 
   async function generateArmouryLauncher() {
-    onclose();
+    const g = dismiss();
     try {
-      const path = await api.generateArmouryLauncher(game.id);
+      const path = await api.generateArmouryLauncher(g.id);
       // Pull the dir off the end of the path string so the "Open
       // folder" CTA reveals the .exe in Explorer without needing
       // a separate IPC.
@@ -140,7 +156,7 @@
         label: 'ARMOURY CRATE',
         title: 'Launcher generated',
         sub: `In Armoury Crate: Library → Manage Library → Add → browse to ${path}`,
-        catalog: fmtCatalog(game.catalog_number),
+        catalog: fmtCatalog(g.catalog_number),
         duration: 0,
         cta: {
           label: 'Open folder',
@@ -155,22 +171,22 @@
         label: 'ARMOURY CRATE · FAILED',
         title: "Couldn't generate launcher",
         sub: String(e),
-        catalog: fmtCatalog(game.catalog_number),
+        catalog: fmtCatalog(g.catalog_number),
       });
     }
   }
 
   async function manualBackup() {
-    onclose();
+    const g = dismiss();
     try {
-      const r = await api.manualBackup(game.id);
+      const r = await api.manualBackup(g.id);
       if (r.game_count === 0) {
         toasts.show({
           kind: 'info',
           label: 'LUDUSAVI',
           title: 'Nothing to back up',
-          sub: `${game.game_name} has no save data ludusavi recognises.`,
-          catalog: fmtCatalog(game.catalog_number),
+          sub: `${g.game_name} has no save data ludusavi recognises.`,
+          catalog: fmtCatalog(g.catalog_number),
         });
         return;
       }
@@ -184,15 +200,15 @@
               kind: 'ok',
               label: 'LUDUSAVI',
               title: 'Saves backed up & synced',
-              sub: `${game.game_name} · ${mb} MB · cloud updated`,
-              catalog: fmtCatalog(game.catalog_number),
+              sub: `${g.game_name} · ${mb} MB · cloud updated`,
+              catalog: fmtCatalog(g.catalog_number),
             }
           : {
               kind: 'warn',
               label: 'LUDUSAVI',
               title: 'Backed up locally',
-              sub: `${game.game_name} · ${mb} MB · cloud sync pending`,
-              catalog: fmtCatalog(game.catalog_number),
+              sub: `${g.game_name} · ${mb} MB · cloud sync pending`,
+              catalog: fmtCatalog(g.catalog_number),
             },
       );
     } catch (e) {
@@ -201,34 +217,34 @@
         label: 'LUDUSAVI · BACKUP',
         title: "Couldn't back up",
         sub: String(e),
-        catalog: fmtCatalog(game.catalog_number),
+        catalog: fmtCatalog(g.catalog_number),
       });
     }
   }
 
   async function manualRestore() {
-    onclose();
+    const g = dismiss();
     if (
       !(await confirmDialog({
         label: 'LUDUSAVI · RESTORE',
         title: 'Restore saves from backup?',
-        body: `This overwrites your current local saves for "${game.game_name}" with the most recent backup.`,
+        body: `This overwrites your current local saves for "${g.game_name}" with the most recent backup.`,
         confirmLabel: 'Restore saves',
         accent,
-        catalog: fmtCatalog(game.catalog_number),
+        catalog: fmtCatalog(g.catalog_number),
       }))
     ) {
       return;
     }
     try {
-      const r = await api.manualRestore(game.id);
+      const r = await api.manualRestore(g.id);
       if (r.game_count === 0) {
         toasts.show({
           kind: 'info',
           label: 'LUDUSAVI',
           title: 'No backups found',
-          sub: `${game.game_name} has nothing to restore yet.`,
-          catalog: fmtCatalog(game.catalog_number),
+          sub: `${g.game_name} has nothing to restore yet.`,
+          catalog: fmtCatalog(g.catalog_number),
         });
         return;
       }
@@ -236,8 +252,8 @@
         kind: 'ok',
         label: 'LUDUSAVI',
         title: 'Saves restored',
-        sub: `${game.game_name} is ready to play.`,
-        catalog: fmtCatalog(game.catalog_number),
+        sub: `${g.game_name} is ready to play.`,
+        catalog: fmtCatalog(g.catalog_number),
       });
     } catch (e) {
       const msg = String(e);
@@ -247,7 +263,7 @@
         label: isConflict ? 'LUDUSAVI · CONFLICT' : 'LUDUSAVI · RESTORE',
         title: isConflict ? 'Cloud sync conflict' : "Couldn't restore",
         sub: msg,
-        catalog: fmtCatalog(game.catalog_number),
+        catalog: fmtCatalog(g.catalog_number),
         cta: isConflict
           ? {
               label: 'Open Ludusavi',
@@ -263,20 +279,20 @@
   }
 
   async function addToSteam() {
-    onclose();
+    const g = dismiss();
     if (!(await confirmSteamRestart())) return;
     try {
-      const r = await api.addToSteam(game.id);
+      const r = await api.addToSteam(g.id);
       const extras = r.extras_placed.length ? ` · ${r.extras_placed.join(', ')} art placed` : '';
       const sub = r.steam_restarted
-        ? `Restarting Steam — "${game.game_name}" will appear in your library${extras}.`
-        : `Restart Steam to see "${game.game_name}" in your library${extras}.`;
+        ? `Restarting Steam — "${g.game_name}" will appear in your library${extras}.`
+        : `Restart Steam to see "${g.game_name}" in your library${extras}.`;
       toasts.show({
         kind: 'ok',
         label: 'STEAM',
         title: 'Added to Steam',
         sub,
-        catalog: fmtCatalog(game.catalog_number),
+        catalog: fmtCatalog(g.catalog_number),
       });
     } catch (e) {
       toasts.show({
@@ -289,18 +305,18 @@
   }
 
   async function removeFromSteam() {
-    onclose();
+    const g = dismiss();
     if (!(await confirmSteamRestart('Removing from Steam'))) return;
     try {
-      const removed = await api.removeFromSteam(game.id);
+      const removed = await api.removeFromSteam(g.id);
       toasts.show({
         kind: 'ok',
         label: 'STEAM',
         title: removed ? 'Removed from Steam' : 'Already removed',
         sub: removed
-          ? `"${game.game_name}" was removed from your Steam library.`
-          : `No Steam shortcut was found for "${game.game_name}".`,
-        catalog: fmtCatalog(game.catalog_number),
+          ? `"${g.game_name}" was removed from your Steam library.`
+          : `No Steam shortcut was found for "${g.game_name}".`,
+        catalog: fmtCatalog(g.catalog_number),
       });
     } catch (e) {
       toasts.show({
@@ -313,28 +329,28 @@
   }
 
   function openEdit() {
-    onclose();
-    openView('edit', { id: game.id });
+    const g = dismiss();
+    openView('edit', { id: g.id });
   }
 
   // Open the three-option remove chooser (remove from disk / from library /
   // from disk and library), hosted globally by RemoveGameHost.
   function remove() {
-    onclose();
-    removeGameDialog.request(game);
+    const g = dismiss();
+    removeGameDialog.request(g);
   }
 
   // Re-add an uninstalled game via the Add flow (which reuses this entry).
   function reinstall() {
-    onclose();
-    openView('add', { reinstall: game.id });
+    const g = dismiss();
+    openView('add', { reinstall: g.id });
   }
 
   // Open the move-install chooser (relocate the install to another library
   // folder / drive), hosted globally by MoveInstallHost.
   function moveInstall() {
-    onclose();
-    moveInstallDialog.request(game);
+    const g = dismiss();
+    moveInstallDialog.request(g);
   }
 </script>
 
