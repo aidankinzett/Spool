@@ -16,10 +16,10 @@
   import { open as openDialog } from '@tauri-apps/plugin-dialog';
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import { listen } from '@tauri-apps/api/event';
-  import { Folder, HardDrive, Loader2, Package, FileWarning } from '@lucide/svelte';
+  import { Folder, HardDrive, Loader2, Package, FileWarning, Check } from '@lucide/svelte';
   import { api } from '$lib/api';
-  import { parentDir } from '$lib/format';
-  import type { SearchCandidate, GuidedInstallResult, ProtonVersion } from '$lib/types';
+  import { parentDir, fmtSize } from '$lib/format';
+  import type { SearchCandidate, GuidedInstallResult, ProtonVersion, ConfigData } from '$lib/types';
   import AppChrome from '$lib/components/AppChrome.svelte';
   import MonoLabel from '$lib/components/MonoLabel.svelte';
   import Btn from '$lib/components/Btn.svelte';
@@ -35,6 +35,16 @@
   let setupExe = $state<string | null>(null);
   let gameName = $state('');
   let error = $state<string | null>(null);
+
+  // Install location — which configured library folder the game's install
+  // folder gets created under. Defaults to the default-install folder, same
+  // rule as ConfigData::default_install_folder (Settings mirrors it too);
+  // `null` means Spool's hidden app-data folder.
+  let config = $state<ConfigData | null>(null);
+  let libraryFolders = $derived(config?.library_folders ?? []);
+  let selectedFolder = $state<string | null>(null);
+  let folderFree = $state<Record<string, number>>({});
+  let addingFolder = $state(false);
 
   // Proton version picker — loaded at mount, pre-selects first GE-Proton found.
   let protonVersions = $state<ProtonVersion[]>([]);
@@ -101,13 +111,22 @@
       // immediately so we don't leak the listener.
       if (isUnmounted) fn();
       else unlisten = fn;
-      // Proton versions are a non-essential convenience (the dropdown just
-      // falls back to "auto") — don't let a reject here throw out of the IIFE
-      // and silently skip the auto-open setup picker below.
+      // Proton versions + the library folder list are non-essential
+      // conveniences (the dropdown/picker just fall back to "auto"/app-data)
+      // — don't let a reject here throw out of the IIFE and silently skip the
+      // auto-open setup picker below.
       try {
         protonVersions = await api.listProtonVersions();
       } catch (e) {
         console.error('[install] listProtonVersions failed:', e);
+      }
+      try {
+        config = await api.getConfig();
+        const def =
+          config.library_folders.find((f) => f.default_install) ?? config.library_folders[0] ?? null;
+        selectedFolder = def?.path ?? null;
+      } catch (e) {
+        console.error('[install] getConfig failed:', e);
       }
       await pickSetup(true);
     })();
@@ -116,6 +135,67 @@
       unlisten?.();
     };
   });
+
+  // Free space per configured library folder, for the install-location rows.
+  // Generation counter so only the latest probe writes `folderFree`: adding a
+  // folder re-derives `libraryFolders` and re-runs this effect, and a slow
+  // earlier probe (a sleeping drive) resolving last would otherwise overwrite
+  // the newer map and drop the just-added folder's figure. Same guard as
+  // Settings' refreshLibFolderCapacity.
+  let freeSeq = 0;
+  $effect(() => {
+    const folders = libraryFolders;
+    const seq = ++freeSeq;
+    (async () => {
+      const entries = await Promise.all(
+        folders.map(async (f): Promise<readonly [string, number]> => {
+          try {
+            return [f.path, await api.folderFreeSpace(f.path)] as const;
+          } catch {
+            return [f.path, 0] as const;
+          }
+        }),
+      );
+      if (seq === freeSeq) folderFree = Object.fromEntries(entries);
+    })();
+  });
+
+  /** Browse for a new library folder and register it (mirrors Settings'
+   *  addLibraryFolder), then select it as this install's destination. */
+  async function browseFolder() {
+    const dir = await openDialog({ title: 'Pick a library folder', directory: true, multiple: false });
+    if (typeof dir !== 'string') return;
+    addingFolder = true;
+    try {
+      // `config` is normally loaded at mount; if that failed, load it now
+      // rather than selecting a folder we then can't register (which would
+      // install into an unregistered path). A second failure surfaces as an
+      // error and leaves `selectedFolder` untouched.
+      if (!config) config = await api.getConfig();
+      const canonical = await api.prepareLibraryFolder(dir);
+      if (!config.library_folders.some((f) => f.path === canonical)) {
+        const prev = config.library_folders;
+        config.library_folders = [
+          ...prev,
+          { path: canonical, label: null, default_install: prev.length === 0 },
+        ];
+        // Send a snapshot, not the live $state proxy, and keep the local
+        // `config` as the source of truth — don't reassign from the echo.
+        // Roll back the list if the save fails so the UI matches disk. (#272)
+        try {
+          await api.updateConfig($state.snapshot(config));
+        } catch (e) {
+          config.library_folders = prev;
+          throw e;
+        }
+      }
+      selectedFolder = canonical;
+    } catch (e) {
+      error = String(e);
+    } finally {
+      addingFolder = false;
+    }
+  }
 
   async function pickSetup(closeOnCancel = false) {
     const result = await openDialog({
@@ -139,7 +219,12 @@
     error = null;
     stage = 'installing';
     try {
-      install = await api.runGuidedInstaller(setupExe, gameName.trim(), undefined, selectedProton || undefined);
+      install = await api.runGuidedInstaller(
+        setupExe,
+        gameName.trim(),
+        selectedFolder ?? undefined,
+        selectedProton || undefined,
+      );
       // Installer finished — pick the installed game exe.
       stage = 'detect';
       await pickGameExe();
@@ -215,6 +300,28 @@
   }
 </script>
 
+{#snippet locationRow(pathVal: string | null, label: string, sublabel: string)}
+  {@const active = selectedFolder === pathVal}
+  <button
+    type="button"
+    onclick={() => (selectedFolder = pathVal)}
+    class="flex w-full items-center gap-3 rounded-sm border px-3 py-2.5 text-left transition-colors duration-100"
+    style:border-color={active ? 'var(--color-spool)' : 'var(--color-line-1)'}
+    style:background={active ? 'color-mix(in srgb, var(--color-spool) 10%, transparent)' : 'var(--color-bg-2)'}
+  >
+    <span
+      class="flex size-7 shrink-0 items-center justify-center rounded-sm border border-line-2 bg-bg-3 text-ink-1"
+    >
+      <HardDrive size={13} />
+    </span>
+    <div class="min-w-0 flex-1">
+      <div class="font-mono truncate text-[12px] text-ink-0">{label}</div>
+      <div class="font-mono truncate text-[10px] text-ink-3">{sublabel}</div>
+    </div>
+    {#if active}<Check size={14} class="shrink-0 text-spool" />{/if}
+  </button>
+{/snippet}
+
 <div
   class="flex h-screen flex-col bg-bg-0 text-ink-0"
   use:gamepadScope={{ onBack: () => history.back() }}
@@ -243,10 +350,10 @@
     {/if}
 
     <!-- Body -->
-    <div class="flex flex-1 flex-col gap-3 overflow-hidden px-6 pb-2 pt-2">
+    <div class="flex flex-1 flex-col gap-3.5 overflow-y-auto px-6 pb-3 pt-3">
       {#if stage === 'config'}
         <!-- Installer strip -->
-        <div class="relative flex items-center gap-3.5 overflow-hidden rounded-md border border-line-1 bg-bg-1 px-3.5 py-3">
+        <div class="relative flex shrink-0 items-center gap-3.5 overflow-hidden rounded-md border border-line-1 bg-bg-1 px-3.5 py-3.5">
           <div class="absolute inset-y-0 left-0 w-[3px]" style:background="var(--color-spool)"></div>
           <div class="flex size-[38px] shrink-0 items-center justify-center rounded-sm border border-line-2 bg-bg-2 text-ink-1">
             <Package size={18} strokeWidth={1.4} />
@@ -255,7 +362,7 @@
             <div class="font-mono truncate text-[13px] font-medium">
               {setupExe ? baseName(setupExe) : 'No installer selected'}
             </div>
-            <div class="font-mono mt-1 min-w-0 truncate text-[10.5px] tracking-[0.04em] text-ink-3">
+            <div class="font-mono mt-1.5 min-w-0 truncate text-[10.5px] tracking-[0.04em] text-ink-3">
               {setupExe ?? "Pick the installer's setup.exe."}
             </div>
           </div>
@@ -272,6 +379,24 @@
             Used for the install folder name. You can refine the library name after install.
           </p>
           <TextField bind:value={gameName} placeholder="e.g. Elden Ring" full />
+        </div>
+
+        <!-- Install location -->
+        <div class="rounded-md border border-line-1 bg-bg-1 px-3.5 py-3">
+          <MonoLabel size={10}>Install location</MonoLabel>
+          <p class="m-0 mt-1 mb-2 text-[11.5px] leading-relaxed text-ink-3">
+            Which library folder should this game's install folder go in?
+          </p>
+          <div class="flex flex-col gap-1.5">
+            {#each libraryFolders as f (f.path)}
+              {@render locationRow(f.path, f.label || f.path, `${fmtSize((folderFree[f.path] ?? 0) / 1048576)} free`)}
+            {/each}
+            {@render locationRow(null, "Use Spool's data folder", 'Hidden application folder')}
+          </div>
+          <Btn variant="ghost" onclick={browseFolder} disabled={addingFolder} class="mt-2">
+            {#snippet icon()}<Folder size={14} />{/snippet}
+            {addingFolder ? 'Adding…' : 'Add a folder…'}
+          </Btn>
         </div>
 
         <!-- Proton version -->
@@ -309,7 +434,7 @@
         </div>
       {:else if stage === 'detect'}
         <!-- Picked exe strip -->
-        <div class="relative flex items-center gap-3.5 overflow-hidden rounded-md border border-line-1 bg-bg-1 px-3.5 py-3">
+        <div class="relative flex shrink-0 items-center gap-3.5 overflow-hidden rounded-md border border-line-1 bg-bg-1 px-3.5 py-3.5">
           <div class="absolute inset-y-0 left-0 w-[3px]" style:background="var(--color-spool)"></div>
           <div class="flex size-[38px] shrink-0 items-center justify-center rounded-sm border border-line-2 bg-bg-2 text-ink-1">
             <FileWarning size={18} strokeWidth={1.4} />
@@ -318,7 +443,7 @@
             <div class="font-mono truncate text-[13px] font-medium">
               {exePath ? baseName(exePath) : 'No executable selected'}
             </div>
-            <div class="font-mono mt-1 min-w-0 truncate text-[10.5px] tracking-[0.04em] text-ink-3">
+            <div class="font-mono mt-1.5 min-w-0 truncate text-[10.5px] tracking-[0.04em] text-ink-3">
               {exePath ?? 'Pick the game exe the installer created.'}
             </div>
           </div>

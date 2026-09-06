@@ -43,7 +43,10 @@ pub struct GuidedInstallResult {
 ///
 /// `game_name` only seeds the default install folder name; the caller confirms
 /// the real game name later when adding to the library. `install_dir_override`
-/// lets the user pick a different install location. `proton_version_override`
+/// is the library folder the game's install folder gets created under — a
+/// safe-filename subfolder of `game_name` is appended the same way the
+/// no-override default (`installed_games_dir()`) is, so callers just pass a
+/// library folder root, not the final directory. `proton_version_override`
 /// pins a specific Proton build for the installer (path to a Proton dir);
 /// when absent the backend prefers any installed GE-Proton, then the global
 /// config default, then umu-run's own bundled default.
@@ -106,11 +109,13 @@ async fn run_impl(
         .and_then(|p| proton::resolve_proton_path(Some(p), None))
         .or_else(|| proton::resolve_proton_path(None, Some(&default_proton_path)));
 
-    // Clean host folder for the game.
-    let install_dir = match install_dir_override {
+    // Clean host folder for the game, under the chosen library folder (or
+    // Spool's app-data folder when the user didn't pick one).
+    let install_root = match install_dir_override {
         Some(p) if !p.trim().is_empty() => PathBuf::from(p),
-        _ => paths::installed_games_dir().join(make_safe_filename(&game_name)),
+        _ => paths::installed_games_dir(),
     };
+    let install_dir = install_root.join(make_safe_filename(&game_name));
     let install_dir_existed = install_dir.exists();
     std::fs::create_dir_all(&install_dir)
         .map_err(|e| AppError::Other(format!("failed to create install folder: {e}")))?;
