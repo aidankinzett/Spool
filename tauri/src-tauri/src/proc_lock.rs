@@ -131,6 +131,17 @@ pub fn try_acquire_backup() -> AppResult<Option<FileLock>> {
     try_acquire_at(paths::backup_lock_file())
 }
 
+/// Non-blocking attempt to take the machine-wide **startup log-rotation lock**,
+/// serialising the size-check / copy / truncate of `debug.log` at boot against
+/// other Spool processes starting at the same time. `Ok(Some(guard))` = free and
+/// acquired; `Ok(None)` = another process is already rotating (skip — it's doing
+/// the work); `Err` only if the lock file can't be opened. Runs before the tokio
+/// runtime, so it's the synchronous, single-shot variant — there's nothing to
+/// wait for.
+pub fn try_acquire_log_rotate() -> AppResult<Option<FileLock>> {
+    try_acquire_at(paths::log_rotate_lock_file())
+}
+
 /// Non-blocking attempt to take the machine-wide **per-game run lock**. The run
 /// workflow holds it across a whole play session; a disk-wipe (uninstall /
 /// delete) holds it across the wipe. `Ok(Some(guard))` = acquired (free);

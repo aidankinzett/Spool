@@ -43,12 +43,117 @@ const UMU_RELAY_LINE_CAP: usize = 500;
 /// without the buffer tracking a whole session's output.
 const UMU_STDERR_TAIL_LINES: usize = 50;
 
+/// Bytes of a single umu output line buffered before its newline. Past this the
+/// rest of the line is dropped rather than stored, so a child that emits a long
+/// run of bytes with no newline can't grow memory or the log without bound —
+/// `tokio`'s `Lines` / `read_until` buffer a whole record before any cap can
+/// see it. Set far above any real umu line, which run well under 1 KiB.
+const UMU_RELAY_LINE_MAX_BYTES: usize = 64 * 1024;
+
 /// Append to the crash-hint tail, dropping the oldest line once it's full.
 fn push_tail(buf: &mut VecDeque<String>, line: String) {
     if buf.len() == UMU_STDERR_TAIL_LINES {
         buf.pop_front();
     }
     buf.push_back(line);
+}
+
+/// Relay one of a Proton child's output streams to `debug.log`, bounded three
+/// ways so a child that never stops talking can't blow up memory or the log
+/// (#512):
+///
+///   * at most [`UMU_RELAY_LINE_CAP`] lines reach tracing; the rest are counted;
+///   * a line is buffered only up to [`UMU_RELAY_LINE_MAX_BYTES`]; once it hits
+///     that, the rest of the line is drained without being stored and the whole
+///     line is dropped, so a newline-free blob costs a fixed amount of memory
+///     (`tokio`'s `Lines` / `read_until` buffer a whole record before any cap
+///     can see it);
+///   * `tail`, when given (stderr only), keeps just the last
+///     [`UMU_STDERR_TAIL_LINES`] lines for the crash hint.
+///
+/// After an oversized line the relay resynchronises at the next newline and
+/// carries on. `emit` writes one kept line to tracing at that stream's own level
+/// — stdout at INFO, stderr at WARN.
+async fn relay_umu_stream<R>(
+    mut reader: R,
+    stream: &'static str,
+    tail: Option<Arc<Mutex<VecDeque<String>>>>,
+    emit: impl Fn(&str) + Send,
+) where
+    R: tokio::io::AsyncRead + Unpin + Send,
+{
+    use tokio::io::AsyncReadExt as _;
+
+    let mut relayed = 0usize;
+    let mut suppressed = 0usize;
+    let mut oversized = 0usize;
+
+    let mut deliver = |bytes: &[u8]| {
+        let text = String::from_utf8_lossy(bytes);
+        if relayed < UMU_RELAY_LINE_CAP {
+            emit(&text);
+            relayed += 1;
+        } else {
+            suppressed += 1;
+        }
+        if let Some(tail) = tail.as_ref() {
+            if let Ok(mut buf) = tail.lock() {
+                push_tail(&mut buf, text.into_owned());
+            }
+        }
+    };
+
+    let mut chunk = [0u8; 8 * 1024];
+    let mut line: Vec<u8> = Vec::new();
+    // The current line has passed the byte cap: swallow the rest of it.
+    let mut dropping = false;
+
+    loop {
+        let n = match reader.read(&mut chunk).await {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(_) => break,
+        };
+        for &byte in &chunk[..n] {
+            if byte == b'\n' {
+                if dropping {
+                    oversized += 1;
+                } else {
+                    if line.last() == Some(&b'\r') {
+                        line.pop();
+                    }
+                    deliver(&line);
+                }
+                line.clear();
+                dropping = false;
+            } else if !dropping {
+                if line.len() >= UMU_RELAY_LINE_MAX_BYTES {
+                    line.clear();
+                    dropping = true;
+                } else {
+                    line.push(byte);
+                }
+            }
+        }
+    }
+    // A trailing line with no newline still counts.
+    if dropping {
+        oversized += 1;
+    } else if !line.is_empty() {
+        deliver(&line);
+    }
+
+    if suppressed > 0 || oversized > 0 {
+        tracing::warn!(
+            target: "umu",
+            stream,
+            suppressed,
+            oversized,
+            line_cap = UMU_RELAY_LINE_CAP,
+            max_line_bytes = UMU_RELAY_LINE_MAX_BYTES,
+            "umu output truncated to keep debug.log bounded"
+        );
+    }
 }
 
 /// Result of spawning and waiting for a game process.
@@ -298,67 +403,24 @@ pub async fn run_game(exe_path: &Path, spec: LaunchSpec<'_>) -> AppResult<GameEx
                 .map_err(|e| AppError::Other(format!("failed to start game via Proton: {e}")))?;
 
             let stdout_handle = child.stdout.take().map(|s| {
-                tokio::spawn(async move {
-                    use tokio::io::{AsyncBufReadExt, BufReader};
-                    let mut lines = BufReader::new(s).lines();
-                    let mut relayed = 0usize;
-                    let mut suppressed = 0usize;
-                    while let Ok(Some(line)) = lines.next_line().await {
-                        if relayed < UMU_RELAY_LINE_CAP {
-                            tracing::info!(target: "umu", "{}", line);
-                            relayed += 1;
-                        } else {
-                            suppressed += 1;
-                        }
-                    }
-                    if suppressed > 0 {
-                        tracing::info!(
-                            target: "umu",
-                            suppressed,
-                            cap = UMU_RELAY_LINE_CAP,
-                            "further umu stdout not relayed"
-                        );
-                    }
-                })
+                tokio::spawn(relay_umu_stream(s, "stdout", None, |line| {
+                    tracing::info!(target: "umu", "{}", line)
+                }))
             });
 
-            // Relay stderr to debug.log and keep the tail for crash diagnosis.
-            //
-            // Both are bounded. umu's accessibility layer can throw in a loop and
-            // print a full .NET stack trace each time — one session wrote ~1.2M
-            // lines and left a 220 MB debug.log, and retaining every line to serve
-            // the 15 the crash hint reads grew the buffer to match (#512). The
-            // opening lines carry the launch diagnostics worth having, so the
-            // relay keeps those and counts the rest; the ring keeps the tail, which
-            // is the half a crash hint needs.
+            // Relay stderr to debug.log and, unlike stdout, keep the tail for
+            // crash diagnosis — `stderr_buf` is the ring the crash hint reads its
+            // last 15 lines from. Both the relay and the ring are bounded; see
+            // `relay_umu_stream`. umu's accessibility layer throwing in a loop is
+            // what wrote ~1.2M lines and a 220 MB debug.log in #512.
             let stderr_buf: Arc<Mutex<VecDeque<String>>> = Arc::new(Mutex::new(VecDeque::new()));
-            let stderr_buf_clone = Arc::clone(&stderr_buf);
-            let stderr_handle = child.stderr.take().map(|s| {
-                tokio::spawn(async move {
-                    use tokio::io::{AsyncBufReadExt, BufReader};
-                    let mut lines = BufReader::new(s).lines();
-                    let mut relayed = 0usize;
-                    let mut suppressed = 0usize;
-                    while let Ok(Some(line)) = lines.next_line().await {
-                        if relayed < UMU_RELAY_LINE_CAP {
-                            tracing::warn!(target: "umu", "{}", line);
-                            relayed += 1;
-                        } else {
-                            suppressed += 1;
-                        }
-                        if let Ok(mut buf) = stderr_buf_clone.lock() {
-                            push_tail(&mut buf, line);
-                        }
-                    }
-                    if suppressed > 0 {
-                        tracing::warn!(
-                            target: "umu",
-                            suppressed,
-                            cap = UMU_RELAY_LINE_CAP,
-                            "further umu stderr not relayed — the tail is kept for the crash hint"
-                        );
-                    }
-                })
+            let stderr_handle = child.stderr.take().map({
+                let tail = Arc::clone(&stderr_buf);
+                move |s| {
+                    tokio::spawn(relay_umu_stream(s, "stderr", Some(tail), |line| {
+                        tracing::warn!(target: "umu", "{}", line)
+                    }))
+                }
             });
 
             let status = child
@@ -531,6 +593,41 @@ mod tests {
         push_tail(&mut buf, "b".to_string());
         assert_eq!(buf.len(), 2);
         assert_eq!(buf.front().map(String::as_str), Some("a"));
+    }
+
+    #[tokio::test]
+    async fn relay_drops_a_newline_free_blob_instead_of_buffering_it() {
+        // `Lines::next_line` would allocate the whole blob before any cap could
+        // see it; the byte cap drains it instead, so neither the log nor the
+        // crash-hint tail grows without bound (#512).
+        let blob = vec![b'x'; UMU_RELAY_LINE_MAX_BYTES * 4];
+        let tail = Arc::new(Mutex::new(VecDeque::new()));
+        let relayed = Arc::new(Mutex::new(Vec::<String>::new()));
+        let sink = Arc::clone(&relayed);
+        relay_umu_stream(blob.as_slice(), "stderr", Some(Arc::clone(&tail)), move |line| {
+            sink.lock().unwrap().push(line.to_string());
+        })
+        .await;
+
+        assert!(relayed.lock().unwrap().is_empty(), "oversized line never relayed");
+        assert!(tail.lock().unwrap().is_empty(), "oversized line never buffered");
+    }
+
+    #[tokio::test]
+    async fn relay_resyncs_to_normal_lines_after_an_oversized_one() {
+        let mut input = b"before\n".to_vec();
+        input.resize(input.len() + UMU_RELAY_LINE_MAX_BYTES * 2, b'x');
+        input.push(b'\n');
+        input.extend_from_slice(b"after\n");
+
+        let relayed = Arc::new(Mutex::new(Vec::<String>::new()));
+        let sink = Arc::clone(&relayed);
+        relay_umu_stream(input.as_slice(), "stdout", None, move |line| {
+            sink.lock().unwrap().push(line.to_string());
+        })
+        .await;
+
+        assert_eq!(*relayed.lock().unwrap(), ["before", "after"]);
     }
 
     fn env_mods(cmd: &Command) -> HashMap<String, Option<String>> {

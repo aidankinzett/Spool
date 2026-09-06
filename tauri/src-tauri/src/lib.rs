@@ -481,14 +481,37 @@ const LOG_ROTATE_BYTES: u64 = 8 * 1024 * 1024;
 /// `O_APPEND`, so every writer seeks to the end on its next write — which is
 /// now zero. They all carry on into the same file.
 ///
+/// Because several processes can hit this at once, the check / copy / truncate
+/// runs under a machine-wide lock ([`proc_lock::try_acquire_log_rotate`]).
+/// Without it two processes both pass the size check, one truncates the log
+/// between the other's check and its copy, and `debug.log.1` ends up a copy of
+/// the just-emptied file — the previous run's log lost. A process that can't
+/// take the lock skips rotation: whoever holds it is already doing the work.
+///
 /// Best-effort: if the copy fails the original is left alone rather than
 /// emptied, and a large log beats no logging.
 fn rotate_log_if_oversized(log: &std::path::Path) {
-    let Ok(meta) = std::fs::metadata(log) else {
-        return; // no log yet — nothing to rotate
-    };
-    if meta.len() <= LOG_ROTATE_BYTES {
+    if !log_is_oversized(log) {
         return;
+    }
+    let Ok(Some(_guard)) = proc_lock::try_acquire_log_rotate() else {
+        return; // another Spool process is already rotating
+    };
+    rotate_oversized_log_locked(log);
+}
+
+/// `true` when `log` exists and is past [`LOG_ROTATE_BYTES`].
+fn log_is_oversized(log: &std::path::Path) -> bool {
+    std::fs::metadata(log).is_ok_and(|m| m.len() > LOG_ROTATE_BYTES)
+}
+
+/// The check / copy / truncate itself, run by [`rotate_log_if_oversized`] while
+/// it holds the cross-process rotation lock. The size is re-checked here: another
+/// process may have rotated between the unlocked check and the lock, and rotating
+/// again would replace `debug.log.1` with the freshly emptied log.
+fn rotate_oversized_log_locked(log: &std::path::Path) {
+    if !log_is_oversized(log) {
+        return; // no log, under the cap, or already rotated by another process
     }
     if let Err(e) = std::fs::copy(log, log.with_extension("log.1")) {
         eprintln!("spool: could not copy {} aside: {e}", log.display());
@@ -881,13 +904,19 @@ fn spawn_library_change_poll(app: AppHandle) {
 mod tests {
     use super::*;
 
+    // The behaviour tests drive `rotate_oversized_log_locked` directly: the
+    // public `rotate_log_if_oversized` takes a single machine-wide lock, so
+    // exercising it from several tests running in parallel would have them all
+    // contend on one real lock file. `rotate_wrapper_rotates_when_uncontended`
+    // covers the lock path once.
+
     #[test]
     fn rotate_empties_the_log_in_place_and_keeps_a_copy() {
         let dir = tempfile::tempdir().unwrap();
         let log = dir.path().join("debug.log");
         std::fs::write(&log, vec![b'x'; (LOG_ROTATE_BYTES + 1) as usize]).unwrap();
 
-        rotate_log_if_oversized(&log);
+        rotate_oversized_log_locked(&log);
 
         // The live file keeps its name and stays present — support asks for
         // debug.log, and the launch-crash message points at it.
@@ -897,6 +926,20 @@ mod tests {
             std::fs::metadata(dir.path().join("debug.log.1")).unwrap().len(),
             LOG_ROTATE_BYTES + 1
         );
+    }
+
+    #[test]
+    fn rotate_wrapper_rotates_when_uncontended() {
+        // The lock path end to end: nothing else holds the rotation lock, so
+        // the wrapper should acquire it and do the rotation.
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("debug.log");
+        std::fs::write(&log, vec![b'x'; (LOG_ROTATE_BYTES + 1) as usize]).unwrap();
+
+        rotate_log_if_oversized(&log);
+
+        assert_eq!(std::fs::metadata(&log).unwrap().len(), 0);
+        assert!(dir.path().join("debug.log.1").exists());
     }
 
     #[cfg(unix)]
@@ -912,7 +955,7 @@ mod tests {
         std::fs::write(&log, vec![b'x'; (LOG_ROTATE_BYTES + 1) as usize]).unwrap();
         let before = std::fs::metadata(&log).unwrap().ino();
 
-        rotate_log_if_oversized(&log);
+        rotate_oversized_log_locked(&log);
 
         assert_eq!(std::fs::metadata(&log).unwrap().ino(), before);
     }
@@ -924,7 +967,7 @@ mod tests {
         let log = dir.path().join("debug.log");
         std::fs::write(&log, b"a few lines").unwrap();
 
-        rotate_log_if_oversized(&log);
+        rotate_oversized_log_locked(&log);
 
         assert_eq!(std::fs::read(&log).unwrap(), b"a few lines");
         assert!(!dir.path().join("debug.log.1").exists());
@@ -939,7 +982,7 @@ mod tests {
         std::fs::write(&previous, b"older run").unwrap();
         std::fs::write(&log, vec![b'x'; (LOG_ROTATE_BYTES + 1) as usize]).unwrap();
 
-        rotate_log_if_oversized(&log);
+        rotate_oversized_log_locked(&log);
 
         assert_eq!(
             std::fs::metadata(&previous).unwrap().len(),
@@ -952,7 +995,7 @@ mod tests {
     #[test]
     fn rotate_is_a_no_op_when_there_is_no_log_yet() {
         let dir = tempfile::tempdir().unwrap();
-        rotate_log_if_oversized(&dir.path().join("debug.log"));
+        rotate_oversized_log_locked(&dir.path().join("debug.log"));
         assert!(!dir.path().join("debug.log.1").exists());
     }
 }
