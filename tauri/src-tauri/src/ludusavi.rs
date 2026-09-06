@@ -663,7 +663,7 @@ impl LudusaviClient {
         // Slow path: read `manifest.yaml` straight off disk, so Spool's
         // customGames entries (which replace or extend manifest entries for the
         // games the user has touched) can't leak into the raw lookup — see
-        // `load_manifest`.
+        // `read_manifest_file`.
         let mut guard = self.manifest.write().await;
         // Double-checked locking: another caller may have populated the cache
         // between us dropping the read guard and acquiring the write guard, so
@@ -673,7 +673,24 @@ impl LudusaviClient {
         if let Some(m) = guard.as_ref() {
             return Ok(Arc::clone(m));
         }
-        let manifest = load_manifest(ludusavi_exe).await?;
+        // Serve whatever manifest is already on disk without waiting on the
+        // network. `ludusavi manifest update` runs synchronously only when
+        // there's nothing usable to fall back to (a fresh install); otherwise
+        // it's kicked off detached so a slow or unreachable remote can't stall
+        // this search for the full RUN_API_TIMEOUT. An empty or failed manifest
+        // isn't cached, so a blocking refresh here would repeat on every search.
+        let manifest = match read_manifest_file().await {
+            Ok(m) => {
+                spawn_manifest_refresh(Arc::clone(&self.manifest), ludusavi_exe.to_path_buf());
+                m
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "no usable manifest on disk — fetching one");
+                refresh_manifest(ludusavi_exe).await;
+                read_manifest_file().await?
+            }
+        };
+        tracing::info!(games = manifest.len(), "ludusavi manifest loaded");
         let arc = Arc::new(manifest);
         *guard = Some(Arc::clone(&arc));
         Ok(arc)
@@ -1033,14 +1050,15 @@ pub async fn validate_config(ludusavi_exe: &Path, config_dir: &Path) -> Result<(
     }
 }
 
-/// Load ludusavi's manifest, with none of Spool's own `customGames:` merged in.
+/// Read ludusavi's manifest off disk, with none of Spool's own `customGames:`
+/// merged in.
 ///
-/// Reads `manifest.yaml` straight off disk rather than via `ludusavi manifest
-/// show`: that command merges the config's `customGames:` block into its output
-/// with no flag to suppress it, and the merged entries can't be filtered back
-/// out by name — an override, or a custom save on a manifest-covered game, is
-/// stored under that game's own name, so dropping it would take the real entry
-/// with it (#513). The file on disk is the manifest ludusavi actually ships;
+/// Reads `manifest.yaml` directly rather than via `ludusavi manifest show`: that
+/// command merges the config's `customGames:` block into its output with no flag
+/// to suppress it, and the merged entries can't be filtered back out by name —
+/// an override, or a custom save on a manifest-covered game, is stored under
+/// that game's own name, so dropping it would take the real entry with it
+/// (#513). The file on disk is the manifest ludusavi actually ships;
 /// `custom_saves` re-derives each override from it.
 ///
 /// `manifest.yaml` sits beside the config, not next to the executable. Reading
@@ -1048,12 +1066,10 @@ pub async fn validate_config(ludusavi_exe: &Path, config_dir: &Path) -> Result<(
 /// default dir, where Spool keeps no manifest, so `manifest show` printed `{}`
 /// and exited 0 — a clean parse into an empty map that silently cost every
 /// candidate its save paths, store ids and install dirs.
-async fn load_manifest(ludusavi_exe: &Path) -> AppResult<HashMap<String, ManifestEntry>> {
-    // Nothing else refreshes the file now that the read is a plain fs read.
-    // Best-effort: a device that can't reach the network still gets whatever
-    // manifest it already has on disk.
-    refresh_manifest(ludusavi_exe).await;
-
+///
+/// Pure filesystem read, no network — the file is freshened separately by
+/// [`refresh_manifest`] / [`spawn_manifest_refresh`].
+async fn read_manifest_file() -> AppResult<HashMap<String, ManifestEntry>> {
     let path = crate::paths::ludusavi_config_dir().join("manifest.yaml");
     let raw = tokio::fs::read_to_string(&path).await.map_err(|e| {
         AppError::Other(format!(
@@ -1066,14 +1082,13 @@ async fn load_manifest(ludusavi_exe: &Path) -> AppResult<HashMap<String, Manifes
     // An empty manifest is the shape #508 shipped as: a clean parse and no data,
     // cached for the life of the process so every lookup after it silently
     // missed. ludusavi ships tens of thousands of games, so treat empty as the
-    // failure it is — nothing caches it, and `search_multi` falls back to
-    // unenriched candidates rather than aborting.
+    // failure it is — the cold-load path doesn't cache it, and `search_multi`
+    // falls back to unenriched candidates rather than aborting.
     if manifest.is_empty() {
         return Err(AppError::Other(
             "ludusavi returned an empty manifest — game identification is degraded".into(),
         ));
     }
-    tracing::info!(games = manifest.len(), "ludusavi manifest loaded");
     Ok(manifest)
 }
 
@@ -1084,6 +1099,24 @@ async fn load_manifest(ludusavi_exe: &Path) -> AppResult<HashMap<String, Manifes
 fn parse_manifest_yaml(raw: &str) -> AppResult<HashMap<String, ManifestEntry>> {
     serde_yaml::from_str(raw)
         .map_err(|e| AppError::Other(format!("couldn't parse ludusavi manifest: {e}")))
+}
+
+/// Refresh `manifest.yaml` in the background and swap the parsed result into
+/// `cache` on success. Detached so a slow or unreachable remote never blocks the
+/// search that triggered the cold load — that first search runs against whatever
+/// was already on disk, and the next one picks up the fresh copy. A failed
+/// refresh (offline) leaves the existing cache in place.
+fn spawn_manifest_refresh(cache: ManifestCache, ludusavi_exe: PathBuf) {
+    tokio::spawn(async move {
+        refresh_manifest(&ludusavi_exe).await;
+        match read_manifest_file().await {
+            Ok(m) => {
+                tracing::info!(games = m.len(), "ludusavi manifest refreshed");
+                *cache.write().await = Some(Arc::new(m));
+            }
+            Err(e) => tracing::warn!(error = %e, "background manifest refresh produced nothing usable"),
+        }
+    });
 }
 
 /// Run `ludusavi manifest update` against `config_dir`. Shared by the
@@ -1101,9 +1134,9 @@ async fn run_manifest_update(
 }
 
 /// Bring the on-disk manifest up to date in the config dir Spool owns, so the
-/// direct read in [`load_manifest`] sees current data. Best-effort: failures are
-/// logged and swallowed — an offline device would rather search a stale manifest
-/// than none.
+/// direct read in [`read_manifest_file`] sees current data. Best-effort:
+/// failures are logged and swallowed — an offline device would rather search a
+/// stale manifest than none.
 async fn refresh_manifest(ludusavi_exe: &Path) {
     match run_manifest_update(ludusavi_exe, &crate::paths::ludusavi_config_dir()).await {
         Ok(out) if out.status.success() => {}
@@ -1689,10 +1722,10 @@ mod tests {
 
     #[test]
     fn parse_manifest_yaml_reads_a_ludusavi_shaped_entry() {
-        // `load_manifest` now reads `manifest.yaml` directly instead of shelling
-        // out to `manifest show`, so the parse has to cope with the real file's
-        // shape: nested `files`/`registry` maps with `tags`/`when`, `installDir`,
-        // and `steam`/`gog`/`id` blocks.
+        // `read_manifest_file` reads `manifest.yaml` directly instead of
+        // shelling out to `manifest show`, so the parse has to cope with the
+        // real file's shape: nested `files`/`registry` maps with `tags`/`when`,
+        // `installDir`, and `steam`/`gog`/`id` blocks.
         let raw = r#"
 Hades:
   files:
@@ -1728,8 +1761,8 @@ Aliased Game:
 
     #[test]
     fn parse_manifest_yaml_maps_an_empty_document_to_an_empty_map() {
-        // The #508 shape: `{}` parses clean. `load_manifest` turns this into an
-        // error so it isn't cached and `search_multi` degrades instead.
+        // The #508 shape: `{}` parses clean. `read_manifest_file` turns this
+        // into an error so it isn't cached and `search_multi` degrades instead.
         assert!(parse_manifest_yaml("{}").unwrap().is_empty());
     }
 
