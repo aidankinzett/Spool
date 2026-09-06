@@ -137,8 +137,15 @@
   });
 
   // Free space per configured library folder, for the install-location rows.
+  // Generation counter so only the latest probe writes `folderFree`: adding a
+  // folder re-derives `libraryFolders` and re-runs this effect, and a slow
+  // earlier probe (a sleeping drive) resolving last would otherwise overwrite
+  // the newer map and drop the just-added folder's figure. Same guard as
+  // Settings' refreshLibFolderCapacity.
+  let freeSeq = 0;
   $effect(() => {
     const folders = libraryFolders;
+    const seq = ++freeSeq;
     (async () => {
       const entries = await Promise.all(
         folders.map(async (f): Promise<readonly [string, number]> => {
@@ -149,24 +156,38 @@
           }
         }),
       );
-      folderFree = Object.fromEntries(entries);
+      if (seq === freeSeq) folderFree = Object.fromEntries(entries);
     })();
   });
 
   /** Browse for a new library folder and register it (mirrors Settings'
    *  addLibraryFolder), then select it as this install's destination. */
   async function browseFolder() {
-    const picked = await openDialog({ title: 'Pick a library folder', directory: true, multiple: false });
-    if (typeof picked !== 'string') return;
+    const dir = await openDialog({ title: 'Pick a library folder', directory: true, multiple: false });
+    if (typeof dir !== 'string') return;
     addingFolder = true;
     try {
-      const canonical = await api.prepareLibraryFolder(picked);
-      if (config && !config.library_folders.some((f) => f.path === canonical)) {
+      // `config` is normally loaded at mount; if that failed, load it now
+      // rather than selecting a folder we then can't register (which would
+      // install into an unregistered path). A second failure surfaces as an
+      // error and leaves `selectedFolder` untouched.
+      if (!config) config = await api.getConfig();
+      const canonical = await api.prepareLibraryFolder(dir);
+      if (!config.library_folders.some((f) => f.path === canonical)) {
+        const prev = config.library_folders;
         config.library_folders = [
-          ...config.library_folders,
-          { path: canonical, label: null, default_install: config.library_folders.length === 0 },
+          ...prev,
+          { path: canonical, label: null, default_install: prev.length === 0 },
         ];
-        config = await api.updateConfig(config);
+        // Send a snapshot, not the live $state proxy, and keep the local
+        // `config` as the source of truth — don't reassign from the echo.
+        // Roll back the list if the save fails so the UI matches disk. (#272)
+        try {
+          await api.updateConfig($state.snapshot(config));
+        } catch (e) {
+          config.library_folders = prev;
+          throw e;
+        }
       }
       selectedFolder = canonical;
     } catch (e) {
