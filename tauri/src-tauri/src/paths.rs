@@ -133,6 +133,17 @@ pub fn control_plane_lock_file() -> PathBuf {
     app_data_dir().join("control-plane.lock")
 }
 
+/// Marker file for the machine-wide lock serialising the startup rotation of
+/// `debug.log` across processes. Every Spool process rotates the log at boot and
+/// several can start at once (tray GUI, an attached `spool --run`, the headless
+/// Decky server), so the size-check / copy / truncate sequence must not
+/// interleave — otherwise one process can truncate the log between another's
+/// check and its copy, and the copy captures an empty file. Same lifecycle as
+/// [`backup_lock_file`] — only its lock state matters, never its contents.
+pub fn log_rotate_lock_file() -> PathBuf {
+    app_data_dir().join("log-rotate.lock")
+}
+
 /// Directory holding the per-game run-lock marker files (see
 /// [`run_lock_file`] / `proc_lock::try_acquire_run`).
 pub fn run_locks_dir() -> PathBuf {
