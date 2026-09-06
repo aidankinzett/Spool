@@ -408,7 +408,18 @@ impl LudusaviClient {
         config_dir: &Path,
         queries: &[String],
     ) -> AppResult<Vec<SearchCandidate>> {
-        let manifest = self.manifest_or_load(ludusavi_exe, config_dir).await?;
+        // A manifest failure (missing / empty / unparseable) shouldn't sink the
+        // whole search. `run_find` still returns ranked names; they just come
+        // back without save paths, store ids or install dirs — the same
+        // degraded shape as a game the manifest doesn't cover. Log it once and
+        // carry on rather than handing the frontend an error toast.
+        let manifest = self
+            .manifest_or_load(ludusavi_exe, config_dir)
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "manifest unavailable — returning unenriched candidates");
+                Arc::new(HashMap::new())
+            });
 
         // Merge hits keyed by game name, keeping the highest score when a
         // game matches more than one query.
@@ -592,9 +603,7 @@ impl LudusaviClient {
     /// callers treat a failure as a warning, since a stale cached manifest
     /// still works.
     pub async fn manifest_update(&self, ludusavi_exe: &Path, config_dir: &Path) -> AppResult<()> {
-        let mut cmd = blocking_command(ludusavi_exe, config_dir);
-        cmd.args(["manifest", "update"]);
-        let output = run_blocking(cmd, "manifest update").await?;
+        let output = run_manifest_update(ludusavi_exe, config_dir).await?;
         if output.status.success() {
             // Drop the in-memory parsed copy so the next manifest_or_load()
             // re-reads the freshly-updated file — otherwise Add Game search
@@ -651,11 +660,10 @@ impl LudusaviClient {
                 return Ok(Arc::clone(m));
             }
         }
-        // Slow path: load the manifest from ludusavi WITHOUT --config so that
-        // Spool's customGames entries (which replace manifest entries with a
-        // reduced path set for the active overrides) don't leak into the raw
-        // manifest lookup. The global manifest.yaml is found relative to the
-        // executable regardless of the config location.
+        // Slow path: read `manifest.yaml` straight off disk, so Spool's
+        // customGames entries (which replace or extend manifest entries for the
+        // games the user has touched) can't leak into the raw lookup — see
+        // `read_manifest_file`.
         let mut guard = self.manifest.write().await;
         // Double-checked locking: another caller may have populated the cache
         // between us dropping the read guard and acquiring the write guard, so
@@ -665,7 +673,24 @@ impl LudusaviClient {
         if let Some(m) = guard.as_ref() {
             return Ok(Arc::clone(m));
         }
-        let manifest = load_manifest(ludusavi_exe).await?;
+        // Serve whatever manifest is already on disk without waiting on the
+        // network. `ludusavi manifest update` runs synchronously only when
+        // there's nothing usable to fall back to (a fresh install); otherwise
+        // it's kicked off detached so a slow or unreachable remote can't stall
+        // this search for the full RUN_API_TIMEOUT. An empty or failed manifest
+        // isn't cached, so a blocking refresh here would repeat on every search.
+        let manifest = match read_manifest_file().await {
+            Ok(m) => {
+                spawn_manifest_refresh(Arc::clone(&self.manifest), ludusavi_exe.to_path_buf());
+                m
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "no usable manifest on disk — fetching one");
+                refresh_manifest(ludusavi_exe).await;
+                read_manifest_file().await?
+            }
+        };
+        tracing::info!(games = manifest.len(), "ludusavi manifest loaded");
         let arc = Arc::new(manifest);
         *guard = Some(Arc::clone(&arc));
         Ok(arc)
@@ -1025,32 +1050,102 @@ pub async fn validate_config(ludusavi_exe: &Path, config_dir: &Path) -> Result<(
     }
 }
 
-async fn load_manifest(ludusavi_exe: &Path) -> AppResult<HashMap<String, ManifestEntry>> {
-    // `manifest show` (no `--no-manifest-update`) fetches/refreshes the manifest
-    // over the network. On a flaky network that download can hang indefinitely,
-    // freezing the first Add-Game search's spinner forever. Bound it with the
-    // same blocking-spawn + RUN_API_TIMEOUT + kill-on-expiry as run_api, so it
-    // fails cleanly instead. No `--config` (so the raw manifest isn't filtered by
-    // Spool's customGames) — built inline rather than via blocking_command.
-    let mut cmd = std::process::Command::new(ludusavi_exe);
-    cmd.args(["manifest", "show", "--api"]);
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt as _;
-        cmd.process_group(0);
+/// Read ludusavi's manifest off disk, with none of Spool's own `customGames:`
+/// merged in.
+///
+/// Reads `manifest.yaml` directly rather than via `ludusavi manifest show`: that
+/// command merges the config's `customGames:` block into its output with no flag
+/// to suppress it, and the merged entries can't be filtered back out by name —
+/// an override, or a custom save on a manifest-covered game, is stored under
+/// that game's own name, so dropping it would take the real entry with it
+/// (#513). The file on disk is the manifest ludusavi actually ships;
+/// `custom_saves` re-derives each override from it.
+///
+/// `manifest.yaml` sits beside the config, not next to the executable. Reading
+/// with no `--config` at all (the #508 bug) pointed ludusavi at the user's
+/// default dir, where Spool keeps no manifest, so `manifest show` printed `{}`
+/// and exited 0 — a clean parse into an empty map that silently cost every
+/// candidate its save paths, store ids and install dirs.
+///
+/// Pure filesystem read, no network — the file is freshened separately by
+/// [`refresh_manifest`] / [`spawn_manifest_refresh`].
+async fn read_manifest_file() -> AppResult<HashMap<String, ManifestEntry>> {
+    let path = crate::paths::ludusavi_config_dir().join("manifest.yaml");
+    let raw = tokio::fs::read_to_string(&path).await.map_err(|e| {
+        AppError::Other(format!(
+            "couldn't read ludusavi manifest at {}: {e}",
+            path.display()
+        ))
+    })?;
+    let manifest = parse_manifest_yaml(&raw)?;
+
+    // An empty manifest is the shape #508 shipped as: a clean parse and no data,
+    // cached for the life of the process so every lookup after it silently
+    // missed. ludusavi ships tens of thousands of games, so treat empty as the
+    // failure it is — the cold-load path doesn't cache it, and `search_multi`
+    // falls back to unenriched candidates rather than aborting.
+    if manifest.is_empty() {
+        return Err(AppError::Other(
+            "ludusavi returned an empty manifest — game identification is degraded".into(),
+        ));
     }
-    crate::process::strip_appimage_env_blocking(&mut cmd);
-    crate::capture_stdio!(cmd);
-    let output = run_blocking(cmd, "manifest").await?;
-    if !output.status.success() {
-        return Err(AppError::Other(format!(
-            "ludusavi manifest exited {}",
-            output.status.code().unwrap_or(-1)
-        )));
+    Ok(manifest)
+}
+
+/// Parse ludusavi's `manifest.yaml` into the entry map. `ManifestEntry` derives
+/// `Deserialize` with a container-level `#[serde(default)]`, so unmodelled keys
+/// (e.g. an entry that's only an `alias`) are ignored and land as empty entries
+/// rather than failing the parse.
+fn parse_manifest_yaml(raw: &str) -> AppResult<HashMap<String, ManifestEntry>> {
+    serde_yaml::from_str(raw)
+        .map_err(|e| AppError::Other(format!("couldn't parse ludusavi manifest: {e}")))
+}
+
+/// Refresh `manifest.yaml` in the background and swap the parsed result into
+/// `cache` on success. Detached so a slow or unreachable remote never blocks the
+/// search that triggered the cold load — that first search runs against whatever
+/// was already on disk, and the next one picks up the fresh copy. A failed
+/// refresh (offline) leaves the existing cache in place.
+fn spawn_manifest_refresh(cache: ManifestCache, ludusavi_exe: PathBuf) {
+    tokio::spawn(async move {
+        refresh_manifest(&ludusavi_exe).await;
+        match read_manifest_file().await {
+            Ok(m) => {
+                tracing::info!(games = m.len(), "ludusavi manifest refreshed");
+                *cache.write().await = Some(Arc::new(m));
+            }
+            Err(e) => tracing::warn!(error = %e, "background manifest refresh produced nothing usable"),
+        }
+    });
+}
+
+/// Run `ludusavi manifest update` against `config_dir`. Shared by the
+/// best-effort [`refresh_manifest`] and [`LudusaviClient::manifest_update`].
+///
+/// A cold manifest fetch can hang on a flaky connection; `run_blocking` bounds
+/// it with `RUN_API_TIMEOUT` and kills the child on expiry.
+async fn run_manifest_update(
+    ludusavi_exe: &Path,
+    config_dir: &Path,
+) -> AppResult<std::process::Output> {
+    let mut cmd = blocking_command(ludusavi_exe, config_dir);
+    cmd.args(["manifest", "update"]);
+    run_blocking(cmd, "manifest update").await
+}
+
+/// Bring the on-disk manifest up to date in the config dir Spool owns, so the
+/// direct read in [`read_manifest_file`] sees current data. Best-effort:
+/// failures are logged and swallowed — an offline device would rather search a
+/// stale manifest than none.
+async fn refresh_manifest(ludusavi_exe: &Path) {
+    match run_manifest_update(ludusavi_exe, &crate::paths::ludusavi_config_dir()).await {
+        Ok(out) if out.status.success() => {}
+        Ok(out) => tracing::warn!(
+            exit = out.status.code().unwrap_or(-1),
+            "ludusavi manifest update failed — reading whatever manifest is on disk"
+        ),
+        Err(e) => tracing::warn!(error = %e, "ludusavi manifest update failed"),
     }
-    let stdout = String::from_utf8(output.stdout)
-        .map_err(|e| AppError::Other(format!("ludusavi manifest output not utf-8: {e}")))?;
-    crate::util::parse_json(stdout.as_bytes(), "ludusavi manifest")
 }
 
 // ── Enrichment + helpers ────────────────────────────────────────────────────
@@ -1611,6 +1706,65 @@ fn ludusavi_path_or_err(_config: &State<'_, SharedConfig>) -> AppResult<PathBuf>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn enrich_without_a_manifest_entry_loses_every_derived_field() {
+        // Documents what an empty manifest cost: #508's `{}` meant this branch
+        // ran for every candidate, so the missing save path the issue reported
+        // came with missing store ids and install dirs too.
+        let c = enrich("Hades".to_string(), 0.9, None);
+        assert_eq!(c.save_path, None);
+        assert!(c.save_paths.is_empty());
+        assert_eq!(c.steam_id, None);
+        assert_eq!(c.manifest_install_dir, None);
+        assert!(c.manifest_install_dirs.is_empty());
+    }
+
+    #[test]
+    fn parse_manifest_yaml_reads_a_ludusavi_shaped_entry() {
+        // `read_manifest_file` reads `manifest.yaml` directly instead of
+        // shelling out to `manifest show`, so the parse has to cope with the
+        // real file's shape: nested `files`/`registry` maps with `tags`/`when`,
+        // `installDir`, and `steam`/`gog`/`id` blocks.
+        let raw = r#"
+Hades:
+  files:
+    <winAppData>/Hades/save:
+      tags: [save]
+      when:
+        - os: windows
+        - os: linux
+  installDir:
+    Hades: {}
+  steam:
+    id: 1145360
+  id:
+    lutris: hades
+Aliased Game:
+  alias: Hades
+"#;
+        let m = parse_manifest_yaml(raw).unwrap();
+        let hades = m.get("Hades").expect("Hades present");
+        assert_eq!(hades.files.len(), 1);
+        let fe = hades.files.values().next().unwrap();
+        assert_eq!(fe.tags, ["save"]);
+        assert_eq!(fe.when.len(), 2);
+        assert!(hades.install_dir.contains_key("Hades"));
+        assert_eq!(hades.steam.as_ref().map(|s| s.id), Some(1145360));
+        assert_eq!(hades.id.as_ref().and_then(|i| i.lutris.as_deref()), Some("hades"));
+        // An alias-only entry parses to an empty ManifestEntry rather than
+        // failing the whole map. `run_find` canonicalises names, so it's never
+        // looked up under the alias anyway.
+        assert!(m.contains_key("Aliased Game"));
+        assert!(m["Aliased Game"].files.is_empty());
+    }
+
+    #[test]
+    fn parse_manifest_yaml_maps_an_empty_document_to_an_empty_map() {
+        // The #508 shape: `{}` parses clean. `read_manifest_file` turns this
+        // into an error so it isn't cached and `search_multi` degrades instead.
+        assert!(parse_manifest_yaml("{}").unwrap().is_empty());
+    }
 
     fn file_entry(tags: &[&str], when_os: &[Option<&str>]) -> ManifestFileEntry {
         ManifestFileEntry {
