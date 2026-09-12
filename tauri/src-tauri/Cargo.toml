@@ -29,7 +29,7 @@ chrono = { version = "0.4", features = ["serde"] }
 # Runtime-checked queries (query/query_as) — no compile-time DATABASE_URL or
 # `.sqlx` offline cache needed, so CI builds unchanged.
 sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "sqlite", "chrono"] }
-dirs = "6"
+dirs = "7"
 thiserror = "2"
 tauri-plugin-dialog = "2.7.1"
 tauri-plugin-single-instance = "2"
