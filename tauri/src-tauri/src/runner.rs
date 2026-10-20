@@ -1696,8 +1696,11 @@ pub async fn launch_game_inner_steal(app: &AppHandle, game_id: &str, steal: bool
         )
     };
 
-    // Resolve the launch plan (umu-run + Proton paths) *before* the long
-    // awaits below so a misconfiguration surfaces as a clean launch error.
+    // Resolve the launch plan (umu-run + Proton paths, launch options) *before*
+    // the long awaits below so a misconfiguration surfaces as a clean launch
+    // error. Its error goes through the same error phase + OS toast as a
+    // workflow error, since a forwarded `--run` or the Game-Mode splash has no
+    // other way to show it.
     let launch_plan = build_launch_plan(
         game_id,
         proton_version_path,
@@ -1707,20 +1710,25 @@ pub async fn launch_game_inner_steal(app: &AppHandle, game_id: &str, steal: bool
         &umu_run_path,
         &default_proton_path,
         &exe_path,
-    )?;
+    );
 
     let ludusavi_client = app.state::<LudusaviClient>();
-    let result = run_workflow(
-        app,
-        game_id,
-        &game_name,
-        &exe_path,
-        &launch_plan,
-        &ludusavi_exe,
-        &ludusavi_client,
-        steal,
-    )
-    .await;
+    let result = match launch_plan {
+        Ok(launch_plan) => {
+            run_workflow(
+                app,
+                game_id,
+                &game_name,
+                &exe_path,
+                &launch_plan,
+                &ludusavi_exe,
+                &ludusavi_client,
+                steal,
+            )
+            .await
+        }
+        Err(e) => Err(e),
+    };
 
     if let Err(e) = &result {
         emit_phase(
@@ -2459,12 +2467,16 @@ async fn phase_launch(ctx: &WorkflowCtx<'_>, exe_pathbuf: &Path) -> AppResult<Se
             umu_run = %ctx.launch.umu_run.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "<none>".into()),
             prefix_root = %ctx.launch.prefix_root.display(),
             proton_path = %ctx.launch.proton_path.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "<umu default>".into()),
+            env = ?ctx.launch.options.env,
             "launching game via Proton"
         );
     } else {
         tracing::info!(
             exe_path = %exe_pathbuf.display(),
             run_as_admin = ctx.launch.run_as_admin,
+            wrapper = ?ctx.launch.options.wrapper,
+            args = ?ctx.launch.options.args,
+            env = ?ctx.launch.options.env,
             "launching game natively"
         );
     }

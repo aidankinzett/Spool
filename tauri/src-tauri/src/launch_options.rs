@@ -18,7 +18,14 @@
 //! Tokenising is whitespace splitting with `'…'` / `"…"` grouping and no
 //! backslash escapes, so Windows paths survive unquoted. There's no shell: no
 //! globbing, no `$VAR` expansion, no `;` / `&&`. A leading `~/` on the wrapper
-//! program is expanded to the home directory.
+//! program or an env value is expanded to the home directory.
+//!
+//! A string without `%command%` that doesn't tokenise (a stray apostrophe, as in
+//! `-name O'Brien`) falls back to plain whitespace splitting, which is how
+//! launch arguments were split before `%command%` support. `WINEPREFIX` is
+//! rejected: Spool restores and backs up saves from the prefix set in the
+//! editor's Wine prefix field, so a prefix set here would put saves where
+//! backups don't look.
 
 use crate::error::{AppError, AppResult};
 
@@ -42,10 +49,34 @@ impl LaunchOptions {
     }
 }
 
-/// Parses a launch-options string. Errors on an unbalanced quote or more than
-/// one `%command%`.
+/// Env vars that launch options may not set, with the reason shown to the user.
+const RESERVED_ENV: &[(&str, &str)] = &[(
+    "WINEPREFIX",
+    "Set the prefix in the Wine prefix field instead of WINEPREFIX in launch options, so Spool backs up saves from the same prefix the game uses",
+)];
+
+/// Parses a launch-options string. With `%command%` present, errors on an
+/// unbalanced quote, more than one `%command%`, or a reserved env var. Either
+/// way, errors on `%command%` joined to other text (`mangohud%command%`).
 pub fn parse(raw: &str) -> AppResult<LaunchOptions> {
-    let tokens = tokenize(raw)?;
+    let tokens = match tokenize(raw) {
+        Ok(tokens) => tokens,
+        Err(_) if !raw.contains(COMMAND_TOKEN) => {
+            return Ok(LaunchOptions {
+                args: raw.split_whitespace().map(String::from).collect(),
+                ..Default::default()
+            })
+        }
+        Err(e) => return Err(e),
+    };
+    if tokens
+        .iter()
+        .any(|t| !t.quoted && !t.is_command && t.text.contains(COMMAND_TOKEN))
+    {
+        return Err(AppError::Other(
+            "Put spaces around %command% in launch options".into(),
+        ));
+    }
     let mut positions = tokens.iter().enumerate().filter(|(_, t)| t.is_command);
     let Some((cmd_at, _)) = positions.next() else {
         return Ok(LaunchOptions {
@@ -67,8 +98,11 @@ pub fn parse(raw: &str) -> AppResult<LaunchOptions> {
     let mut wrapper = Vec::new();
     for tok in before {
         if wrapper.is_empty() {
-            if let Some(pair) = env_assignment(&tok) {
-                env.push(pair);
+            if let Some((name, value)) = env_assignment(&tok) {
+                if let Some((_, why)) = RESERVED_ENV.iter().find(|(r, _)| *r == name) {
+                    return Err(AppError::Other((*why).into()));
+                }
+                env.push((name, expand_home(&value)));
                 continue;
             }
         }
@@ -85,6 +119,8 @@ struct Token {
     text: String,
     /// The token was a bare, unquoted `%command%`.
     is_command: bool,
+    /// Some part of the token was quoted.
+    quoted: bool,
     /// The `=` of a `NAME=value` came before any quote, so the name is literal.
     unquoted_name: bool,
 }
@@ -125,6 +161,7 @@ fn tokenize(raw: &str) -> AppResult<Vec<Token>> {
         }
         tokens.push(Token {
             is_command: !quoted && text == COMMAND_TOKEN,
+            quoted,
             text,
             unquoted_name,
         });
@@ -145,11 +182,18 @@ fn env_assignment(tok: &Token) -> Option<(String, String)> {
     valid.then(|| (name.to_string(), value.to_string()))
 }
 
-fn expand_home(program: &str) -> String {
-    match (program.strip_prefix("~/"), dirs::home_dir()) {
+fn expand_home(path: &str) -> String {
+    match (path.strip_prefix("~/"), dirs::home_dir()) {
         (Some(rest), Some(home)) => home.join(rest).to_string_lossy().into_owned(),
-        _ => program.to_string(),
+        _ => path.to_string(),
     }
+}
+
+/// Checks a launch-options string without launching, so the editor can show
+/// the same error a launch would hit.
+#[tauri::command]
+pub fn validate_launch_options(raw: String) -> AppResult<()> {
+    parse(&raw).map(|_| ())
 }
 
 #[cfg(test)]
@@ -245,5 +289,21 @@ mod tests {
     fn errors() {
         assert!(parse("wrap %command% %command%").is_err());
         assert!(parse("wrap \"unterminated %command%").is_err());
+        assert!(parse("mangohud%command%").is_err());
+        assert!(parse("wrap %command%;").is_err());
+        assert!(parse("WINEPREFIX=/tmp/pfx %command%").is_err());
+    }
+
+    #[test]
+    fn unbalanced_quote_without_command_splits_on_whitespace() {
+        let o = parse("-name O'Brien -mod \"x").unwrap();
+        assert_eq!(o.args, s(&["-name", "O'Brien", "-mod", "\"x"]));
+    }
+
+    #[test]
+    fn tilde_expands_in_env_values() {
+        let home = dirs::home_dir().unwrap();
+        let o = parse("DXVK_CONFIG_FILE=~/dxvk.conf %command%").unwrap();
+        assert_eq!(o.env[0].1, home.join("dxvk.conf").to_string_lossy());
     }
 }

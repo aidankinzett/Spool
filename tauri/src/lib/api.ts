@@ -65,6 +65,8 @@ export const api = {
     invoke('list_play_sessions', { gameName: gameName ?? null }),
   addGame: (newGame: NewGame): Promise<GameEntry> => invoke('add_game', { newGame }),
   updateGame: (entry: GameEntry): Promise<GameEntry> => invoke('update_game', { entry }),
+  /** Rejects with the same message a launch would hit for a malformed launch-options string. */
+  validateLaunchOptions: (raw: string): Promise<void> => invoke('validate_launch_options', { raw }),
   removeGame: (id: string): Promise<boolean> => invoke('remove_game', { id }),
   /** Removes the library entry AND deletes its install folder from disk. */
   deleteGameFromDisk: (id: string): Promise<void> => invoke('delete_game_from_disk', { id }),
