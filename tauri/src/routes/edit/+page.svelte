@@ -727,8 +727,8 @@
             )}
           {/if}
           {@render field(
-            'Launch arguments',
-            'Extra command-line arguments passed after the executable.',
+            'Launch options',
+            'Extra arguments passed after the executable. Like Steam, use %command% for the game command to add a wrapper or environment variables, e.g. VAR=1 mangohud %command% -windowed.',
             argsField,
           )}
 

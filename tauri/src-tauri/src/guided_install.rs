@@ -169,6 +169,7 @@ async fn run_impl(
                 game_id: &install_id,
                 extra_args: &[],
                 extra_env: &[("WINE_LARGE_ADDRESS_AWARE", "1")],
+                wrapper: &[],
             },
         )
         .await
@@ -221,6 +222,7 @@ async fn init_prefix(
             game_id: install_id,
             extra_args: &[],
             extra_env: &[],
+            wrapper: &[],
         },
     )
     .await;

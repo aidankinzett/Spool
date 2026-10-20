@@ -38,6 +38,7 @@ mod gamepad;
 mod guided_install;
 mod headless;
 mod lan;
+mod launch_options;
 mod launcher;
 mod library;
 mod ludusavi;

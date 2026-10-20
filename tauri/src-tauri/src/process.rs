@@ -22,6 +22,7 @@
 //! routes behaving identically.
 
 use crate::error::{AppError, AppResult};
+use crate::launch_options::LaunchOptions;
 use crate::proton;
 use std::collections::VecDeque;
 use std::path::Path;
@@ -305,11 +306,16 @@ pub(crate) fn strip_appimage_env_blocking(cmd: &mut std::process::Command) {
     }
 }
 
-/// How to launch a game. The `Native` path is unchanged from before; the
+/// How to launch a game. The `Native` path runs the exe directly; the
 /// `Proton` path wraps the exe in umu-run with a per-game Wine prefix.
+///
+/// Both carry the game's [`LaunchOptions`] (`launch_options.rs`): a non-empty
+/// `wrapper` is spawned instead, with the game command (the exe, or the whole
+/// umu-run invocation) appended to its arguments.
 pub enum LaunchSpec<'a> {
     Native {
         run_as_admin: bool,
+        options: &'a LaunchOptions,
     },
     Proton {
         umu_run: &'a Path,
@@ -320,7 +326,28 @@ pub enum LaunchSpec<'a> {
         extra_args: &'a [String],
         /// Additional env vars applied after the standard umu env.
         extra_env: &'a [(&'a str, &'a str)],
+        /// Wrapper program + args placed in front of the umu-run command.
+        wrapper: &'a [String],
     },
+}
+
+/// `program args…`, or `wrapper[0] wrapper[1..]… program args…` when a
+/// wrapper is set.
+fn wrapped_command<S: AsRef<std::ffi::OsStr>>(
+    wrapper: &[String],
+    program: &Path,
+    args: &[S],
+) -> Command {
+    let mut cmd = match wrapper.split_first() {
+        Some((wrap_program, wrap_args)) => {
+            let mut cmd = Command::new(wrap_program);
+            cmd.args(wrap_args).arg(program);
+            cmd
+        }
+        None => Command::new(program),
+    };
+    cmd.args(args);
+    cmd
 }
 
 /// Spawns the game and waits for it to exit.
@@ -331,8 +358,14 @@ pub async fn run_game(exe_path: &Path, spec: LaunchSpec<'_>) -> AppResult<GameEx
         .unwrap_or_else(|| Path::new("."));
 
     match spec {
-        LaunchSpec::Native { run_as_admin } => {
+        LaunchSpec::Native {
+            run_as_admin,
+            options,
+        } => {
             if cfg!(windows) && run_as_admin {
+                if !options.is_empty() {
+                    tracing::warn!("launch options are not applied to an elevated launch");
+                }
                 let code = run_elevated(exe_path).await?;
                 return Ok(GameExitResult {
                     code,
@@ -340,12 +373,14 @@ pub async fn run_game(exe_path: &Path, spec: LaunchSpec<'_>) -> AppResult<GameEx
                 });
             }
 
-            let mut cmd = Command::new(exe_path);
+            let mut cmd = wrapped_command(&options.wrapper, exe_path, &options.args);
             cmd.current_dir(cwd);
             strip_appimage_env(&mut cmd);
-            let mut child = cmd
-                .spawn()
-                .map_err(|e| AppError::Other(format!("failed to start game: {e}")))?;
+            cmd.envs(options.env.iter().map(|(k, v)| (k, v)));
+            let mut child = cmd.spawn().map_err(|e| match options.wrapper.first() {
+                Some(w) => AppError::Other(format!("failed to start launch wrapper {w}: {e}")),
+                None => AppError::Other(format!("failed to start game: {e}")),
+            })?;
 
             let status = child
                 .wait()
@@ -364,6 +399,7 @@ pub async fn run_game(exe_path: &Path, spec: LaunchSpec<'_>) -> AppResult<GameEx
             game_id,
             extra_args,
             extra_env,
+            wrapper,
         } => {
             let launch = proton::build_umu_launch(
                 umu_run,
@@ -384,6 +420,7 @@ pub async fn run_game(exe_path: &Path, spec: LaunchSpec<'_>) -> AppResult<GameEx
             // Steam runtime container see the host environment. Without it,
             // umu-run's Python aborts instantly and the game "exits" in ~10ms.
             tracing::info!(
+                wrapper = ?wrapper,
                 program = %launch.program.display(),
                 args = ?launch.args,
                 cwd = %cwd.display(),
@@ -392,15 +429,16 @@ pub async fn run_game(exe_path: &Path, spec: LaunchSpec<'_>) -> AppResult<GameEx
 
             let start = tokio::time::Instant::now();
 
-            let mut cmd = Command::new(&launch.program);
-            cmd.args(&launch.args).envs(launch.env).current_dir(cwd);
+            let mut cmd = wrapped_command(wrapper, &launch.program, &launch.args);
+            cmd.envs(launch.env).current_dir(cwd);
             cmd.stdout(std::process::Stdio::piped());
             cmd.stderr(std::process::Stdio::piped());
             strip_appimage_env(&mut cmd);
             cmd.envs(extra_env.iter().copied());
-            let mut child = cmd
-                .spawn()
-                .map_err(|e| AppError::Other(format!("failed to start game via Proton: {e}")))?;
+            let mut child = cmd.spawn().map_err(|e| match wrapper.first() {
+                Some(w) => AppError::Other(format!("failed to start launch wrapper {w}: {e}")),
+                None => AppError::Other(format!("failed to start game via Proton: {e}")),
+            })?;
 
             let stdout_handle = child.stdout.take().map(|s| {
                 tokio::spawn(relay_umu_stream(s, "stdout", None, |line| {
@@ -565,6 +603,24 @@ async fn run_elevated(_exe_path: &Path) -> AppResult<i32> {
 mod tests {
     use super::*;
     use std::collections::HashMap;
+
+    fn argv(cmd: &Command) -> Vec<String> {
+        let std = cmd.as_std();
+        std::iter::once(std.get_program())
+            .chain(std.get_args())
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    #[test]
+    fn wrapped_command_puts_the_wrapper_in_front() {
+        let wrapper = vec!["/bin/wrap".to_string(), "--flag".to_string()];
+        let cmd = wrapped_command(&wrapper, Path::new("/g/game"), &["-dx11"]);
+        assert_eq!(argv(&cmd), ["/bin/wrap", "--flag", "/g/game", "-dx11"]);
+
+        let cmd = wrapped_command(&[], Path::new("/g/game"), &["-dx11"]);
+        assert_eq!(argv(&cmd), ["/g/game", "-dx11"]);
+    }
 
     #[test]
     fn push_tail_keeps_the_newest_lines_and_stays_bounded() {
