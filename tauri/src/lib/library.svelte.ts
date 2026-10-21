@@ -926,6 +926,27 @@ export function createLibrary() {
       });
       return;
     }
+    // The last session's saves couldn't be backed up before the restore (see
+    // runner.rs `rescue_under_lock` / `rescue_unbacked_session`). Offer to
+    // launch anyway, accepting that the restore replaces that progress.
+    if (/'s last session hasn't been backed up yet|^Couldn't back up .+'s last session/.test(message)) {
+      toasts.show({
+        kind: 'bad',
+        label: 'LAUNCH · STOPPED',
+        catalog,
+        title: "Last session's saves aren't backed up",
+        sub: `${message} Launching anyway replaces that progress with the last backup.`,
+        cta: {
+          label: 'Launch anyway',
+          onClick: () => {
+            api
+              .launchGame(gameId, false, true)
+              .catch((e) => console.error('[library] launch-anyway failed:', e));
+          },
+        },
+      });
+      return;
+    }
     toasts.show({
       kind: 'bad',
       label: 'LAUNCH · FAILED',

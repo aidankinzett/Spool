@@ -98,6 +98,10 @@
   // ── State machine ─────────────────────────────────────────────────────────
   let phase = $state<ConflictPhase>('choose');
   let selected = $state<ConflictSide | null>(null);
+  // The resolve stopped because it found and backed up progress from a session
+  // that wasn't backed up (runner.rs `resolve_cloud_conflict`), which this
+  // dialog didn't show. Retrying would discard it, so only cancelling is offered.
+  let unsavedFound = $state(false);
   let hover = $state<Record<string, boolean>>({});
 
   const acc = $derived(accent ?? BRAND_SPOOL);
@@ -136,6 +140,7 @@
     // `resolve` transfers for the same conflict.
     if (!side || phase === 'applying') return;
     phase = 'applying';
+    unsavedFound = false;
     try {
       await resolve(side);
       // Success — hand straight back to the host, which closes this modal and
@@ -143,6 +148,7 @@
       onContinue();
     } catch (e) {
       console.error('[cloud-conflict] resolve failed:', e);
+      unsavedFound = /session that wasn't backed up/.test(String(e));
       phase = 'error';
     }
   }
@@ -160,6 +166,7 @@
   function cancel() {
     phase = 'choose';
     selected = null;
+    unsavedFound = false;
     onCancel();
   }
 
@@ -460,12 +467,18 @@
           </span>
           <div class="min-w-0 flex-1">
             <div class="font-mono" style:font-size="10px" style:letter-spacing="0.16em" style:color="var(--color-bad)">
-              {local ? 'UPLOAD FAILED' : 'DOWNLOAD FAILED'}
+              {unsavedFound ? 'NEWER LOCAL PROGRESS FOUND' : local ? 'UPLOAD FAILED' : 'DOWNLOAD FAILED'}
             </div>
             <div style:margin-top="3px" style:font-size="13px" style:color="var(--color-ink-1)" style:line-height="1.45">
-              Couldn't {local ? 'reach your cloud remote' : 'download from your cloud remote'}.
-              <strong class="font-semibold text-ink-0">Nothing was overwritten</strong> — your
-              {local ? 'saves on this device' : 'local saves'} are untouched.
+              {#if unsavedFound}
+                Found progress from a session that wasn't backed up, and backed it up.
+                <strong class="font-semibold text-ink-0">Nothing was overwritten</strong> — cancel and
+                launch again to compare it with the cloud before choosing.
+              {:else}
+                Couldn't {local ? 'reach your cloud remote' : 'download from your cloud remote'}.
+                <strong class="font-semibold text-ink-0">Nothing was overwritten</strong> — your
+                {local ? 'saves on this device' : 'local saves'} are untouched.
+              {/if}
             </div>
           </div>
         </div>
@@ -473,6 +486,7 @@
           {@render linkBtn('err-ludusavi', 'Open Ludusavi instead', onLudusavi, 'var(--color-ink-2)')}
           <div class="flex-1"></div>
           {@render ghostBtn('err-cancel', 'Cancel launch', cancel)}
+          {#if !unsavedFound}
           <button
             type="button"
             onclick={() => void runResolve()}
@@ -490,6 +504,7 @@
             <RotateCw size={13} />
             Try again
           </button>
+          {/if}
         </div>
       </div>
     {:else}
