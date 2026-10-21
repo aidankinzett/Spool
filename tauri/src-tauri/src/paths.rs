@@ -158,7 +158,24 @@ pub fn run_locks_dir() -> PathBuf {
 /// OS frees it when the holder exits. `game_id` is a UUID; sanitised defensively
 /// so a stray id can't escape the locks dir.
 pub fn run_lock_file(game_id: &str) -> PathBuf {
-    let safe: String = game_id
+    run_locks_dir().join(format!("run-{}.lock", safe_game_id(game_id)))
+}
+
+/// Marker written when a play session starts and removed once its post-session
+/// local backup has run (see `runner::phase_backup`). A marker left behind means
+/// the session's Spool process stopped before backing up — the live save may
+/// hold progress no backup has, so the next restore backs it up first. Unlike
+/// the lock files, its existence is the signal.
+pub fn unbacked_session_file(game_id: &str) -> PathBuf {
+    app_data_dir()
+        .join("unbacked-sessions")
+        .join(format!("{}.marker", safe_game_id(game_id)))
+}
+
+/// `game_id` is a UUID; sanitised defensively so a stray id can't escape the
+/// directory it's joined onto.
+fn safe_game_id(game_id: &str) -> String {
+    game_id
         .chars()
         .map(|c| {
             if c.is_ascii_alphanumeric() || c == '-' {
@@ -167,8 +184,7 @@ pub fn run_lock_file(game_id: &str) -> PathBuf {
                 '_'
             }
         })
-        .collect();
-    run_locks_dir().join(format!("run-{safe}.lock"))
+        .collect()
 }
 
 /// Marker file for the machine-wide **per-install LAN lock** — `flock`ed by a

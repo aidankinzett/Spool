@@ -109,6 +109,8 @@ Workflow orchestration:
 
 * **`launch_options.rs`** — parses a game's `launch_args` string in Steam's "Launch Options" format. Without `%command%` it's extra args after the exe. With one, leading `NAME=value` tokens become env vars, the other tokens before `%command%` become a wrapper program, and tokens after it are game args. `process::run_game` spawns the wrapper with the game command appended (on Proton, the whole `umu-run game.exe …` invocation). Quote grouping only; no shell, no backslash escapes. A string with no `%command%` that fails to tokenise (stray apostrophe) falls back to whitespace splitting. `WINEPREFIX` is rejected, since save restore/backup resolve the prefix from the editor's Wine prefix field. The editor validates via `validate_launch_options`; a launch-time parse error goes through the runner's error phase + OS toast. Not applied to an elevated (Run-As-Admin) Windows launch.
 
+* **`unbacked_session.rs`** — per-game marker (`unbacked-sessions/<game_id>.marker`) written when a play session starts and removed once its post-session local backup runs. A marker left behind means Spool stopped before backing up while the game may have kept running (e.g. a streaming host or Steam killing the `spool --run` process). Every path that restores the tip over the live save (launch, pull, manual restore, conflict resolution — not a revision rollback, which deliberately replaces it) first runs `runner::rescue_unbacked_session`, a local backup that captures that progress. When the rescue writes a revision and the game has no cloud baseline, the tip it replaced becomes the baseline, so every later sync decision (including `go_online`) compares against it rather than the rescue's timestamp. The marker records the rescue and is cleared only after the following restore succeeds, so a retry after a conflict still knows the tip is a rescue. If the rescue can't run, the launch stops; the run-error toast offers "Launch anyway" (`launch_game` with `skip_rescue`).
+
 Startup backfills (one-shot at boot, saved once at the end, emit `library:changed`): **`accent_backfill.rs`** (cover on disk but no accent colour → `extract_vibrant_color`), **`size_backfill.rs`** (`game_folder_path` exists but `install_size_mb == 0` → recursive `walkdir` size in `spawn_blocking`), **`metadata_backfill.rs`** (`steam_id` set but empty `description`/`developer` → Steam Store fetch, ~1.5 s throttle).
 
 ### SvelteKit frontend (`tauri/src/`)
@@ -141,6 +143,7 @@ Paths below use `%LOCALAPPDATA%\Spool\` (Windows). The root resolves cross-platf
 | `launchers/` | Per-game `.exe` launcher stubs (Armoury Crate, Windows) |
 | `lan-games/` | Fallback install root for LAN downloads when no library folders are configured |
 | ludusavi `config.yaml` + `ludusavi-backup/` | Spool-owned, managed by `ludusavi_config.rs`; backup/restore paths must match for cloud sync |
+| `unbacked-sessions/` | Per-game markers for sessions whose saves haven't been backed up yet (`unbacked_session.rs`) |
 | `prefixes/` *(Linux)* | Per-game Proton/Wine prefixes (`proton.rs`) |
 | `debug.log` | App log |
 
