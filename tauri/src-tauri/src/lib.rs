@@ -66,6 +66,7 @@ mod steamgriddb;
 mod suspend;
 mod system_open;
 mod tray;
+mod unbacked_session;
 mod util;
 mod virtual_keyboard;
 
