@@ -524,17 +524,22 @@ pub async fn manual_restore(app: AppHandle, game_id: String) -> AppResult<Manual
         .await?
         .and_then(|e| e.game_folder_path.map(PathBuf::from));
     let ludusavi_client = app.state::<LudusaviClient>();
+    let run_state = app.state::<RunState>();
+    let _guard = run_state.try_acquire(&game_id)?;
+    let _run_lock = acquire_run_lock_for_restore(&game_id)?;
     // Capture an interrupted session's progress before the restore lands the tip
     // over it. A rescued tip then shows up as a conflict below, like on launch.
-    let (_backup_lock, _rescue) = rescue_before_restore(
-        &ludusavi_client,
-        &ludusavi_exe,
-        &config_dir,
-        &game_id,
-        &game_name,
-        wine_prefix.as_deref(),
-        game_folder.as_deref(),
-    )
+    let library = app.state::<SharedLibrary>();
+    let (_backup_lock, _rescue) = rescue_before_restore(&RescueTarget {
+        ludusavi_client: &ludusavi_client,
+        ludusavi_exe: &ludusavi_exe,
+        config_dir: &config_dir,
+        library: &library,
+        game_id: &game_id,
+        game_name: &game_name,
+        wine_prefix: wine_prefix.as_deref(),
+        game_folder: game_folder.as_deref(),
+    })
     .await?;
     let out = restore_with_redirects(
         &ludusavi_client,
@@ -564,7 +569,7 @@ pub async fn manual_restore(app: AppHandle, game_id: String) -> AppResult<Manual
             "Cloud sync conflict — open Ludusavi to resolve before restoring.".into(),
         ));
     }
-    unbacked_session::clear(&game_id);
+    unbacked_session::clear(&game_id).await;
 
     let game_count = out.overall.as_ref().map(|o| o.total_games).unwrap_or(0);
 
@@ -656,12 +661,7 @@ pub async fn pull_cloud_saves_core(
     game_id: &str,
 ) -> AppResult<PullResult> {
     // Acquire the machine-wide run lock so we can't sync cloud saves while a game session is running.
-    let _run_lock = crate::proc_lock::try_acquire_run(game_id)?.ok_or_else(|| {
-        AppError::Other(
-            "This game is busy right now (running, or being modified) — close it and try again."
-                .into(),
-        )
-    })?;
+    let _run_lock = acquire_run_lock_for_restore(game_id)?;
 
     // Without a remote there is nothing to pull — report it so the UI can hint
     // the user to configure cloud saves rather than showing a misleading
@@ -695,16 +695,17 @@ pub async fn pull_cloud_saves_core(
     // The restore below lands the tip in the live save. If the last session
     // ended without its backup, capture its progress first. The lock is held
     // through the restore, which reads the same backup tree. The marker is
-    // cleared once the live save matches the cloud (or local was kept ahead).
-    let (_backup_lock, rescue) = rescue_before_restore(
+    // cleared once the live save matches the cloud.
+    let (_backup_lock, rescue) = rescue_before_restore(&RescueTarget {
         ludusavi_client,
         ludusavi_exe,
         config_dir,
+        library,
         game_id,
-        &game_name,
-        wine_prefix.as_deref(),
-        game_folder.as_deref(),
-    )
+        game_name: &game_name,
+        wine_prefix: wine_prefix.as_deref(),
+        game_folder: game_folder.as_deref(),
+    })
     .await?;
     let rescue = rescue.and_then(|o| o.rescue);
 
@@ -739,7 +740,7 @@ pub async fn pull_cloud_saves_core(
             let _ = set_baseline_in(library, game_id, &tip.name).await;
         }
         mark_synced_badge(library, game_id).await;
-        unbacked_session::clear(game_id);
+        unbacked_session::clear(game_id).await;
         let game_count = out.overall.as_ref().map(|o| o.total_games).unwrap_or(0);
         return Ok(PullResult {
             outcome: PullOutcome::UpToDate,
@@ -772,7 +773,7 @@ pub async fn pull_cloud_saves_core(
     match decision {
         CloudSyncDecision::InSync => {
             mark_synced_badge(library, game_id).await;
-            unbacked_session::clear(game_id);
+            unbacked_session::clear(game_id).await;
             Ok(PullResult {
                 outcome: PullOutcome::UpToDate,
                 game_count: 0,
@@ -815,7 +816,7 @@ pub async fn pull_cloud_saves_core(
                 let _ = set_baseline_in(library, game_id, &tip.name).await;
             }
             mark_synced_badge(library, game_id).await;
-            unbacked_session::clear(game_id);
+            unbacked_session::clear(game_id).await;
             let game_count = out.overall.as_ref().map(|o| o.total_games).unwrap_or(0);
             Ok(PullResult {
                 outcome: PullOutcome::Pulled,
@@ -890,12 +891,7 @@ pub async fn restore_save_revision_core(
     backup_name: &str,
 ) -> AppResult<ManualRestoreResult> {
     // Acquire the machine-wide run lock so we can't restore saves while a game session is running.
-    let _run_lock = crate::proc_lock::try_acquire_run(game_id)?.ok_or_else(|| {
-        AppError::Other(
-            "This game is busy right now (running, or being modified) — close it and try again."
-                .into(),
-        )
-    })?;
+    let _run_lock = acquire_run_lock_for_restore(game_id)?;
 
     // Resolve the game's name, Proton prefix, and install folder from the
     // library (the same fields `manual_prep` derives for the command path).
@@ -914,20 +910,6 @@ pub async fn restore_save_revision_core(
     let wine_prefix =
         crate::proton::resolve_prefix_root(uses_proton, prefix_override.as_deref(), game_id);
 
-    // Capture an interrupted session's progress as a revision first, so rolling
-    // back over it stays undoable from the revision list. The lock is released
-    // before the pin, which takes it itself.
-    let (backup_lock, _rescue) = rescue_before_restore(
-        ludusavi_client,
-        ludusavi_exe,
-        config_dir,
-        game_id,
-        &game_name,
-        wine_prefix.as_deref(),
-        game_folder.as_deref(),
-    )
-    .await?;
-
     // ── Step 1: restore the chosen revision into the live save location ───
     // `Some(backup)` takes the no-cloud-sync rollback path, so the flag is
     // inert here — pass false for clarity.
@@ -945,8 +927,10 @@ pub async fn restore_save_revision_core(
     .map_err(|e| AppError::Other(format!("ludusavi restore: {e}")))?;
 
     let game_count = out.overall.as_ref().map(|o| o.total_games).unwrap_or(0);
-    drop(backup_lock);
-    unbacked_session::clear(game_id);
+    // No rescue before a rollback: the user chose to replace the live save, and
+    // a rescue revision could push the chosen one out of retention. The live
+    // save is now that revision, so an unbacked earlier session is moot.
+    unbacked_session::clear(game_id).await;
 
     // ── Step 2: pin the rolled-back state as the new tip ──────────────────
     let pin = backup_game_core(ludusavi_client, ludusavi_exe, config_dir, library, game_id)
@@ -1056,20 +1040,34 @@ pub async fn resolve_cloud_conflict(
         .await?
         .and_then(|e| e.game_folder_path.map(PathBuf::from));
     let ludusavi_client = app.state::<LudusaviClient>();
+    let run_state = app.state::<RunState>();
+    let _guard = run_state.try_acquire(&game_id)?;
+    let _run_lock = acquire_run_lock_for_restore(&game_id)?;
 
-    // If the live save holds an interrupted session's progress not yet backed
-    // up, capture it first so keeping "local" keeps it. (Keeping "cloud"
-    // replaces the local backups with the cloud's, discarding it by choice.)
-    let (_backup_lock, _rescue) = rescue_before_restore(
-        &ludusavi_client,
-        &ludusavi_exe,
-        &config_dir,
-        &game_id,
-        &game_name,
-        wine_prefix.as_deref(),
-        game_folder.as_deref(),
-    )
+    // The launch or pull that raised this conflict already rescued any
+    // interrupted session, so the dialog's "this device" side includes it.
+    // Rescue again in case the live save changed since. If that finds new
+    // progress, the dialog the user chose from didn't show it: keeping "local"
+    // still keeps it, but keeping "cloud" would discard it unseen, so stop.
+    let library = app.state::<SharedLibrary>();
+    let (_backup_lock, rescue) = rescue_before_restore(&RescueTarget {
+        ludusavi_client: &ludusavi_client,
+        ludusavi_exe: &ludusavi_exe,
+        config_dir: &config_dir,
+        library: &library,
+        game_id: &game_id,
+        game_name: &game_name,
+        wine_prefix: wine_prefix.as_deref(),
+        game_folder: game_folder.as_deref(),
+    })
     .await?;
+    if matches!(op, crate::ludusavi::CloudOp::Download) && rescue.is_some_and(|o| o.wrote) {
+        return Err(AppError::Other(
+            "Found progress from a session that wasn't backed up, and backed it up. Cancel and \
+             launch again to compare it with the cloud before choosing."
+                .into(),
+        ));
+    }
 
     // ── Step 1: mirror the chosen side, clearing the conflict ─────────────
     tracing::info!(game_name, ?op, "resolving cloud conflict");
@@ -1104,7 +1102,7 @@ pub async fn resolve_cloud_conflict(
             "Cloud sync conflict persisted after resolving — open Ludusavi to inspect.".into(),
         ));
     }
-    unbacked_session::clear(&game_id);
+    unbacked_session::clear(&game_id).await;
 
     let game_count = out.overall.as_ref().map(|o| o.total_games).unwrap_or(0);
 
@@ -1719,8 +1717,19 @@ async fn manual_prep(
 }
 
 #[tauri::command]
-pub async fn launch_game(app: AppHandle, game_id: String, steal: Option<bool>) -> AppResult<()> {
-    launch_game_inner_steal(&app, &game_id, steal.unwrap_or(false)).await
+pub async fn launch_game(
+    app: AppHandle,
+    game_id: String,
+    steal: Option<bool>,
+    skip_rescue: Option<bool>,
+) -> AppResult<()> {
+    launch_game_inner_steal(
+        &app,
+        &game_id,
+        steal.unwrap_or(false),
+        skip_rescue.unwrap_or(false),
+    )
+    .await
 }
 
 /// Inner launch function callable from non-command contexts (e.g. the
@@ -1728,13 +1737,20 @@ pub async fn launch_game(app: AppHandle, game_id: String, steal: Option<bool>) -
 /// Same behaviour as the `launch_game` command — single-launch guard +
 /// full workflow + phase emission.
 pub async fn launch_game_inner(app: &AppHandle, game_id: &str) -> AppResult<()> {
-    launch_game_inner_steal(app, game_id, false).await
+    launch_game_inner_steal(app, game_id, false, false).await
 }
 
 /// Like [`launch_game_inner`] but with control over whether the play-state
 /// lock acquire may steal a *suspended* lock from another device. Only the
 /// user's explicit "Play here instead" override passes `steal = true`.
-pub async fn launch_game_inner_steal(app: &AppHandle, game_id: &str, steal: bool) -> AppResult<()> {
+/// `skip_rescue` is the "Launch anyway" override for a launch the
+/// unbacked-session rescue stopped (see [`phase_restore`]).
+pub async fn launch_game_inner_steal(
+    app: &AppHandle,
+    game_id: &str,
+    steal: bool,
+    skip_rescue: bool,
+) -> AppResult<()> {
     let run_state = app.state::<RunState>();
     let _guard = run_state.try_acquire(game_id)?;
 
@@ -1816,6 +1832,7 @@ pub async fn launch_game_inner_steal(app: &AppHandle, game_id: &str, steal: bool
         &ludusavi_exe,
         &ludusavi_client,
         steal,
+        skip_rescue,
     )
     .await;
 
@@ -1993,6 +2010,15 @@ enum BackupLock {
     Unavailable,
 }
 
+impl BackupLock {
+    fn into_guard(self) -> Option<crate::proc_lock::FileLock> {
+        match self {
+            BackupLock::Held(guard) => Some(guard),
+            BackupLock::Busy | BackupLock::Unavailable => None,
+        }
+    }
+}
+
 /// Take the backup lock for a restore, waiting up to the usual timeout when
 /// another process holds it. `on_wait` runs once before that wait, so the
 /// caller can say why it paused.
@@ -2016,7 +2042,31 @@ async fn acquire_backup_lock(game_name: &str, on_wait: impl FnOnce()) -> BackupL
     }
 }
 
-/// Result of [`rescue_unbacked_session`].
+/// Take the per-game run lock for a restore outside the launch workflow, so it
+/// can't overwrite the live save (or clear the unbacked-session marker) of a
+/// session running in another Spool process.
+fn acquire_run_lock_for_restore(game_id: &str) -> AppResult<crate::proc_lock::FileLock> {
+    crate::proc_lock::try_acquire_run(game_id)?.ok_or_else(|| {
+        AppError::Other(
+            "This game is busy right now (running, or being modified) — close it and try again."
+                .into(),
+        )
+    })
+}
+
+/// The game a rescue backup runs for, and what it needs to run.
+struct RescueTarget<'a> {
+    ludusavi_client: &'a LudusaviClient,
+    ludusavi_exe: &'a Path,
+    config_dir: &'a Path,
+    library: &'a SharedLibrary,
+    game_id: &'a str,
+    game_name: &'a str,
+    wine_prefix: Option<&'a Path>,
+    game_folder: Option<&'a Path>,
+}
+
+/// Result of a rescue backup.
 struct RescueOutcome {
     /// The rescue recorded for this session (this attempt's or an earlier
     /// one's), if a rescue backup has written a revision.
@@ -2026,8 +2076,7 @@ struct RescueOutcome {
 }
 
 /// Back up the live save after a session that ended without its post-session
-/// backup, before a restore overwrites it. `None` when there's no such session
-/// ([`unbacked_session`] has the marker lifecycle).
+/// backup (`marker`, see [`unbacked_session`]), before a restore overwrites it.
 ///
 /// A restore lands the backup tip unconditionally, so it assumes the live save
 /// is already captured by that tip. That holds when a session ends with Spool's
@@ -2036,34 +2085,32 @@ struct RescueOutcome {
 /// `spool --run` process): the game's later progress is only in the live save,
 /// and the restore would replace it with the older tip. Backing up first makes
 /// that progress the local tip; with a remote configured, the restore then
-/// reports local ≠ cloud and the reconciliation ([`decide_after_rescue`])
-/// uploads it or reports a conflict.
+/// reports local ≠ cloud and the reconciliation uploads it or reports a
+/// conflict.
+///
+/// The rescue revision is stamped with the time of the rescue, not of the play
+/// it captured, so without a cloud baseline the timestamp fallback would always
+/// pick it over the cloud. When the game has no baseline, the tip the session
+/// started from is recorded as one: every later sync decision (this restore,
+/// a retry, `go_online` after an offline launch) then compares against it.
 ///
 /// ludusavi writes a revision only when the live save differs from the tip, so
 /// an unchanged save writes nothing. The marker is left in place: the caller
-/// clears it once its restore succeeds. Callers hold the backup lock when they
-/// can get it (see [`acquire_backup_lock`]).
+/// clears it once its restore succeeds.
 async fn rescue_unbacked_session(
-    ludusavi_client: &LudusaviClient,
-    ludusavi_exe: &Path,
-    config_dir: &Path,
-    game_id: &str,
-    game_name: &str,
-    wine_prefix: Option<&Path>,
-    game_folder: Option<&Path>,
-) -> AppResult<Option<RescueOutcome>> {
-    let Some(marker) = unbacked_session::read(game_id) else {
-        return Ok(None);
-    };
+    target: &RescueTarget<'_>,
+    marker: &unbacked_session::Marker,
+) -> AppResult<RescueOutcome> {
+    let game_name = target.game_name;
     let backup_dir = ludusavi_config::backup_dir();
     let tip_before = redirects::read_local_backup_tip_async(&backup_dir, game_name).await;
     backup_local_canonical(
-        ludusavi_client,
-        ludusavi_exe,
-        config_dir,
+        target.ludusavi_client,
+        target.ludusavi_exe,
+        target.config_dir,
         game_name,
-        wine_prefix,
-        game_folder,
+        target.wine_prefix,
+        target.game_folder,
     )
     .await
     .map_err(|e| {
@@ -2085,7 +2132,17 @@ async fn rescue_unbacked_session(
             "last session wasn't backed up — backed up its saves before restoring"
         );
         if let Some(r) = rescue.clone() {
-            unbacked_session::record_rescue(game_id, &marker, r);
+            if let Some(from) = r.from.as_deref() {
+                let has_baseline = target
+                    .library
+                    .find(target.game_id)
+                    .await?
+                    .is_some_and(|e| e.cloud_sync_baseline.is_some());
+                if !has_baseline {
+                    set_baseline_in(target.library, target.game_id, from).await?;
+                }
+            }
+            unbacked_session::record_rescue(target.game_id, marker, r).await;
         }
     } else {
         tracing::info!(
@@ -2093,49 +2150,43 @@ async fn rescue_unbacked_session(
             "last session wasn't backed up, but the live save matches the backup"
         );
     }
-    Ok(Some(RescueOutcome { rescue, wrote }))
+    Ok(RescueOutcome { rescue, wrote })
 }
 
-/// [`rescue_unbacked_session`] for restore paths outside the launch workflow,
-/// which don't otherwise take the backup lock. Returns the lock to hold through
-/// the restore (`None` when no rescue was needed, or locking is unavailable).
-/// A lock held by another process stops the restore rather than letting it
-/// overwrite the unbacked save.
-async fn rescue_before_restore(
-    ludusavi_client: &LudusaviClient,
-    ludusavi_exe: &Path,
-    config_dir: &Path,
-    game_id: &str,
-    game_name: &str,
-    wine_prefix: Option<&Path>,
-    game_folder: Option<&Path>,
-) -> AppResult<(Option<crate::proc_lock::FileLock>, Option<RescueOutcome>)> {
-    if unbacked_session::read(game_id).is_none() {
-        return Ok((None, None));
+/// Run the rescue for `marker` under the backup lock state `lock`. A lock held
+/// by another process past the timeout stops the restore rather than letting it
+/// overwrite the unbacked save. A lock file that can't be opened won't recover
+/// on retry, so the rescue runs without it. Shared by the launch restore and
+/// [`rescue_before_restore`].
+async fn rescue_under_lock(
+    lock: &BackupLock,
+    target: &RescueTarget<'_>,
+    marker: &unbacked_session::Marker,
+) -> AppResult<RescueOutcome> {
+    if matches!(lock, BackupLock::Busy) {
+        return Err(AppError::Other(format!(
+            "{}'s last session hasn't been backed up yet, and another backup is still running. \
+             Try again once it finishes.",
+            target.game_name
+        )));
     }
-    let lock = match acquire_backup_lock(game_name, || {}).await {
-        BackupLock::Held(guard) => Some(guard),
-        BackupLock::Unavailable => None,
-        BackupLock::Busy => return Err(rescue_lock_busy_error(game_name)),
-    };
-    let outcome = rescue_unbacked_session(
-        ludusavi_client,
-        ludusavi_exe,
-        config_dir,
-        game_id,
-        game_name,
-        wine_prefix,
-        game_folder,
-    )
-    .await?;
-    Ok((lock, outcome))
+    rescue_unbacked_session(target, marker).await
 }
 
-fn rescue_lock_busy_error(game_name: &str) -> AppError {
-    AppError::Other(format!(
-        "{game_name}'s last session hasn't been backed up yet, and another backup is still \
-         running. Try again once it finishes."
-    ))
+/// Rescue an unbacked session before a restore outside the launch workflow,
+/// which doesn't otherwise take the backup lock. Returns the lock to hold
+/// through the restore, and the outcome (`None` when there was no unbacked
+/// session). Callers hold the per-game run lock
+/// ([`acquire_run_lock_for_restore`]).
+async fn rescue_before_restore(
+    target: &RescueTarget<'_>,
+) -> AppResult<(Option<crate::proc_lock::FileLock>, Option<RescueOutcome>)> {
+    let Some(marker) = unbacked_session::read(target.game_id).await else {
+        return Ok((None, None));
+    };
+    let lock = acquire_backup_lock(target.game_name, || {}).await;
+    let outcome = rescue_under_lock(&lock, target, &marker).await?;
+    Ok((lock.into_guard(), Some(outcome)))
 }
 
 /// Run a ludusavi restore with automatic cross-platform redirect generation.
@@ -2371,6 +2422,7 @@ async fn run_workflow(
     ludusavi_exe: &Path,
     ludusavi_client: &LudusaviClient,
     steal_lock: bool,
+    skip_rescue: bool,
 ) -> AppResult<()> {
     tracing::info!(game_id, game_name, "starting run workflow");
 
@@ -2408,11 +2460,11 @@ async fn run_workflow(
     );
 
     preflight(&ctx, &exe_pathbuf, steal_lock).await?;
-    let no_saves = phase_restore(&ctx).await?;
+    let no_saves = phase_restore(&ctx, skip_rescue).await?;
     // Cleared by phase_backup once the session's saves are in the local backup
     // store. If this process dies first, the next restore finds it.
     if !no_saves {
-        unbacked_session::mark_started(ctx.game_id);
+        unbacked_session::mark_started(ctx.game_id).await;
     }
     let timing = phase_launch(&ctx, &exe_pathbuf).await?;
     let backup = phase_backup(&ctx, no_saves, &timing).await?;
@@ -2492,7 +2544,7 @@ async fn preflight(ctx: &WorkflowCtx<'_>, exe_pathbuf: &Path, steal_lock: bool) 
 /// Phase 1: restore saves before launch. Returns whether ludusavi found no
 /// saves to restore (a fresh game, fine). Any failure after the session claim
 /// releases our marker so peers aren't blocked by a session that never started.
-async fn phase_restore(ctx: &WorkflowCtx<'_>) -> AppResult<bool> {
+async fn phase_restore(ctx: &WorkflowCtx<'_>, skip_rescue: bool) -> AppResult<bool> {
     // One offline-mode read for the whole phase: the restore flag, the phase
     // messages, and the baseline advance must all agree.
     let (cloud_configured, _) = ctx.cloud_split();
@@ -2530,14 +2582,11 @@ async fn phase_restore(ctx: &WorkflowCtx<'_>) -> AppResult<bool> {
 
         // The last session ended without its post-session backup, so the live
         // save may hold progress the tip doesn't. Back it up before the restore
-        // overwrites it. A lock held elsewhere past the timeout stops the launch
-        // rather than restoring over the unbacked save; a lock that can't be
-        // opened at all won't clear on retry, so the rescue runs without it.
+        // overwrites it (see `rescue_under_lock` for the lock policy). If the
+        // rescue can't run, the launch stops — unless the user chose "Launch
+        // anyway" (`skip_rescue`), accepting that the restore replaces it.
         let mut rescue = None;
-        if unbacked_session::read(ctx.game_id).is_some() {
-            if matches!(backup_lock, BackupLock::Busy) {
-                return Err(rescue_lock_busy_error(ctx.game_name));
-            }
+        if let Some(marker) = unbacked_session::read(ctx.game_id).await {
             emit_phase(
                 ctx.app,
                 ctx.game_id,
@@ -2546,25 +2595,37 @@ async fn phase_restore(ctx: &WorkflowCtx<'_>) -> AppResult<bool> {
                 cloud_configured,
                 None,
             );
-            if let Some(outcome) = rescue_unbacked_session(
-                ctx.ludusavi_client,
-                ctx.ludusavi_exe,
-                &ctx.config_dir,
-                ctx.game_id,
-                ctx.game_name,
-                ctx.wine_prefix(),
-                ctx.game_folder(),
-            )
-            .await?
-            {
-                if outcome.wrote {
-                    emit_cloud_notice(
-                        ctx.app,
-                        ctx.game_id,
-                        "Backed up save progress from a session that wasn't backed up",
-                    );
+            let library = ctx.app.state::<SharedLibrary>();
+            let target = RescueTarget {
+                ludusavi_client: ctx.ludusavi_client,
+                ludusavi_exe: ctx.ludusavi_exe,
+                config_dir: &ctx.config_dir,
+                library: &library,
+                game_id: ctx.game_id,
+                game_name: ctx.game_name,
+                wine_prefix: ctx.wine_prefix(),
+                game_folder: ctx.game_folder(),
+            };
+            match rescue_under_lock(&backup_lock, &target, &marker).await {
+                Ok(outcome) => {
+                    if outcome.wrote {
+                        emit_cloud_notice(
+                            ctx.app,
+                            ctx.game_id,
+                            "Backed up save progress from a session that wasn't backed up",
+                        );
+                    }
+                    rescue = outcome.rescue;
                 }
-                rescue = outcome.rescue;
+                Err(e) if skip_rescue => {
+                    tracing::warn!(
+                        game_name = ctx.game_name,
+                        error = %e,
+                        "launching anyway without backing up the last session"
+                    );
+                    rescue = marker.rescue.clone();
+                }
+                Err(e) => return Err(e),
             }
         }
 
@@ -2629,7 +2690,7 @@ async fn phase_restore(ctx: &WorkflowCtx<'_>) -> AppResult<bool> {
         // The live save now matches what was restored, so an unbacked earlier
         // session (rescued above) can no longer be lost. run_workflow writes a
         // fresh marker for this session.
-        unbacked_session::clear(ctx.game_id);
+        unbacked_session::clear(ctx.game_id).await;
         Ok(no_saves)
     }
     .await;
@@ -2885,7 +2946,7 @@ async fn phase_launch(ctx: &WorkflowCtx<'_>, exe_pathbuf: &Path) -> AppResult<Se
         Err(e) => {
             // Process never started — delete the marker so peers aren't blocked.
             rclone::delete_session_marker(ctx.app, ctx.game_name).await;
-            unbacked_session::clear(ctx.game_id);
+            unbacked_session::clear(ctx.game_id).await;
             return Err(AppError::Other(format!("Game failed to launch: {e}")));
         }
         Ok(ref result) if result.crash_hint.is_some() => {
@@ -2895,7 +2956,7 @@ async fn phase_launch(ctx: &WorkflowCtx<'_>, exe_pathbuf: &Path) -> AppResult<Se
             // failed launch so the user sees the relevant umu output rather than
             // a silent 0-minute session.
             rclone::delete_session_marker(ctx.app, ctx.game_name).await;
-            unbacked_session::clear(ctx.game_id);
+            unbacked_session::clear(ctx.game_id).await;
             let hint = result.crash_hint.as_deref().unwrap_or_default();
             let log_path = crate::paths::log_file();
             return Err(AppError::Other(format!(
@@ -3269,7 +3330,7 @@ async fn phase_backup(
                     .as_ref()
                     .is_none_or(|e| e.unknown_games.is_empty())
                 {
-                    unbacked_session::clear(ctx.game_id);
+                    unbacked_session::clear(ctx.game_id).await;
                 }
                 if let Some(overall) = &out.overall {
                     if overall.total_games > 0 {

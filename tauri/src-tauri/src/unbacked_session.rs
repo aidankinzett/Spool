@@ -37,54 +37,75 @@ pub struct Rescue {
 
 /// Record that a session for `game_id` has started. Best-effort: a failed
 /// write only loses the safety net, so it's logged rather than returned.
-pub fn mark_started(game_id: &str) {
+pub async fn mark_started(game_id: &str) {
     write(
         game_id,
-        &Marker {
+        Marker {
             started_at: Some(Utc::now()),
             rescue: None,
         },
-    );
+    )
+    .await;
 }
 
 /// The marker for `game_id`, if a session's saves haven't been backed up. A
 /// marker file that doesn't parse still counts — its existence is the signal.
-pub fn read(game_id: &str) -> Option<Marker> {
-    let bytes = std::fs::read(crate::paths::unbacked_session_file(game_id)).ok()?;
+pub async fn read(game_id: &str) -> Option<Marker> {
+    let path = crate::paths::unbacked_session_file(game_id);
+    let bytes = tokio::fs::read(path).await.ok()?;
     Some(parse(&bytes))
 }
 
 /// Store a rescue on the existing marker.
-pub fn record_rescue(game_id: &str, marker: &Marker, rescue: Rescue) {
+pub async fn record_rescue(game_id: &str, marker: &Marker, rescue: Rescue) {
     write(
         game_id,
-        &Marker {
+        Marker {
             rescue: Some(rescue),
             ..marker.clone()
         },
-    );
+    )
+    .await;
 }
 
 /// Remove the marker once the session's saves are safe.
-pub fn clear(game_id: &str) {
+pub async fn clear(game_id: &str) {
     let path = crate::paths::unbacked_session_file(game_id);
-    match std::fs::remove_file(&path) {
+    match tokio::fs::remove_file(&path).await {
         Ok(()) => {}
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => tracing::warn!(game_id, error = %e, "failed to remove unbacked-session marker"),
     }
 }
 
-fn write(game_id: &str, marker: &Marker) {
+/// [`clear`], but only when the marker was written before `t`. The Decky
+/// game-stop backup uses this so a backup that finishes after the same game
+/// was relaunched can't remove the new session's marker. A marker with no
+/// start time predates this check and is treated as older.
+#[cfg_attr(not(unix), allow(dead_code))]
+pub async fn clear_if_started_before(game_id: &str, t: DateTime<Utc>) {
+    let Some(marker) = read(game_id).await else {
+        return;
+    };
+    if started_before(&marker, t) {
+        clear(game_id).await;
+    }
+}
+
+#[cfg_attr(not(unix), allow(dead_code))]
+fn started_before(marker: &Marker, t: DateTime<Utc>) -> bool {
+    marker.started_at.is_none_or(|s| s < t)
+}
+
+async fn write(game_id: &str, marker: Marker) {
     let path = crate::paths::unbacked_session_file(game_id);
-    let res = serde_json::to_vec(marker)
-        .map_err(std::io::Error::other)
-        .and_then(|bytes| {
-            if let Some(parent) = path.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            crate::paths::write_atomic(&path, &bytes, false)
-        });
+    let res = tokio::task::spawn_blocking(move || {
+        let bytes = serde_json::to_vec(&marker).map_err(std::io::Error::other)?;
+        crate::paths::write_atomic(&path, &bytes, false)
+    })
+    .await
+    .map_err(std::io::Error::other)
+    .and_then(|r| r);
     if let Err(e) = res {
         tracing::warn!(game_id, error = %e, "failed to write unbacked-session marker");
     }
@@ -136,6 +157,22 @@ mod tests {
             }),
         };
         assert_eq!(parse(&serde_json::to_vec(&m).unwrap()), m);
+    }
+
+    #[test]
+    fn only_markers_written_before_game_stop_are_cleared() {
+        let stop = Utc::now();
+        let earlier = Marker {
+            started_at: Some(stop - chrono::Duration::hours(2)),
+            rescue: None,
+        };
+        let relaunched = Marker {
+            started_at: Some(stop + chrono::Duration::seconds(5)),
+            rescue: None,
+        };
+        assert!(started_before(&earlier, stop));
+        assert!(!started_before(&relaunched, stop));
+        assert!(started_before(&Marker::default(), stop));
     }
 
     #[test]

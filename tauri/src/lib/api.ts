@@ -235,9 +235,11 @@ export const api = {
    * Launch a game through the run workflow. `steal` overrides a *suspended*
    * play-state lock held by another sleeping device (the "Play here instead"
    * path) — the server refuses to steal a live, actively-played lock.
+   * `skipRescue` is the "Launch anyway" override for a launch stopped because
+   * the last session's saves couldn't be backed up first.
    */
-  launchGame: (gameId: string, steal = false): Promise<void> =>
-    invoke('launch_game', { gameId, steal }),
+  launchGame: (gameId: string, steal = false, skipRescue = false): Promise<void> =>
+    invoke('launch_game', { gameId, steal, skipRescue }),
   manualBackup: (
     gameId: string,
   ): Promise<{ game_count: number; bytes_total: number; cloud_synced: boolean; game_name: string }> =>

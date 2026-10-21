@@ -245,9 +245,10 @@ async fn run_backup(
             // The SIGKILLed workflow never cleared its unbacked-session marker;
             // the saves are in the local backup store now, so the next launch
             // needn't rescue them. Only on game-stop: "Back up now" can run while
-            // the game is still being played.
-            if is_game_stop && r.game_count > 0 {
-                crate::unbacked_session::clear(&game_id);
+            // the game is still being played. Only a marker written before this
+            // game-stop: the same game may have been relaunched since.
+            if let (Some((_, _, ended_at)), true) = (session, r.game_count > 0) {
+                crate::unbacked_session::clear_if_started_before(&game_id, ended_at).await;
             }
             // Playtime was already recorded above (gated on the row insert).
             // Here we only finish the backup and reconcile the record — and the
