@@ -1809,8 +1809,11 @@ pub async fn launch_game_inner_steal(
         )
     };
 
-    // Resolve the launch plan (umu-run + Proton paths) *before* the long
-    // awaits below so a misconfiguration surfaces as a clean launch error.
+    // Resolve the launch plan (umu-run + Proton paths, launch options) *before*
+    // the long awaits below so a misconfiguration surfaces as a clean launch
+    // error. Its error goes through the same error phase + OS toast as a
+    // workflow error, since a forwarded `--run` or the Game-Mode splash has no
+    // other way to show it.
     let launch_plan = build_launch_plan(
         game_id,
         proton_version_path,
@@ -1820,21 +1823,26 @@ pub async fn launch_game_inner_steal(
         &umu_run_path,
         &default_proton_path,
         &exe_path,
-    )?;
+    );
 
     let ludusavi_client = app.state::<LudusaviClient>();
-    let result = run_workflow(
-        app,
-        game_id,
-        &game_name,
-        &exe_path,
-        &launch_plan,
-        &ludusavi_exe,
-        &ludusavi_client,
-        steal,
-        skip_rescue,
-    )
-    .await;
+    let result = match launch_plan {
+        Ok(launch_plan) => {
+            run_workflow(
+                app,
+                game_id,
+                &game_name,
+                &exe_path,
+                &launch_plan,
+                &ludusavi_exe,
+                &ludusavi_client,
+                steal,
+                skip_rescue,
+            )
+            .await
+        }
+        Err(e) => Err(e),
+    };
 
     if let Err(e) = &result {
         emit_phase(
@@ -1860,7 +1868,8 @@ struct LaunchPlan {
     umu_run: Option<PathBuf>,
     proton_path: Option<PathBuf>,
     prefix_root: PathBuf,
-    extra_args: Vec<String>,
+    /// Parsed per-game launch options (args, env, `%command%` wrapper).
+    options: crate::launch_options::LaunchOptions,
     run_as_admin: bool,
 }
 
@@ -1884,12 +1893,7 @@ fn build_launch_plan(
         .filter(|p| !p.trim().is_empty())
         .map(PathBuf::from)
         .unwrap_or_else(|| crate::proton::game_prefix_path(game_id));
-    let extra_args: Vec<String> = launch_args
-        .as_deref()
-        .unwrap_or("")
-        .split_whitespace()
-        .map(String::from)
-        .collect();
+    let options = crate::launch_options::parse(launch_args.as_deref().unwrap_or(""))?;
 
     let effective_proton = crate::proton::exe_needs_proton(exe_path);
 
@@ -1915,7 +1919,7 @@ fn build_launch_plan(
             umu_run: Some(umu_run),
             proton_path,
             prefix_root,
-            extra_args,
+            options,
             run_as_admin: false,
         });
     }
@@ -1928,7 +1932,7 @@ fn build_launch_plan(
         umu_run: None,
         proton_path: None,
         prefix_root,
-        extra_args,
+        options,
         run_as_admin: needs_admin,
     })
 }
@@ -2865,17 +2869,27 @@ async fn phase_launch(ctx: &WorkflowCtx<'_>, exe_pathbuf: &Path) -> AppResult<Se
             umu_run = %ctx.launch.umu_run.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "<none>".into()),
             prefix_root = %ctx.launch.prefix_root.display(),
             proton_path = %ctx.launch.proton_path.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "<umu default>".into()),
+            env = ?ctx.launch.options.env,
             "launching game via Proton"
         );
     } else {
         tracing::info!(
             exe_path = %exe_pathbuf.display(),
             run_as_admin = ctx.launch.run_as_admin,
+            wrapper = ?ctx.launch.options.wrapper,
+            args = ?ctx.launch.options.args,
+            env = ?ctx.launch.options.env,
             "launching game natively"
         );
     }
     let session_start = Utc::now();
 
+    let options = &ctx.launch.options;
+    let option_env: Vec<(&str, &str)> = options
+        .env
+        .iter()
+        .map(|(k, v)| (k.as_str(), v.as_str()))
+        .collect();
     let spec = if ctx.launch.use_proton {
         process::LaunchSpec::Proton {
             umu_run: ctx
@@ -2886,12 +2900,14 @@ async fn phase_launch(ctx: &WorkflowCtx<'_>, exe_pathbuf: &Path) -> AppResult<Se
             prefix_root: &ctx.launch.prefix_root,
             proton_path: ctx.launch.proton_path.as_deref(),
             game_id: ctx.game_id,
-            extra_args: &ctx.launch.extra_args,
-            extra_env: &[],
+            extra_args: &options.args,
+            extra_env: &option_env,
+            wrapper: &options.wrapper,
         }
     } else {
         process::LaunchSpec::Native {
             run_as_admin: ctx.launch.run_as_admin,
+            options,
         }
     };
 

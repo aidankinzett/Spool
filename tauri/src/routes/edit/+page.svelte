@@ -47,6 +47,19 @@
   let tab = $state<Tab>('identity');
   let saving = $state(false);
   let error = $state<string | null>(null);
+  // Parse error for the launch-options field, set on commit and on save.
+  let argsError = $state<string | null>(null);
+
+  async function validateArgs(raw: string): Promise<boolean> {
+    try {
+      await api.validateLaunchOptions(raw);
+      argsError = null;
+      return true;
+    } catch (e) {
+      argsError = String(e);
+      return false;
+    }
+  }
   let manifestStatus = $state<ManifestStatus>('nomanifest');
   let preparingManifest = $state(false);
 
@@ -467,6 +480,10 @@
 
   async function save() {
     if (!form) return;
+    if (!(await validateArgs(form.launch_args ?? ''))) {
+      tab = 'launch';
+      return;
+    }
     saving = true;
     try {
       const payload = $state.snapshot(form);
@@ -727,8 +744,9 @@
             )}
           {/if}
           {@render field(
-            'Launch arguments',
-            'Extra command-line arguments passed after the executable.',
+            'Launch options',
+            'Extra arguments passed after the executable. Like Steam, use %command% for the game command to add a wrapper or environment variables, e.g. VAR=1 mangohud %command% -windowed.' +
+              (isLinux ? '' : ' Not applied when the game runs as administrator.'),
             argsField,
           )}
 
@@ -774,15 +792,21 @@
             </div>
           {/snippet}
           {#snippet argsField()}
-            <TextField
-              bind:value={
-                () => form!.launch_args ?? '',
-                (v) => (form!.launch_args = v)
-              }
-              mono
-              full
-              placeholder="--windowed -nolauncher"
-            />
+            <div class="flex flex-col gap-1">
+              <TextField
+                bind:value={
+                  () => form!.launch_args ?? '',
+                  (v) => (form!.launch_args = v)
+                }
+                mono
+                full
+                placeholder="--windowed -nolauncher"
+                oncommit={(v) => void validateArgs(v)}
+              />
+              {#if argsError}
+                <span class="text-[11px] text-bad">{argsError}</span>
+              {/if}
+            </div>
           {/snippet}
           {#snippet depsRow()}
             <div class="flex flex-col gap-2">

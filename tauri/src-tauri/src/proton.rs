@@ -795,6 +795,7 @@ pub async fn run_exe_in_prefix_core(
             game_id,
             extra_args: &[],
             extra_env: &[("WINE_LARGE_ADDRESS_AWARE", "1")],
+            wrapper: &[],
         },
     )
     .await?;

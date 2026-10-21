@@ -38,6 +38,7 @@ mod gamepad;
 mod guided_install;
 mod headless;
 mod lan;
+mod launch_options;
 mod launcher;
 mod library;
 mod ludusavi;
@@ -287,6 +288,7 @@ pub fn run() {
             virtual_keyboard::hide_virtual_keyboard,
             // library
             library::list_games,
+            launch_options::validate_launch_options,
             library::list_play_sessions,
             library::add_game,
             library::update_game,
