@@ -678,6 +678,23 @@ pub async fn pull_cloud_saves_core(
         (entry.game_name.clone(), wine_prefix, game_folder)
     };
 
+    // The restore below lands the tip in the live save, so first capture any
+    // progress the live save holds beyond it (see `back_up_unrecorded_saves`).
+    // That's a ludusavi backup, so serialise it — and the restore, which reads
+    // the same backup tree — against other Spool processes' backups.
+    let _backup_lock =
+        crate::proc_lock::acquire_backup(std::time::Duration::from_secs(180)).await?;
+    back_up_unrecorded_saves(
+        ludusavi_client,
+        ludusavi_exe,
+        config_dir,
+        &game_name,
+        wine_prefix.as_deref(),
+        game_folder.as_deref(),
+    )
+    .await
+    .map_err(|e| AppError::Other(format!("backing up the current saves before pulling: {e}")))?;
+
     // ── Pass 1: restore --cloud-sync (pulls the remote, lands the tip) ────────
     let out = restore_with_redirects(
         ludusavi_client,
@@ -1836,6 +1853,91 @@ fn cloud_sync_failed(out: &crate::ludusavi::ApiOutput) -> bool {
         .is_some_and(|e| e.cloud_sync_failed.is_some())
 }
 
+/// Back up the live save before a restore overwrites it, when it holds changes
+/// the local backup store doesn't have. Returns whether a new revision was
+/// written.
+///
+/// A restore lands the backup tip unconditionally, so it assumes the live save
+/// is already captured by that tip. That holds when every session ends with
+/// Spool's post-session backup, but not when the Spool process was killed
+/// while the game kept running (e.g. a streaming host ending the
+/// Steam-tracked `spool --run` process): the game's later progress is only in
+/// the live save, and the next launch's restore would replace it with the
+/// older tip. Backing up first makes that progress the local tip; with a remote
+/// configured, the restore then reports local ≠ cloud and the normal
+/// baseline reconciliation decides whether it uploads or is a real conflict.
+///
+/// Skipped when there's no local backup yet — on a fresh device a leftover
+/// save would otherwise become a "newer" local tip than the cloud's real
+/// progress — and when the tip was recorded in another save-path layout (see
+/// [`redirects::backup_keeps_origin_paths`]), where ludusavi would report
+/// every file as new. Callers must hold the backup lock.
+async fn back_up_unrecorded_saves(
+    ludusavi_client: &LudusaviClient,
+    ludusavi_exe: &Path,
+    config_dir: &Path,
+    game_name: &str,
+    wine_prefix: Option<&Path>,
+    game_folder: Option<&Path>,
+) -> AppResult<bool> {
+    let backup_dir = ludusavi_config::backup_dir();
+    let Some(origin) = redirects::read_backup_origin_async(&backup_dir, game_name).await else {
+        return Ok(false);
+    };
+    let local_win_user = redirects::local_windows_username();
+    if !redirects::backup_keeps_origin_paths(
+        &origin,
+        wine_prefix,
+        game_folder,
+        local_win_user.as_deref(),
+    ) {
+        tracing::info!(
+            game_name,
+            "pre-restore save check skipped — local tip uses another device's save paths"
+        );
+        return Ok(false);
+    }
+    let tip_before = redirects::read_local_backup_tip_async(&backup_dir, game_name).await;
+
+    // Same canonicalisation as the post-session backup (phase_backup), so a
+    // Proton game's backup records the tip's Windows paths, not prefix paths.
+    let mut backup_redirects_set = false;
+    if wine_prefix.is_some() {
+        match redirects::apply_redirects_for_backup(
+            &origin,
+            wine_prefix,
+            game_folder,
+            local_win_user.as_deref(),
+        ) {
+            Ok(n) => backup_redirects_set = n > 0,
+            Err(e) => {
+                tracing::warn!(game_name, error = %e, "failed to apply backup redirects");
+            }
+        }
+    }
+    let out = ludusavi_client
+        .backup_local(ludusavi_exe, config_dir, game_name, wine_prefix)
+        .await;
+    if backup_redirects_set {
+        let _ = ludusavi_config::set_redirects(&[]);
+    }
+    out?;
+
+    // ludusavi only writes a revision when the scan differs from the tip, so a
+    // moved tip means the live save had changes no backup recorded.
+    let tip_after = redirects::read_local_backup_tip_async(&backup_dir, game_name).await;
+    let wrote = tip_after.as_ref().map(|t| &t.name) != tip_before.as_ref().map(|t| &t.name);
+    if wrote {
+        tracing::warn!(
+            game_name,
+            previous_tip = ?tip_before.as_ref().map(|t| t.name.as_str()),
+            new_tip = ?tip_after.as_ref().map(|t| t.name.as_str()),
+            "live save had changes no backup recorded — backed them up before restoring"
+        );
+    }
+    Ok(wrote)
+}
+
 /// Run a ludusavi restore with automatic cross-platform redirect generation.
 ///
 /// Flow:
@@ -2204,7 +2306,7 @@ async fn phase_restore(ctx: &WorkflowCtx<'_>) -> AppResult<bool> {
         // without it rather than block the launch — restore reads the backup
         // store, so a stale read is possible, but the live save is on disk and
         // the post-session backup reconciles.
-        let _backup_lock: Option<crate::proc_lock::FileLock> =
+        let backup_lock: Option<crate::proc_lock::FileLock> =
             match crate::proc_lock::try_acquire_backup() {
                 Ok(Some(guard)) => Some(guard),
                 Ok(None) => {
@@ -2235,6 +2337,34 @@ async fn phase_restore(ctx: &WorkflowCtx<'_>) -> AppResult<bool> {
                     None
                 }
             };
+
+        // Capture any progress the live save holds beyond the backup tip before
+        // the restore overwrites it. Needs the backup lock (it runs a ludusavi
+        // backup); without it another process is already backing up, so skip.
+        if backup_lock.is_some() {
+            let rescued = back_up_unrecorded_saves(
+                ctx.ludusavi_client,
+                ctx.ludusavi_exe,
+                &ctx.config_dir,
+                ctx.game_name,
+                ctx.wine_prefix(),
+                ctx.game_folder(),
+            )
+            .await
+            .map_err(|e| {
+                AppError::Other(format!(
+                    "Couldn't back up the current saves before restoring, so the launch was \
+                     stopped to avoid overwriting them: {e}"
+                ))
+            })?;
+            if rescued {
+                emit_cloud_notice(
+                    ctx.app,
+                    ctx.game_id,
+                    "Backed up save progress from a session that wasn't backed up",
+                );
+            }
+        }
 
         let restore_msg = if cloud_configured {
             "Syncing + restoring saves…"
