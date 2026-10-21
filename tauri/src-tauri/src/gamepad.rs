@@ -57,7 +57,7 @@ impl GamepadPresence {
         // Saturating — never wrap below zero on a spurious disconnect.
         let _ = self
             .count
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |c| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |c| {
                 Some(c.saturating_sub(1))
             });
     }
