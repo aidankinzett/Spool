@@ -1238,6 +1238,181 @@ async fn fold_history(remote: &RcloneRemote, library: &crate::library::Library) 
     library.upsert_sessions(&all).await.unwrap_or(0)
 }
 
+// ── Per-device achievement unlocks ───────────────────────────────────────────
+
+/// One device's achievement unlocks, stored at
+/// `_spool/achievements/<device_id>.json`. Same shape of store as
+/// [`HistoryBlob`]: each device writes only its own file, as a projection of
+/// the rows it recorded itself in `achievement_unlocks`, and every device folds
+/// all the files in. Emulator stats files are per-device and not part of the
+/// synced saves, so this is how an unlock earned on one device shows up on
+/// another.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AchievementsBlob {
+    pub device_name: String,
+    pub unlocks: Vec<AchievementBlobEntry>,
+    pub schema: u32,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct AchievementBlobEntry {
+    pub game_name: String,
+    pub api_name: String,
+    /// Unix seconds.
+    pub unlocked_at: i64,
+}
+
+impl HasSchema for AchievementsBlob {
+    fn stored_schema(&self) -> u32 {
+        self.schema
+    }
+}
+
+async fn sync_achievements_core(id: &RemoteIdentity, library: &crate::library::Library) {
+    // The blob is overwritten wholesale, so merge the current remote copy in
+    // first. On a fresh or reset library a publish can run before the startup
+    // fold has restored this device's rows; publishing the local rows alone
+    // would then replace the only copy with an empty list. Anything only on
+    // the remote is restored as local rows, so the projection below covers it.
+    let store = id.remote.store("achievements", 1);
+    match cat_outcome(&id.remote.exe, &store.target(&id.device_id)).await {
+        CatOutcome::Found(body) => match serde_json::from_str::<AchievementsBlob>(&body) {
+            // Written by a newer Spool: leave it rather than drop fields this
+            // build doesn't know.
+            Ok(blob) if blob.schema > 1 => return,
+            Ok(blob) => {
+                let rows = achievement_fold_rows(
+                    vec![(id.device_id.clone(), blob)],
+                    chrono::Utc::now().timestamp_millis(),
+                );
+                if let Err(e) = library.fold_achievement_unlocks(&rows, &id.device_id).await {
+                    tracing::warn!(error = %e, "sync_achievements: couldn't merge the remote copy");
+                    return;
+                }
+            }
+            // Unreadable: nothing worth keeping, so it's replaced below.
+            Err(_) => {}
+        },
+        CatOutcome::NotFound => {}
+        // Can't tell what's there; the publish would most likely fail too.
+        CatOutcome::Unreachable => return,
+    }
+    let rows = match library.local_achievement_unlocks().await {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!(error = %e, "sync_achievements: failed to read local unlocks");
+            return;
+        }
+    };
+    let blob = AchievementsBlob {
+        device_name: id.device_name.clone(),
+        unlocks: rows
+            .into_iter()
+            .map(|r| AchievementBlobEntry {
+                game_name: r.game_name,
+                api_name: r.api_name,
+                unlocked_at: r.unlocked_at,
+            })
+            .collect(),
+        schema: 1,
+    };
+    store.publish(&id.device_id, &blob).await;
+}
+
+/// Overwrite this device's achievements blob with every unlock it recorded.
+/// Best-effort and idempotent; no-op when cloud isn't configured (or offline).
+pub async fn sync_achievements(app: &AppHandle) {
+    let Some(id) = RemoteIdentity::from_app(app) else {
+        return;
+    };
+    let library = app.state::<SharedLibrary>().inner().clone();
+    sync_achievements_core(&id, &library).await;
+}
+
+/// AppHandle-free [`sync_achievements`] for the Game-Mode forced-close
+/// fallback, which runs in the headless server.
+#[cfg_attr(windows, allow(dead_code))] // only reached via the unix-gated plugin server
+pub async fn sync_achievements_from_config(cfg: &ConfigData, library: &crate::library::Library) {
+    let Some(id) = RemoteIdentity::from_config(cfg) else {
+        return;
+    };
+    sync_achievements_core(&id, library).await;
+}
+
+/// Turns every device's blob into rows for [`crate::library::Library::fold_achievement_unlocks`].
+/// The device is the blob's key (its file name).
+fn achievement_fold_rows(
+    blobs: Vec<(String, AchievementsBlob)>,
+    detected_at: i64,
+) -> Vec<crate::library::AchievementUnlock> {
+    blobs
+        .into_iter()
+        .flat_map(|(device_id, blob)| {
+            let device_name = blob.device_name;
+            blob.unlocks.into_iter().map(move |u| crate::library::AchievementUnlock {
+                game_name: u.game_name,
+                api_name: u.api_name,
+                unlocked_at: u.unlocked_at,
+                detected_at,
+                live: 0,
+                display_name: None,
+                icon: None,
+                device_id: device_id.clone(),
+                device_name: device_name.clone(),
+            })
+        })
+        .filter(|r| !r.game_name.is_empty() && !r.api_name.is_empty())
+        .collect()
+}
+
+/// Fold every device's achievements blob into the local table. Our own blob is
+/// included, which restores our unlocks if the local DB was wiped. Returns the
+/// number of rows added or changed. The table's triggers bump
+/// `achievements_version`, which the GUI polls to refresh an open card.
+async fn fold_achievements(
+    remote: &RcloneRemote,
+    library: &crate::library::Library,
+    our_device_id: &str,
+) -> usize {
+    let blobs: Vec<(String, AchievementsBlob)> = remote.store("achievements", 1).read_all().await;
+    let rows = achievement_fold_rows(blobs, chrono::Utc::now().timestamp_millis());
+    library
+        .fold_achievement_unlocks(&rows, our_device_id)
+        .await
+        .unwrap_or(0)
+}
+
+/// Minimum gap between on-demand achievement folds.
+const ACHIEVEMENT_FOLD_INTERVAL: Duration = Duration::from_secs(10 * 60);
+
+/// Folds other devices' unlocks while the app is running, so a tray process
+/// that stays up for days still picks up unlocks earned elsewhere. Called when
+/// a game's detail pane loads; runs at most once per
+/// [`ACHIEVEMENT_FOLD_INTERVAL`] to keep requests to the remote low.
+pub async fn fold_achievements_throttled(app: &AppHandle) {
+    static LAST: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
+    {
+        let Ok(mut last) = LAST.lock() else {
+            return;
+        };
+        if last.is_some_and(|t| t.elapsed() < ACHIEVEMENT_FOLD_INTERVAL) {
+            return;
+        }
+        *last = Some(std::time::Instant::now());
+    }
+    let Some(remote) = resolve_remote(app) else {
+        return;
+    };
+    let (our_device_id, _) = device_identity(app);
+    let library = app.state::<SharedLibrary>().inner().clone();
+    let changed = fold_achievements(&remote, &library, &our_device_id).await;
+    if changed > 0 {
+        tracing::info!(changed, "achievement fold: imported unlocks from other devices");
+    }
+}
+
 // ── Generic fold: adopt name-keyed definitions from the control plane ─────────
 
 /// Fetch all blobs in a namespace, map each to an optional `(game_name, def)`
@@ -1655,12 +1830,16 @@ pub async fn fold_devices_from_config() -> bool {
     // run them concurrently — their (now fanned-out) round-trips don't stack on a
     // slow remote.
     let device_store = remote.store("devices", 1);
-    let (new_sessions, blobs) = tokio::join!(
+    let (new_sessions, blobs, new_unlocks) = tokio::join!(
         fold_history(&remote, &library),
         device_store.read_all::<DeviceBlob>(),
+        fold_achievements(&remote, &library, &our_device_id),
     );
     if new_sessions > 0 {
         tracing::info!(new_sessions, "headless fold: imported peer play sessions");
+    }
+    if new_unlocks > 0 {
+        tracing::info!(new_unlocks, "headless fold: imported peer achievement unlocks");
     }
     // Re-derive playtime/last-played from the timeline (replaces the device-blob
     // playtime fold). Runs after the join so the just-folded sessions are present.
@@ -1740,12 +1919,16 @@ async fn run_startup_fold(app: &AppHandle) {
     // run them concurrently — their (now fanned-out) round-trips don't stack on a
     // slow remote, cutting the delay before the first `library:changed`.
     let device_store = remote.store("devices", 1);
-    let (new_sessions, blobs) = tokio::join!(
+    let (new_sessions, blobs, new_unlocks) = tokio::join!(
         fold_history(&remote, &library),
         device_store.read_all::<DeviceBlob>(),
+        fold_achievements(&remote, &library, &our_device_id),
     );
     if new_sessions > 0 {
         tracing::info!(new_sessions, "startup fold: imported peer play sessions");
+    }
+    if new_unlocks > 0 {
+        tracing::info!(new_unlocks, "startup fold: imported peer achievement unlocks");
     }
     // Re-derive playtime/last-played from the timeline (now including any peer
     // sessions just folded in) — this is what replaces the device-blob playtime
@@ -2183,6 +2366,29 @@ pub async fn refresh_sync_status(app: AppHandle) -> SyncStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn achievement_fold_rows_take_the_device_from_the_blob_key() {
+        let blob = AchievementsBlob {
+            device_name: "Steam Deck".into(),
+            unlocks: vec![
+                AchievementBlobEntry {
+                    game_name: "Game".into(),
+                    api_name: "ACH_A".into(),
+                    unlocked_at: 100,
+                },
+                // Malformed entries are dropped.
+                AchievementBlobEntry::default(),
+            ],
+            schema: 1,
+        };
+        let rows = achievement_fold_rows(vec![("dev-b".into(), blob)], 42);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].device_id, "dev-b");
+        assert_eq!(rows[0].device_name, "Steam Deck");
+        assert_eq!(rows[0].live, 0);
+        assert_eq!(rows[0].detected_at, 42);
+    }
 
     fn marker(
         state: SessionState,

@@ -506,6 +506,7 @@ export function makeAchievements(): GameAchievements {
     global_percent: number,
     unlocked_days_ago: number | null,
     hidden = false,
+    unlocked_on: string | null = null,
   ): AchievementView => ({
     api_name,
     display_name,
@@ -515,10 +516,11 @@ export function makeAchievements(): GameAchievements {
     icon_gray: null,
     global_percent,
     unlocked_at: unlocked_days_ago === null ? null : now - unlocked_days_ago * day,
+    unlocked_on,
   });
   const items = [
     a('ACH_FIRST_CONTRACT', 'Contractor', 'Complete your first contract.', 71.4, 12),
-    a('ACH_ALCHEMY', 'Alchemist', 'Brew 20 potions.', 38.2, 5),
+    a('ACH_ALCHEMY', 'Alchemist', 'Brew 20 potions.', 38.2, 5, false, 'Steam Deck'),
     a('ACH_GWENT', 'Card Collector', 'Win 10 rounds of Gwent.', 22.9, 1),
     a('ACH_SWORDS', 'Bladesmith', 'Craft a master-tier sword.', 9.6, null),
     a('ACH_ENDING', 'Full Circle', 'Reach the final ending.', 4.1, null, true),

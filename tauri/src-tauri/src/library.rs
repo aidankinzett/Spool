@@ -471,6 +471,34 @@ fn row_to_session(row: &sqlx::sqlite::SqliteRow) -> AppResult<PlaySession> {
     })
 }
 
+/// `CREATE TABLE` for `achievement_unlocks` under a given name (the migration
+/// builds a copy first); see `Library::init_achievement_tables`.
+macro_rules! achievement_unlocks_table {
+    ($name:literal) => {
+        concat!(
+            "CREATE TABLE IF NOT EXISTS ",
+            $name,
+            " (
+                 game_name    TEXT NOT NULL,
+                 api_name     TEXT NOT NULL,
+                 device_id    TEXT NOT NULL DEFAULT '',
+                 device_name  TEXT NOT NULL DEFAULT '',
+                 unlocked_at  INTEGER NOT NULL,
+                 detected_at  INTEGER NOT NULL,
+                 live         INTEGER NOT NULL,
+                 display_name TEXT,
+                 icon         TEXT,
+                 PRIMARY KEY (game_name, api_name, device_id)
+             )"
+        )
+    };
+}
+
+/// Whether `achievement_unlocks.device_id` is part of the primary key, i.e. the
+/// table already has the per-device shape.
+const DEVICE_IN_KEY: &str =
+    "SELECT COUNT(*) FROM pragma_table_info('achievement_unlocks') WHERE name = 'device_id' AND pk > 0";
+
 /// One row of the `achievement_unlocks` table.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AchievementUnlock {
@@ -484,6 +512,9 @@ pub struct AchievementUnlock {
     pub live: i64,
     pub display_name: Option<String>,
     pub icon: Option<String>,
+    /// The other device that recorded it; empty for this device's own rows.
+    pub device_id: String,
+    pub device_name: String,
 }
 
 fn row_to_unlock(row: &sqlx::sqlite::SqliteRow) -> AchievementUnlock {
@@ -495,6 +526,8 @@ fn row_to_unlock(row: &sqlx::sqlite::SqliteRow) -> AchievementUnlock {
         live: row.get("live"),
         display_name: row.get("display_name"),
         icon: row.get("icon"),
+        device_id: row.get("device_id"),
+        device_name: row.get("device_name"),
     }
 }
 
@@ -598,29 +631,93 @@ impl Library {
              )",
             "CREATE INDEX IF NOT EXISTS play_sessions_game ON play_sessions (game_name)",
             "CREATE INDEX IF NOT EXISTS play_sessions_device ON play_sessions (device_id)",
-            // One row per achievement Spool has seen unlocked, read from the
-            // game's Steam-emulator stats file (`achievements.rs`). Keyed by
-            // game name like `play_sessions`. `unlocked_at` is the emulator's
-            // unix time (or detection time when it records none);
-            // `detected_at` is unix ms when Spool recorded the row. `live` is 1
-            // for unlocks caught during a play session (these drive the Decky
-            // in-game toast), 0 for ones imported from an existing file. Not
-            // wired to `meta.version`, same as play_sessions.
-            "CREATE TABLE IF NOT EXISTS achievement_unlocks (
-                 game_name    TEXT NOT NULL,
-                 api_name     TEXT NOT NULL,
-                 unlocked_at  INTEGER NOT NULL,
-                 detected_at  INTEGER NOT NULL,
-                 live         INTEGER NOT NULL,
-                 display_name TEXT,
-                 icon         TEXT,
-                 PRIMARY KEY (game_name, api_name)
-             )",
-            "CREATE INDEX IF NOT EXISTS achievement_unlocks_detected ON achievement_unlocks (detected_at)",
         ];
         for sql in stmts {
             sqlx::query(sql).execute(&self.pool).await?;
         }
+        self.init_achievement_tables().await?;
+        Ok(())
+    }
+
+    /// The `achievement_unlocks` table: one row per achievement per device
+    /// that recorded it, read from the game's Steam-emulator stats file
+    /// (`achievements.rs`) or folded in from another device's blob
+    /// (`rclone.rs`). Keyed by game name like `play_sessions`.
+    ///
+    /// * `device_id` is empty for this device's own rows, else the recording
+    ///   device's id (`device_name` is its display name, refreshed by each
+    ///   fold). Rows from other devices mirror their blob and are never
+    ///   published from here.
+    /// * `unlocked_at` is the emulator's unix time (or detection time when it
+    ///   records none); `detected_at` is unix ms when this device stored the row.
+    /// * `live` is 1 for unlocks caught during a play session (they drive the
+    ///   Decky in-game toast), 0 for imports from an existing file and folded rows.
+    ///
+    /// Not wired to `meta.version` (a fold shouldn't reload the whole library);
+    /// triggers bump a separate `achievements_version` counter instead, which
+    /// the GUI polls to refresh after another process writes.
+    async fn init_achievement_tables(&self) -> AppResult<()> {
+        sqlx::query(achievement_unlocks_table!("achievement_unlocks"))
+            .execute(&self.pool)
+            .await?;
+        self.migrate_achievement_key().await?;
+        let stmts = [
+            "CREATE INDEX IF NOT EXISTS achievement_unlocks_detected ON achievement_unlocks (detected_at)",
+            "INSERT OR IGNORE INTO meta (k, v) VALUES ('achievements_version', 0)",
+            "CREATE TRIGGER IF NOT EXISTS achievement_unlocks_version_ai AFTER INSERT ON achievement_unlocks
+             BEGIN UPDATE meta SET v = v + 1 WHERE k = 'achievements_version'; END",
+            "CREATE TRIGGER IF NOT EXISTS achievement_unlocks_version_au AFTER UPDATE ON achievement_unlocks
+             BEGIN UPDATE meta SET v = v + 1 WHERE k = 'achievements_version'; END",
+        ];
+        for sql in stmts {
+            sqlx::query(sql).execute(&self.pool).await?;
+        }
+        Ok(())
+    }
+
+    /// Rebuilds an `achievement_unlocks` table created before cross-device sync
+    /// (keyed by game + achievement, no device columns) into the per-device
+    /// shape. Its rows are all this device's, so they get an empty
+    /// `device_id`. SQLite can't change a primary key in place, hence the copy.
+    /// Runs under `BEGIN IMMEDIATE` and re-checks inside it, so two Spool
+    /// processes starting at once don't both rebuild.
+    async fn migrate_achievement_key(&self) -> AppResult<()> {
+        let keyed: i64 = sqlx::query_scalar(DEVICE_IN_KEY)
+            .fetch_one(&self.pool)
+            .await?;
+        if keyed > 0 {
+            return Ok(());
+        }
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let keyed: i64 = sqlx::query_scalar(DEVICE_IN_KEY)
+            .fetch_one(&mut *tx)
+            .await?;
+        if keyed > 0 {
+            return Ok(());
+        }
+        for sql in [
+            "DROP TABLE IF EXISTS achievement_unlocks_new",
+            achievement_unlocks_table!("achievement_unlocks_new"),
+        ] {
+            sqlx::query(sql).execute(&mut *tx).await?;
+        }
+        sqlx::query(
+            "INSERT INTO achievement_unlocks_new
+                 (game_name, api_name, unlocked_at, detected_at, live, display_name, icon,
+                  device_id, device_name)
+             SELECT game_name, api_name, unlocked_at, detected_at, live, display_name, icon, '', ''
+             FROM achievement_unlocks",
+        )
+        .execute(&mut *tx)
+        .await?;
+        for sql in [
+            "DROP TABLE achievement_unlocks",
+            "ALTER TABLE achievement_unlocks_new RENAME TO achievement_unlocks",
+        ] {
+            sqlx::query(sql).execute(&mut *tx).await?;
+        }
+        tx.commit().await?;
+        tracing::info!("library: migrated achievement_unlocks to per-device rows");
         Ok(())
     }
 
@@ -1158,8 +1255,9 @@ impl Library {
         for u in unlocks {
             let res = sqlx::query(
                 "INSERT OR IGNORE INTO achievement_unlocks
-                     (game_name, api_name, unlocked_at, detected_at, live, display_name, icon)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                     (game_name, api_name, unlocked_at, detected_at, live, display_name, icon,
+                      device_id, device_name)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             )
             .bind(&u.game_name)
             .bind(&u.api_name)
@@ -1168,6 +1266,8 @@ impl Library {
             .bind(u.live)
             .bind(&u.display_name)
             .bind(&u.icon)
+            .bind(&u.device_id)
+            .bind(&u.device_name)
             .execute(&mut *tx)
             .await?;
             if res.rows_affected() > 0 {
@@ -1196,9 +1296,10 @@ impl Library {
         for u in unlocks {
             let res = sqlx::query(
                 "INSERT INTO achievement_unlocks
-                     (game_name, api_name, unlocked_at, detected_at, live, display_name, icon)
-                 VALUES (?1, ?2, ?3, ?4, 1, ?5, ?6)
-                 ON CONFLICT (game_name, api_name) DO UPDATE
+                     (game_name, api_name, unlocked_at, detected_at, live, display_name, icon,
+                      device_id, device_name)
+                 VALUES (?1, ?2, ?3, ?4, 1, ?5, ?6, ?8, ?9)
+                 ON CONFLICT (game_name, api_name, device_id) DO UPDATE
                      SET live = 1, detected_at = excluded.detected_at
                      WHERE achievement_unlocks.live = 0
                        AND achievement_unlocks.detected_at >= ?7",
@@ -1210,6 +1311,8 @@ impl Library {
             .bind(&u.display_name)
             .bind(&u.icon)
             .bind(session_start_ms)
+            .bind(&u.device_id)
+            .bind(&u.device_name)
             .execute(&mut *tx)
             .await?;
             if res.rows_affected() > 0 {
@@ -1226,13 +1329,92 @@ impl Library {
         game_name: &str,
     ) -> AppResult<Vec<AchievementUnlock>> {
         let rows = sqlx::query(
-            "SELECT game_name, api_name, unlocked_at, detected_at, live, display_name, icon
+            "SELECT game_name, api_name, unlocked_at, detected_at, live, display_name, icon,
+                    device_id, device_name
              FROM achievement_unlocks WHERE game_name = ?1 ORDER BY unlocked_at",
         )
         .bind(game_name)
         .fetch_all(&self.pool)
         .await?;
         Ok(rows.iter().map(row_to_unlock).collect())
+    }
+
+    /// This device's own unlocks (empty `device_id`). The rclone achievements
+    /// blob is a projection of these.
+    pub async fn local_achievement_unlocks(&self) -> AppResult<Vec<AchievementUnlock>> {
+        let rows = sqlx::query(
+            "SELECT game_name, api_name, unlocked_at, detected_at, live, display_name, icon,
+                    device_id, device_name
+             FROM achievement_unlocks WHERE device_id = ''
+             ORDER BY game_name, unlocked_at",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.iter().map(row_to_unlock).collect())
+    }
+
+    /// Folds unlocks from devices' blobs (the rclone fold); each row's
+    /// `device_id` is the blob it came from.
+    ///
+    /// * Rows from `our_device_id`'s own blob are stored as this device's
+    ///   (empty `device_id`) when missing, which restores them after the local
+    ///   DB was wiped. Existing local rows are left alone.
+    /// * Other devices' rows mirror their blob: inserted, or updated when the
+    ///   blob's time or device name differs (a rename shows up on the next fold).
+    ///
+    /// Folded rows are never live, so they don't toast. Returns the number of
+    /// rows inserted or changed.
+    pub async fn fold_achievement_unlocks(
+        &self,
+        unlocks: &[AchievementUnlock],
+        our_device_id: &str,
+    ) -> AppResult<usize> {
+        if unlocks.is_empty() {
+            return Ok(0);
+        }
+        let mut tx = self.pool.begin().await?;
+        let mut changed = 0usize;
+        for u in unlocks {
+            let ours = !our_device_id.is_empty() && u.device_id == our_device_id;
+            let (device_id, device_name) = if ours {
+                ("", "")
+            } else {
+                (u.device_id.as_str(), u.device_name.as_str())
+            };
+            let res = sqlx::query(
+                "INSERT INTO achievement_unlocks
+                     (game_name, api_name, unlocked_at, detected_at, live, display_name, icon,
+                      device_id, device_name)
+                 VALUES (?1, ?2, ?3, ?4, 0, NULL, NULL, ?5, ?6)
+                 ON CONFLICT (game_name, api_name, device_id) DO UPDATE
+                     SET unlocked_at = excluded.unlocked_at,
+                         device_name = excluded.device_name
+                     WHERE excluded.device_id != ''
+                       AND (achievement_unlocks.unlocked_at != excluded.unlocked_at
+                            OR achievement_unlocks.device_name != excluded.device_name)",
+            )
+            .bind(&u.game_name)
+            .bind(&u.api_name)
+            .bind(u.unlocked_at)
+            .bind(u.detected_at)
+            .bind(device_id)
+            .bind(device_name)
+            .execute(&mut *tx)
+            .await?;
+            changed += res.rows_affected() as usize;
+        }
+        tx.commit().await?;
+        Ok(changed)
+    }
+
+    /// Current value of the `achievements_version` counter, bumped by every
+    /// insert or update of `achievement_unlocks` in any Spool process.
+    pub async fn achievements_version(&self) -> AppResult<i64> {
+        let v: i64 =
+            sqlx::query_scalar("SELECT COALESCE((SELECT v FROM meta WHERE k = 'achievements_version'), 0)")
+                .fetch_one(&self.pool)
+                .await?;
+        Ok(v)
     }
 
     /// Unlocks caught during a play session (`live = 1`) and recorded after
@@ -1243,7 +1425,8 @@ impl Library {
         since_ms: i64,
     ) -> AppResult<Vec<AchievementUnlock>> {
         let rows = sqlx::query(
-            "SELECT game_name, api_name, unlocked_at, detected_at, live, display_name, icon
+            "SELECT game_name, api_name, unlocked_at, detected_at, live, display_name, icon,
+                    device_id, device_name
              FROM achievement_unlocks WHERE live = 1 AND detected_at > ?1
              ORDER BY detected_at LIMIT 50",
         )
@@ -2266,6 +2449,47 @@ fn is_unsafe_delete_target(path: &std::path::Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn achievement_table_from_before_sync_is_rebuilt_per_device() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        // The table as created before cross-device sync, with one row.
+        sqlx::query(
+            "CREATE TABLE achievement_unlocks (
+                 game_name TEXT NOT NULL, api_name TEXT NOT NULL,
+                 unlocked_at INTEGER NOT NULL, detected_at INTEGER NOT NULL,
+                 live INTEGER NOT NULL, display_name TEXT, icon TEXT,
+                 PRIMARY KEY (game_name, api_name))",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO achievement_unlocks VALUES ('G', 'A', 1, 2, 1, 'Alpha', NULL)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let lib = Library { pool };
+        lib.init_schema().await.unwrap();
+        // Running it again is harmless.
+        lib.init_schema().await.unwrap();
+
+        let rows = lib.local_achievement_unlocks().await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].display_name.as_deref(), Some("Alpha"));
+        assert_eq!(rows[0].live, 1);
+        // Another device's row for the same achievement now fits beside it.
+        let peer = AchievementUnlock {
+            device_id: "dev-b".into(),
+            device_name: "Deck".into(),
+            ..rows[0].clone()
+        };
+        assert_eq!(lib.fold_achievement_unlocks(&[peer], "dev-a").await.unwrap(), 1);
+        assert_eq!(lib.achievement_unlocks_for("G").await.unwrap().len(), 2);
+    }
 
     #[test]
     fn make_safe_filename_handles_basics() {

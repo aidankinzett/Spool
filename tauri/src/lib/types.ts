@@ -161,6 +161,8 @@ export type AchievementView = {
   global_percent: number | null;
   /** Unix seconds; null while locked. */
   unlocked_at: number | null;
+  /** Name of the other device that recorded the unlock; null for this one's. */
+  unlocked_on: string | null;
 };
 
 /** Mirror of Rust `achievements::GameAchievements`. */
