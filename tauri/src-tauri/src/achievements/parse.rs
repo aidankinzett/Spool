@@ -68,8 +68,10 @@ pub fn parse(format: Format, bytes: &[u8]) -> Vec<Earned> {
 fn decode_text(bytes: &[u8]) -> String {
     if bytes.len() >= 2 && bytes[0] == 0xFF && bytes[1] == 0xFE {
         let units: Vec<u16> = bytes[2..]
-            .chunks_exact(2)
-            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|c| u16::from_le_bytes(*c))
             .collect();
         return String::from_utf16_lossy(&units);
     }
@@ -350,7 +352,9 @@ fn parse_sse(bytes: &[u8]) -> Vec<Earned> {
         return Vec::new();
     }
     let le = |b: &[u8]| i32::from_le_bytes([b[0], b[1], b[2], b[3]]);
-    body.chunks_exact(RECORD)
+    body.as_chunks::<RECORD>()
+        .0
+        .iter()
         .filter_map(|r| {
             // 0/1 is an achievement's state; larger values are plain stats.
             let value = le(&r[20..24]);

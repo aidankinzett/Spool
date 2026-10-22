@@ -1237,6 +1237,7 @@ impl Library {
 
     /// Unlocks caught during a play session (`live = 1`) and recorded after
     /// `since_ms`, oldest first. The Decky plugin polls this for its toasts.
+    #[cfg_attr(not(unix), allow(dead_code))] // only reached via the unix-gated plugin server
     pub async fn live_achievement_unlocks_since(
         &self,
         since_ms: i64,
