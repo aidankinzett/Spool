@@ -32,6 +32,19 @@ use tokio::sync::RwLock;
 /// the local restore.
 const RUN_API_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// Ceiling for a forced `ludusavi cloud upload` / `cloud download`. These move
+/// every revision in a game's backup folder, which on a slow remote (a few
+/// hundred KB/s to a home server) takes well over [`RUN_API_TIMEOUT`]. The
+/// fast-fail rclone flags still make an unreachable remote fail in seconds;
+/// this only stops a transfer that is making progress from being killed.
+const CLOUD_TRANSFER_TIMEOUT: Duration = Duration::from_secs(600);
+
+/// Attempts for a forced cloud transfer that ludusavi reports as a failed
+/// sync. The fast-fail rclone flags allow a single attempt per file, so one
+/// dropped connection fails the whole `rclone sync`; rerunning it skips the
+/// files already transferred and continues with the rest.
+const CLOUD_TRANSFER_ATTEMPTS: u32 = 3;
+
 /// Direction of a cloud-conflict resolution — which copy of the save wins.
 /// Maps onto the `cloud upload` / `cloud download` ludusavi subcommands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -564,7 +577,7 @@ impl LudusaviClient {
             args.push("--wine-prefix");
             args.push(&prefix_str);
         }
-        let out = run_api(ludusavi_exe, config_dir, &args).await?;
+        let mut out = run_api(ludusavi_exe, config_dir, &args).await?;
         // A conflict or failed sync means nothing was uploaded, so only a clean
         // cloud leg gets its index pushed (see `rclone::push_backup_index`).
         if cloud_sync
@@ -573,7 +586,7 @@ impl LudusaviClient {
                 .as_ref()
                 .is_none_or(|e| e.cloud_sync_failed.is_none() && e.cloud_conflict.is_none())
         {
-            crate::rclone::push_backup_index(game_name).await;
+            mirror_backup_index(&mut out, CloudOp::Upload, game_name).await;
         }
         Ok(out)
     }
@@ -603,21 +616,32 @@ impl LudusaviClient {
         op: CloudOp,
         game_name: &str,
     ) -> AppResult<ApiOutput> {
-        let out = run_api(
-            ludusavi_exe,
-            config_dir,
-            &["cloud", op.subcommand(), "--api", "--force", game_name],
-        )
-        .await?;
+        let args = ["cloud", op.subcommand(), "--api", "--force", game_name];
+        let mut attempt = 1;
+        let mut out = loop {
+            let out = run_api_with_timeout(ludusavi_exe, config_dir, &args, CLOUD_TRANSFER_TIMEOUT)
+                .await?;
+            let failed = out
+                .errors
+                .as_ref()
+                .is_some_and(|e| e.cloud_sync_failed.is_some());
+            if !failed || attempt >= CLOUD_TRANSFER_ATTEMPTS {
+                break out;
+            }
+            tracing::warn!(
+                game_name,
+                op = op.subcommand(),
+                attempt,
+                "cloud transfer failed — retrying"
+            );
+            attempt += 1;
+        };
         if out
             .errors
             .as_ref()
             .is_none_or(|e| e.cloud_sync_failed.is_none())
         {
-            match op {
-                CloudOp::Upload => crate::rclone::push_backup_index(game_name).await,
-                CloudOp::Download => crate::rclone::pull_backup_index(game_name).await,
-            };
+            mirror_backup_index(&mut out, op, game_name).await;
         }
         Ok(out)
     }
@@ -823,8 +847,8 @@ async fn run_find(ludusavi_exe: &Path, config_dir: &Path, query: &str) -> AppRes
 }
 
 /// Runs an already-built `std::process::Command` for ludusavi on a
-/// `spawn_blocking` thread, bounded by [`RUN_API_TIMEOUT`], and returns its
-/// captured `Output`.
+/// `spawn_blocking` thread, bounded by `timeout` (normally
+/// [`RUN_API_TIMEOUT`]), and returns its captured `Output`.
 ///
 /// Why blocking std::process rather than `tokio::process`: tokio reaps child
 /// exits via the runtime's SIGCHLD/IO driver, which only makes progress while
@@ -839,7 +863,11 @@ async fn run_find(ludusavi_exe: &Path, config_dir: &Path, query: &str) -> AppRes
 /// for building `cmd` (its `--config`, args, PATH, and `capture_stdio!` so the
 /// pipes exist for the drain below). On timeout the child is killed and a clean
 /// error is returned.
-async fn run_blocking(mut cmd: std::process::Command, op: &str) -> AppResult<std::process::Output> {
+async fn run_blocking(
+    mut cmd: std::process::Command,
+    op: &str,
+    timeout: Duration,
+) -> AppResult<std::process::Output> {
     let started = std::time::Instant::now();
 
     let mut child = match cmd.spawn() {
@@ -895,7 +923,7 @@ async fn run_blocking(mut cmd: std::process::Command, op: &str) -> AppResult<std
         })
     });
 
-    let output = match tokio::time::timeout(RUN_API_TIMEOUT, join).await {
+    let output = match tokio::time::timeout(timeout, join).await {
         Ok(Ok(Ok(out))) => out,
         Ok(Ok(Err(e))) => return Err(AppError::Other(format!("failed to execute ludusavi: {e}"))),
         Ok(Err(e)) => return Err(AppError::Other(format!("ludusavi task panicked: {e}"))),
@@ -920,7 +948,7 @@ async fn run_blocking(mut cmd: std::process::Command, op: &str) -> AppResult<std
             }
             return Err(AppError::Other(format!(
                 "ludusavi {op} timed out after {}s — the network or cloud sync may be unavailable.",
-                RUN_API_TIMEOUT.as_secs()
+                timeout.as_secs()
             )));
         }
     };
@@ -987,7 +1015,7 @@ async fn run_backups(
     // ~40s. See run_blocking / run_api for the full rationale.
     let mut cmd = blocking_command(ludusavi_exe, config_dir);
     cmd.args(["backups", "--api", game_name]);
-    let output = run_blocking(cmd, "backups").await?;
+    let output = run_blocking(cmd, "backups", RUN_API_TIMEOUT).await?;
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     if stdout.trim().is_empty() {
@@ -997,11 +1025,48 @@ async fn run_backups(
     crate::util::parse_json(stdout.as_bytes(), "ludusavi backups output")
 }
 
+/// Copy `game_name`'s `mapping.yaml` in the direction of a cloud transfer that
+/// just succeeded (see `rclone::push_backup_index`), trying twice. When both
+/// tries fail, record a failed cloud sync on `out`: the backup folders moved
+/// but the index on the far side may still be stale, so callers must not treat
+/// the transfer as complete (badge, baseline, session marker).
+async fn mirror_backup_index(out: &mut ApiOutput, op: CloudOp, game_name: &str) {
+    for _ in 0..2 {
+        let ok = match op {
+            CloudOp::Upload => crate::rclone::push_backup_index(game_name).await,
+            CloudOp::Download => crate::rclone::pull_backup_index(game_name).await,
+        };
+        if ok {
+            return;
+        }
+    }
+    tracing::warn!(
+        game_name,
+        op = op.subcommand(),
+        "backup index (mapping.yaml) transfer failed — reporting the cloud sync as failed"
+    );
+    out.errors
+        .get_or_insert_with(Default::default)
+        .cloud_sync_failed = Some(serde_json::Value::String(
+        "backup index (mapping.yaml) transfer failed".into(),
+    ));
+}
+
 /// Generic runner for ludusavi subcommands that emit the `--api` envelope
 /// shared by `restore` and `backup`. Treats empty stdout as a successful
 /// no-op (ludusavi sometimes exits non-zero with no output when the game
 /// isn't in its manifest, which we surface as "no saves to handle").
 async fn run_api(ludusavi_exe: &Path, config_dir: &Path, args: &[&str]) -> AppResult<ApiOutput> {
+    run_api_with_timeout(ludusavi_exe, config_dir, args, RUN_API_TIMEOUT).await
+}
+
+/// [`run_api`] with an explicit process timeout instead of [`RUN_API_TIMEOUT`].
+async fn run_api_with_timeout(
+    ludusavi_exe: &Path,
+    config_dir: &Path,
+    args: &[&str],
+    timeout: Duration,
+) -> AppResult<ApiOutput> {
     // The subcommand ("restore" / "backup") for log/error messages — the first
     // non-flag arg, since global flags like `--no-manifest-update` precede it.
     let op = args
@@ -1014,7 +1079,7 @@ async fn run_api(ludusavi_exe: &Path, config_dir: &Path, args: &[&str]) -> AppRe
     // Game-Mode launch needs the synchronous waitpid.
     let mut cmd = blocking_command(ludusavi_exe, config_dir);
     cmd.args(args);
-    let output = run_blocking(cmd, op).await?;
+    let output = run_blocking(cmd, op, timeout).await?;
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     if !output.status.success() && stdout.trim().is_empty() {
@@ -1156,7 +1221,7 @@ async fn run_manifest_update(
 ) -> AppResult<std::process::Output> {
     let mut cmd = blocking_command(ludusavi_exe, config_dir);
     cmd.args(["manifest", "update"]);
-    run_blocking(cmd, "manifest update").await
+    run_blocking(cmd, "manifest update", RUN_API_TIMEOUT).await
 }
 
 /// Bring the on-disk manifest up to date in the config dir Spool owns, so the

@@ -622,11 +622,11 @@ fn backup_folder_candidates(game_name: &str) -> Vec<String> {
 
 /// Overwrite the cloud copy of `game_name`'s `mapping.yaml` with this device's.
 /// Call after a successful `cloud upload` / `backup --cloud-sync`. Returns
-/// `false` when cloud isn't configured, there's no local index, or the write
-/// failed.
+/// `false` only when the write failed; with no remote configured or no local
+/// index there's nothing to copy, which counts as success.
 pub(crate) async fn push_backup_index(game_name: &str) -> bool {
     let Some((exe, remote_name, remote_path)) = ludusavi_remote() else {
-        return false;
+        return true;
     };
     let backup_dir = crate::ludusavi_config::backup_dir();
     for folder in backup_folder_candidates(game_name) {
@@ -640,17 +640,18 @@ pub(crate) async fn push_backup_index(game_name: &str) -> bool {
         }
         return ok;
     }
-    false
+    true
 }
 
 /// Overwrite this device's `mapping.yaml` for `game_name` with the cloud copy.
 /// Call after a successful `cloud download`. Only a body that parses as a
-/// backup index replaces the local file. Returns `false` when cloud isn't
-/// configured, the cloud has no index, the remote was unreachable, or the
-/// write failed.
+/// backup index replaces the local file. Returns `false` when the remote was
+/// unreachable, the cloud index didn't parse, or the write failed; with no
+/// remote configured or no cloud index there's nothing to copy, which counts
+/// as success.
 pub(crate) async fn pull_backup_index(game_name: &str) -> bool {
     let Some((exe, remote_name, remote_path)) = ludusavi_remote() else {
-        return false;
+        return true;
     };
     let backup_dir = crate::ludusavi_config::backup_dir();
     for folder in backup_folder_candidates(game_name) {
@@ -685,7 +686,7 @@ pub(crate) async fn pull_backup_index(game_name: &str) -> bool {
             CatOutcome::Unreachable => return false,
         }
     }
-    false
+    true
 }
 
 /// One entry from `rclone lsjson`.
