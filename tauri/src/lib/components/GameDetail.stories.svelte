@@ -3,7 +3,11 @@
   import { defineMeta } from '@storybook/addon-svelte-csf';
   import { mockIPC } from '@tauri-apps/api/mocks';
   import type { GameEntry } from '$lib/types';
-  import { makeGame as makePlayedGame, makePlaySessions } from '../../../.storybook/fixtures';
+  import {
+    makeAchievements,
+    makeGame as makePlayedGame,
+    makePlaySessions,
+  } from '../../../.storybook/fixtures';
   import GameDetail from './GameDetail.svelte';
 
   // GameDetail reaches into Tauri on mount (app_platform gates the Armoury
@@ -21,6 +25,9 @@
         return makePlaySessions(
           String((args as Record<string, unknown>)?.gameName ?? ''),
         );
+      // Fill the achievements card.
+      case 'get_game_achievements':
+        return makeAchievements();
       case 'add_to_steam':
         return { extras_placed: ['cover', 'hero'] };
       case 'generate_armoury_launcher':

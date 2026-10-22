@@ -17,6 +17,7 @@
 
 #![cfg(unix)]
 
+mod achievements;
 mod lan;
 mod library;
 mod proton;
@@ -115,6 +116,8 @@ pub async fn serve() -> AppResult<()> {
         .route("/session", get(session::get_session))
         .route("/session/game-stopped", post(session::post_game_stopped))
         .route("/session/backup-now", post(session::post_backup_now))
+        // Live achievement unlocks since a timestamp, for the in-game toast.
+        .route("/achievements/recent", get(achievements::get_recent))
         // Pull cloud saves for a game down to this device without launching it,
         // for the Quick Access "Sync now" action. Mirrors the desktop
         // `pull_cloud_saves` command. Pull-only — never uploads.

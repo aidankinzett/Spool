@@ -6,6 +6,7 @@ import {
   toaster,
 } from "@decky/api";
 import {
+  Router,
   afterPatch,
   appDetailsClasses,
   appDetailsHeaderClasses,
@@ -18,6 +19,7 @@ import { FaFloppyDisk } from "react-icons/fa6";
 import { SPOOL_LAN_ROUTE, SPOOL_LAN_PEER_ROUTE } from "./constants";
 import { onAppStop } from "./api/callables";
 import { backupStarted, backupFinished } from "./lib/backup-status";
+import { onAppLifetime, stopAchievementToasts } from "./lib/achievement-toasts";
 import { Content } from "./components/content";
 import { LanPage } from "./components/lan-view";
 import { PeerGamesPage } from "./components/peer-games";
@@ -109,24 +111,37 @@ export default definePlugin(() => {
     },
   );
 
-  // Register the game-stop listener ONCE at plugin load (not inside the panel,
-  // which unmounts when the QAM closes). On a stop, let the backend decide
-  // whether a forced-close fallback backup is needed.
+  // Register the app-lifetime listener ONCE at plugin load (not inside the
+  // panel, which unmounts when the QAM closes). On a stop, let the backend
+  // decide whether a forced-close fallback backup is needed. Starts and stops
+  // also drive the achievement-toast poller.
   const sub = SteamClient.GameSessions.RegisterForAppLifetimeNotifications(
     (n) => {
+      // Spool's non-Steam shortcut appids are `crc32(...) | 0x80000000`, so
+      // the high bit is set. Steam surfaces those through `unAppID` as a
+      // *signed* int32 (e.g. -105595925 instead of 4189371371), which would
+      // never match the unsigned `steam_appid` in active-session.json. `>>> 0`
+      // coerces it back to the unsigned 32-bit value the backend compares.
+      const appid = n.unAppID >>> 0;
+      if (appid === 0) return;
+      onAppLifetime(appid, n.bRunning);
       if (!n.bRunning) {
-        // Spool's non-Steam shortcut appids are `crc32(...) | 0x80000000`, so
-        // the high bit is set. Steam surfaces those through `unAppID` as a
-        // *signed* int32 (e.g. -105595925 instead of 4189371371), which would
-        // never match the unsigned `steam_appid` in active-session.json. `>>> 0`
-        // coerces it back to the unsigned 32-bit value the backend compares.
-        const appid = n.unAppID >>> 0;
-        if (appid !== 0) {
-          void onAppStop(appid);
-        }
+        void onAppStop(appid);
       }
     },
   );
+
+  // Lifetime notifications only report transitions, so a game already running
+  // when the plugin loads (e.g. after a plugin reload mid-session) is seeded
+  // from Steam's running-app list. `appid` is a string there.
+  try {
+    for (const app of Router.RunningApps ?? []) {
+      const appid = Number(app.appid) >>> 0;
+      if (appid !== 0) onAppLifetime(appid, true);
+    }
+  } catch (err) {
+    console.warn("[Spool] Couldn't read running apps:", err);
+  }
 
   // Drive the game-page backup badge's spinner. `started`/`finished` carry the
   // appid and always fire (independent of the notify setting); the separate
@@ -150,6 +165,7 @@ export default definePlugin(() => {
     icon: <FaFloppyDisk />,
     onDismount() {
       sub.unregister();
+      stopAchievementToasts();
       removeEventListener("spool_backup_started", onBackupStarted);
       removeEventListener("spool_backup_finished", onBackupFinished);
       removeEventListener("spool_backup_toast", onBackupToast);

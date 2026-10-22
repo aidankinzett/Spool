@@ -8,7 +8,7 @@
  */
 import { mockIPC, mockConvertFileSrc, mockWindows } from '@tauri-apps/api/mocks';
 import { emit } from '@tauri-apps/api/event';
-import { makeConfig, makeGame, makePlaySessions, SAMPLE_PEER_GAMES } from './fixtures';
+import { makeAchievements, makeConfig, makeGame, makePlaySessions, SAMPLE_PEER_GAMES } from './fixtures';
 import TauriMockDecorator from './TauriMockDecorator.svelte';
 
 /**
@@ -36,6 +36,7 @@ function defaultHandlers(): TauriHandlers {
     // pane. Keyed off the requested game name so each game's chart is consistent.
     list_play_sessions: (args: Record<string, unknown>) =>
       makePlaySessions(String(args.gameName ?? '')),
+    get_game_achievements: makeAchievements(),
     get_run_as_admin_in_registry: false,
     list_proton_versions: [],
     check_dependencies: [],

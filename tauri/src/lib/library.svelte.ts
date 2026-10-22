@@ -7,6 +7,7 @@ import { downloadIsActive, downloadPercent, liveUploads } from '$lib/transfers';
 import { toasts } from '$lib/toasts.svelte';
 import { startUpdateChecks } from '$lib/updater';
 import type {
+  AchievementUnlockedEvent,
   Collection,
   DisplayGame,
   DownloadProgress,
@@ -974,6 +975,7 @@ export function createLibrary() {
     let unlistenSyncStatus: (() => void) | undefined;
     let unlistenSavesBackup: (() => void) | undefined;
     let unlistenCollections: (() => void) | undefined;
+    let unlistenAchievement: (() => void) | undefined;
     // Guards against a leaked subscription when the component unmounts before a
     // listen() promise resolves: the teardown sets this, and each handler below
     // immediately unlistens a late-resolving handle instead of storing it on a
@@ -1247,6 +1249,29 @@ export function createLibrary() {
       })
       .catch((e) => console.error('[library] saves-backup listener failed:', e));
 
+    // An achievement unlocked mid-session. The backend shows its desktop
+    // overlay unless a Spool window has focus; this toast covers that case.
+    // Honours the same notifications setting, read when the event arrives so a
+    // change in Settings applies straight away.
+    listen<AchievementUnlockedEvent>('achievement:unlocked', async (event) => {
+      const config = await api.getConfig().catch(() => null);
+      if (config && !config.achievement_notifications) return;
+      const { game_id, game_name, display_name, description } = event.payload;
+      const game = games.find((g) => g.id === game_id);
+      toasts.show({
+        kind: 'ok',
+        label: 'ACHIEVEMENT',
+        title: display_name,
+        sub: description ? `${game_name} · ${description}` : game_name,
+        catalog: game ? fmtCatalog(game.catalog_number) : undefined,
+      });
+    })
+      .then((fn) => {
+        if (disposed) fn();
+        else unlistenAchievement = fn;
+      })
+      .catch((e) => console.error('[library] achievement listener failed:', e));
+
     return () => {
       disposed = true;
       stopUpdateChecks();
@@ -1260,6 +1285,7 @@ export function createLibrary() {
       unlistenSyncStatus?.();
       unlistenSavesBackup?.();
       unlistenCollections?.();
+      unlistenAchievement?.();
     };
   });
 

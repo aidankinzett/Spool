@@ -2882,6 +2882,10 @@ async fn phase_launch(ctx: &WorkflowCtx<'_>, exe_pathbuf: &Path) -> AppResult<Se
             "launching game natively"
         );
     }
+    // Watch the game's Steam-emulator achievement files for the session, so
+    // unlocks earned while playing are announced. Runs in the background.
+    let achievement_watch = crate::achievements::SessionWatch::start(ctx.app, ctx.game_id);
+
     let session_start = Utc::now();
 
     let options = &ctx.launch.options;
@@ -2937,6 +2941,8 @@ async fn phase_launch(ctx: &WorkflowCtx<'_>, exe_pathbuf: &Path) -> AppResult<Se
 
     let spawn_result = process::run_game(exe_pathbuf, spec).await;
     let session_end = Utc::now();
+
+    achievement_watch.finish().await;
 
     // Always abort the heartbeat + suspend watcher, then flip our marker to
     // `pending-backup` — even if launch failed mid-spawn. The marker stays

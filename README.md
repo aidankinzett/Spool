@@ -63,6 +63,16 @@ so the same app feels right whether you're at your PC or on a Steam Deck.
 <!-- spool:endshot -->
 
 
+### Achievements
+
+If a game ships with a Steam emulator (Goldberg/GSE, EMPRESS, CODEX, RUNE,
+Reloaded/3DM, Skidrow, SmartSteamEmu, CreamAPI, OnlineFix), Spool reads the
+unlocks it records and lists them on the game's page with your progress and
+unlock dates. While you play, a new unlock pops up in the corner of the screen
+over the game (windowed or borderless fullscreen), and in Game Mode as a Steam
+toast through the Decky plugin. Add a Steam Web API key in
+settings to get the official names, descriptions, icons and unlock rates.
+
 ### Decky plugin for Game Mode
 
 A companion [Decky Loader](https://github.com/SteamDeckHomebrew/decky-loader)

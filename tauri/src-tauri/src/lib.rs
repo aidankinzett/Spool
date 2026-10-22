@@ -26,6 +26,7 @@
 //!   - [`steamgriddb`] — cover art fetch
 
 mod accent_backfill;
+mod achievements;
 mod cli;
 mod config;
 mod custom_saves;
@@ -239,6 +240,9 @@ pub fn run() {
                         | tauri_plugin_window_state::StateFlags::MAXIMIZED,
                 )
                 .with_denylist(&["splash"])
+                // Achievement overlay windows are placed fresh in the screen
+                // corner each time.
+                .with_filter(|label| !label.starts_with(achievements::overlay::LABEL_PREFIX))
                 .build(),
         );
     if !attached {
@@ -290,6 +294,9 @@ pub fn run() {
             library::list_games,
             launch_options::validate_launch_options,
             library::list_play_sessions,
+            achievements::get_game_achievements,
+            achievements::overlay::achievement_toast_payload,
+            achievements::overlay::preview_achievement_overlay,
             library::add_game,
             library::update_game,
             library::remove_game,
@@ -405,11 +412,15 @@ pub fn run() {
             // Gate the gamepad bridge on window focus: a Spool window gaining
             // focus turns input on, losing it (alt-tab away, hide to tray,
             // game launch) turns it off. Fires for every window, so switching
-            // between the library and a child window keeps it on.
+            // between the library and a child window keeps it on. The
+            // achievement overlay is skipped: it shouldn't take focus at all,
+            // and a window manager that gives it focus anyway mustn't turn the
+            // bridge on while the game has the controller.
             RunEvent::WindowEvent {
+                label,
                 event: WindowEvent::Focused(focused),
                 ..
-            } => {
+            } if !label.starts_with(achievements::overlay::LABEL_PREFIX) => {
                 app_handle
                     .state::<gamepad::GamepadPresence>()
                     .set_active(*focused);

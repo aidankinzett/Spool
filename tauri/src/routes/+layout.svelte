@@ -16,6 +16,11 @@
 
   let { children } = $props();
 
+  // The desktop achievement overlay (`achievement-toast-<n>` windows) is a
+  // bare, transparent, non-focusable popup: it skips the mode resolution
+  // (touch mode would maximize it), input bridges, and global hosts.
+  const isOverlay = getCurrentWindow().label.startsWith('achievement-toast');
+
   // Resolve the UI mode once per window at boot, after config loads, so
   // <html data-mode> is set before the user interacts. Every window runs
   // this layout, so each resolves its own data-mode.
@@ -36,6 +41,7 @@
   }
 
   onMount(() => {
+    if (isOverlay) return;
     // Wire controller / keyboard spatial navigation for every window. Idempotent
     // and self-disabling when the Tauri event bridge isn't present.
     startGamepadNav();
@@ -77,14 +83,16 @@
 
 {@render children()}
 
-<!-- Global toast stack — overlaid on every route. -->
-<ToastStack />
+{#if !isOverlay}
+  <!-- Global toast stack — overlaid on every route. -->
+  <ToastStack />
 
-<!-- Global confirmation-dialog host — replaces the unreliable window.confirm(). -->
-<ConfirmHost />
+  <!-- Global confirmation-dialog host — replaces the unreliable window.confirm(). -->
+  <ConfirmHost />
 
-<!-- Global remove-game chooser host — opened via removeGameDialog.request(). -->
-<RemoveGameHost />
+  <!-- Global remove-game chooser host — opened via removeGameDialog.request(). -->
+  <RemoveGameHost />
 
-<!-- Global move-install chooser host — opened via moveInstallDialog.request(). -->
-<MoveInstallHost />
+  <!-- Global move-install chooser host — opened via moveInstallDialog.request(). -->
+  <MoveInstallHost />
+{/if}

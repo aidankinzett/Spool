@@ -40,6 +40,14 @@ pub enum UiMode {
 pub struct ConfigData {
     pub steamgriddb_enabled: bool,
     pub steamgriddb_api_key: String,
+    /// Steam Web API key. Used only to fetch achievement schemas (names,
+    /// descriptions, icons) via `ISteamUserStats/GetSchemaForGame`, which
+    /// requires one. Empty = achievements show the names from the game's own
+    /// `steam_settings/achievements.json`, or raw API names.
+    pub steam_web_api_key: String,
+    /// Show a notification when an achievement unlocks during a session (the
+    /// desktop overlay window, or the Decky toast in Game Mode).
+    pub achievement_notifications: bool,
     pub spool_exe: String,
 
     // ── Identity (assigned once at first run) ────────────────────────────
@@ -126,6 +134,8 @@ impl Default for ConfigData {
         Self {
             steamgriddb_enabled: false,
             steamgriddb_api_key: String::new(),
+            steam_web_api_key: String::new(),
+            achievement_notifications: true,
             spool_exe: String::new(),
             device_id: String::new(),
             device_name: String::new(),

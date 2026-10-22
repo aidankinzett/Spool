@@ -4438,6 +4438,7 @@ dependencies = [
  "base64 0.23.1",
  "blake3",
  "chrono",
+ "crc32fast",
  "dirs",
  "filetime",
  "futures-util",
