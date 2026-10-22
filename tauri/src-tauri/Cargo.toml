@@ -58,6 +58,8 @@ hyper-util = { version = "0.1", features = ["tokio"] }
 tower-service = "0.3"
 tower-http = { version = "0.7", features = ["fs", "cors"] }
 walkdir = "2"
+# CRC32 of achievement API names (SmartSteamEmu keys its stats file by them).
+crc32fast = "1"
 tokio-util = { version = "0.7", features = ["io"] }
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 urlencoding = "2"

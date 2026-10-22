@@ -6,6 +6,10 @@ export type UiMode = 'auto' | 'desktop' | 'touch';
 export type ConfigData = {
   steamgriddb_enabled: boolean;
   steamgriddb_api_key: string;
+  /** Steam Web API key, used only to fetch achievement schemas. */
+  steam_web_api_key: string;
+  /** Notify when an achievement unlocks mid-session (OS toast / Decky toast). */
+  achievement_notifications: boolean;
   spool_exe: string;
 
   device_id: string;
@@ -144,6 +148,52 @@ export type SaveRevision = {
 
 // Mirror of the Rust `PlaySession` struct in src-tauri/src/library.rs — one
 // finished launch on one device. The cross-device activity timeline reads these.
+/** One achievement in a game's list. Mirror of Rust `achievements::AchievementView`. */
+export type AchievementView = {
+  api_name: string;
+  display_name: string;
+  description: string;
+  hidden: boolean;
+  /** Steam CDN URL, or an absolute path under app data (local schema). */
+  icon: string | null;
+  icon_gray: string | null;
+  /** Share of Steam players who have it, 0–100. */
+  global_percent: number | null;
+  /** Unix seconds; null while locked. */
+  unlocked_at: number | null;
+};
+
+/** Mirror of Rust `achievements::GameAchievements`. */
+export type GameAchievements = {
+  /** Steam app id the emulator files are keyed by; null when unknown. */
+  appid: number | null;
+  /** 'steam' (Web API), 'local' (the game's steam_settings), or null (no schema). */
+  schema_source: 'steam' | 'local' | null;
+  total: number;
+  unlocked: number;
+  items: AchievementView[];
+};
+
+/** Mirror of Rust `achievements::overlay::OverlayToast`. */
+export type AchievementToast = {
+  display_name: string;
+  description: string;
+  game_name: string;
+  icon: string | null;
+  /** How long the window stays up, in ms. */
+  duration_ms: number;
+};
+
+/** Payload of the `achievement:unlocked` event. */
+export type AchievementUnlockedEvent = {
+  game_id: string;
+  game_name: string;
+  api_name: string;
+  display_name: string;
+  description: string;
+  icon: string | null;
+};
+
 export type PlaySession = {
   /** Globally unique: `<device_id>:<started_at_millis>`. */
   session_id: string;

@@ -471,6 +471,33 @@ fn row_to_session(row: &sqlx::sqlite::SqliteRow) -> AppResult<PlaySession> {
     })
 }
 
+/// One row of the `achievement_unlocks` table.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AchievementUnlock {
+    pub game_name: String,
+    pub api_name: String,
+    /// Unix seconds.
+    pub unlocked_at: i64,
+    /// Unix milliseconds.
+    pub detected_at: i64,
+    /// 1 = caught during a play session, 0 = imported from an existing file.
+    pub live: i64,
+    pub display_name: Option<String>,
+    pub icon: Option<String>,
+}
+
+fn row_to_unlock(row: &sqlx::sqlite::SqliteRow) -> AchievementUnlock {
+    AchievementUnlock {
+        game_name: row.get("game_name"),
+        api_name: row.get("api_name"),
+        unlocked_at: row.get("unlocked_at"),
+        detected_at: row.get("detected_at"),
+        live: row.get("live"),
+        display_name: row.get("display_name"),
+        icon: row.get("icon"),
+    }
+}
+
 /// Returns `items` with duplicates removed, preserving first-seen order.
 fn dedup_preserve_order(items: &[String]) -> Vec<String> {
     let mut seen = std::collections::HashSet::new();
@@ -571,6 +598,25 @@ impl Library {
              )",
             "CREATE INDEX IF NOT EXISTS play_sessions_game ON play_sessions (game_name)",
             "CREATE INDEX IF NOT EXISTS play_sessions_device ON play_sessions (device_id)",
+            // One row per achievement Spool has seen unlocked, read from the
+            // game's Steam-emulator stats file (`achievements.rs`). Keyed by
+            // game name like `play_sessions`. `unlocked_at` is the emulator's
+            // unix time (or detection time when it records none);
+            // `detected_at` is unix ms when Spool recorded the row. `live` is 1
+            // for unlocks caught during a play session (these drive the Decky
+            // in-game toast), 0 for ones imported from an existing file. Not
+            // wired to `meta.version`, same as play_sessions.
+            "CREATE TABLE IF NOT EXISTS achievement_unlocks (
+                 game_name    TEXT NOT NULL,
+                 api_name     TEXT NOT NULL,
+                 unlocked_at  INTEGER NOT NULL,
+                 detected_at  INTEGER NOT NULL,
+                 live         INTEGER NOT NULL,
+                 display_name TEXT,
+                 icon         TEXT,
+                 PRIMARY KEY (game_name, api_name)
+             )",
+            "CREATE INDEX IF NOT EXISTS achievement_unlocks_detected ON achievement_unlocks (detected_at)",
         ];
         for sql in stmts {
             sqlx::query(sql).execute(&self.pool).await?;
@@ -1095,6 +1141,73 @@ impl Library {
             }
         };
         rows.iter().map(row_to_session).collect()
+    }
+
+    /// Records achievement unlocks. `INSERT OR IGNORE` on `(game_name,
+    /// api_name)`, so an unlock is recorded once and a re-scan is a no-op.
+    /// Returns the rows actually inserted.
+    pub async fn insert_achievement_unlocks(
+        &self,
+        unlocks: &[AchievementUnlock],
+    ) -> AppResult<Vec<AchievementUnlock>> {
+        if unlocks.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut tx = self.pool.begin().await?;
+        let mut added = Vec::new();
+        for u in unlocks {
+            let res = sqlx::query(
+                "INSERT OR IGNORE INTO achievement_unlocks
+                     (game_name, api_name, unlocked_at, detected_at, live, display_name, icon)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            )
+            .bind(&u.game_name)
+            .bind(&u.api_name)
+            .bind(u.unlocked_at)
+            .bind(u.detected_at)
+            .bind(u.live)
+            .bind(&u.display_name)
+            .bind(&u.icon)
+            .execute(&mut *tx)
+            .await?;
+            if res.rows_affected() > 0 {
+                added.push(u.clone());
+            }
+        }
+        tx.commit().await?;
+        Ok(added)
+    }
+
+    /// Every recorded unlock for one game.
+    pub async fn achievement_unlocks_for(
+        &self,
+        game_name: &str,
+    ) -> AppResult<Vec<AchievementUnlock>> {
+        let rows = sqlx::query(
+            "SELECT game_name, api_name, unlocked_at, detected_at, live, display_name, icon
+             FROM achievement_unlocks WHERE game_name = ?1 ORDER BY unlocked_at",
+        )
+        .bind(game_name)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.iter().map(row_to_unlock).collect())
+    }
+
+    /// Unlocks caught during a play session (`live = 1`) and recorded after
+    /// `since_ms`, oldest first. The Decky plugin polls this for its toasts.
+    pub async fn live_achievement_unlocks_since(
+        &self,
+        since_ms: i64,
+    ) -> AppResult<Vec<AchievementUnlock>> {
+        let rows = sqlx::query(
+            "SELECT game_name, api_name, unlocked_at, detected_at, live, display_name, icon
+             FROM achievement_unlocks WHERE live = 1 AND detected_at > ?1
+             ORDER BY detected_at LIMIT 50",
+        )
+        .bind(since_ms)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.iter().map(row_to_unlock).collect())
     }
 
     /// Persists post-backup stats. `size_mb` is optional — `None` leaves the

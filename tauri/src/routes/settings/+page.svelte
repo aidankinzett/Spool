@@ -9,6 +9,7 @@
     Folder,
     Gamepad2,
     Grid2x2,
+    Trophy,
     HardDrive,
     KeyRound,
     Layers,
@@ -904,6 +905,43 @@
                     </div>
                   {/if}
                 </div>
+              </SettingsCard>
+
+              <!-- Achievements -->
+              <SettingsCard
+                title="Achievements"
+                helper="Spool reads unlocks from the Steam emulator a game ships with (Goldberg/GSE, CODEX, RUNE, SmartSteamEmu, CreamAPI and others) and shows them on the game's page."
+              >
+                {#snippet icon()}<Trophy size={14} />{/snippet}
+
+                <div class="border-b border-dashed border-line-1">
+                  <div class="flex items-center gap-[14px] px-[18px] py-[14px]">
+                    <div class="flex-1">
+                      <div class="text-[13px] font-medium text-ink-0">Unlock notifications</div>
+                      <div class="mt-[3px] text-[11.5px] text-ink-2">
+                        A pop-up in the corner of the screen while you play. It shows over windowed and
+                        borderless-fullscreen games, not exclusive fullscreen. In Game Mode it comes from
+                        the Decky plugin.
+                      </div>
+                    </div>
+                    <Btn variant="ghost" onclick={() => api.previewAchievementOverlay()}>Preview</Btn>
+                    <Toggle bind:checked={config!.achievement_notifications} onchange={persist} />
+                  </div>
+                </div>
+                <SettingsRow
+                  label="Steam Web API key"
+                  helper="Optional. Fetches achievement names, descriptions and icons from Steam. Without it, Spool uses the game's own steam_settings files when present. The key is only sent to Steam."
+                >
+                  {#snippet extras()}
+                    <TextField bind:value={config!.steam_web_api_key} placeholder="API key" mono masked full oncommit={persist} />
+                    <a href="https://steamcommunity.com/dev/apikey" target="_blank" rel="noopener noreferrer">
+                      <Btn variant="ghost">
+                        {#snippet icon()}<KeyRound size={14} />{/snippet}
+                        Get a key
+                      </Btn>
+                    </a>
+                  {/snippet}
+                </SettingsRow>
               </SettingsCard>
 
             </div>

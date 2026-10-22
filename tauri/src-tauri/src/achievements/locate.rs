@@ -1,0 +1,289 @@
+//! Where each Steam emulator keeps its achievement-state file.
+//!
+//! The emulators write under the Windows user profile, so the same relative
+//! paths are resolved against one of two sets of roots:
+//!
+//! * the host's own folders (Windows, and Linux-native games — Goldberg's Linux
+//!   build writes to `~/.local/share`, which `dirs::data_dir()` returns), or
+//! * a Proton prefix's `drive_c` (`users/steamuser/AppData/…`,
+//!   `users/Public/…`, `ProgramData`).
+//!
+//! Each candidate is a directory plus the file names an emulator might use in
+//! it (the list Achievement Watcher probes). Some emulators can also be set to
+//! save beside the game ("local save"), so the install folder is walked for a
+//! directory named after the app id that holds one of those files.
+
+use super::parse::Format;
+use std::path::{Path, PathBuf};
+
+/// The Windows-profile folders the emulators write under.
+#[derive(Debug, Clone, Default)]
+pub struct Roots {
+    /// `%APPDATA%` (Roaming).
+    pub appdata: Option<PathBuf>,
+    /// `%LOCALAPPDATA%`.
+    pub local_appdata: Option<PathBuf>,
+    /// The user's Documents folder.
+    pub documents: Option<PathBuf>,
+    /// `C:\Users\Public`.
+    pub public: Option<PathBuf>,
+    /// `%PROGRAMDATA%`.
+    pub program_data: Option<PathBuf>,
+}
+
+impl Roots {
+    /// The host's own folders.
+    pub fn native() -> Self {
+        let env_dir = |k: &str| std::env::var_os(k).map(PathBuf::from);
+        Self {
+            appdata: dirs::data_dir(),
+            local_appdata: dirs::data_local_dir(),
+            documents: dirs::document_dir(),
+            public: env_dir("PUBLIC"),
+            program_data: env_dir("PROGRAMDATA"),
+        }
+    }
+
+    /// The folders inside a Proton/Wine prefix (`prefix_root` contains `drive_c`).
+    pub fn prefix(prefix_root: &Path) -> Self {
+        let profile = prefix_root.join(crate::proton::WINE_STEAMUSER_PROFILE);
+        let drive_c = prefix_root.join("drive_c");
+        Self {
+            appdata: Some(profile.join("AppData/Roaming")),
+            local_appdata: Some(profile.join("AppData/Local")),
+            documents: Some(profile.join("Documents")),
+            public: Some(drive_c.join("users/Public")),
+            program_data: Some(drive_c.join("ProgramData")),
+        }
+    }
+}
+
+/// One file to watch.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Source {
+    pub path: PathBuf,
+    pub format: Format,
+}
+
+/// File names an emulator may use inside its per-app directory, in the order
+/// Achievement Watcher tries them.
+const FILE_NAMES: &[&str] = &[
+    "achievements.ini",
+    "achievements.json",
+    "achiev.ini",
+    "stats.ini",
+    "Achievements.Bin",
+    "achieve.dat",
+    "Achievements.ini",
+    "stats/achievements.ini",
+    "stats.bin",
+    "stats/CreamAPI.Achievements.cfg",
+];
+
+/// Per-app directories for `appid` under `roots`.
+fn emulator_dirs(roots: &Roots, appid: u64) -> Vec<PathBuf> {
+    let id = appid.to_string();
+    let mut out = Vec::new();
+    let mut push = |base: &Option<PathBuf>, rel: &str| {
+        if let Some(b) = base {
+            out.push(b.join(rel.replace("{id}", &id)));
+        }
+    };
+    push(&roots.appdata, "GSE Saves/{id}");
+    push(&roots.appdata, "Goldberg SteamEmu Saves/{id}");
+    push(&roots.appdata, "EMPRESS/{id}/remote/{id}");
+    push(&roots.appdata, "Steam/CODEX/{id}");
+    push(&roots.appdata, "SmartSteamEmu/{id}");
+    push(&roots.appdata, "CreamAPI/{id}");
+    push(&roots.local_appdata, "SKIDROW/{id}");
+    push(&roots.local_appdata, "SKIDROW/{id}/SteamEmu/UserStats");
+    push(&roots.documents, "SKIDROW/{id}");
+    push(&roots.documents, "SkidRow/{id}");
+    push(&roots.public, "Documents/Steam/CODEX/{id}");
+    push(&roots.public, "Documents/Steam/RUNE/{id}");
+    push(&roots.public, "Documents/EMPRESS/{id}/remote/{id}");
+    push(&roots.public, "Documents/OnlineFix/{id}/Stats");
+    // Reloaded / 3DM: ProgramData/Steam/<profile>/<id>.
+    if let Some(pd) = &roots.program_data {
+        if let Ok(rd) = std::fs::read_dir(pd.join("Steam")) {
+            for e in rd.flatten() {
+                if e.file_type().is_ok_and(|t| t.is_dir()) {
+                    out.push(e.path().join(&id));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Every candidate file for `appid`, whether or not it exists yet. A watcher
+/// stats these each tick, so a file an emulator creates mid-session is seen.
+pub fn candidate_sources(roots: &Roots, appid: u64) -> Vec<Source> {
+    emulator_dirs(roots, appid)
+        .into_iter()
+        .flat_map(|dir| {
+            FILE_NAMES.iter().map(move |name| Source {
+                path: dir.join(name),
+                format: Format::for_file(name.rsplit('/').next().unwrap_or(name)),
+            })
+        })
+        .collect()
+}
+
+/// How deep the install-folder walk goes. Local saves sit beside the emulator
+/// DLL, which is rarely more than a few levels down.
+const GAME_FOLDER_DEPTH: usize = 5;
+
+/// What one walk of an install folder finds.
+#[derive(Debug, Clone, Default)]
+pub struct FolderScan {
+    /// From the first `steam_appid.txt` (next to the emulator DLL or in its
+    /// `steam_settings/`). Used when the library entry has no `steam_id`.
+    pub appid: Option<u64>,
+    /// The Goldberg/GSE schema file, `steam_settings/achievements.json`.
+    pub schema_file: Option<PathBuf>,
+    /// Directories whose name is all digits — candidate local-save folders,
+    /// one of which is named after the app id.
+    numeric_dirs: Vec<PathBuf>,
+}
+
+impl FolderScan {
+    pub fn walk(game_folder: &Path) -> Self {
+        let mut out = Self::default();
+        for e in walkdir::WalkDir::new(game_folder)
+            .max_depth(GAME_FOLDER_DEPTH)
+            .into_iter()
+            .filter_map(Result::ok)
+        {
+            let name = e.file_name().to_string_lossy();
+            if e.file_type().is_dir() {
+                if !name.is_empty() && name.bytes().all(|b| b.is_ascii_digit()) {
+                    out.numeric_dirs.push(e.path().to_path_buf());
+                }
+            } else if out.appid.is_none() && name.eq_ignore_ascii_case("steam_appid.txt") {
+                out.appid = std::fs::read_to_string(e.path())
+                    .ok()
+                    .and_then(|t| t.trim().parse::<u64>().ok())
+                    .filter(|id| *id > 0);
+            } else if out.schema_file.is_none()
+                && name == "achievements.json"
+                && e.path()
+                    .parent()
+                    .and_then(|p| p.file_name())
+                    .is_some_and(|n| n.eq_ignore_ascii_case("steam_settings"))
+            {
+                out.schema_file = Some(e.path().to_path_buf());
+            }
+        }
+        out
+    }
+
+    /// The same walk, reused for [`SCAN_TTL`]. Opening a game's detail pane
+    /// would otherwise re-walk a large install folder each time.
+    pub fn cached(game_folder: &Path) -> Self {
+        static CACHE: std::sync::LazyLock<
+            std::sync::Mutex<std::collections::HashMap<PathBuf, (std::time::Instant, FolderScan)>>,
+        > = std::sync::LazyLock::new(Default::default);
+        if let Ok(cache) = CACHE.lock() {
+            if let Some((at, scan)) = cache.get(game_folder) {
+                if at.elapsed() < SCAN_TTL {
+                    return scan.clone();
+                }
+            }
+        }
+        let scan = Self::walk(game_folder);
+        if let Ok(mut cache) = CACHE.lock() {
+            cache.insert(
+                game_folder.to_path_buf(),
+                (std::time::Instant::now(), scan.clone()),
+            );
+        }
+        scan
+    }
+
+    /// Local-save files for `appid`: a directory named after it that holds one
+    /// of the known file names. Only existing files are returned, so the
+    /// session watcher re-walks periodically to pick up a file created
+    /// mid-session.
+    pub fn sources(&self, appid: u64) -> Vec<Source> {
+        let id = appid.to_string();
+        let mut out = Vec::new();
+        for dir in self
+            .numeric_dirs
+            .iter()
+            .filter(|d| d.file_name().is_some_and(|n| n.to_string_lossy() == id))
+        {
+            for name in FILE_NAMES {
+                let path = dir.join(name);
+                if path.is_file() {
+                    out.push(Source {
+                        path,
+                        format: Format::for_file(name.rsplit('/').next().unwrap_or(name)),
+                    });
+                }
+            }
+        }
+        out
+    }
+}
+
+const SCAN_TTL: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn prefix_roots_point_into_drive_c() {
+        let r = Roots::prefix(Path::new("/p"));
+        let srcs = candidate_sources(&r, 480);
+        let has = |p: &str| srcs.iter().any(|s| s.path == Path::new(p));
+        assert!(has(
+            "/p/drive_c/users/steamuser/AppData/Roaming/GSE Saves/480/achievements.json"
+        ));
+        assert!(has(
+            "/p/drive_c/users/Public/Documents/Steam/CODEX/480/achievements.ini"
+        ));
+        assert!(has(
+            "/p/drive_c/users/steamuser/AppData/Roaming/SmartSteamEmu/480/stats.bin"
+        ));
+        let sse = srcs
+            .iter()
+            .find(|s| s.path.ends_with("SmartSteamEmu/480/stats.bin"))
+            .unwrap();
+        assert_eq!(sse.format, Format::SseBin);
+        let cream = srcs
+            .iter()
+            .find(|s| {
+                s.path
+                    .ends_with("CreamAPI/480/stats/CreamAPI.Achievements.cfg")
+            })
+            .unwrap();
+        assert_eq!(cream.format, Format::Ini);
+    }
+
+    #[test]
+    fn game_folder_scan_finds_local_saves_and_appid() {
+        let dir = tempfile::tempdir().unwrap();
+        let saves = dir.path().join("bin/steam_settings/saves/480");
+        std::fs::create_dir_all(&saves).unwrap();
+        std::fs::write(saves.join("achievements.json"), "{}").unwrap();
+        std::fs::write(dir.path().join("bin/steam_appid.txt"), "480\n").unwrap();
+        std::fs::write(
+            dir.path().join("bin/steam_settings/achievements.json"),
+            "[]",
+        )
+        .unwrap();
+
+        let scan = FolderScan::walk(dir.path());
+        let found = scan.sources(480);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].format, Format::Json);
+        assert!(scan.sources(10).is_empty());
+        assert_eq!(scan.appid, Some(480));
+        assert_eq!(
+            scan.schema_file,
+            Some(dir.path().join("bin/steam_settings/achievements.json"))
+        );
+    }
+}

@@ -5,7 +5,9 @@
 
 import { invoke, convertFileSrc } from '@tauri-apps/api/core';
 import type {
+  AchievementToast,
   AddToSteamResult,
+  GameAchievements,
   Collection,
   ConfigData,
   DownloadProgress,
@@ -63,6 +65,16 @@ export const api = {
    *  scoped to one game by name. Feeds the cross-device activity timeline. */
   listPlaySessions: (gameName?: string): Promise<PlaySession[]> =>
     invoke('list_play_sessions', { gameName: gameName ?? null }),
+  /** A game's achievements: its schema merged with the unlocks Spool has read
+   *  from the game's Steam-emulator stats file. Scans the file first, so
+   *  unlocks from sessions outside Spool are picked up. */
+  getGameAchievements: (gameId: string): Promise<GameAchievements> =>
+    invoke('get_game_achievements', { gameId }),
+  /** What the desktop achievement overlay window should draw. */
+  achievementToastPayload: (): Promise<AchievementToast | null> =>
+    invoke('achievement_toast_payload'),
+  /** Shows a sample achievement overlay toast. */
+  previewAchievementOverlay: (): Promise<void> => invoke('preview_achievement_overlay'),
   addGame: (newGame: NewGame): Promise<GameEntry> => invoke('add_game', { newGame }),
   updateGame: (entry: GameEntry): Promise<GameEntry> => invoke('update_game', { entry }),
   /** Rejects with the same message a launch would hit for a malformed launch-options string. */

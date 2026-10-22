@@ -26,6 +26,7 @@
 //!   - [`steamgriddb`] — cover art fetch
 
 mod accent_backfill;
+mod achievements;
 mod cli;
 mod config;
 mod custom_saves;
@@ -239,6 +240,9 @@ pub fn run() {
                         | tauri_plugin_window_state::StateFlags::MAXIMIZED,
                 )
                 .with_denylist(&["splash"])
+                // Achievement overlay windows are placed fresh in the screen
+                // corner each time.
+                .with_filter(|label| !label.starts_with(achievements::overlay::LABEL_PREFIX))
                 .build(),
         );
     if !attached {
@@ -290,6 +294,9 @@ pub fn run() {
             library::list_games,
             launch_options::validate_launch_options,
             library::list_play_sessions,
+            achievements::get_game_achievements,
+            achievements::overlay::achievement_toast_payload,
+            achievements::overlay::preview_achievement_overlay,
             library::add_game,
             library::update_game,
             library::remove_game,

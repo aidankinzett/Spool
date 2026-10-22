@@ -6,6 +6,8 @@
  * fields they care about.
  */
 import type {
+  AchievementView,
+  GameAchievements,
   Collection,
   ConfigData,
   GameEntry,
@@ -80,6 +82,8 @@ export function makeConfig(over: Partial<ConfigData> = {}): ConfigData {
   return {
     steamgriddb_enabled: true,
     steamgriddb_api_key: '',
+    steam_web_api_key: '',
+    achievement_notifications: true,
     spool_exe: 'C:/Users/you/AppData/Local/Spool/spool.exe',
     device_id: 'dev-abc123',
     device_name: 'Desktop-PC',
@@ -485,4 +489,46 @@ export function makePlaySessions(gameName: string): PlaySession[] {
   });
 
   return sessions;
+}
+
+/**
+ * Sample `get_game_achievements` payload for the detail pane's achievements
+ * card: a Steam-schema game with a few unlocks, a hidden locked entry, and
+ * global percentages. Icons are left null so stories don't hit the network.
+ */
+export function makeAchievements(): GameAchievements {
+  const now = Math.floor(Date.now() / 1000);
+  const day = 24 * 60 * 60;
+  const a = (
+    api_name: string,
+    display_name: string,
+    description: string,
+    global_percent: number,
+    unlocked_days_ago: number | null,
+    hidden = false,
+  ): AchievementView => ({
+    api_name,
+    display_name,
+    description,
+    hidden,
+    icon: null,
+    icon_gray: null,
+    global_percent,
+    unlocked_at: unlocked_days_ago === null ? null : now - unlocked_days_ago * day,
+  });
+  const items = [
+    a('ACH_FIRST_CONTRACT', 'Contractor', 'Complete your first contract.', 71.4, 12),
+    a('ACH_ALCHEMY', 'Alchemist', 'Brew 20 potions.', 38.2, 5),
+    a('ACH_GWENT', 'Card Collector', 'Win 10 rounds of Gwent.', 22.9, 1),
+    a('ACH_SWORDS', 'Bladesmith', 'Craft a master-tier sword.', 9.6, null),
+    a('ACH_ENDING', 'Full Circle', 'Reach the final ending.', 4.1, null, true),
+    a('ACH_DEATHMARCH', 'Death March', 'Finish on the hardest difficulty.', 2.3, null),
+  ];
+  return {
+    appid: 292030,
+    schema_source: 'steam',
+    total: items.length,
+    unlocked: items.filter((i) => i.unlocked_at !== null).length,
+    items,
+  };
 }

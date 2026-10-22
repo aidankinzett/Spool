@@ -56,6 +56,7 @@
   import Btn from './Btn.svelte';
   import DetailCard from './DetailCard.svelte';
   import CrossDeviceActivityCard from './CrossDeviceActivityCard.svelte';
+  import AchievementsCard from './AchievementsCard.svelte';
   import { removeGameDialog } from '$lib/removeGame.svelte';
   import { moveInstallDialog } from '$lib/moveInstall.svelte';
 
@@ -942,6 +943,10 @@
 
     <div class="flex min-w-0 flex-col gap-3.5">
       <CrossDeviceActivityCard {game} {accent} />
+
+      {#if !isSyntheticPeer}
+        <AchievementsCard {game} {accent} />
+      {/if}
 
       <DetailCard title="ENTRY · DETAILS" {accent}>
         <div class="flex flex-col">
