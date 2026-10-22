@@ -478,17 +478,20 @@ impl LudusaviClient {
         Ok(candidates)
     }
 
-    /// Runs `ludusavi restore --api [--cloud-sync] --force <name>` and parses
-    /// the JSON output. `cloud_sync` makes ludusavi compare the local backup
-    /// store with the remote first (an `rclone sync --dry-run`, no transfer)
-    /// and report `cloudConflict` when they differ; it doesn't download. A
-    /// newer cloud copy is pulled by the caller via
-    /// [`cloud_resolve`](Self::cloud_resolve) with [`CloudOp::Download`], which
-    /// also refreshes the local `mapping.yaml`. Callers pass `false` when no
-    /// remote is configured or offline mode is on, so the restore never makes
-    /// a network attempt. Empty stdout (which ludusavi sometimes produces for
-    /// unknown-game errors) deserialises to an empty `ApiOutput` rather
-    /// than failing.
+    /// Runs `ludusavi restore --api --[no-]cloud-sync --force <name>` and
+    /// parses the JSON output. `cloud_sync` makes ludusavi compare the local
+    /// backup store with the remote first (an `rclone sync --dry-run`, no
+    /// transfer) and, because of `--force`, report `cloudConflict` when they
+    /// differ rather than pick a side; it doesn't download. A newer cloud copy
+    /// is pulled by the caller via [`cloud_resolve`](Self::cloud_resolve) with
+    /// [`CloudOp::Download`], which also refreshes the local `mapping.yaml`.
+    /// Callers pass `false` when no remote is configured or offline mode is
+    /// on, so the restore never makes a network attempt. Empty stdout (which
+    /// ludusavi sometimes produces for unknown-game errors) deserialises to an
+    /// empty `ApiOutput` rather than failing.
+    ///
+    /// The flag is always passed one way or the other: with neither, ludusavi
+    /// falls back to `cloud.synchronize` from its config.
     pub async fn restore(
         &self,
         ludusavi_exe: &Path,
@@ -497,16 +500,14 @@ impl LudusaviClient {
         cloud_sync: bool,
     ) -> AppResult<ApiOutput> {
         let mut args = vec!["restore", "--api"];
-        if cloud_sync {
-            args.push("--cloud-sync");
-        }
+        args.push(cloud_sync_flag(cloud_sync));
         args.push("--force");
         args.push(game_name);
         run_api(ludusavi_exe, config_dir, &args).await
     }
 
-    /// Runs `ludusavi restore --api --backup <id> --force <name>` — a restore
-    /// of a *specific* revision. Deliberately omits `--cloud-sync`: this is a
+    /// Runs `ludusavi restore --api --no-cloud-sync --backup <id> --force
+    /// <name>` — a restore of a *specific* revision. No cloud sync: this is a
     /// local rollback, and the caller pins the result by following up with a
     /// (cloud-syncing) backup so the rolled-back state becomes the new tip.
     /// Pulling the cloud here would re-land the newest revision and defeat the
@@ -524,6 +525,7 @@ impl LudusaviClient {
             &[
                 "restore",
                 "--api",
+                "--no-cloud-sync",
                 "--backup",
                 backup_name,
                 "--force",
@@ -548,8 +550,8 @@ impl LudusaviClient {
             .await
     }
 
-    /// Runs `ludusavi backup --api --force <name>` *without* `--cloud-sync`, so
-    /// it only writes the local revision and never touches the cloud remote.
+    /// Runs `ludusavi backup --api --no-cloud-sync --force <name>`, so it only
+    /// writes the local revision and never touches the cloud remote.
     /// The play workflow uses this to split the post-session backup into two
     /// observable steps — local write, then a separate cloud upload — so the
     /// splash can show real progress for each instead of one combined call that
@@ -565,8 +567,9 @@ impl LudusaviClient {
             .await
     }
 
-    /// Shared backup invocation. `cloud_sync` toggles the `--cloud-sync` flag
-    /// that mirrors the freshly-written revision to the configured remote.
+    /// Shared backup invocation. `cloud_sync` chooses between `--cloud-sync`,
+    /// which mirrors the freshly-written revision to the configured remote,
+    /// and `--no-cloud-sync` (see [`cloud_sync_flag`]).
     async fn run_backup(
         &self,
         ludusavi_exe: &Path,
@@ -576,9 +579,7 @@ impl LudusaviClient {
         cloud_sync: bool,
     ) -> AppResult<ApiOutput> {
         let mut args = vec!["backup", "--api"];
-        if cloud_sync {
-            args.push("--cloud-sync");
-        }
+        args.push(cloud_sync_flag(cloud_sync));
         args.push("--force");
         args.push(game_name);
         let prefix_str;
@@ -1044,6 +1045,20 @@ async fn run_backups(
         return Ok(BackupsOutput::default());
     }
     crate::util::parse_json(stdout.as_bytes(), "ludusavi backups output")
+}
+
+/// The ludusavi flag for a `backup` / `restore` that should (`--cloud-sync`)
+/// or shouldn't (`--no-cloud-sync`) sync with the cloud. ludusavi resolves the
+/// setting as `--cloud-sync`, else `--no-cloud-sync`, else `cloud.synchronize`
+/// from its config, so leaving the flag out isn't enough to keep an operation
+/// local: with `synchronize: true` a "local" backup would upload its new
+/// revision.
+fn cloud_sync_flag(cloud_sync: bool) -> &'static str {
+    if cloud_sync {
+        "--cloud-sync"
+    } else {
+        "--no-cloud-sync"
+    }
 }
 
 /// Copy `game_name`'s `mapping.yaml` in the direction of a cloud transfer that
@@ -2157,6 +2172,14 @@ Aliased Game:
         assert_eq!(CloudOp::Download.subcommand(), "download");
         assert!(CloudOp::from_side("nonsense").is_err());
         assert!(CloudOp::from_side("").is_err());
+    }
+
+    #[test]
+    fn cloud_sync_flag_is_always_explicit() {
+        // Leaving the flag out lets ludusavi's `cloud.synchronize` decide, so a
+        // local-only call has to pass `--no-cloud-sync`.
+        assert_eq!(cloud_sync_flag(true), "--cloud-sync");
+        assert_eq!(cloud_sync_flag(false), "--no-cloud-sync");
     }
 
     #[test]

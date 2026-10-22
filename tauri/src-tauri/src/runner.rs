@@ -640,8 +640,9 @@ pub async fn pull_cloud_saves(app: AppHandle, game_id: String) -> AppResult<Pull
 /// Pull-only sync core, shared by the [`pull_cloud_saves`] command and the
 /// headless plugin server (Decky). Never uploads.
 ///
-/// `ludusavi restore --cloud-sync` pulls the remote into the local backup store
-/// and lands the tip on disk. A clean run means we were already in sync. A
+/// `ludusavi restore --cloud-sync` compares the local backup store with the
+/// remote (no transfer) and lands the local tip on disk. A clean run means we
+/// were already in sync. A
 /// reported cloud conflict is reconciled against the last-synced baseline:
 ///   * cloud cleanly ahead → download + re-restore (the actual pull),
 ///   * local cleanly ahead → leave both sides alone and report `LocalNewer`
@@ -708,7 +709,7 @@ pub async fn pull_cloud_saves_core(
     .await?;
     let rescue = rescue.and_then(|o| o.rescue);
 
-    // ── Pass 1: restore --cloud-sync (pulls the remote, lands the tip) ────────
+    // ── Pass 1: restore --cloud-sync (checks the remote, lands the tip) ───────
     let out = restore_with_redirects(
         ludusavi_client,
         ludusavi_exe,
@@ -2194,8 +2195,9 @@ async fn rescue_before_restore(
 /// Run a ludusavi restore with automatic cross-platform redirect generation.
 ///
 /// Flow:
-///  1. Restore once — this pulls the latest cloud backup (via `--cloud-sync`)
-///     and lands files at the *recorded* absolute paths.
+///  1. Restore once — this checks the local backup store against the cloud
+///     (via `--cloud-sync`, reporting a conflict if they differ) and lands
+///     files at the *recorded* absolute paths.
 ///  2. Read the backup's `mapping.yaml` to discover the origin OS + paths.
 ///  3. If the backup is foreign-origin (different OS / different prefix):
 ///     a. Derive redirect rules (Windows paths → Proton prefix, or reverse).
