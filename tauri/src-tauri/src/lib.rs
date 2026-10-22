@@ -412,11 +412,15 @@ pub fn run() {
             // Gate the gamepad bridge on window focus: a Spool window gaining
             // focus turns input on, losing it (alt-tab away, hide to tray,
             // game launch) turns it off. Fires for every window, so switching
-            // between the library and a child window keeps it on.
+            // between the library and a child window keeps it on. The
+            // achievement overlay is skipped: it shouldn't take focus at all,
+            // and a window manager that gives it focus anyway mustn't turn the
+            // bridge on while the game has the controller.
             RunEvent::WindowEvent {
+                label,
                 event: WindowEvent::Focused(focused),
                 ..
-            } => {
+            } if !label.starts_with(achievements::overlay::LABEL_PREFIX) => {
                 app_handle
                     .state::<gamepad::GamepadPresence>()
                     .set_active(*focused);

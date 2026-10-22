@@ -40,9 +40,10 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 /// How often the session watcher stats the candidate files.
 const POLL: Duration = Duration::from_secs(2);
-/// The install folder is re-walked for local-save files every this many polls,
-/// so a file the emulator creates there mid-session is picked up.
-const GAME_FOLDER_RESCAN_TICKS: u32 = 15;
+/// The install folder is re-walked for local-save files every this many polls
+/// (once a minute), so a file the emulator creates there mid-session is picked
+/// up. Uncached, since the point is to see new files.
+const GAME_FOLDER_RESCAN_TICKS: u32 = 30;
 
 /// What's needed to find and name one game's achievements.
 #[derive(Debug, Clone)]
@@ -56,8 +57,9 @@ struct GameContext {
 }
 
 impl GameContext {
-    /// `None` when no Steam app id is known (no `steam_id` on the entry and no
-    /// `steam_appid.txt` in the install folder) — emulator files are keyed by it.
+    /// `None` when no Steam app id is known (no `steam_appid.txt` in the
+    /// install folder and no `steam_id` on the entry) — emulator files are
+    /// keyed by it.
     /// Walks the install folder (cached), so call it off the async runtime.
     fn for_entry(entry: &GameEntry) -> Option<Self> {
         let game_folder = entry
@@ -66,10 +68,13 @@ impl GameContext {
             .map(PathBuf::from)
             .filter(|p| p.is_dir());
         let folder_scan = game_folder.as_deref().map(FolderScan::cached);
-        let appid = entry
-            .steam_id
-            .filter(|id| *id > 0)
-            .or_else(|| folder_scan.as_ref().and_then(|s| s.appid))?;
+        // The emulator's own app id wins: its save folder is keyed by it, and
+        // the library's `steam_id` (from metadata matching) can be another
+        // edition's.
+        let appid = folder_scan
+            .as_ref()
+            .and_then(|s| s.appid)
+            .or(entry.steam_id.filter(|id| *id > 0))?;
         let prefix = crate::proton::resolve_prefix_root(
             crate::proton::exe_needs_proton(&entry.exe_path),
             entry.wine_prefix_path.as_deref(),
@@ -195,6 +200,7 @@ struct UnlockedEvent {
 }
 
 /// The files being watched and the (mtime, size) each had when last read.
+#[derive(Default)]
 struct Tracked {
     sources: Vec<Source>,
     stamps: HashMap<PathBuf, (SystemTime, u64)>,
@@ -241,6 +247,8 @@ struct Watcher {
     library: SharedLibrary,
     ctx: GameContext,
     notify: bool,
+    /// Unix ms when the watcher started; see [`Library::record_live_unlocks`].
+    started_ms: i64,
     /// Filled by a background fetch; read on each unlock.
     schema: Arc<std::sync::Mutex<Option<Schema>>>,
     files: Tracked,
@@ -251,6 +259,20 @@ struct Watcher {
 impl Watcher {
     fn schema(&self) -> Option<Schema> {
         self.schema.lock().ok().and_then(|s| s.clone())
+    }
+
+    /// [`Tracked::read_changed`] on the blocking pool (it stats every
+    /// candidate file).
+    async fn read_changed(&mut self, force: bool) -> Vec<Earned> {
+        let mut files = std::mem::take(&mut self.files);
+        let (files, earned) = tokio::task::spawn_blocking(move || {
+            let earned = files.read_changed(force);
+            (files, earned)
+        })
+        .await
+        .unwrap_or_default();
+        self.files = files;
+        earned
     }
 
     /// Records what's already earned at launch, without notifying.
@@ -265,7 +287,7 @@ impl Watcher {
             }
         }
         let schema = self.schema();
-        let earned = self.files.read_changed(true);
+        let earned = self.read_changed(true).await;
         let rows: Vec<_> = earned
             .iter()
             .filter(|e| !self.seen.contains(&key_id(&e.key)))
@@ -300,31 +322,46 @@ impl Watcher {
                 }
             }
         }
-        let earned = self.files.read_changed(force);
+        let earned = self.read_changed(force).await;
         if earned.is_empty() {
             return;
         }
         let schema = self.schema();
         let mut rows = Vec::new();
+        let mut keys = Vec::new();
         for e in &earned {
             if self.seen.contains(&key_id(&e.key)) {
                 continue;
             }
-            // Unnamed (CRC without a schema yet) entries stay unseen so a later
-            // read retries them once the schema has loaded.
+            // A CRC entry with no schema loaded yet can't be named, so it stays
+            // unseen. It's retried the next time its file changes, and on the
+            // forced read after the game exits.
             if let Some(row) = to_unlock(&self.ctx, e, schema.as_ref(), true) {
-                self.seen.extend(seen_keys(&row.api_name));
-                self.seen.insert(key_id(&e.key));
+                keys.push(key_id(&e.key));
                 rows.push(row);
             }
         }
-        let added = match self.library.insert_achievement_unlocks(&rows).await {
+        if rows.is_empty() {
+            return;
+        }
+        let added = match self
+            .library
+            .record_live_unlocks(&rows, self.started_ms)
+            .await
+        {
             Ok(a) => a,
             Err(e) => {
+                // Nothing is marked seen; forget the file stamps so the next
+                // tick re-reads every file and retries.
                 tracing::warn!(error = %e, "achievements: failed to record unlocks");
+                self.files.stamps.clear();
                 return;
             }
         };
+        for row in &rows {
+            self.seen.extend(seen_keys(&row.api_name));
+        }
+        self.seen.extend(keys);
         for row in added {
             self.announce(&row, schema.as_ref());
         }
@@ -351,11 +388,9 @@ impl Watcher {
         // In Steam Game Mode the Decky plugin shows the toast (gamescope has no
         // desktop to overlay). When Spool's own window has focus, the in-app
         // toast from `achievement:unlocked` covers it.
-        let spool_focused = self
-            .app
-            .get_webview_window("main")
-            .and_then(|w| w.is_focused().ok())
-            .unwrap_or(false);
+        let spool_focused = self.app.webview_windows().iter().any(|(label, w)| {
+            !label.starts_with(overlay::LABEL_PREFIX) && w.is_focused().unwrap_or(false)
+        });
         if self.notify && !crate::gamemode::is_steam_game_mode() && !spool_focused {
             overlay::show(
                 &self.app,
@@ -369,8 +404,11 @@ impl Watcher {
 }
 
 /// Watches a game's achievement files for the length of a play session.
+/// Dropping it without [`finish`](Self::finish) also stops the polling loop,
+/// since the loop ends when `stop` is dropped.
 pub struct SessionWatch {
     task: tokio::task::JoinHandle<()>,
+    stop: tokio::sync::watch::Sender<bool>,
     /// `None` until the baseline has been taken, and for a game with no known
     /// Steam app id.
     watcher: Arc<tokio::sync::Mutex<Option<Watcher>>>,
@@ -383,6 +421,7 @@ impl SessionWatch {
     /// did land before the baseline is still recorded, just not announced.
     pub fn start(app: &AppHandle, game_id: &str) -> Self {
         let slot = Arc::new(tokio::sync::Mutex::new(None));
+        let (stop, mut stopped) = tokio::sync::watch::channel(false);
         let task = {
             let (app, game_id, slot) = (app.clone(), game_id.to_string(), slot.clone());
             tokio::spawn(async move {
@@ -394,7 +433,13 @@ impl SessionWatch {
                 interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
                 interval.tick().await;
                 loop {
-                    interval.tick().await;
+                    // Only the wait is raced against the stop signal; a tick
+                    // that has started always runs to completion, so an unlock
+                    // is never half-recorded when the session ends.
+                    tokio::select! {
+                        _ = interval.tick() => {}
+                        _ = stopped.changed() => break,
+                    }
                     if let Some(w) = slot.lock().await.as_mut() {
                         w.tick(false).await;
                     }
@@ -403,14 +448,15 @@ impl SessionWatch {
         };
         Self {
             task,
+            stop,
             watcher: slot,
         }
     }
 
     /// Stops polling and reads every file once more, catching unlocks the
-    /// game wrote as it exited.
+    /// game wrote as it exited. Waits for the baseline if it's still running.
     pub async fn finish(self) {
-        self.task.abort();
+        let _ = self.stop.send(true);
         let _ = self.task.await;
         if let Some(w) = self.watcher.lock().await.as_mut() {
             w.tick(true).await;
@@ -427,7 +473,14 @@ impl Watcher {
         let ctx = GameContext::load(entry).await?;
         let config = load_config();
 
-        let schema_slot = Arc::new(std::sync::Mutex::new(schema::load_cached(ctx.appid)));
+        let cached = {
+            let appid = ctx.appid;
+            tokio::task::spawn_blocking(move || schema::load_cached(appid))
+                .await
+                .ok()
+                .flatten()
+        };
+        let schema_slot = Arc::new(std::sync::Mutex::new(cached));
         {
             let slot = schema_slot.clone();
             let http = http_client(&app);
@@ -445,12 +498,18 @@ impl Watcher {
             });
         }
 
-        let sources = ctx.sources();
+        let sources = {
+            let ctx = ctx.clone();
+            tokio::task::spawn_blocking(move || ctx.sources())
+                .await
+                .unwrap_or_default()
+        };
         let mut watcher = Watcher {
             app,
             library,
             ctx,
             notify: config.achievement_notifications,
+            started_ms: now_ms(),
             schema: schema_slot,
             files: Tracked::new(sources),
             seen: HashSet::new(),
@@ -672,6 +731,46 @@ mod tests {
         assert_eq!(out.items[0].unlocked_at, None);
         assert_eq!(out.items[1].unlocked_at, Some(5));
         assert_eq!(out.items[2].api_name, "OLD");
+    }
+
+    #[tokio::test]
+    async fn live_record_upgrades_only_imports_from_this_session() {
+        let library = crate::library::Library::open_in_memory().await.unwrap();
+        let row = |name: &str, detected_at: i64| AchievementUnlock {
+            game_name: "Game".into(),
+            api_name: name.into(),
+            unlocked_at: 1_700_000_000,
+            detected_at,
+            live: 0,
+            display_name: None,
+            icon: None,
+        };
+        let start = 1_000;
+        // Imported before the session (a previous detail-pane scan) and during it.
+        library
+            .insert_achievement_unlocks(&[row("OLD", 500), row("MID", 1_500)])
+            .await
+            .unwrap();
+
+        let added = library
+            .record_live_unlocks(
+                &[row("OLD", 2_000), row("MID", 2_000), row("NEW", 2_000)],
+                start,
+            )
+            .await
+            .unwrap();
+        let mut names: Vec<_> = added.iter().map(|r| r.api_name.as_str()).collect();
+        names.sort();
+        assert_eq!(names, ["MID", "NEW"]);
+
+        // Already live: recording again announces nothing.
+        assert!(library
+            .record_live_unlocks(&[row("MID", 3_000), row("NEW", 3_000)], start)
+            .await
+            .unwrap()
+            .is_empty());
+        let live = library.live_achievement_unlocks_since(0).await.unwrap();
+        assert_eq!(live.len(), 2);
     }
 
     #[tokio::test]

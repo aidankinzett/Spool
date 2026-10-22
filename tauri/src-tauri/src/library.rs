@@ -1178,6 +1178,48 @@ impl Library {
         Ok(added)
     }
 
+    /// Records unlocks caught during a play session (`live = 1`). A row that
+    /// already exists as an import (`live = 0`) recorded at or after
+    /// `session_start_ms` is upgraded to live: something else (the detail
+    /// pane's scan, another process) read the file first during this session,
+    /// so the unlock is still new. Returns the rows inserted or upgraded.
+    pub async fn record_live_unlocks(
+        &self,
+        unlocks: &[AchievementUnlock],
+        session_start_ms: i64,
+    ) -> AppResult<Vec<AchievementUnlock>> {
+        if unlocks.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut tx = self.pool.begin().await?;
+        let mut added = Vec::new();
+        for u in unlocks {
+            let res = sqlx::query(
+                "INSERT INTO achievement_unlocks
+                     (game_name, api_name, unlocked_at, detected_at, live, display_name, icon)
+                 VALUES (?1, ?2, ?3, ?4, 1, ?5, ?6)
+                 ON CONFLICT (game_name, api_name) DO UPDATE
+                     SET live = 1, detected_at = excluded.detected_at
+                     WHERE achievement_unlocks.live = 0
+                       AND achievement_unlocks.detected_at >= ?7",
+            )
+            .bind(&u.game_name)
+            .bind(&u.api_name)
+            .bind(u.unlocked_at)
+            .bind(u.detected_at)
+            .bind(&u.display_name)
+            .bind(&u.icon)
+            .bind(session_start_ms)
+            .execute(&mut *tx)
+            .await?;
+            if res.rows_affected() > 0 {
+                added.push(u.clone());
+            }
+        }
+        tx.commit().await?;
+        Ok(added)
+    }
+
     /// Every recorded unlock for one game.
     pub async fn achievement_unlocks_for(
         &self,

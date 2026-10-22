@@ -137,8 +137,10 @@ const GAME_FOLDER_DEPTH: usize = 5;
 /// What one walk of an install folder finds.
 #[derive(Debug, Clone, Default)]
 pub struct FolderScan {
-    /// From the first `steam_appid.txt` (next to the emulator DLL or in its
-    /// `steam_settings/`). Used when the library entry has no `steam_id`.
+    /// From the shallowest `steam_appid.txt` (next to the emulator DLL or in
+    /// its `steam_settings/`). The emulator keys its save folder by this id,
+    /// so it's preferred over the library entry's `steam_id`, which can be a
+    /// different edition's id.
     pub appid: Option<u64>,
     /// The Goldberg/GSE schema file, `steam_settings/achievements.json`.
     pub schema_file: Option<PathBuf>,
@@ -150,6 +152,7 @@ pub struct FolderScan {
 impl FolderScan {
     pub fn walk(game_folder: &Path) -> Self {
         let mut out = Self::default();
+        let mut appid_depth = usize::MAX;
         for e in walkdir::WalkDir::new(game_folder)
             .max_depth(GAME_FOLDER_DEPTH)
             .into_iter()
@@ -160,11 +163,17 @@ impl FolderScan {
                 if !name.is_empty() && name.bytes().all(|b| b.is_ascii_digit()) {
                     out.numeric_dirs.push(e.path().to_path_buf());
                 }
-            } else if out.appid.is_none() && name.eq_ignore_ascii_case("steam_appid.txt") {
-                out.appid = std::fs::read_to_string(e.path())
+            } else if e.depth() < appid_depth && name.eq_ignore_ascii_case("steam_appid.txt") {
+                // Tools and redists bundled with a game sometimes ship their
+                // own, deeper down; the game's is nearest the root.
+                if let Some(id) = std::fs::read_to_string(e.path())
                     .ok()
                     .and_then(|t| t.trim().parse::<u64>().ok())
-                    .filter(|id| *id > 0);
+                    .filter(|id| *id > 0)
+                {
+                    out.appid = Some(id);
+                    appid_depth = e.depth();
+                }
             } else if out.schema_file.is_none()
                 && name == "achievements.json"
                 && e.path()
@@ -269,6 +278,9 @@ mod tests {
         std::fs::create_dir_all(&saves).unwrap();
         std::fs::write(saves.join("achievements.json"), "{}").unwrap();
         std::fs::write(dir.path().join("bin/steam_appid.txt"), "480\n").unwrap();
+        // A bundled tool's own appid file, deeper down, is ignored.
+        std::fs::create_dir_all(dir.path().join("bin/tools/editor")).unwrap();
+        std::fs::write(dir.path().join("bin/tools/editor/steam_appid.txt"), "999").unwrap();
         std::fs::write(
             dir.path().join("bin/steam_settings/achievements.json"),
             "[]",

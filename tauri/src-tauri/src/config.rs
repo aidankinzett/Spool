@@ -45,8 +45,8 @@ pub struct ConfigData {
     /// requires one. Empty = achievements show the names from the game's own
     /// `steam_settings/achievements.json`, or raw API names.
     pub steam_web_api_key: String,
-    /// Show a notification when an achievement unlocks during a session (OS
-    /// toast on desktop, Decky toast in Game Mode).
+    /// Show a notification when an achievement unlocks during a session (the
+    /// desktop overlay window, or the Decky toast in Game Mode).
     pub achievement_notifications: bool,
     pub spool_exe: String,
 

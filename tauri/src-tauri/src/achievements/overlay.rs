@@ -34,6 +34,8 @@ const MARGIN: f64 = 24.0;
 const SHOW_FOR: Duration = Duration::from_millis(6000);
 /// Pause between consecutive toasts.
 const GAP: Duration = Duration::from_millis(400);
+/// How long to wait for the page to load before starting the clock anyway.
+const READY_TIMEOUT: Duration = Duration::from_secs(3);
 
 #[derive(Debug, Clone, Serialize)]
 pub struct OverlayToast {
@@ -50,6 +52,10 @@ pub struct OverlayToast {
 static CURRENT: Mutex<Option<OverlayToast>> = Mutex::new(None);
 static QUEUE: OnceLock<mpsc::UnboundedSender<OverlayToast>> = OnceLock::new();
 static NEXT_ID: AtomicU64 = AtomicU64::new(0);
+/// Signalled when the page fetches its payload. [`SHOW_FOR`] is timed from
+/// then, the same moment the page starts its own slide-out timer, so a slow
+/// webview start can't cut the slide-out short.
+static READY: tokio::sync::Notify = tokio::sync::Notify::const_new();
 
 /// Queues an unlock for the overlay.
 pub fn show(
@@ -80,6 +86,7 @@ async fn run(app: AppHandle, mut rx: mpsc::UnboundedReceiver<OverlayToast>) {
         }
         match open(&app) {
             Ok(window) => {
+                let _ = tokio::time::timeout(READY_TIMEOUT, READY.notified()).await;
                 tokio::time::sleep(SHOW_FOR).await;
                 if let Err(e) = window.destroy() {
                     tracing::warn!(error = %e, "achievement overlay: close failed");
@@ -139,6 +146,7 @@ fn open(app: &AppHandle) -> tauri::Result<tauri::WebviewWindow> {
 /// What the overlay page should draw.
 #[tauri::command]
 pub fn achievement_toast_payload() -> Option<OverlayToast> {
+    READY.notify_waiters();
     CURRENT.lock().ok().and_then(|c| c.clone())
 }
 

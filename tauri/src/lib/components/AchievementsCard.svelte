@@ -39,11 +39,18 @@
   /** Bumped by an `achievement:unlocked` event for this game to trigger a reload. */
   let unlockTick = $state(0);
 
+  // The library store replaces every GameEntry object on each
+  // `library:changed`, so the effects below key on these primitives, not on
+  // `game`, or they'd rerun (rescan, re-subscribe, collapse the list) on every
+  // unrelated refresh.
+  const gameId = $derived(game.id);
+  const lastPlayed = $derived(game.last_played_at);
+
   // Reload when the selected game changes, after a session ends (last_played_at
   // moves), and on a live unlock for this game.
   $effect(() => {
-    const id = game.id;
-    void game.last_played_at;
+    const id = gameId;
+    void lastPlayed;
     void unlockTick;
     let stale = false;
     api
@@ -60,7 +67,7 @@
   });
 
   $effect(() => {
-    const id = game.id;
+    const id = gameId;
     expanded = false;
     let unlisten: (() => void) | undefined;
     let disposed = false;

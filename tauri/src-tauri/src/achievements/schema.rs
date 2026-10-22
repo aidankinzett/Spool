@@ -30,6 +30,9 @@ const PERCENT_URL: &str =
 /// added in updates; percentages drift).
 const MAX_AGE_SECS: i64 = 14 * 24 * 60 * 60;
 
+/// How long to wait after a failed Steam schema fetch before trying again.
+const STEAM_RETRY_SECS: u64 = 6 * 60 * 60;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SchemaEntry {
     pub api_name: String,
@@ -82,6 +85,22 @@ fn cache_file(appid: u64) -> PathBuf {
     cache_dir().join(format!("{appid}.json"))
 }
 
+/// Marker whose mtime records the last failed Steam fetch for `appid` (bad or
+/// expired key, network down, or an app Steam has no achievements for).
+fn failed_marker(appid: u64) -> PathBuf {
+    cache_dir().join(format!("{appid}.steam-failed"))
+}
+
+/// True for [`STEAM_RETRY_SECS`] after a failed Steam fetch, so a bad key
+/// doesn't send a request on every detail-pane load.
+fn steam_backed_off(appid: u64) -> bool {
+    std::fs::metadata(failed_marker(appid))
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.elapsed().ok())
+        .is_some_and(|age| age.as_secs() < STEAM_RETRY_SECS)
+}
+
 pub fn load_cached(appid: u64) -> Option<Schema> {
     let text = std::fs::read_to_string(cache_file(appid)).ok()?;
     serde_json::from_str(&text).ok()
@@ -112,23 +131,28 @@ pub async fn ensure(
     let cached = load_cached(appid);
     let now = chrono::Utc::now().timestamp();
     let offline = crate::config::offline_mode_enabled();
-    let has_key = !api_key.trim().is_empty();
+    let steam_due = !api_key.trim().is_empty() && !offline && !steam_backed_off(appid);
     if let Some(c) = &cached {
         let fresh = now - c.fetched_at < MAX_AGE_SECS;
         // A local schema is upgraded to Steam's as soon as a key is set.
-        let upgradable = c.source == "local" && has_key;
+        let upgradable = c.source == "local" && steam_due;
         if offline || (fresh && !upgradable) {
             return cached;
         }
     }
 
-    if has_key && !offline {
+    if steam_due {
         match fetch_steam(http, appid, api_key.trim()).await {
             Ok(schema) => {
+                let _ = std::fs::remove_file(failed_marker(appid));
                 save_cached(&schema);
                 return Some(schema);
             }
-            Err(e) => tracing::warn!(error = %e, appid, "achievements: Steam schema fetch failed"),
+            Err(e) => {
+                tracing::warn!(error = %e, appid, "achievements: Steam schema fetch failed");
+                let _ = std::fs::create_dir_all(cache_dir());
+                let _ = std::fs::write(failed_marker(appid), b"");
+            }
         }
     }
 
@@ -151,8 +175,10 @@ pub async fn ensure(
     cached
 }
 
+/// The request URL is dropped from the message: it carries the API key as a
+/// query parameter, and this text ends up in `debug.log`.
 fn net(e: reqwest::Error) -> AppError {
-    AppError::Other(format!("network error: {e}"))
+    AppError::Other(format!("network error: {}", e.without_url()))
 }
 
 /// Steam's per-language string, or a plain string.
@@ -207,10 +233,15 @@ async fn fetch_steam(http: &reqwest::Client, appid: u64, key: &str) -> AppResult
         fetched_at: chrono::Utc::now().timestamp(),
         achievements: list.iter().filter_map(steam_entry).collect(),
     };
-    if !schema.achievements.is_empty() {
-        if let Ok(pct) = fetch_percentages(http, appid).await {
-            apply_percentages(&mut schema, &pct);
-        }
+    // Steam answers `{"game":{}}` for apps it has no stats for. Treated as a
+    // failure so the game's own steam_settings schema is used instead.
+    if schema.achievements.is_empty() {
+        return Err(AppError::Other(format!(
+            "Steam lists no achievements for app {appid}"
+        )));
+    }
+    if let Ok(pct) = fetch_percentages(http, appid).await {
+        apply_percentages(&mut schema, &pct);
     }
     Ok(schema)
 }
@@ -284,11 +315,18 @@ fn read_local(appid: u64, file: &Path) -> Option<Schema> {
             return Some(rel.to_string());
         }
         let src = settings_dir.join(rel);
-        let name = src.file_name()?;
-        let dst = icon_dir.join(name);
-        if !dst.is_file() {
+        // Named after the whole relative path, so same-named files in
+        // different subfolders (e.g. colour and gray icons) don't collide.
+        let dst = icon_dir.join(rel.replace(['/', '\\'], "_"));
+        let src_meta = std::fs::metadata(&src).ok()?;
+        let up_to_date = std::fs::metadata(&dst).is_ok_and(|d| d.len() == src_meta.len());
+        if !up_to_date {
             std::fs::create_dir_all(&icon_dir).ok()?;
-            std::fs::copy(&src, &dst).ok()?;
+            // Copied beside the target then renamed, so another Spool process
+            // reading the icon never sees a partial file.
+            let tmp = dst.with_extension(format!("tmp-{}", std::process::id()));
+            std::fs::copy(&src, &tmp).ok()?;
+            std::fs::rename(&tmp, &dst).ok()?;
         }
         Some(dst.to_string_lossy().into_owned())
     };

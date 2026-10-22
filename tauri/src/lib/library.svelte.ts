@@ -1249,9 +1249,13 @@ export function createLibrary() {
       })
       .catch((e) => console.error('[library] saves-backup listener failed:', e));
 
-    // An achievement unlocked mid-session. The backend also raises an OS toast
-    // when this window is hidden; this covers the visible-window case.
-    listen<AchievementUnlockedEvent>('achievement:unlocked', (event) => {
+    // An achievement unlocked mid-session. The backend shows its desktop
+    // overlay unless a Spool window has focus; this toast covers that case.
+    // Honours the same notifications setting, read when the event arrives so a
+    // change in Settings applies straight away.
+    listen<AchievementUnlockedEvent>('achievement:unlocked', async (event) => {
+      const config = await api.getConfig().catch(() => null);
+      if (config && !config.achievement_notifications) return;
       const { game_id, game_name, display_name, description } = event.payload;
       const game = games.find((g) => g.id === game_id);
       toasts.show({
