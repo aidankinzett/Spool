@@ -235,7 +235,7 @@ def _request_sync(
 
     A read timeout is different: on loopback the connection was accepted, so the
     server received the request and is still working (e.g. a backup waiting on
-    the machine-wide lock for up to 180s). Retrying would fire a SECOND backup,
+    the machine-wide lock for up to 300s). Retrying would fire a SECOND backup,
     so we do NOT retry — we return None and let the server finish on its own.
     Game-stop/backup callers use a timeout above the server's lock wait so a
     legitimately-slow backup completes within the single attempt.
@@ -432,10 +432,11 @@ class Plugin:
         # seconds, crosses the debounce threshold.
         await decky.emit("spool_backup_started", appid)
 
-        # Timeout exceeds the server's 180s backup-lock wait so a backup blocked
-        # behind another Spool process still completes within this one attempt
-        # (a read timeout is not retried — see `_request_sync`). (#8)
-        result = await _spool("POST", "/session/game-stopped", {"appid": appid}, timeout=240.0)
+        # Timeout exceeds the server's 300s backup-lock wait plus the backup and
+        # its cloud upload, so a backup blocked behind another Spool process
+        # still completes within this one attempt (a read timeout is not
+        # retried — see `_request_sync`). (#8)
+        result = await _spool("POST", "/session/game-stopped", {"appid": appid}, timeout=480.0)
         if result is None:
             decky.logger.warning(
                 "Spool: server unavailable for game-stopped (appid %s)", appid
@@ -464,7 +465,7 @@ class Plugin:
         # "Back up now" that doesn't match the active session's game; the QAM
         # panel passes None to back up the last session regardless. (#7)
         # Also waits on the server's backup lock — match game-stopped's timeout. (#8)
-        result = await _spool("POST", "/session/backup-now", {"appid": appid}, timeout=240.0)
+        result = await _spool("POST", "/session/backup-now", {"appid": appid}, timeout=480.0)
         if result is None:
             return {"acted": False, "ok": False, "reason": "server unavailable"}
         return result

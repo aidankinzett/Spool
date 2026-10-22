@@ -56,6 +56,11 @@ use tauri::{AppHandle, Emitter, Manager, State};
 /// Timeout for a control-plane op (cat / rcat / deletefile / lsjson). The
 /// blobs are tiny; this only needs to cover connect + a small transfer.
 const OP_TIMEOUT: Duration = Duration::from_secs(8);
+/// Timeout for copying a game's backup index (`mapping.yaml`) to or from the
+/// remote. The index lists every saved file in each retained backup, so a game
+/// with many save files can have an index of a few MB — far larger than the
+/// control-plane blobs `OP_TIMEOUT` is sized for.
+const INDEX_OP_TIMEOUT: Duration = Duration::from_secs(30);
 /// Timeout for the reachability probe (`rclone lsd <remote>:`).
 const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 /// How often the session heartbeat rewrites the marker's `updated_at`.
@@ -464,9 +469,19 @@ fn base_command(exe: &Path) -> tokio::process::Command {
 /// unchanged. Shared by every leaf helper so the timeout + exit-code
 /// classification lives in exactly one place.
 async fn run_op(
+    cmd: tokio::process::Command,
+    label: &str,
+    stdin_body: Option<&[u8]>,
+) -> Option<std::process::Output> {
+    run_op_with_timeout(cmd, label, stdin_body, OP_TIMEOUT).await
+}
+
+/// [`run_op`] with an explicit timeout instead of `OP_TIMEOUT`.
+async fn run_op_with_timeout(
     mut cmd: tokio::process::Command,
     label: &str,
     stdin_body: Option<&[u8]>,
+    timeout: Duration,
 ) -> Option<std::process::Output> {
     use tokio::io::AsyncWriteExt;
     if stdin_body.is_some() {
@@ -496,7 +511,7 @@ async fn run_op(
             drop(stdin); // close so rclone sees EOF
         }
     }
-    match tokio::time::timeout(OP_TIMEOUT, child.wait_with_output()).await {
+    match tokio::time::timeout(timeout, child.wait_with_output()).await {
         Ok(Ok(out)) => {
             report_reach(reach_from_code(out.status.code()), stderr_tail(&out.stderr));
             Some(out)
@@ -527,9 +542,14 @@ pub enum CatOutcome {
 
 /// `rclone cat <target>`, classifying the result (see [`CatOutcome`]).
 pub async fn cat_outcome(exe: &Path, target: &str) -> CatOutcome {
+    cat_outcome_with_timeout(exe, target, OP_TIMEOUT).await
+}
+
+/// [`cat_outcome`] with an explicit timeout instead of `OP_TIMEOUT`.
+async fn cat_outcome_with_timeout(exe: &Path, target: &str, timeout: Duration) -> CatOutcome {
     let mut cmd = base_command(exe);
     cmd.arg("cat").arg(target);
-    match run_op(cmd, "cat", None).await {
+    match run_op_with_timeout(cmd, "cat", None, timeout).await {
         Some(out) if out.status.success() => {
             CatOutcome::Found(String::from_utf8_lossy(&out.stdout).into_owned())
         }
@@ -554,9 +574,14 @@ pub async fn cat(exe: &Path, target: &str) -> Option<String> {
 /// `rclone rcat <target>` reading `body` from stdin → object. rclone creates
 /// intermediate dirs. Returns `true` on success.
 async fn rcat(exe: &Path, target: &str, body: &[u8]) -> bool {
+    rcat_with_timeout(exe, target, body, OP_TIMEOUT).await
+}
+
+/// [`rcat`] with an explicit timeout instead of `OP_TIMEOUT`.
+async fn rcat_with_timeout(exe: &Path, target: &str, body: &[u8], timeout: Duration) -> bool {
     let mut cmd = base_command(exe);
     cmd.arg("rcat").arg(target);
-    let Some(out) = run_op(cmd, "rcat", Some(body)).await else {
+    let Some(out) = run_op_with_timeout(cmd, "rcat", Some(body), timeout).await else {
         return false;
     };
     if !out.status.success() {
@@ -576,6 +601,136 @@ async fn deletefile(exe: &Path, target: &str) -> bool {
     run_op(cmd, "deletefile", None)
         .await
         .is_some_and(|out| out.status.success())
+}
+
+// ── Backup index (`mapping.yaml`) mirroring ─────────────────────────────────
+//
+// ludusavi's `cloud upload` / `cloud download` run `rclone sync` over the
+// backup tree. On a remote that reports neither modification times nor hashes
+// (plain WebDAV, among others) rclone decides whether a file changed by size
+// alone. A game's `mapping.yaml` often keeps the same size from one backup to
+// the next: once retention is full, each new entry replaces an oldest entry of
+// the same length. rclone then skips the index while the new `backup-*` folders
+// (new names) still transfer, so the far side lists revisions that no longer
+// exist and misses the new one. Other devices read the cloud tip from that
+// index (`runner::fetch_cloud_backup_tip`), so they keep seeing the old save.
+// After each cloud transfer Spool copies the index across itself with
+// `rcat` / `cat`, which always transfer the whole file.
+
+/// Resolve `(rclone_exe, remote_name, remote_path)` for ludusavi's cloud
+/// backups from the Spool-owned ludusavi `config.yaml`. `None` when cloud isn't
+/// configured or the rclone binary can't be found.
+pub(crate) fn ludusavi_remote() -> Option<(PathBuf, String, String)> {
+    let raw = std::fs::read_to_string(crate::paths::ludusavi_config_file()).ok()?;
+    let config: serde_yaml::Value = serde_yaml::from_str(&raw).ok()?;
+    let remote_name = remote_name_from_yaml(&config)?;
+    let remote_path = config
+        .get("cloud")
+        .and_then(|c| c.get("path"))
+        .and_then(|p| p.as_str())
+        .unwrap_or("ludusavi-backup")
+        .to_string();
+    let rclone_exe = crate::paths::resolve_rclone_path()?;
+    Some((rclone_exe, remote_name, remote_path))
+}
+
+/// Backup folder names ludusavi may use for `game_name`: the exact name, then
+/// the Windows-safe variant (colon → underscore), deduplicated.
+fn backup_folder_candidates(game_name: &str) -> Vec<String> {
+    let mut folders = vec![game_name.to_string()];
+    let safe = crate::redirects::windows_safe_name(game_name);
+    if safe != game_name {
+        folders.push(safe);
+    }
+    folders
+}
+
+/// Overwrite the cloud copy of `game_name`'s `mapping.yaml` with this device's.
+/// Call after a successful `cloud upload` / `backup --cloud-sync`. Returns
+/// `false` only when the write failed; with no remote configured or no local
+/// index there's nothing to copy, which counts as success.
+pub(crate) async fn push_backup_index(game_name: &str) -> bool {
+    let Some((exe, remote_name, remote_path)) = ludusavi_remote() else {
+        return true;
+    };
+    let backup_dir = crate::ludusavi_config::backup_dir();
+    for folder in backup_folder_candidates(game_name) {
+        let Ok(body) = tokio::fs::read(backup_dir.join(&folder).join("mapping.yaml")).await else {
+            continue;
+        };
+        let target = format!("{remote_name}:{remote_path}/{folder}/mapping.yaml");
+        let ok = rcat_with_timeout(&exe, &target, &body, INDEX_OP_TIMEOUT).await;
+        if !ok {
+            tracing::warn!(game_name, "failed to upload backup index (mapping.yaml)");
+        }
+        return ok;
+    }
+    true
+}
+
+/// Overwrite this device's `mapping.yaml` for `game_name` with the cloud copy.
+/// Call after a successful `cloud download`. Only a game folder that already
+/// exists locally (the one the download populated) is updated, from the
+/// same-named cloud folder, and only with a body that parses as a backup
+/// index. Returns `false` when the remote was unreachable, the cloud index
+/// didn't parse, or the write failed; with no remote configured, no local game
+/// folder, or no cloud index there's nothing to copy, which counts as success.
+pub(crate) async fn pull_backup_index(game_name: &str) -> bool {
+    let Some((exe, remote_name, remote_path)) = ludusavi_remote() else {
+        return true;
+    };
+    let backup_dir = crate::ludusavi_config::backup_dir();
+    for folder in backup_folder_candidates(game_name) {
+        let game_dir = backup_dir.join(&folder);
+        if !game_dir.is_dir() {
+            continue;
+        }
+        let target = format!("{remote_name}:{remote_path}/{folder}/mapping.yaml");
+        match cat_outcome_with_timeout(&exe, &target, INDEX_OP_TIMEOUT).await {
+            CatOutcome::Found(body) => {
+                if crate::redirects::read_backup_tip_from_str(&body).is_none() {
+                    tracing::warn!(
+                        game_name,
+                        "cloud backup index didn't parse — keeping local copy"
+                    );
+                    return false;
+                }
+                let path = game_dir.join("mapping.yaml");
+                let written =
+                    tokio::task::spawn_blocking(move || write_index(&path, body.as_bytes())).await;
+                return match written {
+                    Ok(Ok(())) => true,
+                    Ok(Err(e)) => {
+                        tracing::warn!(game_name, error = %e, "failed to write backup index (mapping.yaml)");
+                        false
+                    }
+                    Err(e) => {
+                        tracing::warn!(game_name, error = %e, "backup index write task failed");
+                        false
+                    }
+                };
+            }
+            CatOutcome::NotFound => continue,
+            CatOutcome::Unreachable => return false,
+        }
+    }
+    true
+}
+
+/// Replace `path` (a game's `mapping.yaml`) with `bytes` atomically. The temp
+/// file goes in the app data dir rather than next to the target, so a crash
+/// between write and rename can't leave a stray file inside the game's backup
+/// folder for ludusavi's next sync to pick up. Same volume as the backup dir,
+/// so the rename stays atomic.
+fn write_index(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let tmp = crate::paths::app_data_dir().join(format!("mapping.yaml.tmp.{}", std::process::id()));
+    {
+        let mut f = std::fs::File::create(&tmp)?;
+        f.write_all(bytes)?;
+        f.sync_all()?;
+    }
+    std::fs::rename(&tmp, path)
 }
 
 /// One entry from `rclone lsjson`.

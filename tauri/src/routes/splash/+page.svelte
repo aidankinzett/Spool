@@ -18,7 +18,16 @@
 
   // Mirrors `proton::exe_needs_proton`: off Windows, a `.exe` runs through
   // Proton. `GameEntry.use_proton` is no longer set, so it can't be used here.
-  const onWindows = platform() === 'windows';
+  // `platform()` reads Tauri's OS-plugin globals, which don't exist outside a
+  // Tauri webview (Storybook), so treat that as Windows rather than throw while
+  // the component initialises.
+  const onWindows = (() => {
+    try {
+      return platform() === 'windows';
+    } catch {
+      return true;
+    }
+  })();
 
   let phase = $state<string>('restoring');
   let message = $state<string | null>(null);

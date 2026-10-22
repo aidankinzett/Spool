@@ -314,8 +314,7 @@ pub async fn backup_game_core(
     // unlocked — a concurrent write could corrupt the backup or clobber the
     // remote, while the live save sits safe on disk, so the caller (a UI toast
     // for the manual command, an error response for the plugin server) just retries.
-    let _backup_lock =
-        crate::proc_lock::acquire_backup(std::time::Duration::from_secs(180)).await?;
+    let _backup_lock = crate::proc_lock::acquire_backup(crate::proc_lock::BACKUP_LOCK_WAIT).await?;
 
     // Offline mode with a remote configured: write the local revision only —
     // no `--cloud-sync` network attempt — and report it as not cloud-synced so
@@ -641,8 +640,9 @@ pub async fn pull_cloud_saves(app: AppHandle, game_id: String) -> AppResult<Pull
 /// Pull-only sync core, shared by the [`pull_cloud_saves`] command and the
 /// headless plugin server (Decky). Never uploads.
 ///
-/// `ludusavi restore --cloud-sync` pulls the remote into the local backup store
-/// and lands the tip on disk. A clean run means we were already in sync. A
+/// `ludusavi restore --cloud-sync` compares the local backup store with the
+/// remote (no transfer) and lands the local tip on disk. A clean run means we
+/// were already in sync. A
 /// reported cloud conflict is reconciled against the last-synced baseline:
 ///   * cloud cleanly ahead → download + re-restore (the actual pull),
 ///   * local cleanly ahead → leave both sides alone and report `LocalNewer`
@@ -709,7 +709,7 @@ pub async fn pull_cloud_saves_core(
     .await?;
     let rescue = rescue.and_then(|o| o.rescue);
 
-    // ── Pass 1: restore --cloud-sync (pulls the remote, lands the tip) ────────
+    // ── Pass 1: restore --cloud-sync (checks the remote, lands the tip) ───────
     let out = restore_with_redirects(
         ludusavi_client,
         ludusavi_exe,
@@ -781,7 +781,7 @@ pub async fn pull_cloud_saves_core(
         }
         CloudSyncDecision::FastForwardDownload => {
             // Cloud cleanly ahead — pull it down and re-restore to disk.
-            ludusavi_client
+            let pulled = ludusavi_client
                 .cloud_resolve(
                     ludusavi_exe,
                     config_dir,
@@ -790,6 +790,12 @@ pub async fn pull_cloud_saves_core(
                 )
                 .await
                 .map_err(|e| AppError::Other(format!("ludusavi cloud download: {e}")))?;
+            // A partial download (or a stale local index) must not be restored.
+            if cloud_sync_failed(&pulled) {
+                return Err(AppError::Other(
+                    "Couldn't finish pulling saves from the cloud — try again.".into(),
+                ));
+            }
             let out = restore_with_redirects(
                 ludusavi_client,
                 ludusavi_exe,
@@ -1071,10 +1077,20 @@ pub async fn resolve_cloud_conflict(
 
     // ── Step 1: mirror the chosen side, clearing the conflict ─────────────
     tracing::info!(game_name, ?op, "resolving cloud conflict");
-    ludusavi_client
+    let resolved = ludusavi_client
         .cloud_resolve(&ludusavi_exe, &config_dir, op, &game_name)
         .await
         .map_err(|e| AppError::Other(format!("ludusavi cloud {side}: {e}")))?;
+    if cloud_sync_failed(&resolved) {
+        return Err(AppError::Other(match op {
+            crate::ludusavi::CloudOp::Upload => {
+                "Couldn't finish uploading saves to the cloud — try again.".into()
+            }
+            crate::ludusavi::CloudOp::Download => {
+                "Couldn't finish pulling saves from the cloud — try again.".into()
+            }
+        }));
+    }
 
     // ── Step 2: restore the reconciled backup into the live save location ─
     let out = restore_with_redirects(
@@ -1287,23 +1303,6 @@ async fn get_local_active_save_details(
     }
 }
 
-/// Resolve `(rclone_exe, remote_name, remote_path)` from the ludusavi
-/// `config.yaml` + app config. `None` when cloud isn't configured or the
-/// rclone binary can't be found.
-fn resolve_rclone_remote() -> Option<(PathBuf, String, String)> {
-    let raw = std::fs::read_to_string(crate::paths::ludusavi_config_file()).ok()?;
-    let config: serde_yaml::Value = serde_yaml::from_str(&raw).ok()?;
-    let remote_name = crate::rclone::remote_name_from_yaml(&config)?;
-    let remote_path = config
-        .get("cloud")
-        .and_then(|c| c.get("path"))
-        .and_then(|p| p.as_str())
-        .unwrap_or("ludusavi-backup")
-        .to_string();
-    let rclone_exe = crate::paths::resolve_rclone_path()?;
-    Some((rclone_exe, remote_name, remote_path))
-}
-
 /// The cloud side of a reconciliation. Distinguishes a backup that's genuinely
 /// absent (remote reachable, this game has no cloud backup yet — a clean first
 /// upload) from one we simply couldn't read (unreachable / transient), so the
@@ -1336,7 +1335,7 @@ impl CloudTip {
 /// unparseable result yields [`CloudTip::Unknown`]. Uses `rclone::cat_outcome`
 /// (which applies FAST_FLAGS) so unreachable remotes fail quickly.
 pub(crate) async fn fetch_cloud_backup_tip(game_name: &str) -> CloudTip {
-    let Some((rclone_exe, remote_name, remote_path)) = resolve_rclone_remote() else {
+    let Some((rclone_exe, remote_name, remote_path)) = crate::rclone::ludusavi_remote() else {
         return CloudTip::Unknown;
     };
     let mut folders = vec![game_name.to_string()];
@@ -2031,7 +2030,7 @@ async fn acquire_backup_lock(game_name: &str, on_wait: impl FnOnce()) -> BackupL
         Ok(Some(guard)) => BackupLock::Held(guard),
         Ok(None) => {
             on_wait();
-            match crate::proc_lock::acquire_backup(std::time::Duration::from_secs(180)).await {
+            match crate::proc_lock::acquire_backup(crate::proc_lock::BACKUP_LOCK_WAIT).await {
                 Ok(guard) => BackupLock::Held(guard),
                 Err(e) => {
                     tracing::warn!(game_name, error = %e, "timed out waiting for backup lock");
@@ -2196,8 +2195,9 @@ async fn rescue_before_restore(
 /// Run a ludusavi restore with automatic cross-platform redirect generation.
 ///
 /// Flow:
-///  1. Restore once — this pulls the latest cloud backup (via `--cloud-sync`)
-///     and lands files at the *recorded* absolute paths.
+///  1. Restore once — this checks the local backup store against the cloud
+///     (via `--cloud-sync`, reporting a conflict if they differ) and lands
+///     files at the *recorded* absolute paths.
 ///  2. Read the backup's `mapping.yaml` to discover the origin OS + paths.
 ///  3. If the backup is foreign-origin (different OS / different prefix):
 ///     a. Derive redirect rules (Windows paths → Proton prefix, or reverse).
@@ -2775,7 +2775,8 @@ async fn reconcile_cloud_conflict(
         }
         CloudSyncDecision::FastForwardDownload => {
             // Cloud is cleanly ahead — pull it down and re-restore.
-            ctx.ludusavi_client
+            let pulled = ctx
+                .ludusavi_client
                 .cloud_resolve(
                     ctx.ludusavi_exe,
                     &ctx.config_dir,
@@ -2783,6 +2784,12 @@ async fn reconcile_cloud_conflict(
                     ctx.game_name,
                 )
                 .await?;
+            // A partial download (or a stale local index) must not be restored.
+            if cloud_sync_failed(&pulled) {
+                return Err(AppError::Other(
+                    "Couldn't finish pulling saves from the cloud — try again.".into(),
+                ));
+            }
             // Only reachable when the pass-1 restore ran with cloud sync
             // on (it reported the conflict), so the re-restore keeps it on.
             let out = restore_with_redirects(
@@ -2809,7 +2816,8 @@ async fn reconcile_cloud_conflict(
         CloudSyncDecision::FastForwardUpload => {
             // Local is cleanly ahead — push it up, then land it in the live
             // save location, which the conflicting restore stopped short of.
-            ctx.ludusavi_client
+            let pushed = ctx
+                .ludusavi_client
                 .cloud_resolve(
                     ctx.ludusavi_exe,
                     &ctx.config_dir,
@@ -2818,10 +2826,19 @@ async fn reconcile_cloud_conflict(
                 )
                 .await?;
             land_local_saves(ctx).await?;
-            if let Some(tip) = local_tip.as_ref() {
+            // The local saves are authoritative here, so launch even if the
+            // upload didn't finish. Leave the baseline where it was: local stays
+            // ahead of it, and the next sync pushes again.
+            let uploaded = !cloud_sync_failed(&pushed);
+            if !uploaded {
+                tracing::warn!(
+                    game_name = ctx.game_name,
+                    "launch reconcile: upload didn't finish — keeping the old baseline"
+                );
+            } else if let Some(tip) = local_tip.as_ref() {
                 let _ = set_cloud_baseline(ctx.app, ctx.game_id, &tip.name).await;
             }
-            if first_upload {
+            if uploaded && first_upload {
                 // The cloud was empty for this game — reassure rather than stay
                 // silent, since the old behaviour wrongly showed a conflict here.
                 emit_cloud_notice(
@@ -3309,9 +3326,9 @@ async fn phase_backup(
         // leave the PendingBackup marker so peers keep warning) and let the next
         // launch reconcile. Playtime was already pushed at record time
         // (phase_launch), so there's nothing to record here.
-        let _backup_lock = match crate::proc_lock::acquire_backup(std::time::Duration::from_secs(
-            180,
-        ))
+        let _backup_lock = match crate::proc_lock::acquire_backup(
+            crate::proc_lock::BACKUP_LOCK_WAIT,
+        )
         .await
         {
             Ok(guard) => guard,

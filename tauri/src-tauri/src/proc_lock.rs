@@ -89,6 +89,14 @@ async fn acquire_at(path: PathBuf, timeout: Duration, busy_msg: &str) -> AppResu
     }
 }
 
+/// How long a process waits for the backup lock before giving up. It must
+/// outlast the longest hold, or a waiter times out while the holder is still
+/// within its own limits. The longest hold is the play workflow's post-session
+/// span: a local backup (`RUN_API_TIMEOUT`, 60 s), then a forced cloud upload
+/// (`CLOUD_TRANSFER_BUDGET`, 150 s) and two tries at copying its index
+/// (`INDEX_OP_TIMEOUT`, 2 × 30 s) — 270 s.
+pub const BACKUP_LOCK_WAIT: Duration = Duration::from_secs(300);
+
 /// Acquire the machine-wide backup/upload lock, polling until a holder in
 /// another process finishes or `timeout` elapses. Returns an error on timeout
 /// (or if the lock file can't be opened) — callers fail the backup and let the

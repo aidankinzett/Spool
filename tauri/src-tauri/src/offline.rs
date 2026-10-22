@@ -349,7 +349,7 @@ pub async fn go_online(app: AppHandle) -> AppResult<GoOnlineReport> {
                 // work, like every backup/upload pair (see proc_lock.rs).
                 let upload = async {
                     let _lock =
-                        crate::proc_lock::acquire_backup(std::time::Duration::from_secs(180))
+                        crate::proc_lock::acquire_backup(crate::proc_lock::BACKUP_LOCK_WAIT)
                             .await?;
                     ludusavi_client
                         .cloud_resolve(
