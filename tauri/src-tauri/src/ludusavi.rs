@@ -473,10 +473,14 @@ impl LudusaviClient {
     }
 
     /// Runs `ludusavi restore --api [--cloud-sync] --force <name>` and parses
-    /// the JSON output. `cloud_sync` pulls the remote into the local backup
-    /// store before restoring; callers pass `false` when no remote is
-    /// configured or offline mode is on, so the restore never makes a network
-    /// attempt. Empty stdout (which ludusavi sometimes produces for
+    /// the JSON output. `cloud_sync` makes ludusavi compare the local backup
+    /// store with the remote first (an `rclone sync --dry-run`, no transfer)
+    /// and report `cloudConflict` when they differ; it doesn't download. A
+    /// newer cloud copy is pulled by the caller via
+    /// [`cloud_resolve`](Self::cloud_resolve) with [`CloudOp::Download`], which
+    /// also refreshes the local `mapping.yaml`. Callers pass `false` when no
+    /// remote is configured or offline mode is on, so the restore never makes
+    /// a network attempt. Empty stdout (which ludusavi sometimes produces for
     /// unknown-game errors) deserialises to an empty `ApiOutput` rather
     /// than failing.
     pub async fn restore(
