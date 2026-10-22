@@ -339,6 +339,9 @@ impl Watcher {
         if earned.is_empty() {
             return;
         }
+        if earned.iter().any(|e| !self.seen.contains(&key_id(&e.key))) {
+            self.refresh_elsewhere().await;
+        }
         let schema = self.schema();
         let (mut live, mut quiet, mut keys) = (Vec::new(), Vec::new(), Vec::new());
         for e in &earned {
@@ -388,6 +391,27 @@ impl Watcher {
         self.seen.extend(keys);
         for row in added {
             self.announce(&row, schema.as_ref());
+        }
+    }
+
+    /// Re-reads which achievements other devices have recorded. A fold can
+    /// run mid-session (the detail pane, the headless server's `/fold`), so
+    /// the set from the baseline may be out of date by the time this device
+    /// earns one. Only called when a tick finds something new.
+    async fn refresh_elsewhere(&mut self) {
+        match self
+            .library
+            .achievement_unlocks_for(&self.ctx.game_name)
+            .await
+        {
+            Ok(rows) => {
+                for r in rows.iter().filter(|r| !r.device_id.is_empty()) {
+                    self.elsewhere.extend(seen_keys(&r.api_name));
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "achievements: couldn't refresh other devices' unlocks")
+            }
         }
     }
 

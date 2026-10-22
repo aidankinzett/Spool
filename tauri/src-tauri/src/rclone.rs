@@ -1271,6 +1271,34 @@ impl HasSchema for AchievementsBlob {
 }
 
 async fn sync_achievements_core(id: &RemoteIdentity, library: &crate::library::Library) {
+    // The blob is overwritten wholesale, so merge the current remote copy in
+    // first. On a fresh or reset library a publish can run before the startup
+    // fold has restored this device's rows; publishing the local rows alone
+    // would then replace the only copy with an empty list. Anything only on
+    // the remote is restored as local rows, so the projection below covers it.
+    let store = id.remote.store("achievements", 1);
+    match cat_outcome(&id.remote.exe, &store.target(&id.device_id)).await {
+        CatOutcome::Found(body) => match serde_json::from_str::<AchievementsBlob>(&body) {
+            // Written by a newer Spool: leave it rather than drop fields this
+            // build doesn't know.
+            Ok(blob) if blob.schema > 1 => return,
+            Ok(blob) => {
+                let rows = achievement_fold_rows(
+                    vec![(id.device_id.clone(), blob)],
+                    chrono::Utc::now().timestamp_millis(),
+                );
+                if let Err(e) = library.fold_achievement_unlocks(&rows, &id.device_id).await {
+                    tracing::warn!(error = %e, "sync_achievements: couldn't merge the remote copy");
+                    return;
+                }
+            }
+            // Unreadable: nothing worth keeping, so it's replaced below.
+            Err(_) => {}
+        },
+        CatOutcome::NotFound => {}
+        // Can't tell what's there; the publish would most likely fail too.
+        CatOutcome::Unreachable => return,
+    }
     let rows = match library.local_achievement_unlocks().await {
         Ok(r) => r,
         Err(e) => {
@@ -1290,10 +1318,7 @@ async fn sync_achievements_core(id: &RemoteIdentity, library: &crate::library::L
             .collect(),
         schema: 1,
     };
-    id.remote
-        .store("achievements", 1)
-        .publish(&id.device_id, &blob)
-        .await;
+    store.publish(&id.device_id, &blob).await;
 }
 
 /// Overwrite this device's achievements blob with every unlock it recorded.
