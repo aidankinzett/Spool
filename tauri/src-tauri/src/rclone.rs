@@ -1271,7 +1271,7 @@ impl HasSchema for AchievementsBlob {
 }
 
 async fn sync_achievements_core(id: &RemoteIdentity, library: &crate::library::Library) {
-    let rows = match library.achievement_unlocks_for_device(&id.device_id).await {
+    let rows = match library.local_achievement_unlocks().await {
         Ok(r) => r,
         Err(e) => {
             tracing::warn!(error = %e, "sync_achievements: failed to read local unlocks");
@@ -1344,11 +1344,48 @@ fn achievement_fold_rows(
 
 /// Fold every device's achievements blob into the local table. Our own blob is
 /// included, which restores our unlocks if the local DB was wiped. Returns the
-/// number of rows added or changed.
-async fn fold_achievements(remote: &RcloneRemote, library: &crate::library::Library) -> usize {
+/// number of rows added or changed. The table's triggers bump
+/// `achievements_version`, which the GUI polls to refresh an open card.
+async fn fold_achievements(
+    remote: &RcloneRemote,
+    library: &crate::library::Library,
+    our_device_id: &str,
+) -> usize {
     let blobs: Vec<(String, AchievementsBlob)> = remote.store("achievements", 1).read_all().await;
     let rows = achievement_fold_rows(blobs, chrono::Utc::now().timestamp_millis());
-    library.fold_achievement_unlocks(&rows).await.unwrap_or(0)
+    library
+        .fold_achievement_unlocks(&rows, our_device_id)
+        .await
+        .unwrap_or(0)
+}
+
+/// Minimum gap between on-demand achievement folds.
+const ACHIEVEMENT_FOLD_INTERVAL: Duration = Duration::from_secs(10 * 60);
+
+/// Folds other devices' unlocks while the app is running, so a tray process
+/// that stays up for days still picks up unlocks earned elsewhere. Called when
+/// a game's detail pane loads; runs at most once per
+/// [`ACHIEVEMENT_FOLD_INTERVAL`] to keep requests to the remote low.
+pub async fn fold_achievements_throttled(app: &AppHandle) {
+    static LAST: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
+    {
+        let Ok(mut last) = LAST.lock() else {
+            return;
+        };
+        if last.is_some_and(|t| t.elapsed() < ACHIEVEMENT_FOLD_INTERVAL) {
+            return;
+        }
+        *last = Some(std::time::Instant::now());
+    }
+    let Some(remote) = resolve_remote(app) else {
+        return;
+    };
+    let (our_device_id, _) = device_identity(app);
+    let library = app.state::<SharedLibrary>().inner().clone();
+    let changed = fold_achievements(&remote, &library, &our_device_id).await;
+    if changed > 0 {
+        tracing::info!(changed, "achievement fold: imported unlocks from other devices");
+    }
 }
 
 // ── Generic fold: adopt name-keyed definitions from the control plane ─────────
@@ -1771,7 +1808,7 @@ pub async fn fold_devices_from_config() -> bool {
     let (new_sessions, blobs, new_unlocks) = tokio::join!(
         fold_history(&remote, &library),
         device_store.read_all::<DeviceBlob>(),
-        fold_achievements(&remote, &library),
+        fold_achievements(&remote, &library, &our_device_id),
     );
     if new_sessions > 0 {
         tracing::info!(new_sessions, "headless fold: imported peer play sessions");
@@ -1860,14 +1897,13 @@ async fn run_startup_fold(app: &AppHandle) {
     let (new_sessions, blobs, new_unlocks) = tokio::join!(
         fold_history(&remote, &library),
         device_store.read_all::<DeviceBlob>(),
-        fold_achievements(&remote, &library),
+        fold_achievements(&remote, &library, &our_device_id),
     );
     if new_sessions > 0 {
         tracing::info!(new_sessions, "startup fold: imported peer play sessions");
     }
     if new_unlocks > 0 {
         tracing::info!(new_unlocks, "startup fold: imported peer achievement unlocks");
-        let _ = app.emit("achievements:changed", &());
     }
     // Re-derive playtime/last-played from the timeline (now including any peer
     // sessions just folded in) — this is what replaces the device-blob playtime

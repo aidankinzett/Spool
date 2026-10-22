@@ -899,16 +899,28 @@ fn spawn_startup_tasks(app: &AppHandle) {
 /// writes the shared database. In-process mutations emit `library:changed`
 /// directly for instant feedback; this only covers external writers (it may
 /// fire one extra refresh shortly after a local write, which is harmless).
+/// Also re-emits `achievements:changed` off the `achievements_version` counter.
 fn spawn_library_change_poll(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         let library = app.state::<SharedLibrary>().inner().clone();
         let mut last = library.version().await.unwrap_or(0);
+        let mut last_achievements = library.achievements_version().await.unwrap_or(0);
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
             match library.version().await {
                 Ok(v) if v != last => {
                     last = v;
                     let _ = app.emit("library:changed", &());
+                }
+                _ => {}
+            }
+            // Achievement unlocks have their own counter, so a fold or a live
+            // unlock refreshes an open achievements card without reloading the
+            // whole library.
+            match library.achievements_version().await {
+                Ok(v) if v != last_achievements => {
+                    last_achievements = v;
+                    let _ = app.emit("achievements:changed", &());
                 }
                 _ => {}
             }
