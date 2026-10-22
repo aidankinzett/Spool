@@ -34,7 +34,9 @@
   /** Rows shown before "Show all". */
   const COLLAPSED = 6;
 
-  let data = $state<GameAchievements | null>(null);
+  /** The last response, tagged with the game it's for, so switching games
+   *  never shows the previous game's list while the new one loads. */
+  let loaded = $state<{ id: string; data: GameAchievements } | null>(null);
   let expanded = $state(false);
   /** Bumped by an `achievement:unlocked` event for this game to trigger a reload. */
   let unlockTick = $state(0);
@@ -45,6 +47,7 @@
   // unrelated refresh.
   const gameId = $derived(game.id);
   const lastPlayed = $derived(game.last_played_at);
+  const data = $derived(loaded?.id === gameId ? loaded.data : null);
 
   // Reload when the selected game changes, after a session ends (last_played_at
   // moves), and on a live unlock for this game.
@@ -56,10 +59,10 @@
     api
       .getGameAchievements(id)
       .then((d) => {
-        if (!stale) data = d;
+        if (!stale) loaded = { id, data: d };
       })
       .catch(() => {
-        if (!stale) data = null;
+        if (!stale) loaded = null;
       });
     return () => {
       stale = true;

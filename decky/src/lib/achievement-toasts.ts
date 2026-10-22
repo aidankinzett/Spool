@@ -31,6 +31,9 @@ let base: string | null = null;
 // Only unlocks recorded after this (unix ms) are shown.
 let since = 0;
 let inFlight = false;
+// Bumped by stop(), so a poll still awaiting the server when polling stops
+// (or the plugin unloads) drops its results instead of toasting.
+let generation = 0;
 
 function isShortcut(appid: number): boolean {
   return (appid & 0x80000000) !== 0;
@@ -57,12 +60,14 @@ async function poll() {
   }
   if (inFlight) return;
   inFlight = true;
+  const gen = generation;
   try {
     if (!base) base = (await getServerBase()).baseUrl;
-    if (!base) return;
+    if (!base || gen !== generation) return;
     const res = await fetch(`${base}/achievements/recent?since=${since}`);
     if (!res.ok) return;
     const unlocks = (await res.json()) as Unlock[];
+    if (gen !== generation) return;
     for (const u of unlocks) {
       since = Math.max(since, u.detected_at);
       show(u);
@@ -78,6 +83,7 @@ async function poll() {
 function stop() {
   if (timer) clearInterval(timer);
   timer = null;
+  generation++;
 }
 
 // Feed from SteamClient.GameSessions.RegisterForAppLifetimeNotifications.

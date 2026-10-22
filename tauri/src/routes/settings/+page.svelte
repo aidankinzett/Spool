@@ -1558,7 +1558,16 @@
                       onclick={async () => {
                         if (!config) return;
                         try {
-                          await navigator.clipboard.writeText(JSON.stringify($state.snapshot(config), null, 2));
+                          // Diagnostics get pasted into issues, so API keys are
+                          // replaced with whether one is set.
+                          const snapshot = $state.snapshot(config);
+                          const redact = (k: string) => (k ? '<redacted>' : '');
+                          const diagnostics = {
+                            ...snapshot,
+                            steamgriddb_api_key: redact(snapshot.steamgriddb_api_key),
+                            steam_web_api_key: redact(snapshot.steam_web_api_key),
+                          };
+                          await navigator.clipboard.writeText(JSON.stringify(diagnostics, null, 2));
                           toasts.show({ kind: 'ok', label: 'SETTINGS', title: 'Copied', sub: 'Config JSON copied to clipboard.' });
                         } catch (e) {
                           toasts.show({ kind: 'bad', label: 'SETTINGS', title: "Couldn't copy", sub: String(e) });

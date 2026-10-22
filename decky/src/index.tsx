@@ -6,6 +6,7 @@ import {
   toaster,
 } from "@decky/api";
 import {
+  Router,
   afterPatch,
   appDetailsClasses,
   appDetailsHeaderClasses,
@@ -129,6 +130,18 @@ export default definePlugin(() => {
       }
     },
   );
+
+  // Lifetime notifications only report transitions, so a game already running
+  // when the plugin loads (e.g. after a plugin reload mid-session) is seeded
+  // from Steam's running-app list. `appid` is a string there.
+  try {
+    for (const app of Router.RunningApps ?? []) {
+      const appid = Number(app.appid) >>> 0;
+      if (appid !== 0) onAppLifetime(appid, true);
+    }
+  } catch (err) {
+    console.warn("[Spool] Couldn't read running apps:", err);
+  }
 
   // Drive the game-page backup badge's spinner. `started`/`finished` carry the
   // appid and always fire (independent of the notify setting); the separate
