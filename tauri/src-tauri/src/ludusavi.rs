@@ -32,18 +32,24 @@ use tokio::sync::RwLock;
 /// the local restore.
 const RUN_API_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// Ceiling for a forced `ludusavi cloud upload` / `cloud download`. These move
-/// every revision in a game's backup folder, which on a slow remote (a few
-/// hundred KB/s to a home server) takes well over [`RUN_API_TIMEOUT`]. The
-/// fast-fail rclone flags still make an unreachable remote fail in seconds;
-/// this only stops a transfer that is making progress from being killed.
-const CLOUD_TRANSFER_TIMEOUT: Duration = Duration::from_secs(600);
+/// Total time for a forced `ludusavi cloud upload` / `cloud download`, shared
+/// by all its attempts. These move every revision in a game's backup folder,
+/// which on a slow remote (a few hundred KB/s to a home server) takes longer
+/// than [`RUN_API_TIMEOUT`]. Files that finished transferring stay transferred,
+/// so a transfer cut off here continues from that point on the next sync.
+/// Kept short enough that the backup lock this runs under is released within
+/// [`crate::proc_lock::BACKUP_LOCK_WAIT`] (see the budget note there).
+const CLOUD_TRANSFER_BUDGET: Duration = Duration::from_secs(150);
 
 /// Attempts for a forced cloud transfer that ludusavi reports as a failed
-/// sync. The fast-fail rclone flags allow a single attempt per file, so one
-/// dropped connection fails the whole `rclone sync`; rerunning it skips the
-/// files already transferred and continues with the rest.
+/// sync, within [`CLOUD_TRANSFER_BUDGET`]. The fast-fail rclone flags allow a
+/// single attempt per file, so one dropped connection fails the whole
+/// `rclone sync`; rerunning it skips the files already transferred and
+/// continues with the rest.
 const CLOUD_TRANSFER_ATTEMPTS: u32 = 3;
+
+/// Shortest time worth starting another transfer attempt with.
+const CLOUD_TRANSFER_MIN_ATTEMPT: Duration = Duration::from_secs(15);
 
 /// Direction of a cloud-conflict resolution — which copy of the save wins.
 /// Maps onto the `cloud upload` / `cloud download` ludusavi subcommands.
@@ -582,13 +588,19 @@ impl LudusaviClient {
             args.push(&prefix_str);
         }
         let mut out = run_api(ludusavi_exe, config_dir, &args).await?;
-        // A conflict or failed sync means nothing was uploaded, so only a clean
-        // cloud leg gets its index pushed (see `rclone::push_backup_index`).
+        // Only push the index when ludusavi backed the game up and its cloud leg
+        // ran cleanly (see `rclone::push_backup_index`). A conflict or failed
+        // sync means nothing was uploaded; an unknown game or an empty result
+        // means ludusavi did no cloud work, so the local index was never
+        // compared with the cloud and must not overwrite it.
+        let backed_up = out.overall.as_ref().is_some_and(|o| o.total_games > 0);
         if cloud_sync
-            && out
-                .errors
-                .as_ref()
-                .is_none_or(|e| e.cloud_sync_failed.is_none() && e.cloud_conflict.is_none())
+            && backed_up
+            && out.errors.as_ref().is_none_or(|e| {
+                e.cloud_sync_failed.is_none()
+                    && e.cloud_conflict.is_none()
+                    && e.unknown_games.is_empty()
+            })
         {
             mirror_backup_index(&mut out, CloudOp::Upload, game_name).await;
         }
@@ -621,15 +633,20 @@ impl LudusaviClient {
         game_name: &str,
     ) -> AppResult<ApiOutput> {
         let args = ["cloud", op.subcommand(), "--api", "--force", game_name];
+        let deadline = std::time::Instant::now() + CLOUD_TRANSFER_BUDGET;
         let mut attempt = 1;
         let mut out = loop {
-            let out = run_api_with_timeout(ludusavi_exe, config_dir, &args, CLOUD_TRANSFER_TIMEOUT)
-                .await?;
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            let out = run_api_with_timeout(ludusavi_exe, config_dir, &args, remaining).await?;
             let failed = out
                 .errors
                 .as_ref()
                 .is_some_and(|e| e.cloud_sync_failed.is_some());
-            if !failed || attempt >= CLOUD_TRANSFER_ATTEMPTS {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if !failed
+                || attempt >= CLOUD_TRANSFER_ATTEMPTS
+                || remaining < CLOUD_TRANSFER_MIN_ATTEMPT
+            {
                 break out;
             }
             tracing::warn!(
