@@ -141,9 +141,11 @@ pub fn read_backup_origin(backup_dir: &Path, game_name: &str) -> Option<BackupOr
 
 /// The tip (most recent backup) of a game's `mapping.yaml` — the unique
 /// ludusavi backup name plus its timestamp. Used as a content-identity token
-/// for cloud fast-forward detection: ludusavi mirrors `mapping.yaml` across
-/// devices on every cloud sync, so the tip name is byte-identical wherever a
-/// given save state lives (and is independent of OS / drive letters).
+/// for cloud fast-forward detection: `mapping.yaml` is mirrored across devices
+/// on every cloud transfer (by ludusavi's sync, and explicitly by
+/// `rclone::push_backup_index` / `pull_backup_index`, since a size-only sync can
+/// skip it), so the tip name is byte-identical wherever a given save state
+/// lives (and is independent of OS / drive letters).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BackupTip {
     pub name: String,

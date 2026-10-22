@@ -1287,23 +1287,6 @@ async fn get_local_active_save_details(
     }
 }
 
-/// Resolve `(rclone_exe, remote_name, remote_path)` from the ludusavi
-/// `config.yaml` + app config. `None` when cloud isn't configured or the
-/// rclone binary can't be found.
-fn resolve_rclone_remote() -> Option<(PathBuf, String, String)> {
-    let raw = std::fs::read_to_string(crate::paths::ludusavi_config_file()).ok()?;
-    let config: serde_yaml::Value = serde_yaml::from_str(&raw).ok()?;
-    let remote_name = crate::rclone::remote_name_from_yaml(&config)?;
-    let remote_path = config
-        .get("cloud")
-        .and_then(|c| c.get("path"))
-        .and_then(|p| p.as_str())
-        .unwrap_or("ludusavi-backup")
-        .to_string();
-    let rclone_exe = crate::paths::resolve_rclone_path()?;
-    Some((rclone_exe, remote_name, remote_path))
-}
-
 /// The cloud side of a reconciliation. Distinguishes a backup that's genuinely
 /// absent (remote reachable, this game has no cloud backup yet — a clean first
 /// upload) from one we simply couldn't read (unreachable / transient), so the
@@ -1336,7 +1319,7 @@ impl CloudTip {
 /// unparseable result yields [`CloudTip::Unknown`]. Uses `rclone::cat_outcome`
 /// (which applies FAST_FLAGS) so unreachable remotes fail quickly.
 pub(crate) async fn fetch_cloud_backup_tip(game_name: &str) -> CloudTip {
-    let Some((rclone_exe, remote_name, remote_path)) = resolve_rclone_remote() else {
+    let Some((rclone_exe, remote_name, remote_path)) = crate::rclone::ludusavi_remote() else {
         return CloudTip::Unknown;
     };
     let mut folders = vec![game_name.to_string()];

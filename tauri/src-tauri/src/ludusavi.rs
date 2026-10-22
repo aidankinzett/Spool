@@ -564,7 +564,18 @@ impl LudusaviClient {
             args.push("--wine-prefix");
             args.push(&prefix_str);
         }
-        run_api(ludusavi_exe, config_dir, &args).await
+        let out = run_api(ludusavi_exe, config_dir, &args).await?;
+        // A conflict or failed sync means nothing was uploaded, so only a clean
+        // cloud leg gets its index pushed (see `rclone::push_backup_index`).
+        if cloud_sync
+            && out
+                .errors
+                .as_ref()
+                .is_none_or(|e| e.cloud_sync_failed.is_none() && e.cloud_conflict.is_none())
+        {
+            crate::rclone::push_backup_index(game_name).await;
+        }
+        Ok(out)
     }
 
     /// Resolve a cloud-sync conflict in one direction, overwriting the losing
@@ -581,6 +592,10 @@ impl LudusaviClient {
     /// conflict guard (the very guard that produced the `cloudConflict` we're
     /// resolving) and unconditionally mirrors the chosen side. Restricted to the
     /// single `game_name` so we never touch unrelated games in the library.
+    ///
+    /// After a successful transfer the game's `mapping.yaml` is copied in the
+    /// same direction, since rclone's sync can skip it on remotes that compare
+    /// by size only (see `rclone::push_backup_index`).
     pub async fn cloud_resolve(
         &self,
         ludusavi_exe: &Path,
@@ -588,12 +603,23 @@ impl LudusaviClient {
         op: CloudOp,
         game_name: &str,
     ) -> AppResult<ApiOutput> {
-        run_api(
+        let out = run_api(
             ludusavi_exe,
             config_dir,
             &["cloud", op.subcommand(), "--api", "--force", game_name],
         )
-        .await
+        .await?;
+        if out
+            .errors
+            .as_ref()
+            .is_none_or(|e| e.cloud_sync_failed.is_none())
+        {
+            match op {
+                CloudOp::Upload => crate::rclone::push_backup_index(game_name).await,
+                CloudOp::Download => crate::rclone::pull_backup_index(game_name).await,
+            };
+        }
+        Ok(out)
     }
 
     /// Runs `ludusavi manifest update` so the on-disk manifest cache is fresh.

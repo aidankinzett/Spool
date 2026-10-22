@@ -578,6 +578,116 @@ async fn deletefile(exe: &Path, target: &str) -> bool {
         .is_some_and(|out| out.status.success())
 }
 
+// ── Backup index (`mapping.yaml`) mirroring ─────────────────────────────────
+//
+// ludusavi's `cloud upload` / `cloud download` run `rclone sync` over the
+// backup tree. On a remote that reports neither modification times nor hashes
+// (plain WebDAV, among others) rclone decides whether a file changed by size
+// alone. A game's `mapping.yaml` often keeps the same size from one backup to
+// the next: once retention is full, each new entry replaces an oldest entry of
+// the same length. rclone then skips the index while the new `backup-*` folders
+// (new names) still transfer, so the far side lists revisions that no longer
+// exist and misses the new one. Other devices read the cloud tip from that
+// index (`runner::fetch_cloud_backup_tip`), so they keep seeing the old save.
+// After each cloud transfer Spool copies the index across itself with
+// `rcat` / `cat`, which always transfer the whole file.
+
+/// Resolve `(rclone_exe, remote_name, remote_path)` for ludusavi's cloud
+/// backups from the Spool-owned ludusavi `config.yaml`. `None` when cloud isn't
+/// configured or the rclone binary can't be found.
+pub(crate) fn ludusavi_remote() -> Option<(PathBuf, String, String)> {
+    let raw = std::fs::read_to_string(crate::paths::ludusavi_config_file()).ok()?;
+    let config: serde_yaml::Value = serde_yaml::from_str(&raw).ok()?;
+    let remote_name = remote_name_from_yaml(&config)?;
+    let remote_path = config
+        .get("cloud")
+        .and_then(|c| c.get("path"))
+        .and_then(|p| p.as_str())
+        .unwrap_or("ludusavi-backup")
+        .to_string();
+    let rclone_exe = crate::paths::resolve_rclone_path()?;
+    Some((rclone_exe, remote_name, remote_path))
+}
+
+/// Backup folder names ludusavi may use for `game_name`: the exact name, then
+/// the Windows-safe variant (colon → underscore), deduplicated.
+fn backup_folder_candidates(game_name: &str) -> Vec<String> {
+    let mut folders = vec![game_name.to_string()];
+    let safe = crate::redirects::windows_safe_name(game_name);
+    if safe != game_name {
+        folders.push(safe);
+    }
+    folders
+}
+
+/// Overwrite the cloud copy of `game_name`'s `mapping.yaml` with this device's.
+/// Call after a successful `cloud upload` / `backup --cloud-sync`. Returns
+/// `false` when cloud isn't configured, there's no local index, or the write
+/// failed.
+pub(crate) async fn push_backup_index(game_name: &str) -> bool {
+    let Some((exe, remote_name, remote_path)) = ludusavi_remote() else {
+        return false;
+    };
+    let backup_dir = crate::ludusavi_config::backup_dir();
+    for folder in backup_folder_candidates(game_name) {
+        let Ok(body) = tokio::fs::read(backup_dir.join(&folder).join("mapping.yaml")).await else {
+            continue;
+        };
+        let target = format!("{remote_name}:{remote_path}/{folder}/mapping.yaml");
+        let ok = rcat(&exe, &target, &body).await;
+        if !ok {
+            tracing::warn!(game_name, "failed to upload backup index (mapping.yaml)");
+        }
+        return ok;
+    }
+    false
+}
+
+/// Overwrite this device's `mapping.yaml` for `game_name` with the cloud copy.
+/// Call after a successful `cloud download`. Only a body that parses as a
+/// backup index replaces the local file. Returns `false` when cloud isn't
+/// configured, the cloud has no index, the remote was unreachable, or the
+/// write failed.
+pub(crate) async fn pull_backup_index(game_name: &str) -> bool {
+    let Some((exe, remote_name, remote_path)) = ludusavi_remote() else {
+        return false;
+    };
+    let backup_dir = crate::ludusavi_config::backup_dir();
+    for folder in backup_folder_candidates(game_name) {
+        let target = format!("{remote_name}:{remote_path}/{folder}/mapping.yaml");
+        match cat_outcome(&exe, &target).await {
+            CatOutcome::Found(body) => {
+                if crate::redirects::read_backup_tip_from_str(&body).is_none() {
+                    tracing::warn!(
+                        game_name,
+                        "cloud backup index didn't parse — keeping local copy"
+                    );
+                    return false;
+                }
+                let path = backup_dir.join(&folder).join("mapping.yaml");
+                let written = tokio::task::spawn_blocking(move || {
+                    crate::paths::write_atomic(&path, body.as_bytes(), false)
+                })
+                .await;
+                return match written {
+                    Ok(Ok(())) => true,
+                    Ok(Err(e)) => {
+                        tracing::warn!(game_name, error = %e, "failed to write backup index (mapping.yaml)");
+                        false
+                    }
+                    Err(e) => {
+                        tracing::warn!(game_name, error = %e, "backup index write task failed");
+                        false
+                    }
+                };
+            }
+            CatOutcome::NotFound => continue,
+            CatOutcome::Unreachable => return false,
+        }
+    }
+    false
+}
+
 /// One entry from `rclone lsjson`.
 #[derive(Debug, Deserialize)]
 struct LsEntry {
