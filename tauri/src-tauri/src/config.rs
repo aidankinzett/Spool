@@ -327,7 +327,7 @@ impl Config {
         changed |= ensure_device_identity(&mut data);
         changed |= auto_detect_umu_run(&mut data);
         changed |= stamp_current_exe(&mut data);
-        changed |= migrate_cloud_base_path(&mut data);
+        changed |= migrate_cloud_base_path(raw_json.as_deref(), &mut data);
         changed |= migrate_onboarding_completed(raw_json.as_deref(), &mut data);
         changed |= migrate_retention_floor(&mut data);
         changed |= migrate_lan_install_dir(&mut data);
@@ -454,18 +454,34 @@ fn stamp_current_exe(data: &mut ConfigData) -> bool {
 /// container-level `#[serde(default)]`, such a config loads with
 /// `cloud_base_path` at its default `"Spool"` — so a user who'd customized
 /// `cloud_path` would silently have their remote folder switched to
-/// `Spool/ludusavi-backup`, hiding their existing saves. When the default
-/// base no longer matches a non-default `cloud_path`, derive the base from
-/// `cloud_path` (stripping the conventional `/ludusavi-backup` leaf) and
-/// normalize `cloud_path` to the canonical derived value so this never fires
-/// again. Idempotent and inert for new installs (base already non-default, or
-/// `cloud_path` already canonical). Returns true if anything changed.
-fn migrate_cloud_base_path(data: &mut ConfigData) -> bool {
+/// `Spool/ludusavi-backup`, hiding their existing saves. For such a config,
+/// derive the base from `cloud_path` (stripping the conventional
+/// `/ludusavi-backup` leaf).
+///
+/// Runs only when the file on disk has no `cloud_base_path` key. Once a config
+/// has been saved with the key, the base folder is the user's own choice:
+/// `cloud_path` is never updated by Settings, so re-deriving from it on every
+/// load would overwrite the folder the user picked (e.g. setting it back to
+/// `Spool` after a migration reverted on the next launch). A bare
+/// `ludusavi-backup` (ludusavi's own default, i.e. the remote root) has no base
+/// folder to derive, so it's left at the default rather than becoming
+/// `ludusavi-backup/ludusavi-backup`. Returns true if anything changed.
+fn migrate_cloud_base_path(raw_json: Option<&str>, data: &mut ConfigData) -> bool {
     const DEFAULT_BASE: &str = "Spool";
-    let old_path = data.cloud.path.trim().trim_end_matches('/').to_string();
-    if old_path.is_empty() || data.cloud.base_path.trim() != DEFAULT_BASE {
-        // No legacy path to migrate, or the base was already set explicitly
-        // (new-scheme config) — leave it alone.
+    let Some(json) = raw_json else {
+        // No file on disk — a fresh install, nothing to migrate.
+        return false;
+    };
+    let base_key_present = serde_json::from_str::<serde_json::Value>(json)
+        .ok()
+        .and_then(|v| v.as_object().map(|o| o.contains_key("cloud_base_path")))
+        // Unparseable (recovered from .bak): don't guess.
+        .unwrap_or(true);
+    if base_key_present {
+        return false;
+    }
+    let old_path = data.cloud.path.trim().trim_matches('/').to_string();
+    if old_path.is_empty() || old_path == "ludusavi-backup" {
         return false;
     }
     let canonical = format!("{DEFAULT_BASE}/ludusavi-backup");
@@ -858,6 +874,38 @@ mod tests {
         let mut data: ConfigData = serde_json::from_str(json).unwrap();
         assert!(!migrate_onboarding_completed(Some(json), &mut data));
         assert!(!data.onboarding_completed);
+    }
+
+    #[test]
+    fn legacy_cloud_path_migrates_to_base_path() {
+        let json = r#"{ "cloud_path": "MySaves/ludusavi-backup" }"#;
+        let mut data: ConfigData = serde_json::from_str(json).unwrap();
+        assert!(migrate_cloud_base_path(Some(json), &mut data));
+        assert_eq!(data.cloud.base_path, "MySaves");
+        assert_eq!(data.cloud.path, "MySaves/ludusavi-backup");
+    }
+
+    #[test]
+    fn bare_ludusavi_backup_cloud_path_is_not_migrated() {
+        // ludusavi's default leaf has no base folder to derive; it must not
+        // become a base of "ludusavi-backup".
+        let json = r#"{ "cloud_path": "ludusavi-backup" }"#;
+        let mut data: ConfigData = serde_json::from_str(json).unwrap();
+        assert!(!migrate_cloud_base_path(Some(json), &mut data));
+        assert_eq!(data.cloud.base_path, "Spool");
+    }
+
+    #[test]
+    fn user_set_base_path_survives_reload() {
+        // A previously migrated config the user then set back to "Spool": the
+        // stale cloud_path must not re-derive the base on the next launch.
+        let json = r#"{
+            "cloud_base_path": "Spool",
+            "cloud_path": "ludusavi-backup/ludusavi-backup"
+        }"#;
+        let mut data: ConfigData = serde_json::from_str(json).unwrap();
+        assert!(!migrate_cloud_base_path(Some(json), &mut data));
+        assert_eq!(data.cloud.base_path, "Spool");
     }
 
     #[test]
