@@ -3140,6 +3140,7 @@ async fn record_play_session(
     tokio::join!(
         rclone::record_session(ctx.app, ctx.game_name, minutes, &ended),
         rclone::sync_play_history(ctx.app),
+        rclone::sync_achievements(ctx.app),
     );
     true
 }
@@ -3223,6 +3224,7 @@ pub async fn record_session_headless(
     tokio::join!(
         rclone::record_session_from_config(cfg, game_name, minutes, &ended),
         rclone::sync_play_history_from_config(cfg, library),
+        rclone::sync_achievements_from_config(cfg, library),
     );
     tracing::info!(
         game = game_name,

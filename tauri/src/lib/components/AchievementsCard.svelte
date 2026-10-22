@@ -74,6 +74,7 @@
     expanded = false;
     let unlisten: (() => void) | undefined;
     let disposed = false;
+    let unlistenFold: (() => void) | undefined;
     listen<AchievementUnlockedEvent>('achievement:unlocked', (e) => {
       if (e.payload.game_id === id) unlockTick++;
     })
@@ -82,9 +83,17 @@
         else unlisten = fn;
       })
       .catch(() => {});
+    // Unlocks from other devices, folded in from the rclone control plane.
+    listen('achievements:changed', () => unlockTick++)
+      .then((fn) => {
+        if (disposed) fn();
+        else unlistenFold = fn;
+      })
+      .catch(() => {});
     return () => {
       disposed = true;
       unlisten?.();
+      unlistenFold?.();
     };
   });
 
@@ -168,6 +177,9 @@
           <div class="shrink-0 text-right text-[11px] text-ink-3 tabular-nums">
             {#if a.unlocked_at !== null}
               {fmtDate(a.unlocked_at)}
+              {#if a.unlocked_on}
+                <div class="truncate text-ink-3">on {a.unlocked_on}</div>
+              {/if}
             {:else if a.global_percent !== null}
               {fmtPercent(a.global_percent)}
             {/if}

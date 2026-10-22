@@ -54,6 +54,10 @@ struct GameContext {
     roots: Roots,
     game_folder: Option<PathBuf>,
     folder_scan: Option<FolderScan>,
+    /// This device, stamped on the rows it records so the cross-device fold
+    /// can tell them from peers'.
+    device_id: String,
+    device_name: String,
 }
 
 impl GameContext {
@@ -62,6 +66,7 @@ impl GameContext {
     /// keyed by it.
     /// Walks the install folder (cached), so call it off the async runtime.
     fn for_entry(entry: &GameEntry) -> Option<Self> {
+        let config = load_config();
         let game_folder = entry
             .game_folder_path
             .as_deref()
@@ -91,6 +96,8 @@ impl GameContext {
             roots,
             game_folder,
             folder_scan,
+            device_id: config.device_id,
+            device_name: config.device_name,
         })
     }
 
@@ -171,6 +178,8 @@ fn to_unlock(
             .map(|s| s.display_name.clone())
             .filter(|n| !n.is_empty()),
         icon: entry.and_then(|s| s.icon.clone()),
+        device_id: ctx.device_id.clone(),
+        device_name: ctx.device_name.clone(),
     })
 }
 
@@ -533,6 +542,9 @@ pub struct AchievementView {
     pub global_percent: Option<f64>,
     /// Unix seconds; `None` while locked.
     pub unlocked_at: Option<i64>,
+    /// Set when another device recorded the unlock (folded in over the rclone
+    /// control plane); `None` for this device's.
+    pub unlocked_on: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -563,7 +575,7 @@ pub async fn get_game_achievements(
     let game_name = entry.game_name.clone();
     let Some(ctx) = GameContext::load(entry).await else {
         let rows = library.achievement_unlocks_for(&game_name).await?;
-        return Ok(merge(None, None, rows));
+        return Ok(merge(None, None, rows, &load_config().device_id));
     };
     let config = load_config();
     let schema = schema::ensure(
@@ -589,17 +601,33 @@ pub async fn get_game_achievements(
         .iter()
         .filter_map(|e| to_unlock(&ctx, e, schema.as_ref(), false))
         .collect();
-    library.insert_achievement_unlocks(&rows).await?;
+    // Unlocks earned outside a Spool session are new to the other devices
+    // too, so publish them rather than waiting for the next session.
+    if !library.insert_achievement_unlocks(&rows).await?.is_empty() {
+        let app = app.clone();
+        tauri::async_runtime::spawn(async move { crate::rclone::sync_achievements(&app).await });
+    }
 
     let rows = library.achievement_unlocks_for(&ctx.game_name).await?;
-    Ok(merge(Some(ctx.appid), schema.as_ref(), rows))
+    Ok(merge(
+        Some(ctx.appid),
+        schema.as_ref(),
+        rows,
+        &ctx.device_id,
+    ))
 }
 
 fn merge(
     appid: Option<u64>,
     schema: Option<&Schema>,
     rows: Vec<AchievementUnlock>,
+    our_device_id: &str,
 ) -> GameAchievements {
+    let unlocked_on = |r: &AchievementUnlock| {
+        (!r.device_id.is_empty() && r.device_id != our_device_id)
+            .then(|| r.device_name.clone())
+            .filter(|n| !n.is_empty())
+    };
     let mut by_name: HashMap<String, &AchievementUnlock> = rows
         .iter()
         .map(|r| (r.api_name.to_ascii_uppercase(), r))
@@ -621,6 +649,7 @@ fn merge(
                 icon_gray: e.icon_gray.clone(),
                 global_percent: e.global_percent,
                 unlocked_at: row.map(|r| r.unlocked_at),
+                unlocked_on: row.and_then(unlocked_on),
             });
         }
     }
@@ -637,6 +666,7 @@ fn merge(
             icon_gray: None,
             global_percent: None,
             unlocked_at: Some(r.unlocked_at),
+            unlocked_on: unlocked_on(r),
         });
     }
     GameAchievements {
@@ -660,6 +690,8 @@ mod tests {
             roots: Roots::default(),
             game_folder: None,
             folder_scan: None,
+            device_id: "dev-a".into(),
+            device_name: "Desk PC".into(),
         }
     }
 
@@ -720,17 +752,26 @@ mod tests {
             live: 0,
             display_name: None,
             icon: None,
+            device_id: "dev-a".into(),
+            device_name: "Desk PC".into(),
         };
+        let mut peer = row("OLD", 3);
+        peer.device_id = "dev-b".into();
+        peer.device_name = "Steam Deck".into();
         let out = merge(
             Some(480),
             Some(&schema()),
-            vec![row("ach_b", 5), row("OLD", 3)],
+            vec![row("ach_b", 5), peer],
+            "dev-a",
         );
         assert_eq!(out.total, 3);
         assert_eq!(out.unlocked, 2);
         assert_eq!(out.items[0].unlocked_at, None);
         assert_eq!(out.items[1].unlocked_at, Some(5));
         assert_eq!(out.items[2].api_name, "OLD");
+        // Only the peer's unlock is attributed to a device.
+        assert_eq!(out.items[1].unlocked_on, None);
+        assert_eq!(out.items[2].unlocked_on.as_deref(), Some("Steam Deck"));
     }
 
     #[tokio::test]
@@ -744,6 +785,8 @@ mod tests {
             live: 0,
             display_name: None,
             icon: None,
+            device_id: "dev-a".into(),
+            device_name: "Desk PC".into(),
         };
         let start = 1_000;
         // Imported before the session (a previous detail-pane scan) and during it.
@@ -771,6 +814,78 @@ mod tests {
             .is_empty());
         let live = library.live_achievement_unlocks_since(0).await.unwrap();
         assert_eq!(live.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn fold_keeps_earliest_time_and_never_goes_live() {
+        let library = crate::library::Library::open_in_memory().await.unwrap();
+        let row = |name: &str, unlocked_at: i64, device: &str| AchievementUnlock {
+            game_name: "Game".into(),
+            api_name: name.into(),
+            unlocked_at,
+            detected_at: 10,
+            live: 0,
+            display_name: None,
+            icon: None,
+            device_id: device.into(),
+            device_name: device.into(),
+        };
+        // Recorded here before sync existed (empty device), and live here.
+        library
+            .insert_achievement_unlocks(&[row("A", 500, "")])
+            .await
+            .unwrap();
+        library
+            .record_live_unlocks(&[row("B", 900, "dev-a")], 0)
+            .await
+            .unwrap();
+
+        // A peer earned A earlier and C, which this device hasn't.
+        let changed = library
+            .fold_achievement_unlocks(&[
+                row("A", 100, "dev-b"),
+                row("B", 950, "dev-b"),
+                row("C", 300, "dev-b"),
+            ])
+            .await
+            .unwrap();
+        assert_eq!(changed, 2, "A moves earlier, C is new, B is unchanged");
+        let rows = library.achievement_unlocks_for("Game").await.unwrap();
+        let get = |n: &str| rows.iter().find(|r| r.api_name == n).unwrap().clone();
+        assert_eq!(get("A").unlocked_at, 100);
+        assert_eq!(
+            get("A").device_id,
+            "",
+            "a fold doesn't take over a local row"
+        );
+        assert_eq!(get("B").unlocked_at, 900);
+        assert_eq!(get("C").device_id, "dev-b");
+        // Folded rows never reach the Decky toast feed.
+        let live = library.live_achievement_unlocks_since(0).await.unwrap();
+        assert_eq!(
+            live.iter().map(|r| r.api_name.as_str()).collect::<Vec<_>>(),
+            ["B"]
+        );
+
+        // This device's projection: its own rows plus pre-sync rows, not peers'.
+        let mut mine: Vec<_> = library
+            .achievement_unlocks_for_device("dev-a")
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|r| r.api_name)
+            .collect();
+        mine.sort();
+        assert_eq!(mine, ["A", "B"]);
+
+        // Folding the same blobs again is a no-op.
+        assert_eq!(
+            library
+                .fold_achievement_unlocks(&[row("A", 100, "dev-b"), row("C", 300, "dev-b")])
+                .await
+                .unwrap(),
+            0
+        );
     }
 
     #[tokio::test]

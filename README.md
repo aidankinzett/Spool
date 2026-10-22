@@ -70,7 +70,8 @@ Reloaded/3DM, Skidrow, SmartSteamEmu, CreamAPI, OnlineFix), Spool reads the
 unlocks it records and lists them on the game's page with your progress and
 unlock dates. While you play, a new unlock pops up in the corner of the screen
 over the game (windowed or borderless fullscreen), and in Game Mode as a Steam
-toast through the Decky plugin. Add a Steam Web API key in
+toast through the Decky plugin. With cloud saves set up, unlocks sync between
+your devices, so the list shows everything you've earned on any of them. Add a Steam Web API key in
 settings to get the official names, descriptions, icons and unlock rates.
 
 ### Decky plugin for Game Mode
