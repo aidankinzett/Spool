@@ -2,13 +2,23 @@
   import { onMount } from 'svelte';
   import { listen } from '@tauri-apps/api/event';
   import { api, assetUrl } from '$lib/api';
-  import type { RunPhaseEvent, GameEntry, SyncStatus, SyncReachability, RawConflictDetails } from '$lib/types';
+  import type { RunPhaseEvent, GameEntry, SyncStatus, SyncReachability, RawConflictDetails, RawSaveDetails } from '$lib/types';
+  import { platform } from '@tauri-apps/plugin-os';
   import SpoolMark from '$lib/components/SpoolMark.svelte';
   import CloudConflictModal from '$lib/components/CloudConflictModal.svelte';
   import { exit } from '@tauri-apps/plugin-process';
   import { absDateTime, relDate, fmtSize as formatFmtSize } from '$lib/format';
 
   let conflictDetails = $state<RawConflictDetails | null>(null);
+
+  // The cloud copy of the saves, shown while restoring. `game.save_backup_*`
+  // describes this device's last backup, which isn't what the restore pulls.
+  let cloudSave = $state<RawSaveDetails | null>(null);
+  let cloudSaveFetchedFor: string | null = null;
+
+  // Mirrors `proton::exe_needs_proton`: off Windows, a `.exe` runs through
+  // Proton. `GameEntry.use_proton` is no longer set, so it can't be used here.
+  const onWindows = platform() === 'windows';
 
   let phase = $state<string>('restoring');
   let message = $state<string | null>(null);
@@ -20,6 +30,7 @@
   let sessionMinutes = $state<number | null>(null);
   let game = $state<GameEntry | null>(null);
   let progress = $state(0);
+  const usesProton = $derived(!onWindows && !!game && game.exe_path.trim().toLowerCase().endsWith('.exe'));
 
   // Gate on a hydrated `game`: the modal's resolve/continue handlers assert
   // `game!.id`, and game hydration (in applyPhase) is async and swallows errors,
@@ -43,6 +54,19 @@
     } else {
       conflictDetails = null;
     }
+  });
+
+  // Fetch the cloud copy's size/time once per game, when a cloud remote is in
+  // use and reachable. Offline or local-only launches keep the local stats.
+  $effect(() => {
+    const id = game?.id;
+    if (!id || !cloudUsed || net !== 'online' || cloudSaveFetchedFor === id) return;
+    cloudSaveFetchedFor = id;
+    api.getCloudConflictDetails(id)
+      .then((res) => {
+        if (game?.id === id) cloudSave = res.cloud;
+      })
+      .catch((e) => console.error('[splash] failed to fetch cloud save details:', e));
   });
 
   const localMeta = $derived.by(() => {
@@ -199,11 +223,16 @@
     };
     
     const offline = net === 'offline';
+    const localSize = game ? fmtSize(game.save_backup_size_mb) : '…';
     const restoreDetail = offline
-      ? `Latest copy on this device · ${game ? fmtSize(game.save_backup_size_mb) : '…'} · cloud remote unreachable`
+      ? `Latest copy on this device · ${localSize} · cloud remote unreachable`
       : net === 'paused'
-        ? `Latest copy on this device · ${game ? fmtSize(game.save_backup_size_mb) : '…'} · offline mode`
-        : `Newest revision · ${game ? fmtSize(game.save_backup_size_mb) : '…'} · pulled from your cloud remote`;
+        ? `Latest copy on this device · ${localSize} · offline mode`
+        : cloudUsed
+          ? cloudSave
+            ? `Cloud revision · ${fmtSize(cloudSave.size_bytes / (1024 * 1024))}${cloudSave.modified ? ` · ${fmtWhen(cloudSave.modified)}` : ''}`
+            : 'Checking your cloud remote for the newest revision…'
+          : `Latest copy on this device · ${localSize}`;
 
     return [
       {
@@ -214,7 +243,7 @@
       },
       {
         id: 'launch', label: 'Launch game',
-        detail: game ? `${game.exe_path.split(/[\\/]/).pop() ?? game.game_name} · ${game.use_proton ? 'Proton' : 'Native'}` : '…',
+        detail: game ? `${game.exe_path.split(/[\\/]/).pop() ?? game.game_name} · ${usesProton ? 'Proton' : 'Native'}` : '…',
         state: state(1),
       },
       {
@@ -314,7 +343,9 @@
           { label: 'Revisions kept', value: game ? String(game.save_backup_count) : '…' },
         ]
       : [
-          { label: 'Last backup', value: game ? `${fmtSize(game.save_backup_size_mb)} · ${fmtWhen(game.save_last_backed_up_at)}` : '…' },
+          cloudSave
+            ? { label: 'Cloud save', value: `${fmtSize(cloudSave.size_bytes / (1024 * 1024))} · ${fmtWhen(cloudSave.modified)}` }
+            : { label: 'Last backup', value: game ? `${fmtSize(game.save_backup_size_mb)} · ${fmtWhen(game.save_last_backed_up_at)}` : '…' },
           { label: 'Playtime', value: game ? fmtPlaytime(game.playtime_minutes) : '…' },
         ]
   );
