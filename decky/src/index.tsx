@@ -24,6 +24,7 @@ import { Content } from "./components/content";
 import { LanPage } from "./components/lan-view";
 import { PeerGamesPage } from "./components/peer-games";
 import { PatchWrapper } from "./components/patch/patch-wrapper";
+import { wrapActivityTabs } from "./lib/activity-patch";
 import { SafeArea } from "./components/safe-area";
 
 export default definePlugin(() => {
@@ -51,11 +52,12 @@ export default definePlugin(() => {
             x?.props?.className?.includes(appDetailsClasses.InnerContainer),
         );
 
-        if (typeof container !== "object" || !container?.props?.children) return ret;
         // Insert as the first child so the zero-height anchor shares the
         // InnerContainer's top edge — PatchWrapper walks from there to the
         // hero capsule and floats the bar over it (see patch-wrapper.tsx).
-        container.props.children.splice(0, 0, createElement(PatchWrapper, null));
+        if (typeof container === "object" && container?.props?.children) {
+          container.props.children.splice(0, 0, createElement(PatchWrapper, null));
+        }
       } catch (err) {
         if (!hasWarnedPatch) {
           console.warn("[Spool] Failed to apply playtime patch to React tree:", err);
@@ -63,7 +65,8 @@ export default definePlugin(() => {
         }
       }
 
-      return ret;
+      // Spool's section in the Activity tab (see activity-patch.tsx).
+      return wrapActivityTabs(ret);
     },
   );
 
