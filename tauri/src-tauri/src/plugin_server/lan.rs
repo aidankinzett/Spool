@@ -227,6 +227,7 @@ mod tests {
             library_available: true,
             lan,
             http: reqwest::Client::new(),
+            api_http: reqwest::Client::new(),
             download: Arc::new(LanDownloadState::default()),
         }
     }

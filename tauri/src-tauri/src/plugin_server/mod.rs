@@ -65,8 +65,14 @@ struct PluginState {
     /// Discovered LAN peers, kept fresh by a background listener spawned in
     /// `serve`. The Decky UI reads it via `GET /lan/peers`.
     lan: Arc<LanState>,
-    /// Shared HTTP client for proxying requests to peer file servers.
+    /// Shared HTTP client for proxying requests to peer file servers and LAN
+    /// installs. No client-wide timeout: an install streams whole games through
+    /// it; the proxy requests set their own.
     http: reqwest::Client,
+    /// HTTP client for Steam / SteamGridDB API and art requests (achievement
+    /// schemas, Steam art), bounded like the desktop's metadata client so a
+    /// stalled request can't leave a Decky UI request pending.
+    api_http: reqwest::Client,
     /// Single-slot in-flight LAN install state. The Decky UI polls
     /// `GET /lan/download` instead of receiving Tauri events.
     download: Arc<LanDownloadState>,
@@ -95,6 +101,11 @@ pub async fn serve() -> AppResult<()> {
         library_available,
         lan: Arc::new(LanState::new()),
         http: reqwest::Client::new(),
+        api_http: reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .unwrap_or_default(),
         download: Arc::new(LanDownloadState::default()),
     };
 

@@ -1,6 +1,7 @@
 // Reloads the plugin's frontend on a running Decky Loader without restarting
 // plugin_loader, by calling DeckyPluginLoader.importPlugin over Steam's CEF
-// remote debugger. Used by `bun run deploy:dev` after it copies dist/ across.
+// remote debugger. Used by `bun run deploy:dev` (scripts/deploy-dev.sh) after
+// it copies dist/ across.
 // Only the frontend (dist/index.js) is reloaded; backend (main.py) changes
 // still need `bun run deploy`.
 //

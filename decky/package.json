@@ -10,7 +10,7 @@
     "storybook": "storybook dev -p 6006",
     "build-storybook": "storybook build",
     "deploy": "rollup -c && rsync -av dist/ deck@192.168.86.113:/tmp/spool-backup-dist/ && ssh -t deck@192.168.86.113 'sudo rsync -av --delete /tmp/spool-backup-dist/ ~/homebrew/plugins/spool-backup/dist/ && sudo systemctl restart plugin_loader'",
-    "deploy:dev": "rollup -c && rsync -a --delete dist/ deck@192.168.86.113:homebrew/plugins/spool-backup/dist/ && node scripts/reload-frontend.mjs 192.168.86.113",
+    "deploy:dev": "rollup -c && sh scripts/deploy-dev.sh 192.168.86.113",
     "deploy:local": "rollup -c && sudo mkdir -p ~/homebrew/plugins/spool-backup && sudo rsync -a --delete dist/ ~/homebrew/plugins/spool-backup/dist/ && sudo cp plugin.json package.json main.py ~/homebrew/plugins/spool-backup/ && sudo chown -R root:root ~/homebrew/plugins/spool-backup && sudo systemctl restart plugin_loader"
   },
   "license": "MIT",

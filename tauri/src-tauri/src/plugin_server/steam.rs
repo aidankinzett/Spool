@@ -121,7 +121,7 @@ pub(super) async fn get_steam_art(
         crate::steamgriddb::SgdbFallback::None
     };
 
-    let art = crate::steamgriddb::resolve_art_bytes(&state.http, steam_id, sgdb, sgdb_kind)
+    let art = crate::steamgriddb::resolve_art_bytes(&state.api_http, steam_id, sgdb, sgdb_kind)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         .ok_or(StatusCode::NOT_FOUND)?;

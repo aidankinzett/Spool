@@ -26,7 +26,7 @@ The cards read two headless-server endpoints, keyed by the Spool game id (the ap
 - `GET /games/{id}/achievements` — the desktop `get_game_achievements` result. The server first scans the game's Steam-emulator stats files, so unlocks earned outside Spool appear, and publishes any new ones to other devices. Icons copied from a game's `steam_settings` are served from `/achievement-icons/…`; Steam Web API icons are CDN URLs.
 - `GET /games/{id}/sessions` — every device's play sessions for the game, plus this device's id.
 
-`useGameActivity` loads both once per page and shares the result between the summary and the Activity tab. Matching unlocks to sessions and grouping by day is `tauri/src/lib/activity.ts`, the same module the desktop app uses; the plugin imports it from the app's source tree rather than keeping a copy.
+`useGameActivity` loads both when the page opens and shares the result between the summary and the Activity tab. It loads them again when the game's last-played time moves, and once the page's cross-device fold (`POST /fold`) has changed something, so unlocks folded in from other devices appear on that visit. Matching unlocks to sessions and grouping by day is `tauri/src/lib/activity.ts`, the same module the desktop app uses; the plugin imports it from the app's source tree rather than keeping a copy.
 
 ## How the cards get onto the page
 

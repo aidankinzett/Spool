@@ -72,7 +72,7 @@ pub(super) async fn get_game_achievements(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         .ok_or(StatusCode::NOT_FOUND)?;
     let (mut achievements, imported) =
-        crate::achievements::scan_game_achievements(&state.http, &state.library, entry)
+        crate::achievements::scan_game_achievements(&state.api_http, &state.library, entry)
             .await
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     if imported {
