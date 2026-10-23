@@ -517,6 +517,7 @@ export function makeAchievements(): GameAchievements {
     global_percent,
     unlocked_at: unlocked_days_ago === null ? null : now - unlocked_days_ago * day,
     unlocked_on,
+    live_at: unlocked_days_ago === null || unlocked_on ? null : (now - unlocked_days_ago * day) * 1000,
   });
   const items = [
     a('ACH_FIRST_CONTRACT', 'Contractor', 'Complete your first contract.', 71.4, 12),

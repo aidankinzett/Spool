@@ -1,50 +1,52 @@
 /**
  * Pure helpers for the post-game summary and the activity timeline. They join
  * a game's play sessions (`list_play_sessions`) with its achievement list
- * (`get_game_achievements`): an unlock belongs to a session when its time falls
- * inside the session and it was recorded on the same device.
+ * (`get_game_achievements`): an unlock belongs to one of this device's
+ * sessions when the session's achievement watcher caught it (`live_at`).
  */
 
 import { assetUrl } from './api';
 import type { AchievementView, PlaySession } from './types';
 
-/** Seconds before a session's start an unlock still counts, for clock skew
- *  between the emulator's timestamp and the session record. */
-const BEFORE_SECS = 60;
-/** Seconds after a session's end an unlock still counts. The achievement files
- *  are read once more after the game exits, and an emulator may write its stats
- *  file during shutdown. */
-const AFTER_SECS = 120;
+/** The achievement watcher takes its baseline just before the session's start
+ *  time is stamped, so a live detection can precede `started_at` slightly. */
+const WATCH_LEAD_MS = 5_000;
+/** The watcher reads the files once more after the game exits, after
+ *  `ended_at` is stamped. */
+const FINAL_READ_MS = 120_000;
 
-/** Unix seconds for an RFC 3339 timestamp; NaN when it doesn't parse. */
-function secs(iso: string): number {
-  return new Date(iso).getTime() / 1000;
+function byLiveAt(a: AchievementView, b: AchievementView): number {
+  return (a.live_at ?? 0) - (b.live_at ?? 0);
 }
 
-/** Whether an unlock was recorded on the session's device. `unlocked_on` is
- *  null for this device's unlocks and names the other device otherwise. */
-function sameDevice(a: AchievementView, session: PlaySession, isThisDevice: boolean): boolean {
-  return isThisDevice ? a.unlocked_on === null : a.unlocked_on === session.device_name;
+/**
+ * The achievements a Spool session on this device caught live at or after
+ * `sinceMs`, oldest first. Matches on `live_at` (when Spool saw the unlock)
+ * rather than `unlocked_at`, which falls back to the import time for stats
+ * files that record no unlock times — so the baseline import at launch would
+ * otherwise look like a session's worth of new unlocks.
+ */
+export function unlockedSince(items: AchievementView[], sinceMs: number): AchievementView[] {
+  return items.filter((a) => a.live_at !== null && a.live_at >= sinceMs).sort(byLiveAt);
 }
 
-/** The achievements unlocked during `session`, oldest first. */
+/**
+ * The achievements this device's `session` caught live, oldest first.
+ * `nextStartMs` is the start of this device's following session, if any, so a
+ * quick relaunch can't claim the same unlock twice.
+ */
 export function sessionUnlocks(
   session: PlaySession,
   items: AchievementView[],
-  isThisDevice: boolean,
+  nextStartMs: number | null = null,
 ): AchievementView[] {
-  const start = secs(session.started_at) - BEFORE_SECS;
-  const end = secs(session.ended_at) + AFTER_SECS;
+  const start = Date.parse(session.started_at) - WATCH_LEAD_MS;
+  let end = Date.parse(session.ended_at) + FINAL_READ_MS;
   if (Number.isNaN(start) || Number.isNaN(end)) return [];
+  if (nextStartMs !== null) end = Math.min(end, nextStartMs - WATCH_LEAD_MS);
   return items
-    .filter(
-      (a) =>
-        a.unlocked_at !== null &&
-        a.unlocked_at >= start &&
-        a.unlocked_at <= end &&
-        sameDevice(a, session, isThisDevice),
-    )
-    .sort((a, b) => (a.unlocked_at ?? 0) - (b.unlocked_at ?? 0));
+    .filter((a) => a.live_at !== null && a.live_at >= start && a.live_at < end)
+    .sort(byLiveAt);
 }
 
 export type TimelineEntry =
@@ -105,7 +107,9 @@ export function buildTimeline(
       kind: 'session',
       session: s,
       minutes: Math.round(s.duration_secs / 60),
-      isThisDevice: s.device_id === thisDeviceId,
+      // Until the device id is known, treat every session as this device's so
+      // no device chips flash up and then vanish.
+      isThisDevice: thisDeviceId === null || s.device_id === thisDeviceId,
       at,
     });
   }

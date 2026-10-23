@@ -11,9 +11,10 @@
    *   │        Win one game.                                    │
    *   └─────────────────────────────────────────────────────────┘
    *
-   * The card stays up until dismissed. Dismissal is stored per game as the
-   * dismissed `session_id`, so the next session shows the card again. An unlock
-   * belongs to the session when its time falls inside it (`sessionUnlocks`).
+   * The card stays up until dismissed, or until the session is a week old.
+   * Dismissal is stored per game as the dismissed `session_id`, so the next
+   * session shows the card again. An unlock belongs to the session when the
+   * session's achievement watcher caught it (`sessionUnlocks`).
    */
   import { Lock, Trophy, X } from '@lucide/svelte';
   import { achievementIconSrc, sessionUnlocks } from '$lib/activity';
@@ -40,6 +41,9 @@
 
   /** Unlock rows shown before "+N more". */
   const SHOWN = 4;
+  /** A session older than this gets no summary, so games last played long ago
+   *  don't each open with one. */
+  const MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
   const storageKey = $derived(`spool:post-game-dismissed:${gameId}`);
 
@@ -65,11 +69,15 @@
     return best;
   });
 
-  const earned = $derived(latest && data ? sessionUnlocks(latest, data.items, true) : []);
+  const earned = $derived(latest && data ? sessionUnlocks(latest, data.items) : []);
   const shown = $derived(earned.slice(0, SHOWN));
   const hasTotal = $derived(data?.schema_source != null && data.total > 0);
   const before = $derived(data ? data.unlocked - earned.length : 0);
-  const visible = $derived(latest !== null && dismissed !== latest.session_id);
+  const visible = $derived(
+    latest !== null &&
+      dismissed !== latest.session_id &&
+      Date.now() - Date.parse(latest.ended_at) < MAX_AGE_MS,
+  );
   const stats = $derived(
     latest
       ? [

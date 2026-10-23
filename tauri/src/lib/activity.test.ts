@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { buildTimeline, sessionUnlocks } from '$lib/activity';
+import { buildTimeline, sessionUnlocks, unlockedSince } from '$lib/activity';
 import type { AchievementView, PlaySession } from '$lib/types';
 
 vi.mock('$lib/api', () => ({ assetUrl: (p: string) => `asset://${p}` }));
@@ -17,7 +17,12 @@ function session(over: Partial<PlaySession> = {}): PlaySession {
   };
 }
 
-function ach(api_name: string, iso: string | null, unlocked_on: string | null = null): AchievementView {
+function ach(
+  api_name: string,
+  iso: string | null,
+  unlocked_on: string | null = null,
+  liveIso: string | null = null,
+): AchievementView {
   return {
     api_name,
     display_name: api_name,
@@ -28,36 +33,60 @@ function ach(api_name: string, iso: string | null, unlocked_on: string | null = 
     global_percent: null,
     unlocked_at: iso === null ? null : new Date(iso).getTime() / 1000,
     unlocked_on,
+    live_at: liveIso === null ? null : new Date(liveIso).getTime(),
   };
 }
 
+/** An unlock this device caught live at `iso`. */
+function live(api_name: string, iso: string): AchievementView {
+  return ach(api_name, iso, null, iso);
+}
+
 describe('sessionUnlocks', () => {
-  it('keeps unlocks inside the session window, with slack at both ends', () => {
+  it('keeps live detections inside the session, with slack for the baseline and final read', () => {
     const items = [
-      ach('before', '2026-06-03T09:58:00Z'),
-      ach('skew', '2026-06-03T09:59:30Z'),
-      ach('mid', '2026-06-03T10:30:00Z'),
-      ach('exit', '2026-06-03T11:01:30Z'),
-      ach('after', '2026-06-03T11:03:00Z'),
+      live('before', '2026-06-03T09:59:00Z'),
+      live('lead', '2026-06-03T09:59:57Z'),
+      live('mid', '2026-06-03T10:30:00Z'),
+      live('exit', '2026-06-03T11:01:30Z'),
+      live('after', '2026-06-03T11:03:00Z'),
       ach('locked', null),
     ];
-    expect(sessionUnlocks(session(), items, true).map((a) => a.api_name)).toEqual([
-      'skew',
+    expect(sessionUnlocks(session(), items).map((a) => a.api_name)).toEqual([
+      'lead',
       'mid',
       'exit',
     ]);
   });
 
-  it("matches this device's session to this device's unlocks only", () => {
-    const items = [ach('here', '2026-06-03T10:30:00Z'), ach('there', '2026-06-03T10:31:00Z', 'Deck')];
-    expect(sessionUnlocks(session(), items, true).map((a) => a.api_name)).toEqual(['here']);
-    const peer = session({ device_id: 'dev-b', device_name: 'Deck' });
-    expect(sessionUnlocks(peer, items, false).map((a) => a.api_name)).toEqual(['there']);
+  it('ignores imports, even when their unlock time falls inside the session', () => {
+    // A stats file with no unlock times: the baseline import at launch stamps
+    // `unlocked_at` with the import time, but it was never caught live.
+    const items = [ach('imported', '2026-06-03T10:00:01Z'), ach('peer', '2026-06-03T10:30:00Z', 'Deck')];
+    expect(sessionUnlocks(session(), items)).toEqual([]);
+  });
+
+  it("stops at the next session's start", () => {
+    const items = [live('first', '2026-06-03T10:30:00Z'), live('second', '2026-06-03T11:01:00Z')];
+    const nextStart = new Date('2026-06-03T11:00:30Z').getTime();
+    expect(sessionUnlocks(session(), items, nextStart).map((a) => a.api_name)).toEqual(['first']);
   });
 
   it('sorts oldest first', () => {
-    const items = [ach('b', '2026-06-03T10:40:00Z'), ach('a', '2026-06-03T10:20:00Z')];
-    expect(sessionUnlocks(session(), items, true).map((a) => a.api_name)).toEqual(['a', 'b']);
+    const items = [live('b', '2026-06-03T10:40:00Z'), live('a', '2026-06-03T10:20:00Z')];
+    expect(sessionUnlocks(session(), items).map((a) => a.api_name)).toEqual(['a', 'b']);
+  });
+});
+
+describe('unlockedSince', () => {
+  it('keeps only live detections at or after the cutoff', () => {
+    const since = new Date('2026-06-03T10:00:00Z').getTime();
+    const items = [
+      live('old', '2026-06-03T09:00:00Z'),
+      live('new', '2026-06-03T10:10:00Z'),
+      ach('imported', '2026-06-03T10:05:00Z'),
+    ];
+    expect(unlockedSince(items, since).map((a) => a.api_name)).toEqual(['new']);
   });
 });
 
@@ -96,9 +125,11 @@ describe('buildTimeline', () => {
     expect(names.sort()).toEqual(['Deck', null].sort());
   });
 
-  it("marks other devices' sessions", () => {
-    const days = buildTimeline([session({ device_id: 'dev-b' })], [], 'dev-a');
-    const e = days[0].entries[0];
-    expect(e.kind === 'session' && e.isThisDevice).toBe(false);
+  it("marks other devices' sessions once the device id is known", () => {
+    const peer = [session({ device_id: 'dev-b' })];
+    const known = buildTimeline(peer, [], 'dev-a')[0].entries[0];
+    expect(known.kind === 'session' && known.isThisDevice).toBe(false);
+    const unknown = buildTimeline(peer, [], null)[0].entries[0];
+    expect(unknown.kind === 'session' && unknown.isThisDevice).toBe(true);
   });
 });

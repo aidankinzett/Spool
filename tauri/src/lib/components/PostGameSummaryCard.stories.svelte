@@ -34,6 +34,7 @@
       global_percent,
       unlocked_at: hoursAgo === null ? null : Math.floor((now - hoursAgo * HOUR) / 1000),
       unlocked_on: null,
+      live_at: hoursAgo === null ? null : now - hoursAgo * HOUR,
     };
   }
 

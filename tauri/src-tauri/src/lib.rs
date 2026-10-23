@@ -698,16 +698,15 @@ fn run_attached_launch(
     gamepad::spawn_bridge(app.handle().clone());
 
     // Splash window (the `main` window stays hidden / unused).
-    if let Err(e) =
+    let splash_created =
         tauri::WebviewWindowBuilder::new(app, "splash", tauri::WebviewUrl::App("splash".into()))
             .title("Spool")
             .decorations(false)
             .fullscreen(true)
             .resizable(false)
             .build()
-    {
-        tracing::warn!(error = %e, "failed to create splash window");
-    }
+            .inspect_err(|e| tracing::warn!(error = %e, "failed to create splash window"))
+            .is_ok();
 
     // Launch + exit when done. app.exit(0) lets Steam see the game stop
     // (RunEvent::ExitRequested only blocks code.is_none()).
@@ -719,17 +718,18 @@ fn run_attached_launch(
     // that never loads from blocking the launch entirely.
     let app_handle = app.handle().clone();
     tauri::async_runtime::spawn(async move {
-        {
+        let splash_ready = splash_created && {
             let ready = app_handle.state::<SplashReady>();
-            let _ =
-                tokio::time::timeout(std::time::Duration::from_secs(5), ready.notify.notified())
-                    .await;
-        }
+            tokio::time::timeout(std::time::Duration::from_secs(5), ready.notify.notified())
+                .await
+                .is_ok()
+        };
         let started_ms = chrono::Utc::now().timestamp_millis();
         let result = runner::launch_game_inner(&app_handle, &id).await;
-        if result.is_ok() && unlocked_since(&app_handle, &id, started_ms).await {
+        if result.is_ok() && splash_ready && unlocked_since(&app_handle, &id, started_ms).await {
             // The splash lists this session's achievements on its exit
-            // screen; hold it long enough to read before handing back.
+            // screen; hold it long enough to read before handing back. Not
+            // when the splash never showed, since nothing would be on screen.
             tokio::time::sleep(std::time::Duration::from_secs(5)).await;
         }
         if let Err(e) = result {

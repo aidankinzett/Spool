@@ -32,12 +32,18 @@ export function createGameActivity(getGame: () => GameEntry) {
   const lastPlayed = $derived(getGame().last_played_at);
   const playtime = $derived(getGame().playtime_minutes);
 
-  api
-    .getConfig()
-    .then((c) => {
-      deviceId = c?.device_id ?? null;
-    })
-    .catch(() => {});
+  // This device's id. Fetched again on each game change until it resolves, so
+  // one failed read doesn't hide the post-game summary for good.
+  $effect(() => {
+    void gameId;
+    if (deviceId !== null) return;
+    api
+      .getConfig()
+      .then((c) => {
+        if (c?.device_id) deviceId = c.device_id;
+      })
+      .catch(() => {});
+  });
 
   // Reload achievements when the selected game changes, after a session ends
   // (last_played_at moves), and on a live unlock for this game.

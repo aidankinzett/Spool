@@ -3,7 +3,7 @@
   import { listen } from '@tauri-apps/api/event';
   import { api, assetUrl } from '$lib/api';
   import type { RunPhaseEvent, GameEntry, SyncStatus, SyncReachability, RawConflictDetails, RawSaveDetails, AchievementView } from '$lib/types';
-  import { achievementIconSrc } from '$lib/activity';
+  import { achievementIconSrc, unlockedSince } from '$lib/activity';
   import { platform } from '@tauri-apps/plugin-os';
   import SpoolMark from '$lib/components/SpoolMark.svelte';
   import CloudConflictModal from '$lib/components/CloudConflictModal.svelte';
@@ -38,11 +38,12 @@
   // was written, so the exit flow must not read as "all saved".
   let noSaves = $state(false);
   let sessionMinutes = $state<number | null>(null);
-  // When the game started (first `playing` phase), and the achievements this
-  // device unlocked since then, shown on the exit flow. In attached mode the
-  // backend holds the exit for a few seconds when there are any, so they can be
-  // read.
-  let playingSince: number | null = null;
+  // The achievements this launch caught live, shown on the exit flow. The
+  // workflow starts only after the splash reports ready, so anything detected
+  // since the splash loaded belongs to this launch. This matches the backend's
+  // check (`unlocked_since` in lib.rs), which holds the exit for a few seconds
+  // when there are any so they can be read.
+  const loadedAt = Date.now();
   let earned = $state<AchievementView[]>([]);
   let game = $state<GameEntry | null>(null);
   let progress = $state(0);
@@ -384,10 +385,8 @@
     cloudUploadFailed = ev.cloud_upload_failed;
     noSaves = ev.no_saves;
     if (ev.session_minutes != null) sessionMinutes = ev.session_minutes;
-    if (ev.phase === 'playing' && playingSince === null) playingSince = Date.now();
-    if ((ev.phase === 'backing-up' || ev.phase === 'done') && playingSince !== null && ev.game_id) {
-      loadEarned(ev.game_id, playingSince);
-    }
+    // Once, at the end: each load rescans the game's stats files.
+    if (ev.phase === 'done' && ev.game_id) loadEarned(ev.game_id);
 
     // Hydrate game entry on first event if not yet loaded.
     if (!game && ev.game_id) {
@@ -401,15 +400,10 @@
     }
   }
 
-  /** This device's unlocks since `since` (unix ms), oldest first. The minute of
-   *  slack covers the emulator's clock against this one. */
-  function loadEarned(gameId: string, since: number) {
-    const from = since / 1000 - 60;
+  function loadEarned(gameId: string) {
     api.getGameAchievements(gameId)
       .then((d) => {
-        earned = (d?.items ?? [])
-          .filter((a) => a.unlocked_on === null && a.unlocked_at !== null && a.unlocked_at >= from)
-          .sort((a, b) => (a.unlocked_at ?? 0) - (b.unlocked_at ?? 0));
+        earned = unlockedSince(d?.items ?? [], loadedAt);
       })
       .catch(() => {});
   }
