@@ -427,7 +427,7 @@ pub fn run() {
                 if *focused && label == "main" {
                     let app = app_handle.clone();
                     tauri::async_runtime::spawn(async move {
-                        rclone::fold_history_throttled(&app).await;
+                        rclone::fold_peers_throttled(&app).await;
                     });
                 }
             }
