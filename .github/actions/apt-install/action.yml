@@ -1,0 +1,86 @@
+name: apt-install
+description: >-
+  Installs Ubuntu packages with apt, caching the downloaded .deb files between
+  runs. The runners' default mirror (azure.archive.ubuntu.com) intermittently
+  stalls on individual downloads, and apt waits out a 30 s timeout for each
+  stalled package, which has stretched a ~1 minute install past 25 minutes. With
+  the archives restored from the cache, apt installs from local files and only
+  downloads packages whose version changed. A cache miss still downloads, with
+  a shorter timeout and retries so a stall costs seconds rather than minutes.
+
+inputs:
+  packages:
+    description: Packages to install, separated by spaces or newlines.
+    required: true
+  update:
+    description: Run `apt-get update` first. Pass "false" when an earlier step in the job already did.
+    default: "true"
+
+runs:
+  using: composite
+  steps:
+    - name: Configure apt
+      id: prep
+      shell: bash
+      env:
+        PACKAGES: ${{ inputs.packages }}
+      run: |
+        archives="$HOME/.cache/apt-archives"
+        mkdir -p "$archives/partial"
+        # Downloads go to a runner-owned directory so actions/cache can save
+        # and restore it; /var/cache/apt/archives is root-only.
+        sudo tee /etc/apt/apt.conf.d/99-ci > /dev/null <<EOF
+        Dir::Cache::Archives "$archives/";
+        APT::Keep-Downloaded-Packages "true";
+        Acquire::http::Timeout "10";
+        Acquire::https::Timeout "10";
+        Acquire::Retries "3";
+        EOF
+        # Skip rebuilding the man-page index after the install.
+        sudo rm -f /var/lib/man-db/auto-update
+        echo "archives=$archives" >> "$GITHUB_OUTPUT"
+        echo "image=${ImageOS:-unknown}-${ImageVersion:-unknown}" >> "$GITHUB_OUTPUT"
+        echo "os=${ImageOS:-unknown}" >> "$GITHUB_OUTPUT"
+        echo "packages=$(tr -s ' \n' '\n' <<< "$PACKAGES" | sed '/^$/d' | sort -u | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
+
+    # Keyed on the package list and the runner image; the fallbacks let a job
+    # with a different list, or a newer image, start from another job's
+    # archives and download only what's missing.
+    - name: Restore apt archives
+      id: cache
+      uses: actions/cache/restore@v6
+      with:
+        path: ${{ steps.prep.outputs.archives }}
+        key: apt-${{ steps.prep.outputs.os }}-${{ runner.arch }}-${{ steps.prep.outputs.packages }}-${{ steps.prep.outputs.image }}
+        restore-keys: |
+          apt-${{ steps.prep.outputs.os }}-${{ runner.arch }}-${{ steps.prep.outputs.packages }}-
+          apt-${{ steps.prep.outputs.os }}-${{ runner.arch }}-
+
+    - name: Install packages
+      shell: bash
+      env:
+        PACKAGES: ${{ inputs.packages }}
+      run: |
+        if [ "${{ inputs.update }}" = "true" ]; then
+          sudo apt-get update
+        fi
+        # shellcheck disable=SC2086 # word-splitting the list is intended
+        sudo apt-get install -y $PACKAGES
+
+    - name: Prepare apt archives for saving
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        archives="${{ steps.prep.outputs.archives }}"
+        # Drop .debs no longer in the package index so the cache doesn't grow
+        # with every version bump, then hand the files to the runner user.
+        sudo apt-get autoclean
+        sudo rm -f "$archives/lock"
+        sudo chown -R "$(id -u):$(id -g)" "$archives"
+
+    - name: Save apt archives
+      if: steps.cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v6
+      with:
+        path: ${{ steps.prep.outputs.archives }}
+        key: apt-${{ steps.prep.outputs.os }}-${{ runner.arch }}-${{ steps.prep.outputs.packages }}-${{ steps.prep.outputs.image }}
