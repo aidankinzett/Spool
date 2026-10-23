@@ -1,6 +1,6 @@
 import { createReactTreePatcher, findInReactTree } from "@decky/ui";
 import { useContext, type ComponentType, type Context, type ReactElement, type ReactNode } from "react";
-import { SpoolActivity } from "../components/activity/spool-activity";
+import { SpoolActivity, SpoolSummary } from "../components/activity/spool-activity";
 
 // Steam's id for the game page's "Activity" tab.
 const ACTIVITY_TAB_ID = "WhatsNew";
@@ -15,7 +15,8 @@ function warnOnce(...args: unknown[]) {
   hasWarned = true;
 }
 
-// Adds Spool's activity cards to the top of the game page's Activity tab.
+// Adds Spool's post-game summary above the game page's tab bar, and its
+// activity timeline to the top of the Activity tab.
 //
 // The game page renders its tabs through a component it reads from a React
 // context (a Provider above the page sets it). The component tree between the
@@ -116,6 +117,29 @@ const tabsPatcher = createReactTreePatcher(
   "SpoolActivityTab",
 );
 
+// Puts the post-game summary between the Play row and the tab bar: into the
+// element whose children hold both, just before the child the tab bar is in.
+// It's inserted on every render (rendering nothing when there's no summary) so
+// the tab bar's position among its siblings never changes, which would
+// remount it.
+function insertSummary(ret: ReactElement | undefined, appid: number) {
+  try {
+    const hasTabs = (n: any) => !!findInReactTree(n, (x: any) => x?.props?.fnOnCancelFromTabHeader);
+    const parent = findInReactTree(
+      ret,
+      (x: any) => Array.isArray(x?.props?.children) && x.props.children.some(hasTabs),
+    );
+    if (!parent) {
+      warnOnce("Tab bar not found on the game page; post-game summary disabled.");
+      return;
+    }
+    const at = parent.props.children.findIndex(hasTabs);
+    parent.props.children.splice(at, 0, <SpoolSummary key="spool-summary" appid={appid} />);
+  } catch (err) {
+    warnOnce("Failed to add the post-game summary:", err);
+  }
+}
+
 // One wrapper per original component, so the Provider's value keeps the same
 // identity across renders and React doesn't remount the tabs.
 const wrapped = new WeakMap<TabsComponent, TabsComponent>();
@@ -126,7 +150,9 @@ function wrapTabs(Orig: TabsComponent): TabsComponent {
   if (!w) {
     const render = Orig as (props: any) => ReactElement;
     w = function SpoolAppDetailsTabs(props: any) {
-      return tabsPatcher([props], render(props));
+      const ret = tabsPatcher([props], render(props));
+      insertSummary(ret, (props?.overview?.appid ?? 0) >>> 0);
+      return ret;
     };
     wrapped.set(Orig, w);
   }

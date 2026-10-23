@@ -626,7 +626,8 @@ pub async fn get_game_achievements(
             crate::rclone::fold_achievements_throttled(&app).await
         });
     }
-    let (achievements, imported) = scan_game_achievements(&http_client(&app), &library, entry).await?;
+    let (achievements, imported) =
+        scan_game_achievements(&http_client(&app), &library, entry).await?;
     // Unlocks earned outside a Spool session are new to the other devices
     // too, so publish them rather than waiting for the next session.
     if imported {

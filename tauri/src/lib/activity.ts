@@ -3,9 +3,10 @@
  * a game's play sessions (`list_play_sessions`) with its achievement list
  * (`get_game_achievements`): an unlock belongs to one of this device's
  * sessions when the session's achievement watcher caught it (`live_at`).
+ *
+ * No Tauri imports: the Decky plugin imports this file too.
  */
 
-import { assetUrl } from './api';
 import type { AchievementView, PlaySession } from './types';
 
 /** The achievement watcher takes its baseline just before the session's start
@@ -132,12 +133,4 @@ export function buildTimeline(
   return [...days.entries()]
     .sort(([a], [b]) => b - a)
     .map(([day, entries]) => ({ day, entries: entries.sort((a, b) => b.at - a.at) }));
-}
-
-/** Icon URL for an achievement: the colour icon once unlocked, the grey one
- *  while locked. Local schema icons are app-data paths served via `asset:`. */
-export function achievementIconSrc(a: AchievementView): string | null {
-  const src = a.unlocked_at !== null ? a.icon : (a.icon_gray ?? a.icon);
-  if (!src) return null;
-  return src.startsWith('http') ? src : assetUrl(src);
 }

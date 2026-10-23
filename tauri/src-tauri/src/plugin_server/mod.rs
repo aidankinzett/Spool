@@ -121,7 +121,10 @@ pub async fn serve() -> AppResult<()> {
         // A game's achievement list and play sessions, for the game page's
         // Activity tab. Mirror the desktop `get_game_achievements` /
         // `list_play_sessions` commands.
-        .route("/games/{id}/achievements", get(achievements::get_game_achievements))
+        .route(
+            "/games/{id}/achievements",
+            get(achievements::get_game_achievements),
+        )
         .route("/games/{id}/sessions", get(achievements::get_game_sessions))
         // Pull cloud saves for a game down to this device without launching it,
         // for the Quick Access "Sync now" action. Mirrors the desktop

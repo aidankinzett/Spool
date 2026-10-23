@@ -1,4 +1,13 @@
-import type { LibraryGame, LanPeer, PeerGame, DownloadProgress, LaunchInfo } from "../types";
+import type {
+  AchievementView,
+  DownloadProgress,
+  GameAchievements,
+  GameSessions,
+  LanPeer,
+  LaunchInfo,
+  LibraryGame,
+  PeerGame,
+} from "../types";
 
 // Base request helpers
 async function serverGet<T>(url: string): Promise<T> {
@@ -103,4 +112,22 @@ export async function cancelLanDownload(base: string, installToken: string): Pro
   return serverSend<{ cancelled: boolean }>(`${base}/lan/download`, "DELETE", {
     install_token: installToken,
   });
+}
+
+// GET /games/{id}/achievements
+export async function getGameAchievements(base: string, gameId: string): Promise<GameAchievements> {
+  return serverGet<GameAchievements>(`${base}/games/${gameId}/achievements`);
+}
+
+// GET /games/{id}/sessions
+export async function getGameSessions(base: string, gameId: string): Promise<GameSessions> {
+  return serverGet<GameSessions>(`${base}/games/${gameId}/sessions`);
+}
+
+// Icon URL for an achievement: the colour icon once unlocked, the grey one
+// while locked. Icons the server hosts come back as paths on it.
+export function achievementIconUrl(base: string, a: AchievementView): string | null {
+  const src = a.unlocked_at !== null ? a.icon : (a.icon_gray ?? a.icon);
+  if (!src) return null;
+  return src.startsWith("/") ? `${base}${src}` : src;
 }

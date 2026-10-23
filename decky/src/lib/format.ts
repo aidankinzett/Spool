@@ -28,3 +28,23 @@ export function fmtBytes(n: number): string {
 }
 
 export const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+// "26 May 2026" — UK format, matching the desktop app.
+export function absDate(iso: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "—";
+  return date.toLocaleDateString("en-GB", { year: "numeric", month: "short", day: "numeric" });
+}
+
+// "26 May 2026, 14:32" — UK format with 24-hour time, matching the desktop app.
+export function absDateTime(iso: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "—";
+  return date.toLocaleString("en-GB", {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}

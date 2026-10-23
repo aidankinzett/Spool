@@ -112,7 +112,7 @@ fn icon_url(icon: &str) -> Option<String> {
     Some(format!("/achievement-icons/{}", parts.join("/")))
 }
 
-/// A game's play sessions on every device (newest first), and this device's
+/// A game's play sessions on every device (oldest first), and this device's
 /// id so the UI can tell its own sessions apart. Mirrors the desktop
 /// `list_play_sessions` command.
 pub(super) async fn get_game_sessions(
@@ -136,7 +136,9 @@ pub(super) async fn get_game_sessions(
     let device_id = crate::config::Config::load()
         .map(|c| c.data.device_id)
         .unwrap_or_default();
-    Ok(Json(json!({ "device_id": device_id, "sessions": sessions })))
+    Ok(Json(
+        json!({ "device_id": device_id, "sessions": sessions }),
+    ))
 }
 
 #[cfg(test)]

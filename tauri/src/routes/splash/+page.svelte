@@ -3,7 +3,8 @@
   import { listen } from '@tauri-apps/api/event';
   import { api, assetUrl } from '$lib/api';
   import type { RunPhaseEvent, GameEntry, SyncStatus, SyncReachability, RawConflictDetails, RawSaveDetails, AchievementView } from '$lib/types';
-  import { achievementIconSrc, unlockedSince } from '$lib/activity';
+  import { unlockedSince } from '$lib/activity';
+  import { achievementIconSrc } from '$lib/achievementIcon';
   import { platform } from '@tauri-apps/plugin-os';
   import SpoolMark from '$lib/components/SpoolMark.svelte';
   import CloudConflictModal from '$lib/components/CloudConflictModal.svelte';

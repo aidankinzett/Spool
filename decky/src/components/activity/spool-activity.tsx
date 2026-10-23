@@ -1,38 +1,55 @@
 import { useServerBase } from "../../hooks/use-server-base";
 import { useSpoolPlaytime } from "../../hooks/use-spool-playtime";
-import { formatPlaytime } from "../../lib/format";
-import { SpoolMark } from "../spool-mark";
+import { useGameActivity } from "../../hooks/use-game-activity";
+import { PostGameSummary } from "./post-game-summary";
+import { ActivityTimeline } from "./activity-timeline";
+import { AchievementsList } from "./achievements-list";
+import { T } from "./detail-card";
 
-// Spool's section at the top of the game page's Activity tab. Renders nothing
-// for games Spool doesn't manage.
-//
-// Placeholder while the post-game summary and timeline cards are ported.
+// Spool's additions to the game page, both for games Spool manages only (they
+// render nothing otherwise). They share one activity load (useGameActivity).
+
+// Between the Play row and the tab bar: the post-game summary. Side margins
+// match the Play row's padding.
+export function SpoolSummary({ appid }: { appid: number }) {
+  const { base } = useServerBase();
+  const { game } = useSpoolPlaytime(appid, base);
+  const { achievements, sessions, deviceId } = useGameActivity(base, game);
+  if (!base || !game) return null;
+
+  return (
+    <PostGameSummary
+      key={game.id}
+      base={base}
+      gameId={game.id}
+      sessions={sessions}
+      data={achievements}
+      deviceId={deviceId}
+      accent={game.accent_color || T.spool}
+      style={{ margin: "0 2.8vw 16px" }}
+    />
+  );
+}
+
+// At the top of the Activity tab: the activity timeline, then the full
+// achievement list.
 export function SpoolActivity({ appid }: { appid: number }) {
   const { base } = useServerBase();
   const { game } = useSpoolPlaytime(appid, base);
-  if (!game) return null;
+  const { achievements, sessions, deviceId } = useGameActivity(base, game);
+  if (!base || !game) return null;
 
-  const accent = game.accent_color || "#d7c9a0";
   return (
-    <div
-      style={{
-        margin: "16px 2.8vw",
-        padding: "14px 16px",
-        display: "flex",
-        alignItems: "center",
-        gap: 12,
-        background: "rgba(21,24,29,0.92)",
-        borderLeft: `2.5px solid ${accent}`,
-        boxShadow: "inset 0 0 0 1px rgba(255,255,255,0.08)",
-        borderRadius: 4,
-        color: "#f4f4f5",
-      }}
-    >
-      <SpoolMark size={17} color="#f4f4f5" tape={accent} />
-      <div style={{ fontSize: 14, fontWeight: 600 }}>Spool activity</div>
-      <div style={{ fontSize: 13, color: "rgba(244,244,245,0.78)" }}>
-        {formatPlaytime(game.playtime_minutes)} played
-      </div>
+    <div style={{ display: "flex", flexDirection: "column", gap: 14, margin: "16px 0" }}>
+      <ActivityTimeline
+        key={game.id}
+        base={base}
+        sessions={sessions}
+        data={achievements}
+        deviceId={deviceId}
+        accent={game.accent_color || T.spool}
+      />
+      <AchievementsList base={base} data={achievements} accent={game.accent_color || T.spool} />
     </div>
   );
 }

@@ -9,7 +9,15 @@
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
     "allowSyntheticDefaultImports": true,
-    "types": ["react"]
+    "types": ["react"],
+    // The repo root, so @rollup/plugin-typescript (whose file filter is rooted
+    // here) also compiles the shared desktop files listed in `include`.
+    "rootDir": ".."
   },
-  "include": ["src"]
+  "include": [
+    "src",
+    // Shared with the desktop app (achievement + play-session helpers/types).
+    "../tauri/src/lib/activity.ts",
+    "../tauri/src/lib/types.ts"
+  ]
 }
