@@ -585,6 +585,11 @@ pub struct AchievementView {
     /// Set when another device recorded the unlock (folded in over the rclone
     /// control plane); `None` for this device's.
     pub unlocked_on: Option<String>,
+    /// Unix ms when a Spool session on this device caught the unlock live;
+    /// `None` when it was imported from an existing file or came from another
+    /// device. Tells which session earned it: `unlocked_at` falls back to the
+    /// import time for files that record no unlock times.
+    pub live_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -689,12 +694,17 @@ fn merge(
             .filter(|n| !n.is_empty());
         Some((r.unlocked_at, on, r))
     }
+    /// The detection time when the shown row is this device's and was caught
+    /// during a session.
+    fn live_at(r: &AchievementUnlock) -> Option<i64> {
+        (r.device_id.is_empty() && r.live == 1).then_some(r.detected_at)
+    }
     let mut items = Vec::new();
     if let Some(s) = schema {
         for e in &s.achievements {
             let unlock = by_name
                 .remove(&e.api_name.to_ascii_uppercase())
-                .and_then(|g| first(&g).map(|(at, on, _)| (at, on)));
+                .and_then(|g| first(&g).map(|(at, on, r)| (at, on, live_at(r))));
             items.push(AchievementView {
                 api_name: e.api_name.clone(),
                 display_name: if e.display_name.is_empty() {
@@ -707,8 +717,9 @@ fn merge(
                 icon: e.icon.clone(),
                 icon_gray: e.icon_gray.clone(),
                 global_percent: e.global_percent,
-                unlocked_at: unlock.as_ref().map(|(at, _)| *at),
-                unlocked_on: unlock.and_then(|(_, on)| on),
+                unlocked_at: unlock.as_ref().map(|(at, _, _)| *at),
+                live_at: unlock.as_ref().and_then(|(_, _, live)| *live),
+                unlocked_on: unlock.and_then(|(_, on, _)| on),
             });
         }
     }
@@ -725,6 +736,7 @@ fn merge(
             icon_gray: None,
             global_percent: None,
             unlocked_at: Some(at),
+            live_at: live_at(r),
             unlocked_on: on,
         });
     }
@@ -843,6 +855,34 @@ mod tests {
         );
         assert_eq!(out.items[1].unlocked_at, Some(2));
         assert_eq!(out.items[1].unlocked_on, None);
+    }
+
+    #[test]
+    fn merge_reports_live_detection_for_this_devices_rows() {
+        let row = |n: &str, live: i64, device: &str| AchievementUnlock {
+            game_name: "Game".into(),
+            api_name: n.into(),
+            unlocked_at: 100,
+            detected_at: 5_000,
+            live,
+            display_name: None,
+            icon: None,
+            device_id: device.into(),
+            device_name: if device.is_empty() { "" } else { "Steam Deck" }.into(),
+        };
+        let out = merge(
+            None,
+            None,
+            vec![
+                row("LIVE", 1, ""),
+                row("IMPORTED", 0, ""),
+                row("PEER", 1, "dev-b"),
+            ],
+        );
+        let get = |n: &str| out.items.iter().find(|i| i.api_name == n).unwrap().live_at;
+        assert_eq!(get("LIVE"), Some(5_000));
+        assert_eq!(get("IMPORTED"), None);
+        assert_eq!(get("PEER"), None);
     }
 
     #[tokio::test]

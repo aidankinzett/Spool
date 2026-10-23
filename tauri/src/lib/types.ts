@@ -163,6 +163,9 @@ export type AchievementView = {
   unlocked_at: number | null;
   /** Name of the other device that recorded the unlock; null for this one's. */
   unlocked_on: string | null;
+  /** Unix ms when a Spool session on this device caught the unlock live; null
+   *  when imported from an existing file or recorded by another device. */
+  live_at: number | null;
 };
 
 /** Mirror of Rust `achievements::GameAchievements`. */

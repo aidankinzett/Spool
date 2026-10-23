@@ -118,14 +118,24 @@ fn take_pending_run(state: State<'_, PendingRun>) -> Option<String> {
 /// (with a timeout fallback so a webview that never loads can't hang the
 /// launch). Mirrors the `PendingRun` handshake the main library window
 /// uses for the desktop `--run` path.
+///
+/// `achievements` is the second handshake: the splash calls
+/// `notify_splash_achievements` once it has loaded the session's unlocks, and
+/// the exit hold for them starts from there.
 #[derive(Default)]
 pub struct SplashReady {
     notify: tokio::sync::Notify,
+    achievements: tokio::sync::Notify,
 }
 
 #[tauri::command]
 fn notify_splash_ready(state: State<'_, SplashReady>) {
     state.notify.notify_one();
+}
+
+#[tauri::command]
+fn notify_splash_achievements(state: State<'_, SplashReady>) {
+    state.achievements.notify_one();
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -288,6 +298,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             take_pending_run,
             notify_splash_ready,
+            notify_splash_achievements,
             virtual_keyboard::show_virtual_keyboard,
             virtual_keyboard::hide_virtual_keyboard,
             // library
@@ -704,16 +715,15 @@ fn run_attached_launch(
     gamepad::spawn_bridge(app.handle().clone());
 
     // Splash window (the `main` window stays hidden / unused).
-    if let Err(e) =
+    let splash_created =
         tauri::WebviewWindowBuilder::new(app, "splash", tauri::WebviewUrl::App("splash".into()))
             .title("Spool")
             .decorations(false)
             .fullscreen(true)
             .resizable(false)
             .build()
-    {
-        tracing::warn!(error = %e, "failed to create splash window");
-    }
+            .inspect_err(|e| tracing::warn!(error = %e, "failed to create splash window"))
+            .is_ok();
 
     // Launch + exit when done. app.exit(0) lets Steam see the game stop
     // (RunEvent::ExitRequested only blocks code.is_none()).
@@ -725,13 +735,26 @@ fn run_attached_launch(
     // that never loads from blocking the launch entirely.
     let app_handle = app.handle().clone();
     tauri::async_runtime::spawn(async move {
-        {
+        let splash_ready = splash_created && {
             let ready = app_handle.state::<SplashReady>();
+            tokio::time::timeout(std::time::Duration::from_secs(5), ready.notify.notified())
+                .await
+                .is_ok()
+        };
+        let started_ms = chrono::Utc::now().timestamp_millis();
+        let result = runner::launch_game_inner(&app_handle, &id).await;
+        if result.is_ok() && splash_ready && unlocked_since(&app_handle, &id, started_ms).await {
+            // The splash lists this session's achievements on its exit
+            // screen; hold it long enough to read before handing back. Not
+            // when the splash never showed, since nothing would be on screen.
+            // The hold starts once the splash has loaded the list (it rescans
+            // the stats files), or after a bounded wait if it never reports.
+            let shown = &app_handle.state::<SplashReady>().achievements;
             let _ =
-                tokio::time::timeout(std::time::Duration::from_secs(5), ready.notify.notified())
-                    .await;
+                tokio::time::timeout(std::time::Duration::from_secs(10), shown.notified()).await;
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
         }
-        if let Err(e) = runner::launch_game_inner(&app_handle, &id).await {
+        if let Err(e) = result {
             tracing::error!(error = %e, "attached --run workflow failed");
             // A cloud-sync conflict is interactive: the workflow emitted an
             // `error` phase and the splash is now showing CloudConflictModal.
@@ -898,6 +921,23 @@ fn spawn_startup_tasks(app: &AppHandle) {
     // `--run` launch, the headless Decky server) by polling the DB's version
     // counter — Tauri's `library:changed` event only reaches this process.
     spawn_library_change_poll(app.clone());
+}
+
+/// Whether this device recorded a live achievement unlock for the game since
+/// `since_ms` (unix ms), i.e. during the session that just ran.
+async fn unlocked_since(app: &AppHandle, game_id: &str, since_ms: i64) -> bool {
+    let library = app.state::<SharedLibrary>().inner().clone();
+    let Ok(Some(entry)) = library.find(game_id).await else {
+        return false;
+    };
+    library
+        .achievement_unlocks_for(&entry.game_name)
+        .await
+        .map(|rows| {
+            rows.iter()
+                .any(|r| r.live == 1 && r.device_id.is_empty() && r.detected_at >= since_ms)
+        })
+        .unwrap_or(false)
 }
 
 /// Polls the library DB's `meta.version` counter and re-emits `library:changed`

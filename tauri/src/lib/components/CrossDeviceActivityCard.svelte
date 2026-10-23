@@ -16,11 +16,10 @@
    * Totals (playtime, last-played time) come from the authoritative GameEntry
    * aggregate; the session *count*, device breakdown, last-played *device*, and
    * the daily bars are derived from the per-session history (`play_sessions`,
-   * via api.listPlaySessions). The bars are a single-accent daily *total* — not
-   * a per-device stack — matching the design.
+   * passed in by GameDetail from `createGameActivity`). The bars are a
+   * single-accent daily *total* — not a per-device stack — matching the design.
    */
   import { Monitor } from '@lucide/svelte';
-  import { api } from '$lib/api';
   import type { GameEntry, PlaySession } from '$lib/types';
   import { fmtPlaytime, relDate } from '$lib/format';
   import DetailCard from './DetailCard.svelte';
@@ -28,9 +27,12 @@
 
   let {
     game,
+    sessions,
     accent = 'var(--color-spool)',
   }: {
     game: GameEntry;
+    /** This game's play sessions, every device. */
+    sessions: PlaySession[];
     /** Per-game accent colour (cover-art tint). Tints the bars + chip glyph. */
     accent?: string;
   } = $props();
@@ -38,33 +40,6 @@
   /** Days shown on the X axis (matches the design's 14-bar timeline). */
   const DAYS = 14;
   const DAY_MS = 24 * 60 * 60 * 1000;
-
-  let sessions = $state<PlaySession[]>([]);
-
-  // Reload the per-session history when the selected game changes, AND when this
-  // game's aggregate moves — a session just ended (or a peer's session was folded
-  // in) bumps playtime_minutes / last_played_at and re-emits library:changed, but
-  // not game_name. Depending on those fields keeps the session count, device
-  // chip, and weekly bars in step with the total playtime instead of going stale
-  // until the game is reselected. Best-effort: a failure leaves the timeline
-  // empty (totals still render). (#270)
-  $effect(() => {
-    const name = game.game_name;
-    void game.last_played_at;
-    void game.playtime_minutes;
-    let stale = false;
-    api
-      .listPlaySessions(name)
-      .then((s) => {
-        if (!stale) sessions = s ?? [];
-      })
-      .catch(() => {
-        if (!stale) sessions = [];
-      });
-    return () => {
-      stale = true;
-    };
-  });
 
   const totalSessions = $derived(sessions.length);
 
