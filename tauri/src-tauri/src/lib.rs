@@ -424,6 +424,12 @@ pub fn run() {
                 app_handle
                     .state::<gamepad::GamepadPresence>()
                     .set_active(*focused);
+                if *focused && label == "main" {
+                    let app = app_handle.clone();
+                    tauri::async_runtime::spawn(async move {
+                        rclone::fold_peers_throttled(&app).await;
+                    });
+                }
             }
             _ => {}
         }

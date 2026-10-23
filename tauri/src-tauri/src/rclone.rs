@@ -2060,6 +2060,33 @@ fn fold_fields_for(
     fields
 }
 
+/// Minimum gap between on-demand cross-device folds.
+const PEER_FOLD_INTERVAL: Duration = Duration::from_secs(2 * 60);
+
+/// Re-runs the startup fold (play history, sync badges, achievement unlocks)
+/// while the app is running. The startup fold only runs once, so a tray process
+/// that stays up for days would otherwise never see what other devices did.
+/// Called when the library window gains focus; runs at most once per
+/// [`PEER_FOLD_INTERVAL`] to keep requests to the remote low.
+pub async fn fold_peers_throttled(app: &AppHandle) {
+    static LAST: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
+    // Check for a remote first so a focus while offline or before cloud is
+    // configured doesn't start the throttle window.
+    if resolve_remote(app).is_none() {
+        return;
+    }
+    {
+        let Ok(mut last) = LAST.lock() else {
+            return;
+        };
+        if last.is_some_and(|t| t.elapsed() < PEER_FOLD_INTERVAL) {
+            return;
+        }
+        *last = Some(std::time::Instant::now());
+    }
+    run_startup_fold(app).await;
+}
+
 async fn run_startup_fold(app: &AppHandle) {
     let Some(remote) = resolve_remote(app) else {
         return;
