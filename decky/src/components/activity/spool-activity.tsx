@@ -13,8 +13,8 @@ import { T } from "./detail-card";
 // match the Play row's padding.
 export function SpoolSummary({ appid }: { appid: number }) {
   const { base } = useServerBase();
-  const { game } = useSpoolPlaytime(appid, base);
-  const { achievements, sessions, deviceId } = useGameActivity(base, game);
+  const { game, folded } = useSpoolPlaytime(appid, base);
+  const { achievements, sessions, deviceId } = useGameActivity(base, game, folded);
   if (!base || !game) return null;
 
   return (
@@ -35,8 +35,8 @@ export function SpoolSummary({ appid }: { appid: number }) {
 // achievement list.
 export function SpoolActivity({ appid }: { appid: number }) {
   const { base } = useServerBase();
-  const { game } = useSpoolPlaytime(appid, base);
-  const { achievements, sessions, deviceId } = useGameActivity(base, game);
+  const { game, folded } = useSpoolPlaytime(appid, base);
+  const { achievements, sessions, deviceId } = useGameActivity(base, game, folded);
   if (!base || !game) return null;
 
   return (

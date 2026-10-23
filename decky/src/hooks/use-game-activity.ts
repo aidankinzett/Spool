@@ -24,11 +24,18 @@ let shared: { key: string; at: number; promise: Promise<GameActivity> } | null =
 function load(base: string, id: string, key: string): Promise<GameActivity> {
   if (shared?.key === key && Date.now() - shared.at < SHARE_MS) return shared.promise;
   const promise = Promise.allSettled([getGameAchievements(base, id), getGameSessions(base, id)]).then(
-    ([achievements, sessions]): GameActivity => ({
-      achievements: achievements.status === "fulfilled" ? achievements.value : null,
-      sessions: sessions.status === "fulfilled" ? sessions.value.sessions : [],
-      deviceId: sessions.status === "fulfilled" ? sessions.value.device_id || null : null,
-    }),
+    ([achievements, sessions]): GameActivity => {
+      // Both failed (e.g. the server restarting): don't hand this to the
+      // page's other components, so the next one to load retries.
+      if (achievements.status === "rejected" && sessions.status === "rejected" && shared?.promise === promise) {
+        shared = null;
+      }
+      return {
+        achievements: achievements.status === "fulfilled" ? achievements.value : null,
+        sessions: sessions.status === "fulfilled" ? sessions.value.sessions : [],
+        deviceId: sessions.status === "fulfilled" ? sessions.value.device_id || null : null,
+      };
+    },
   );
   shared = { key, at: Date.now(), promise };
   return promise;
@@ -36,11 +43,17 @@ function load(base: string, id: string, key: string): Promise<GameActivity> {
 
 // Loads a game's achievement list and play sessions. Reloads when the game's
 // last-played time moves (a session ended here, or another device's was
-// folded in).
-export function useGameActivity(base: string | null, game: LibraryGame | null): GameActivity {
+// folded in), and once the page's cross-device fold has changed something
+// (`folded`, from useSpoolPlaytime), which also covers unlocks folded in from
+// other devices.
+export function useGameActivity(
+  base: string | null,
+  game: LibraryGame | null,
+  folded: boolean,
+): GameActivity {
   const [activity, setActivity] = useState<{ key: string; data: GameActivity } | null>(null);
   const id = game?.id ?? null;
-  const key = `${base}|${id}|${game?.last_played_at ?? ""}`;
+  const key = `${base}|${id}|${game?.last_played_at ?? ""}|${folded}`;
 
   useEffect(() => {
     if (!base || !id) return;
@@ -53,6 +66,8 @@ export function useGameActivity(base: string | null, game: LibraryGame | null): 
     };
   }, [base, id, key]);
 
-  // Never show the previous game's data while the next one loads.
-  return activity && activity.key === key ? activity.data : EMPTY;
+  // Never show the previous game's data while the next one loads; while the
+  // same game reloads, keep showing what's there.
+  if (!activity || !activity.key.startsWith(`${base}|${id}|`)) return EMPTY;
+  return activity.data;
 }

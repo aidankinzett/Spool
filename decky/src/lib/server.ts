@@ -44,12 +44,15 @@ export async function getLibrary(base: string): Promise<LibraryGame[]> {
   return data as LibraryGame[];
 }
 
-// POST /fold
-export async function triggerFold(base: string): Promise<void> {
+// POST /fold — resolves to whether the fold changed anything (sessions,
+// playtime, sync badges or achievement unlocks).
+export async function triggerFold(base: string): Promise<boolean> {
   const res = await fetch(`${base}/fold`, { method: "POST" });
   if (!res.ok) {
     throw new Error(`POST /fold failed: status ${res.status}`);
   }
+  const body = (await res.json().catch(() => null)) as { changed?: boolean } | null;
+  return body?.changed === true;
 }
 
 // GET /games/{id}/steam-launch-info

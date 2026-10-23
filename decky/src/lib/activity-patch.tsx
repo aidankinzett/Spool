@@ -8,11 +8,12 @@ const ACTIVITY_TAB_ID = "WhatsNew";
 type Tab = { id: string; title: string; content: ReactElement };
 type TabsComponent = ComponentType<any>;
 
-let hasWarned = false;
-function warnOnce(...args: unknown[]) {
-  if (hasWarned) return;
-  console.warn("[Spool]", ...args);
-  hasWarned = true;
+// Each distinct message is logged once, so one failure doesn't hide another.
+const warned = new Set<string>();
+function warnOnce(message: string, ...rest: unknown[]) {
+  if (warned.has(message)) return;
+  warned.add(message);
+  console.warn("[Spool]", message, ...rest);
 }
 
 // Adds Spool's post-game summary above the game page's tab bar, and its
@@ -53,26 +54,25 @@ function isTabsContext(e: any): e is Context<TabsComponent> {
   );
 }
 
-let tabsContext: Context<TabsComponent> | null = null;
-// Module count at the last failed search; the next search waits until Steam
-// has loaded more modules.
-let searchedModuleCount = -1;
+// Searched once per plugin load, on the first game-page render. By then the
+// module is always loaded: the Provider above the page comes from it. Doing
+// it once also keeps the type of the element `wrapActivityTabs` returns the
+// same on every render, so the page is never remounted by the patch.
+let tabsContext: Context<TabsComponent> | null | undefined;
 function findTabsContext(): Context<TabsComponent> | null {
-  if (tabsContext) return tabsContext;
+  if (tabsContext !== undefined) return tabsContext;
+  tabsContext = null;
   try {
     let req: any;
     window.webpackChunksteamui.push([[Symbol("spool")], {}, (r: any) => (req = r)]);
-    const ids = Object.keys(req?.m ?? {});
-    if (ids.length === searchedModuleCount) return null;
-    searchedModuleCount = ids.length;
-    for (const id of ids) {
+    for (const id of Object.keys(req?.m ?? {})) {
       const src = `${req.m[id]}`;
       if (!src.includes("createContext(") || !src.includes("concise") || !src.includes("setSections")) continue;
       const found = Object.values(req(id) ?? {}).find(isTabsContext);
       if (found) return (tabsContext = found);
     }
   } catch (err) {
-    warnOnce("Searching for the game page tabs context failed:", err);
+    warnOnce("Searching for the game page tabs context failed; Spool activity disabled.", err);
     return null;
   }
   warnOnce("Game page tabs context not found; Spool activity disabled.");
@@ -133,8 +133,15 @@ function insertSummary(ret: ReactElement | undefined, appid: number) {
       warnOnce("Tab bar not found on the game page; post-game summary disabled.");
       return;
     }
-    const at = parent.props.children.findIndex(hasTabs);
-    parent.props.children.splice(at, 0, <SpoolSummary key="spool-summary" appid={appid} />);
+    // A new array rather than a splice, so a children array Steam reuses
+    // across renders never collects more than one summary.
+    const children: unknown[] = parent.props.children;
+    const at = children.findIndex(hasTabs);
+    parent.props.children = [
+      ...children.slice(0, at),
+      <SpoolSummary key="spool-summary" appid={appid} />,
+      ...children.slice(at),
+    ];
   } catch (err) {
     warnOnce("Failed to add the post-game summary:", err);
   }

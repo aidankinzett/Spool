@@ -43,29 +43,37 @@ export default definePlugin(() => {
           ?.props?.children,
     ],
     (_: Array<Record<string, unknown>>, ret?: ReactElement) => {
-      try {
-        const container = findInReactTree(
-          ret,
-          (x: any) =>
-            Array.isArray(x?.props?.children) &&
-            appDetailsClasses.InnerContainer &&
-            x?.props?.className?.includes(appDetailsClasses.InnerContainer),
-        );
-
-        // Insert as the first child so the zero-height anchor shares the
-        // InnerContainer's top edge — PatchWrapper walks from there to the
-        // hero capsule and floats the bar over it (see patch-wrapper.tsx).
-        if (typeof container === "object" && container?.props?.children) {
-          container.props.children.splice(0, 0, createElement(PatchWrapper, null));
-        }
-      } catch (err) {
+      // The bar locates its slot by Steam's CSS classes; without them it's
+      // skipped, but the activity cards below don't use them.
+      if (!appDetailsClasses?.InnerContainer || !appDetailsHeaderClasses) {
         if (!hasWarnedPatch) {
-          console.warn("[Spool] Failed to apply playtime patch to React tree:", err);
+          console.warn("[Spool] Steam CSS classes (appDetailsClasses or appDetailsHeaderClasses) are undefined; Spool bar disabled.");
           hasWarnedPatch = true;
+        }
+      } else {
+        try {
+          const container = findInReactTree(
+            ret,
+            (x: any) =>
+              Array.isArray(x?.props?.children) &&
+              x?.props?.className?.includes(appDetailsClasses.InnerContainer),
+          );
+
+          // Insert as the first child so the zero-height anchor shares the
+          // InnerContainer's top edge — PatchWrapper walks from there to the
+          // hero capsule and floats the bar over it (see patch-wrapper.tsx).
+          if (typeof container === "object" && container?.props?.children) {
+            container.props.children.splice(0, 0, createElement(PatchWrapper, null));
+          }
+        } catch (err) {
+          if (!hasWarnedPatch) {
+            console.warn("[Spool] Failed to apply playtime patch to React tree:", err);
+            hasWarnedPatch = true;
+          }
         }
       }
 
-      // Spool's section in the Activity tab (see activity-patch.tsx).
+      // The post-game summary and Activity-tab cards (see activity-patch.tsx).
       return wrapActivityTabs(ret);
     },
   );
@@ -86,20 +94,11 @@ export default definePlugin(() => {
     </SafeArea>
   ), { exact: true });
 
-  // Patch the Steam game-detail page to inject Spool's cross-device playtime
-  // badge. Uses afterPatch + findInReactTree to splice into the InnerContainer
-  // of the rendered tree.
+  // Patch the Steam game-detail page to inject Spool's bar and activity
+  // cards. Uses afterPatch + findInReactTree on the route's render function.
   const playtimePatch = routerHook.addPatch(
     "/library/app/:appid",
     (tree: any) => {
-      if (!appDetailsClasses || !appDetailsHeaderClasses) {
-        if (!hasWarnedPatch) {
-          console.warn("[Spool] Steam CSS classes (appDetailsClasses or appDetailsHeaderClasses) are undefined; game-detail patch disabled.");
-          hasWarnedPatch = true;
-        }
-        return tree;
-      }
-
       const routeProps = findInReactTree(tree, (x: any) => x?.renderFunc);
       if (!routeProps) return tree;
 

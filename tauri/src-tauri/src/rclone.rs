@@ -1963,7 +1963,8 @@ pub fn spawn_startup_fold(app: AppHandle) {
 
 /// Headless variant of the startup fold — no `AppHandle` required. Loads
 /// config + library from disk, runs the cross-device fold, saves if anything
-/// changed, and returns whether the library was modified. Used by the plugin
+/// changed, and returns whether the library (including its achievement
+/// unlocks) was modified. Used by the plugin
 /// server's `POST /fold` so the Decky UI can refresh data on page navigation.
 #[cfg(unix)]
 pub async fn fold_devices_from_config() -> bool {
@@ -2001,7 +2002,7 @@ pub async fn fold_devices_from_config() -> bool {
     let recomputed = library.recompute_all_playtime().await.unwrap_or(0);
 
     if blobs.is_empty() {
-        return new_sessions > 0 || recomputed > 0;
+        return new_sessions > 0 || recomputed > 0 || new_unlocks > 0;
     }
 
     let folded = fold_device_totals(&blobs);
@@ -2022,7 +2023,7 @@ pub async fn fold_devices_from_config() -> bool {
         }
     }
     tracing::info!(applied, devices = blobs.len(), "headless fold: done");
-    applied > 0 || new_sessions > 0 || recomputed > 0
+    applied > 0 || new_sessions > 0 || recomputed > 0 || new_unlocks > 0
 }
 
 /// Computes the JSON field updates the cross-device fold should apply to one
