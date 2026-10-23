@@ -1393,6 +1393,38 @@ async fn fold_history(remote: &RcloneRemote, library: &crate::library::Library) 
     library.upsert_sessions(&all).await.unwrap_or(0)
 }
 
+/// Minimum gap between on-demand play-history folds.
+const HISTORY_FOLD_INTERVAL: Duration = Duration::from_secs(2 * 60);
+
+/// Folds peers' play-session history while the app is running. The startup fold
+/// only runs once, so a tray process that stays up for days would otherwise
+/// never see sessions played on another device. Called when the library window
+/// gains focus; runs at most once per [`HISTORY_FOLD_INTERVAL`] to keep
+/// requests to the remote low.
+pub async fn fold_history_throttled(app: &AppHandle) {
+    static LAST: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
+    {
+        let Ok(mut last) = LAST.lock() else {
+            return;
+        };
+        if last.is_some_and(|t| t.elapsed() < HISTORY_FOLD_INTERVAL) {
+            return;
+        }
+        *last = Some(std::time::Instant::now());
+    }
+    let Some(remote) = resolve_remote(app) else {
+        return;
+    };
+    let library = app.state::<SharedLibrary>().inner().clone();
+    let new_sessions = fold_history(&remote, &library).await;
+    if new_sessions == 0 {
+        return;
+    }
+    tracing::info!(new_sessions, "history fold: imported peer play sessions");
+    let _ = library.recompute_all_playtime().await;
+    let _ = app.emit("library:changed", &());
+}
+
 // ── Per-device achievement unlocks ───────────────────────────────────────────
 
 /// One device's achievement unlocks, stored at
