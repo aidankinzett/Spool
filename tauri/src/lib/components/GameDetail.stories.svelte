@@ -5,6 +5,7 @@
   import type { GameEntry } from '$lib/types';
   import {
     makeAchievements,
+    makeConfig,
     makeGame as makePlayedGame,
     makePlaySessions,
   } from '../../../.storybook/fixtures';
@@ -25,6 +26,10 @@
         return makePlaySessions(
           String((args as Record<string, unknown>)?.gameName ?? ''),
         );
+      // This device is the fixture sessions' "Studio PC", so the post-game
+      // summary has a session to show.
+      case 'get_config':
+        return makeConfig({ device_id: 'dev-studio', device_name: 'Studio PC' });
       // Fill the achievements card.
       case 'get_game_achievements':
         return makeAchievements();

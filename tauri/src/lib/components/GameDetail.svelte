@@ -7,7 +7,9 @@
    *     Play button + last-played/playtime, LAN/sync pills
    *   - StatsStrip: 4 columns of mono stats
    *   - ActionToolbar: per-entry actions (Open folder, Steam, …)
+   *   - Post-game summary: last session on this device + its unlocks
    *   - About card: description + genres
+   *   - Activity timeline: sessions + unlocks by day
    *   - Saves card: backup count / size / last-run
    *   - Details card: developer / publisher / executable / install path
    *
@@ -57,6 +59,9 @@
   import DetailCard from './DetailCard.svelte';
   import CrossDeviceActivityCard from './CrossDeviceActivityCard.svelte';
   import AchievementsCard from './AchievementsCard.svelte';
+  import PostGameSummaryCard from './PostGameSummaryCard.svelte';
+  import ActivityTimelineCard from './ActivityTimelineCard.svelte';
+  import { createGameActivity } from '$lib/gameActivity.svelte';
   import { removeGameDialog } from '$lib/removeGame.svelte';
   import { moveInstallDialog } from '$lib/moveInstall.svelte';
 
@@ -157,6 +162,8 @@
   // A synthetic "available on LAN" row — not a real library entry on this
   // device, so per-entry actions (Edit, Remove, Steam…) don't apply yet.
   const isSyntheticPeer = $derived(isSyntheticPeerId(game.id));
+  // Achievements + play sessions, loaded once for the cards that read them.
+  const activity = createGameActivity(() => game);
   // The in-flight install, only when it's *this* peer game — matched against any
   // of the row's sources so a non-primary chooser pick still shows progress here.
   const peerDownload = $derived(downloadMatchesGame(download, game) ? download : null);
@@ -791,6 +798,18 @@
     style:grid-template-columns="minmax(0, 1.4fr) minmax(0, 1fr)"
     style:align-content="start"
   >
+    {#if !isSyntheticPeer}
+      <div class="min-w-0 empty:hidden" style:grid-column="1 / -1">
+        <PostGameSummaryCard
+          gameId={game.id}
+          sessions={activity.sessions}
+          data={activity.achievements}
+          deviceId={activity.deviceId}
+          {accent}
+        />
+      </div>
+    {/if}
+
     <div class="flex min-w-0 flex-col gap-3.5">
       <!-- About -->
       <DetailCard title="ABOUT" {accent}>
@@ -818,6 +837,14 @@
           </p>
         {/if}
       </DetailCard>
+
+      <ActivityTimelineCard
+        gameId={game.id}
+        sessions={activity.sessions}
+        data={activity.achievements}
+        deviceId={activity.deviceId}
+        {accent}
+      />
 
       <!-- Saves -->
       <DetailCard title="SAVE BACKUP · LUDUSAVI" {accent}>
@@ -942,10 +969,10 @@
     </div>
 
     <div class="flex min-w-0 flex-col gap-3.5">
-      <CrossDeviceActivityCard {game} {accent} />
+      <CrossDeviceActivityCard {game} sessions={activity.sessions} {accent} />
 
       {#if !isSyntheticPeer}
-        <AchievementsCard {game} {accent} />
+        <AchievementsCard gameId={game.id} data={activity.achievements} {accent} />
       {/if}
 
       <DetailCard title="ENTRY · DETAILS" {accent}>

@@ -10,91 +10,38 @@
    *   │ Show all 40                                           │
    *   └───────────────────────────────────────────────────────┘
    *
-   * Data comes from `get_game_achievements`, which scans the game's
-   * Steam-emulator stats file and merges it with the schema. Unlocked entries
-   * come first (newest first), then locked ones (most common first). Hidden
-   * locked achievements show no name or description. The card is omitted when
-   * a game has neither a schema nor any unlocks.
+   * `data` comes from `get_game_achievements` (loaded by GameDetail through
+   * `createGameActivity`), which scans the game's Steam-emulator stats file and
+   * merges it with the schema. Unlocked entries come first (newest first), then
+   * locked ones (most common first). Hidden locked achievements show no name or
+   * description. The card is omitted when a game has neither a schema nor any
+   * unlocks.
    */
-  import { listen } from '@tauri-apps/api/event';
   import { Lock, Trophy } from '@lucide/svelte';
-  import { api, assetUrl } from '$lib/api';
-  import type { AchievementUnlockedEvent, AchievementView, GameAchievements, GameEntry } from '$lib/types';
+  import { achievementIconSrc as iconSrc } from '$lib/activity';
+  import type { GameAchievements } from '$lib/types';
   import DetailCard from './DetailCard.svelte';
   import MonoLabel from './MonoLabel.svelte';
 
   let {
-    game,
+    gameId,
+    data,
     accent = 'var(--color-spool)',
   }: {
-    game: GameEntry;
+    gameId: string;
+    data: GameAchievements | null;
     accent?: string;
   } = $props();
 
   /** Rows shown before "Show all". */
   const COLLAPSED = 6;
 
-  /** The last response, tagged with the game it's for, so switching games
-   *  never shows the previous game's list while the new one loads. */
-  let loaded = $state<{ id: string; data: GameAchievements } | null>(null);
   let expanded = $state(false);
-  /** Bumped by an `achievement:unlocked` event for this game to trigger a reload. */
-  let unlockTick = $state(0);
 
-  // The library store replaces every GameEntry object on each
-  // `library:changed`, so the effects below key on these primitives, not on
-  // `game`, or they'd rerun (rescan, re-subscribe, collapse the list) on every
-  // unrelated refresh.
-  const gameId = $derived(game.id);
-  const lastPlayed = $derived(game.last_played_at);
-  const data = $derived(loaded?.id === gameId ? loaded.data : null);
-
-  // Reload when the selected game changes, after a session ends (last_played_at
-  // moves), and on a live unlock for this game.
+  // Collapse the list when another game is selected.
   $effect(() => {
-    const id = gameId;
-    void lastPlayed;
-    void unlockTick;
-    let stale = false;
-    api
-      .getGameAchievements(id)
-      .then((d) => {
-        if (!stale) loaded = { id, data: d };
-      })
-      .catch(() => {
-        if (!stale) loaded = null;
-      });
-    return () => {
-      stale = true;
-    };
-  });
-
-  $effect(() => {
-    const id = gameId;
+    void gameId;
     expanded = false;
-    let unlisten: (() => void) | undefined;
-    let disposed = false;
-    let unlistenFold: (() => void) | undefined;
-    listen<AchievementUnlockedEvent>('achievement:unlocked', (e) => {
-      if (e.payload.game_id === id) unlockTick++;
-    })
-      .then((fn) => {
-        if (disposed) fn();
-        else unlisten = fn;
-      })
-      .catch(() => {});
-    // Unlocks from other devices, folded in from the rclone control plane.
-    listen('achievements:changed', () => unlockTick++)
-      .then((fn) => {
-        if (disposed) fn();
-        else unlistenFold = fn;
-      })
-      .catch(() => {});
-    return () => {
-      disposed = true;
-      unlisten?.();
-      unlistenFold?.();
-    };
   });
 
   const sorted = $derived.by(() => {
@@ -112,12 +59,6 @@
   const pct = $derived(data && data.total > 0 ? Math.round((data.unlocked / data.total) * 100) : 0);
   // Without a schema only unlocked entries are known, so there's no total.
   const hasTotal = $derived(data?.schema_source != null);
-
-  function iconSrc(a: AchievementView): string | null {
-    const src = a.unlocked_at !== null ? a.icon : (a.icon_gray ?? a.icon);
-    if (!src) return null;
-    return src.startsWith('http') ? src : assetUrl(src);
-  }
 
   function fmtDate(secs: number): string {
     return new Date(secs * 1000).toLocaleDateString(undefined, {

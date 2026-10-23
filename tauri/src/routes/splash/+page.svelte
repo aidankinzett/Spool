@@ -2,7 +2,8 @@
   import { onMount } from 'svelte';
   import { listen } from '@tauri-apps/api/event';
   import { api, assetUrl } from '$lib/api';
-  import type { RunPhaseEvent, GameEntry, SyncStatus, SyncReachability, RawConflictDetails, RawSaveDetails } from '$lib/types';
+  import type { RunPhaseEvent, GameEntry, SyncStatus, SyncReachability, RawConflictDetails, RawSaveDetails, AchievementView } from '$lib/types';
+  import { achievementIconSrc } from '$lib/activity';
   import { platform } from '@tauri-apps/plugin-os';
   import SpoolMark from '$lib/components/SpoolMark.svelte';
   import CloudConflictModal from '$lib/components/CloudConflictModal.svelte';
@@ -37,6 +38,12 @@
   // was written, so the exit flow must not read as "all saved".
   let noSaves = $state(false);
   let sessionMinutes = $state<number | null>(null);
+  // When the game started (first `playing` phase), and the achievements this
+  // device unlocked since then, shown on the exit flow. In attached mode the
+  // backend holds the exit for a few seconds when there are any, so they can be
+  // read.
+  let playingSince: number | null = null;
+  let earned = $state<AchievementView[]>([]);
   let game = $state<GameEntry | null>(null);
   let progress = $state(0);
   const usesProton = $derived(!onWindows && !!game && game.exe_path.trim().toLowerCase().endsWith('.exe'));
@@ -349,6 +356,7 @@
     flow === 'exit'
       ? [
           { label: 'This session', value: sessionMinutes != null ? fmtPlaytime(sessionMinutes) : '…' },
+          ...(earned.length > 0 ? [{ label: 'Achievements', value: `+${earned.length}` }] : []),
           { label: 'Revisions kept', value: game ? String(game.save_backup_count) : '…' },
         ]
       : [
@@ -376,6 +384,10 @@
     cloudUploadFailed = ev.cloud_upload_failed;
     noSaves = ev.no_saves;
     if (ev.session_minutes != null) sessionMinutes = ev.session_minutes;
+    if (ev.phase === 'playing' && playingSince === null) playingSince = Date.now();
+    if ((ev.phase === 'backing-up' || ev.phase === 'done') && playingSince !== null && ev.game_id) {
+      loadEarned(ev.game_id, playingSince);
+    }
 
     // Hydrate game entry on first event if not yet loaded.
     if (!game && ev.game_id) {
@@ -387,6 +399,19 @@
     if (RAMP_PHASES.has(phase)) {
       startRamp();
     }
+  }
+
+  /** This device's unlocks since `since` (unix ms), oldest first. The minute of
+   *  slack covers the emulator's clock against this one. */
+  function loadEarned(gameId: string, since: number) {
+    const from = since / 1000 - 60;
+    api.getGameAchievements(gameId)
+      .then((d) => {
+        earned = (d?.items ?? [])
+          .filter((a) => a.unlocked_on === null && a.unlocked_at !== null && a.unlocked_at >= from)
+          .sort((a, b) => (a.unlocked_at ?? 0) - (b.unlocked_at ?? 0));
+      })
+      .catch(() => {});
   }
 
   async function pump() {
@@ -654,6 +679,32 @@
         <div>
           <div class="cloud-label" style="color:{cloudTone}">{cloudLabel}</div>
           {#if cloudNote}<div class="cloud-note">{cloudNote}</div>{/if}
+        </div>
+      </div>
+    {/if}
+
+    <!-- Achievements unlocked this session -->
+    {#if flow === 'exit' && earned.length > 0}
+      <div class="cloud-row ach-row" style="border-color:{accent}; background:linear-gradient(90deg,{accent}1f,{accent}08 40%,transparent)">
+        <svg width={16 * s} height={16 * s} viewBox="0 0 24 24" fill="none" stroke={accent} stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0">
+          <path d="M6 9H4.5a2.5 2.5 0 0 1 0-5H6"/><path d="M18 9h1.5a2.5 2.5 0 0 0 0-5H18"/><path d="M4 22h16"/><path d="M10 14.66V17c0 .55-.47.98-.97 1.21C7.85 18.75 7 20.24 7 22"/><path d="M14 14.66V17c0 .55.47.98.97 1.21C16.15 18.75 17 20.24 17 22"/><path d="M18 2H6v7a6 6 0 0 0 12 0V2Z"/>
+        </svg>
+        <div class="ach-body">
+          <div class="cloud-label" style="color:{accent}">
+            ACHIEVEMENTS · {earned.length} UNLOCKED THIS SESSION
+          </div>
+          <div class="ach-icons">
+            {#each earned.slice(0, 8) as a (a.api_name)}
+              {@const src = achievementIconSrc(a)}
+              <div class="ach-icon" title={a.display_name}>
+                {#if src}<img {src} alt="" />{/if}
+              </div>
+            {/each}
+            {#if earned.length > 8}<span class="cloud-note">+{earned.length - 8}</span>{/if}
+          </div>
+          <div class="cloud-note ach-names">
+            {earned.slice(0, 3).map((a) => a.display_name).join(' · ')}{earned.length > 3 ? ' …' : ''}
+          </div>
         </div>
       </div>
     {/if}
@@ -987,6 +1038,36 @@
     font-size: calc(12px * var(--s, 1));
     color: rgba(244,244,245,0.56);
     line-height: 1.35;
+  }
+
+  .ach-body {
+    min-width: 0;
+  }
+  .ach-icons {
+    margin-top: calc(6px * var(--s, 1));
+    display: flex;
+    align-items: center;
+    gap: calc(6px * var(--s, 1));
+  }
+  .ach-icon {
+    width: calc(30px * var(--s, 1));
+    height: calc(30px * var(--s, 1));
+    border-radius: 3px;
+    overflow: hidden;
+    border: 1px solid rgba(244,244,245,0.16);
+    background: rgba(244,244,245,0.06);
+    flex-shrink: 0;
+  }
+  .ach-icon img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+  }
+  .ach-names {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   /* ── Footer ── */

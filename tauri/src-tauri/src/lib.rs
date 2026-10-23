@@ -725,7 +725,14 @@ fn run_attached_launch(
                 tokio::time::timeout(std::time::Duration::from_secs(5), ready.notify.notified())
                     .await;
         }
-        if let Err(e) = runner::launch_game_inner(&app_handle, &id).await {
+        let started_ms = chrono::Utc::now().timestamp_millis();
+        let result = runner::launch_game_inner(&app_handle, &id).await;
+        if result.is_ok() && unlocked_since(&app_handle, &id, started_ms).await {
+            // The splash lists this session's achievements on its exit
+            // screen; hold it long enough to read before handing back.
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        }
+        if let Err(e) = result {
             tracing::error!(error = %e, "attached --run workflow failed");
             // A cloud-sync conflict is interactive: the workflow emitted an
             // `error` phase and the splash is now showing CloudConflictModal.
@@ -892,6 +899,23 @@ fn spawn_startup_tasks(app: &AppHandle) {
     // `--run` launch, the headless Decky server) by polling the DB's version
     // counter — Tauri's `library:changed` event only reaches this process.
     spawn_library_change_poll(app.clone());
+}
+
+/// Whether this device recorded a live achievement unlock for the game since
+/// `since_ms` (unix ms), i.e. during the session that just ran.
+async fn unlocked_since(app: &AppHandle, game_id: &str, since_ms: i64) -> bool {
+    let library = app.state::<SharedLibrary>().inner().clone();
+    let Ok(Some(entry)) = library.find(game_id).await else {
+        return false;
+    };
+    library
+        .achievement_unlocks_for(&entry.game_name)
+        .await
+        .map(|rows| {
+            rows.iter()
+                .any(|r| r.live == 1 && r.device_id.is_empty() && r.detected_at >= since_ms)
+        })
+        .unwrap_or(false)
 }
 
 /// Polls the library DB's `meta.version` counter and re-emits `library:changed`
