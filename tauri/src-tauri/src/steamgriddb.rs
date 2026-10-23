@@ -238,7 +238,7 @@ pub fn extract_vibrant_color(path: &std::path::Path) -> Option<String> {
             if count < 3 {
                 return None;
             }
-            let (_, s, l) = rgb_to_hsl(r, g, b);
+            let (_, s, l) = crate::accent::rgb_to_hsl(r, g, b);
             if s < 0.25 || !(0.18..=0.85).contains(&l) {
                 return None;
             }
@@ -250,34 +250,8 @@ pub fn extract_vibrant_color(path: &std::path::Path) -> Option<String> {
         })
         .max_by(|a, b| a.3.partial_cmp(&b.3).unwrap_or(std::cmp::Ordering::Equal));
 
-    best.map(|(r, g, b, _)| format!("#{r:02x}{g:02x}{b:02x}"))
-}
-
-/// Standard RGB → HSL conversion. Returns (hue 0–360, sat 0–1, lum 0–1).
-fn rgb_to_hsl(r: u8, g: u8, b: u8) -> (f32, f32, f32) {
-    let r = r as f32 / 255.0;
-    let g = g as f32 / 255.0;
-    let b = b as f32 / 255.0;
-    let max = r.max(g).max(b);
-    let min = r.min(g).min(b);
-    let l = (max + min) / 2.0;
-    let d = max - min;
-    if d < 1e-6 {
-        return (0.0, 0.0, l);
-    }
-    let s = if l > 0.5 {
-        d / (2.0 - max - min)
-    } else {
-        d / (max + min)
-    };
-    let h = if max == r {
-        (g - b) / d + if g < b { 6.0 } else { 0.0 }
-    } else if max == g {
-        (b - r) / d + 2.0
-    } else {
-        (r - g) / d + 4.0
-    } * 60.0;
-    (h, s, l)
+    // Brightened if needed so it reads against the dark cards it tints.
+    best.and_then(|(r, g, b, _)| crate::accent::readable_accent(&format!("#{r:02x}{g:02x}{b:02x}")))
 }
 
 /// Fetches the hero banner (1920×620 landscape) for `game_entry_id`, saves it

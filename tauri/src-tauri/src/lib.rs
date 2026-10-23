@@ -25,6 +25,7 @@
 //!   - [`cli`]         — argv parsing for `--run` mode
 //!   - [`steamgriddb`] — cover art fetch
 
+mod accent;
 mod accent_backfill;
 mod achievements;
 mod cli;

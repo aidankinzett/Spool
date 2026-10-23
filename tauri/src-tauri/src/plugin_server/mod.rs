@@ -111,6 +111,14 @@ pub async fn serve() -> AppResult<()> {
         }
     }
 
+    // Brighten stored accents that are too dark to read (see `accent.rs`). In
+    // Game Mode this server may be the only Spool process that runs, so it
+    // can't rely on the tray GUI's startup backfill to do it.
+    if library_available {
+        let library = state.library.clone();
+        tokio::spawn(async move { crate::accent::normalize_stored(&library).await });
+    }
+
     let router = Router::new()
         .route("/status", get(get_status))
         .route("/session", get(session::get_session))

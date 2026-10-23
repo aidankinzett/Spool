@@ -1579,6 +1579,20 @@ impl Library {
         Ok(res.rows_affected() > 0)
     }
 
+    /// Replaces the accent colour only if it's still `old`, so a concurrent
+    /// update isn't overwritten. Used by `accent::normalize_stored`.
+    pub async fn replace_accent(&self, id: &str, old: &str, new: &str) -> AppResult<bool> {
+        let sql = "UPDATE games SET data = json_set(data, '$.accent_color', ?3)
+                   WHERE id = ?1 AND json_extract(data, '$.accent_color') = ?2";
+        let res = sqlx::query(sql)
+            .bind(id)
+            .bind(old)
+            .bind(new)
+            .execute(&self.pool)
+            .await?;
+        Ok(res.rows_affected() > 0)
+    }
+
     /// Sets the install size only if the entry doesn't already have one (> 0).
     pub async fn set_install_size_if_empty(&self, id: &str, mb: f64) -> AppResult<bool> {
         let sql = "UPDATE games SET data = json_set(data, '$.install_size_mb', ?2)
