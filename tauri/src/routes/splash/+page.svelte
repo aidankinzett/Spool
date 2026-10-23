@@ -386,7 +386,7 @@
     noSaves = ev.no_saves;
     if (ev.session_minutes != null) sessionMinutes = ev.session_minutes;
     // Once, at the end: each load rescans the game's stats files.
-    if (ev.phase === 'done' && ev.game_id) loadEarned(ev.game_id);
+    if (ev.phase === 'done' && ev.game_id && !earnedLoad) void loadEarned(ev.game_id);
 
     // Hydrate game entry on first event if not yet loaded.
     if (!game && ev.game_id) {
@@ -400,12 +400,17 @@
     }
   }
 
-  function loadEarned(gameId: string) {
-    api.getGameAchievements(gameId)
-      .then((d) => {
-        earned = unlockedSince(d?.items ?? [], loadedAt);
-      })
-      .catch(() => {});
+  /** The pending or finished load, so the conflict-retry exit can wait on it. */
+  let earnedLoad: Promise<AchievementView[]> | null = null;
+
+  function loadEarned(gameId: string): Promise<AchievementView[]> {
+    earnedLoad = api.getGameAchievements(gameId)
+      .then((d) => (earned = unlockedSince(d?.items ?? [], loadedAt)))
+      .catch(() => earned)
+      .finally(() => {
+        api.notifySplashAchievements().catch(() => {});
+      });
+    return earnedLoad;
   }
 
   async function pump() {
@@ -765,6 +770,10 @@
           await api.launchGame(game!.id);
           // Retry workflow finished (game played + backed up) — exit so the
           // attached host sees Spool stop, mirroring the normal launch path.
+          // This path skips the backend's exit hold, so hold here while the
+          // session's unlocks are on screen.
+          const unlocked = await (earnedLoad ?? loadEarned(game!.id));
+          if (unlocked.length > 0) await new Promise((r) => setTimeout(r, 5000));
           await exit(0);
         } catch (e) {
           console.error('[splash] retry launch failed:', e);

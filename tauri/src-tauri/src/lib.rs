@@ -118,14 +118,24 @@ fn take_pending_run(state: State<'_, PendingRun>) -> Option<String> {
 /// (with a timeout fallback so a webview that never loads can't hang the
 /// launch). Mirrors the `PendingRun` handshake the main library window
 /// uses for the desktop `--run` path.
+///
+/// `achievements` is the second handshake: the splash calls
+/// `notify_splash_achievements` once it has loaded the session's unlocks, and
+/// the exit hold for them starts from there.
 #[derive(Default)]
 pub struct SplashReady {
     notify: tokio::sync::Notify,
+    achievements: tokio::sync::Notify,
 }
 
 #[tauri::command]
 fn notify_splash_ready(state: State<'_, SplashReady>) {
     state.notify.notify_one();
+}
+
+#[tauri::command]
+fn notify_splash_achievements(state: State<'_, SplashReady>) {
+    state.achievements.notify_one();
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -288,6 +298,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             take_pending_run,
             notify_splash_ready,
+            notify_splash_achievements,
             virtual_keyboard::show_virtual_keyboard,
             virtual_keyboard::hide_virtual_keyboard,
             // library
@@ -730,6 +741,11 @@ fn run_attached_launch(
             // The splash lists this session's achievements on its exit
             // screen; hold it long enough to read before handing back. Not
             // when the splash never showed, since nothing would be on screen.
+            // The hold starts once the splash has loaded the list (it rescans
+            // the stats files), or after a bounded wait if it never reports.
+            let shown = &app_handle.state::<SplashReady>().achievements;
+            let _ =
+                tokio::time::timeout(std::time::Duration::from_secs(10), shown.notified()).await;
             tokio::time::sleep(std::time::Duration::from_secs(5)).await;
         }
         if let Err(e) = result {

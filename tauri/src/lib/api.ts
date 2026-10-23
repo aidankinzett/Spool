@@ -370,6 +370,9 @@ export const api = {
   // Game-Mode splash — signals that the splash's `run:phase` listener is wired
   // so the attached `--run` workflow can start without racing the first phases.
   notifySplashReady: (): Promise<void> => invoke('notify_splash_ready'),
+  /** Tells an attached `--run` the splash has loaded this session's unlocks,
+   *  so its exit hold for them starts now. */
+  notifySplashAchievements: (): Promise<void> => invoke('notify_splash_achievements'),
 
   // KDE on-screen keyboard — WebKitGTK doesn't drive the Wayland text-input
   // protocol on focus, so the layout calls these when a text field gains/loses
