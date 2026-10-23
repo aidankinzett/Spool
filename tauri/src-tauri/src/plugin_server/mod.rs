@@ -65,8 +65,14 @@ struct PluginState {
     /// Discovered LAN peers, kept fresh by a background listener spawned in
     /// `serve`. The Decky UI reads it via `GET /lan/peers`.
     lan: Arc<LanState>,
-    /// Shared HTTP client for proxying requests to peer file servers.
+    /// Shared HTTP client for proxying requests to peer file servers and LAN
+    /// installs. No client-wide timeout: an install streams whole games through
+    /// it; the proxy requests set their own.
     http: reqwest::Client,
+    /// HTTP client for Steam / SteamGridDB API and art requests (achievement
+    /// schemas, Steam art), bounded like the desktop's metadata client so a
+    /// stalled request can't leave a Decky UI request pending.
+    api_http: reqwest::Client,
     /// Single-slot in-flight LAN install state. The Decky UI polls
     /// `GET /lan/download` instead of receiving Tauri events.
     download: Arc<LanDownloadState>,
@@ -95,6 +101,11 @@ pub async fn serve() -> AppResult<()> {
         library_available,
         lan: Arc::new(LanState::new()),
         http: reqwest::Client::new(),
+        api_http: reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .unwrap_or_default(),
         download: Arc::new(LanDownloadState::default()),
     };
 
@@ -111,6 +122,14 @@ pub async fn serve() -> AppResult<()> {
         }
     }
 
+    // Brighten stored accents that are too dark to read (see `accent.rs`). In
+    // Game Mode this server may be the only Spool process that runs, so it
+    // can't rely on the tray GUI's startup backfill to do it.
+    if library_available {
+        let library = state.library.clone();
+        tokio::spawn(async move { crate::accent::normalize_stored(&library).await });
+    }
+
     let router = Router::new()
         .route("/status", get(get_status))
         .route("/session", get(session::get_session))
@@ -118,6 +137,14 @@ pub async fn serve() -> AppResult<()> {
         .route("/session/backup-now", post(session::post_backup_now))
         // Live achievement unlocks since a timestamp, for the in-game toast.
         .route("/achievements/recent", get(achievements::get_recent))
+        // A game's achievement list and play sessions, for the game page's
+        // Activity tab. Mirror the desktop `get_game_achievements` /
+        // `list_play_sessions` commands.
+        .route(
+            "/games/{id}/achievements",
+            get(achievements::get_game_achievements),
+        )
+        .route("/games/{id}/sessions", get(achievements::get_game_sessions))
         // Pull cloud saves for a game down to this device without launching it,
         // for the Quick Access "Sync now" action. Mirrors the desktop
         // `pull_cloud_saves` command. Pull-only — never uploads.
@@ -173,6 +200,13 @@ pub async fn serve() -> AppResult<()> {
         // Static cover art straight off disk — no per-cover handler. The UI
         // `<img>`-loads `/covers/<safe_name>.<ext>`.
         .nest_service("/covers", ServeDir::new(crate::paths::covers_dir()))
+        // Achievement icons copied from games' `steam_settings`, under the
+        // schema cache. `/games/{id}/achievements` rewrites their local paths
+        // to this route.
+        .nest_service(
+            "/achievement-icons",
+            ServeDir::new(crate::achievements::schema::cache_dir()),
+        )
         // The Decky UI runs under https://steamloopback.host, so its JSON
         // fetches are cross-origin and need CORS. `<img>` covers are not
         // CORS-gated and load without this.

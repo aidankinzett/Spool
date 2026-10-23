@@ -13,6 +13,10 @@
 //! per-entry) so a 200-game library doesn't write the json file 200
 //! times.
 //!
+//! Before that it brightens existing accents that are too dark to read on
+//! the dark cards (`accent::normalize_stored`), for entries extracted before
+//! `extract_vibrant_color` started doing so itself.
+//!
 //! Runs as a background task so the app starts instantly — the user
 //! sees the brand-default accents for the first second or two on
 //! first launch, then the real accents pop in via `library:changed`.
@@ -31,11 +35,18 @@ pub fn spawn_backfill(app: AppHandle) {
 }
 
 async fn run_backfill(app: AppHandle) {
+    // Brighten stored accents that are too dark to read (see `accent.rs`).
+    let library = app.state::<SharedLibrary>().inner().clone();
+    if crate::accent::normalize_stored(&library).await > 0 {
+        if let Err(e) = app.emit("library:changed", &()) {
+            tracing::warn!(error = %e, "accent normalize: emit library:changed failed");
+        }
+    }
+
     // Snapshot the entries that need a backfill — id + cover path — with a
     // single `library.list().await`, then work off that owned `Vec`. The async
     // borrow is dropped before any `spawn_blocking` below, so we never hold a
     // library reference across the disk + CPU work of decoding covers.
-    let library = app.state::<SharedLibrary>().inner().clone();
     let entries = match library.list().await {
         Ok(e) => e,
         Err(_) => return,

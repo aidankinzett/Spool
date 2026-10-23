@@ -18,7 +18,7 @@
    * unlocks.
    */
   import { Lock, Trophy } from '@lucide/svelte';
-  import { achievementIconSrc as iconSrc } from '$lib/activity';
+  import { achievementIconSrc as iconSrc } from '$lib/achievementIcon';
   import type { GameAchievements } from '$lib/types';
   import DetailCard from './DetailCard.svelte';
   import MonoLabel from './MonoLabel.svelte';

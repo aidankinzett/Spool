@@ -17,7 +17,8 @@
    * session's achievement watcher caught it (`sessionUnlocks`).
    */
   import { Lock, Trophy, X } from '@lucide/svelte';
-  import { achievementIconSrc, sessionUnlocks } from '$lib/activity';
+  import { sessionUnlocks } from '$lib/activity';
+  import { achievementIconSrc } from '$lib/achievementIcon';
   import { absDateTime, fmtPlaytime, relDate } from '$lib/format';
   import type { GameAchievements, PlaySession } from '$lib/types';
   import DetailCard from './DetailCard.svelte';

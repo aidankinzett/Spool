@@ -27,7 +27,7 @@ mod parse;
 pub mod schema;
 
 use crate::error::{AppError, AppResult};
-use crate::library::{AchievementUnlock, GameEntry, SharedLibrary};
+use crate::library::{AchievementUnlock, GameEntry, Library, SharedLibrary};
 use locate::{FolderScan, Roots, Source};
 use parse::{Earned, Key};
 use schema::Schema;
@@ -626,14 +626,32 @@ pub async fn get_game_achievements(
             crate::rclone::fold_achievements_throttled(&app).await
         });
     }
+    let (achievements, imported) =
+        scan_game_achievements(&http_client(&app), &library, entry).await?;
+    // Unlocks earned outside a Spool session are new to the other devices
+    // too, so publish them rather than waiting for the next session.
+    if imported {
+        tauri::async_runtime::spawn(async move { crate::rclone::sync_achievements(&app).await });
+    }
+    Ok(achievements)
+}
+
+/// The body of [`get_game_achievements`] without the `AppHandle`, so the
+/// headless plugin server can call it too. Also returns whether the scan
+/// imported any unlocks, for the caller to publish them to other devices.
+pub async fn scan_game_achievements(
+    http: &reqwest::Client,
+    library: &Library,
+    entry: GameEntry,
+) -> AppResult<(GameAchievements, bool)> {
     let game_name = entry.game_name.clone();
     let Some(ctx) = GameContext::load(entry).await else {
         let rows = library.achievement_unlocks_for(&game_name).await?;
-        return Ok(merge(None, None, rows));
+        return Ok((merge(None, None, rows), false));
     };
     let config = load_config();
     let schema = schema::ensure(
-        &http_client(&app),
+        http,
         ctx.appid,
         ctx.local_schema_file().as_deref(),
         &config.steam_web_api_key,
@@ -655,15 +673,10 @@ pub async fn get_game_achievements(
         .iter()
         .filter_map(|e| to_unlock(&ctx, e, schema.as_ref(), false))
         .collect();
-    // Unlocks earned outside a Spool session are new to the other devices
-    // too, so publish them rather than waiting for the next session.
-    if !library.insert_achievement_unlocks(&rows).await?.is_empty() {
-        let app = app.clone();
-        tauri::async_runtime::spawn(async move { crate::rclone::sync_achievements(&app).await });
-    }
+    let imported = !library.insert_achievement_unlocks(&rows).await?.is_empty();
 
     let rows = library.achievement_unlocks_for(&ctx.game_name).await?;
-    Ok(merge(Some(ctx.appid), schema.as_ref(), rows))
+    Ok((merge(Some(ctx.appid), schema.as_ref(), rows), imported))
 }
 
 fn merge(

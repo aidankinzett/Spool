@@ -5,9 +5,9 @@ import { getSteamArt } from "./server";
 
 // Extracts params from Steam's internal React Router (memory-based, not
 // window.location). Same pattern as OMGDuke/protondb-decky. The minified
-// variable name can be more than one character (`return P1?P1.params:{}`).
+// variable name can be any identifier (`return P1?P1.params:{}`, or with `$`).
 export const useParams = Object.values(ReactRouter).find((val) =>
-  /return (\w+)\?\1\.params:{}/.test(`${val}`)
+  /return ([\w$]+)\?\1\.params:{}/.test(`${val}`)
 ) as <T>() => T;
 
 export function steamApps(): SteamApps | undefined {

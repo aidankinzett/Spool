@@ -19,7 +19,8 @@
    * `buildTimeline`.
    */
   import { Monitor, Play, Trophy } from '@lucide/svelte';
-  import { achievementIconSrc, buildTimeline } from '$lib/activity';
+  import { buildTimeline } from '$lib/activity';
+  import { achievementIconSrc } from '$lib/achievementIcon';
   import { absDate, fmtPlaytime } from '$lib/format';
   import type { AchievementView, GameAchievements, PlaySession } from '$lib/types';
   import DetailCard from './DetailCard.svelte';

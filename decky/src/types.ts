@@ -129,3 +129,18 @@ export interface DownloadProgress {
   new_game_id?: string;
   bytes_per_second: number;
 }
+
+// Achievement and play-session shapes, shared with the desktop app (the
+// plugin server returns them unchanged). One difference: in the plugin, an
+// achievement's `icon` / `icon_gray` is an http(s) URL or a path on the plugin
+// server (`/achievement-icons/…`), never a local file path.
+import type { PlaySession } from "../../tauri/src/lib/types";
+export type { AchievementView, GameAchievements, PlaySession } from "../../tauri/src/lib/types";
+
+// GET /games/{id}/sessions
+export interface GameSessions {
+  /** This device's id, for telling its sessions from other devices'. */
+  device_id: string;
+  /** Every device's sessions for the game, oldest first. */
+  sessions: PlaySession[];
+}

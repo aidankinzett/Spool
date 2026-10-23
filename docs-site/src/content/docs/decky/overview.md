@@ -7,11 +7,12 @@ sidebar:
 
 Spool ships a companion **Decky Loader** plugin for SteamOS / Steam Deck **Game Mode**. It lives in `decky/` in the repo and is a separate sub-project from the Tauri app (its own `package.json`, build, and CI). The source is embedded into the Spool binary so the app can install it for you — see [Installation & build](./installation).
 
-The plugin does three things in Game Mode, where the desktop Spool window isn't reachable:
+The plugin does four things in Game Mode, where the desktop Spool window isn't reachable:
 
 1. **Forced-close backup safety net** — backs up a game's saves when Steam kills Spool before its post-session backup runs (the plugin's original purpose). See [Forced-close backup](./forced-close-backup).
 2. **A full-screen library + LAN browser** — browse your Spool library, launch games, and download games from LAN peers, all from the Quick Access Menu. See [Library & launching](./library-and-launch) and [LAN browsing](./lan-browsing).
 3. **A cross-device playtime badge** — injects Spool's playtime and last-played onto Steam's own game pages. See [Playtime badge](./playtime-badge).
+4. **Activity & achievements** — adds a post-game summary, an activity timeline and the full achievement list to those game pages. See [Activity & achievements](./activity).
 
 ## The three processes
 

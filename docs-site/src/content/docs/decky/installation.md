@@ -2,7 +2,7 @@
 title: Installation & build
 description: One-click install from Spool, the plugin's settings, and how to build and package it by hand.
 sidebar:
-  order: 7
+  order: 8
 ---
 
 ## One-click install from Spool

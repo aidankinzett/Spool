@@ -1,4 +1,13 @@
-import type { LibraryGame, LanPeer, PeerGame, DownloadProgress, LaunchInfo } from "../types";
+import type {
+  AchievementView,
+  DownloadProgress,
+  GameAchievements,
+  GameSessions,
+  LanPeer,
+  LaunchInfo,
+  LibraryGame,
+  PeerGame,
+} from "../types";
 
 // Base request helpers
 async function serverGet<T>(url: string): Promise<T> {
@@ -35,12 +44,15 @@ export async function getLibrary(base: string): Promise<LibraryGame[]> {
   return data as LibraryGame[];
 }
 
-// POST /fold
-export async function triggerFold(base: string): Promise<void> {
+// POST /fold — resolves to whether the fold changed anything (sessions,
+// playtime, sync badges or achievement unlocks).
+export async function triggerFold(base: string): Promise<boolean> {
   const res = await fetch(`${base}/fold`, { method: "POST" });
   if (!res.ok) {
     throw new Error(`POST /fold failed: status ${res.status}`);
   }
+  const body = (await res.json().catch(() => null)) as { changed?: boolean } | null;
+  return body?.changed === true;
 }
 
 // GET /games/{id}/steam-launch-info
@@ -103,4 +115,22 @@ export async function cancelLanDownload(base: string, installToken: string): Pro
   return serverSend<{ cancelled: boolean }>(`${base}/lan/download`, "DELETE", {
     install_token: installToken,
   });
+}
+
+// GET /games/{id}/achievements
+export async function getGameAchievements(base: string, gameId: string): Promise<GameAchievements> {
+  return serverGet<GameAchievements>(`${base}/games/${gameId}/achievements`);
+}
+
+// GET /games/{id}/sessions
+export async function getGameSessions(base: string, gameId: string): Promise<GameSessions> {
+  return serverGet<GameSessions>(`${base}/games/${gameId}/sessions`);
+}
+
+// Icon URL for an achievement: the colour icon once unlocked, the grey one
+// while locked. Icons the server hosts come back as paths on it.
+export function achievementIconUrl(base: string, a: AchievementView): string | null {
+  const src = a.unlocked_at !== null ? a.icon : (a.icon_gray ?? a.icon);
+  if (!src) return null;
+  return src.startsWith("/") ? `${base}${src}` : src;
 }

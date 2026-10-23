@@ -87,7 +87,14 @@ other Spool devices on your LAN. And it backs up your saves if Steam force-close
 Spool when you quit a game, so a session is never lost. Install it in one click
 from Spool's settings.
 
-<img width="1030" height="585" alt="image" src="https://github.com/user-attachments/assets/45d80f6a-0977-414b-84d6-2b1036bfea0b" />
+<img src="docs/screenshots/decky-game-page.png" alt="A Steam game page in Game Mode with Spool's bar over the banner and a post-game summary under the Play button" width="960" />
+
+After you play, the game page opens with a post-game summary of your last
+session on that device and the achievements it unlocked. The Activity tab lists
+your sessions and unlocks by day across all your devices, followed by the game's
+full achievement list.
+
+<img src="docs/screenshots/decky-activity-timeline.png" alt="The Activity tab showing Spool's timeline of play sessions and achievement unlocks, tagged with the device they happened on" width="480" /> <img src="docs/screenshots/decky-achievements.png" alt="Spool's achievement list in the Activity tab, with progress and the device each achievement was unlocked on" width="480" />
 
 ## Download
 
