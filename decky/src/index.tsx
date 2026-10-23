@@ -26,10 +26,6 @@ import { PeerGamesPage } from "./components/peer-games";
 import { PatchWrapper } from "./components/patch/patch-wrapper";
 import { SafeArea } from "./components/safe-area";
 
-// Temporarily off: the Spool bar on the game-detail page throws a TypeError
-// on the current Steam client. Flip back once the patch is fixed.
-const ENABLE_GAME_PAGE_BAR = false;
-
 export default definePlugin(() => {
   let hasWarnedPatch = false;
 
@@ -89,9 +85,8 @@ export default definePlugin(() => {
 
   // Patch the Steam game-detail page to inject Spool's cross-device playtime
   // badge. Uses afterPatch + findInReactTree to splice into the InnerContainer
-  // of the rendered tree. Currently disabled (ENABLE_GAME_PAGE_BAR): rendering
-  // the bar throws a TypeError on the current Steam client.
-  const playtimePatch = ENABLE_GAME_PAGE_BAR && routerHook.addPatch(
+  // of the rendered tree.
+  const playtimePatch = routerHook.addPatch(
     "/library/app/:appid",
     (tree: any) => {
       if (!appDetailsClasses || !appDetailsHeaderClasses) {
@@ -171,9 +166,7 @@ export default definePlugin(() => {
       removeEventListener("spool_backup_toast", onBackupToast);
       routerHook.removeRoute(SPOOL_LAN_ROUTE);
       routerHook.removeRoute(SPOOL_LAN_PEER_ROUTE);
-      if (playtimePatch) {
-        routerHook.removePatch("/library/app/:appid", playtimePatch);
-      }
+      routerHook.removePatch("/library/app/:appid", playtimePatch);
     },
   };
 });
