@@ -77,7 +77,7 @@ impl Schema {
     }
 }
 
-fn cache_dir() -> PathBuf {
+pub(crate) fn cache_dir() -> PathBuf {
     crate::paths::app_data_dir().join("achievement-schemas")
 }
 

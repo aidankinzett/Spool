@@ -118,6 +118,11 @@ pub async fn serve() -> AppResult<()> {
         .route("/session/backup-now", post(session::post_backup_now))
         // Live achievement unlocks since a timestamp, for the in-game toast.
         .route("/achievements/recent", get(achievements::get_recent))
+        // A game's achievement list and play sessions, for the game page's
+        // Activity tab. Mirror the desktop `get_game_achievements` /
+        // `list_play_sessions` commands.
+        .route("/games/{id}/achievements", get(achievements::get_game_achievements))
+        .route("/games/{id}/sessions", get(achievements::get_game_sessions))
         // Pull cloud saves for a game down to this device without launching it,
         // for the Quick Access "Sync now" action. Mirrors the desktop
         // `pull_cloud_saves` command. Pull-only — never uploads.
@@ -173,6 +178,13 @@ pub async fn serve() -> AppResult<()> {
         // Static cover art straight off disk — no per-cover handler. The UI
         // `<img>`-loads `/covers/<safe_name>.<ext>`.
         .nest_service("/covers", ServeDir::new(crate::paths::covers_dir()))
+        // Achievement icons copied from games' `steam_settings`, under the
+        // schema cache. `/games/{id}/achievements` rewrites their local paths
+        // to this route.
+        .nest_service(
+            "/achievement-icons",
+            ServeDir::new(crate::achievements::schema::cache_dir()),
+        )
         // The Decky UI runs under https://steamloopback.host, so its JSON
         // fetches are cross-origin and need CORS. `<img>` covers are not
         // CORS-gated and load without this.
