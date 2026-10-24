@@ -56,6 +56,44 @@ refresh_caches() {
   fi
 }
 
+# ── Open the LAN sharing ports in the host firewall ───────────────────────────
+# LAN sharing uses UDP 47631 (peer discovery) and TCP 47632 (game transfer;
+# the port can be changed in Settings). firewalld (Fedora, Bazzite) blocks
+# inbound ports by default; ufw does when enabled. Needs root, so ask first,
+# and only print the command when there is no terminal to ask on.
+open_firewall_ports() {
+  local fw="" cmd=""
+  if command -v firewall-cmd &>/dev/null && [ "$(firewall-cmd --state 2>/dev/null || true)" = "running" ]; then
+    fw="firewalld"
+    cmd="sudo firewall-cmd --permanent --add-port=47632/tcp --add-port=47631/udp && sudo firewall-cmd --reload"
+  elif command -v ufw &>/dev/null && systemctl is-active --quiet ufw 2>/dev/null; then
+    fw="ufw"
+    cmd="sudo ufw allow 47632/tcp && sudo ufw allow 47631/udp"
+  fi
+  [ -z "$fw" ] && return 0
+
+  echo "==> $fw is active and may block LAN game sharing (UDP 47631, TCP 47632)."
+  [ "$fw" = "firewalld" ] && echo "    (This opens them in firewalld's default zone.)"
+  # Opening /dev/tty fails when there is no controlling terminal (cron, CI),
+  # unlike a readability test, which passes on the device node alone.
+  if exec 3</dev/tty 2>/dev/null; then
+    local reply=""
+    read -r -p "    Open these ports now? Needs sudo. [y/N] " reply <&3 || true
+    exec 3<&-
+    if [[ "$reply" =~ ^[Yy] ]]; then
+      if bash -c "$cmd"; then
+        echo "    Ports opened."
+      else
+        echo "    Could not open the ports. Run this yourself if you want LAN sharing:" >&2
+        echo "      $cmd" >&2
+      fi
+      return 0
+    fi
+  fi
+  echo "    To allow LAN sharing later, run:"
+  echo "      $cmd"
+}
+
 # ── Uninstall ─────────────────────────────────────────────────────────────────
 if [ "${1:-}" = "--uninstall" ]; then
   echo "==> Removing Spool..."
@@ -171,6 +209,7 @@ fi
 chmod +x "$DESKTOP_PATH"
 
 refresh_caches
+open_firewall_ports
 
 echo ""
 echo "Done. Spool is in your application launcher."

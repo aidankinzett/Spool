@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, tick } from 'svelte';
+  import { onMount, tick, untrack } from 'svelte';
   import {
     Check,
     Cloud,
@@ -30,7 +30,7 @@
   import { confirmSteamRestart } from '$lib/steamRestart';
   import { isNewerVersion } from '$lib/format';
   import { checkForUpdateInteractive } from '$lib/updater';
-  import type { ConfigData, DepStatus, FolderCapacity, LanPeer, OfflinePrepProgress, ProtonVersion, SyncStatus } from '$lib/types';
+  import type { ConfigData, DepStatus, FirewallStatus, FolderCapacity, LanPeer, OfflinePrepProgress, ProtonVersion, SyncStatus } from '$lib/types';
   import AppChrome from '$lib/components/AppChrome.svelte';
   import MonoLabel from '$lib/components/MonoLabel.svelte';
   import Btn from '$lib/components/Btn.svelte';
@@ -160,6 +160,7 @@
   let isLinux = $state(false);
   let protonVersions = $state<ProtonVersion[]>([]);
   let deps = $state<DepStatus[]>([]);
+  let firewall = $state<FirewallStatus | null>(null);
   let depsLoading = $state(false);
 
   let deckyPlugin = $state<DeckyPluginInfo | null>(null);
@@ -570,11 +571,57 @@
     if (!(await persist())) config.library_folders = prev;
   }
 
+  // Firewall hint. `firewallSeq` drops the result of a check that a newer one
+  // has replaced. The check runs when sharing is switched on and when the port
+  // field is committed, not on each keystroke.
+  let firewallSeq = 0;
+  const FIREWALL_DISMISSED_KEY = 'spool.firewallHintDismissed';
+  // Keyed on the firewall's command, which names the port, zone and exe path,
+  // so a changed setup shows the hint again.
+  let firewallDismissed = $state<string | null>(null);
+  try {
+    firewallDismissed = localStorage.getItem(FIREWALL_DISMISSED_KEY);
+  } catch {
+    // Storage can be unavailable; the hint just can't be dismissed for good.
+  }
+  function dismissFirewallHint() {
+    if (!firewall) return;
+    firewallDismissed = firewall.command;
+    try {
+      localStorage.setItem(FIREWALL_DISMISSED_KEY, firewall.command);
+    } catch {
+      // see above
+    }
+  }
+
+  function refreshFirewall() {
+    const seq = ++firewallSeq;
+    if (!config?.lan_share_enabled) {
+      firewall = null;
+      return;
+    }
+    api
+      .checkLanFirewall(config.lan_share_port)
+      .then((status) => {
+        if (seq === firewallSeq) firewall = status;
+      })
+      .catch((e) => {
+        console.error('[settings] checkLanFirewall failed:', e);
+        if (seq === firewallSeq) firewall = null;
+      });
+  }
+
+  $effect(() => {
+    void config?.lan_share_enabled;
+    untrack(refreshFirewall);
+  });
+
   function onLanPortCommit() {
     if (!config) return;
     if (!Number.isFinite(config.lan_share_port) || config.lan_share_port < 1024) config.lan_share_port = 47632;
     if (config.lan_share_port > 65535) config.lan_share_port = 65535;
     persist();
+    refreshFirewall();
   }
 
   function onRetentionCommit() {
@@ -1520,6 +1567,22 @@
                   </div>
 
                   {#if config.lan_share_enabled}
+                    {#if firewall && firewall.state !== 'ok' && firewallDismissed !== firewall.command}
+                      <div class="border-t border-dashed border-line-1 px-[18px] py-[12px]">
+                        <div class="text-[12px] font-medium text-ink-0">
+                          {firewall.state === 'blocked'
+                            ? `${firewall.firewall} is blocking LAN sharing`
+                            : `${firewall.firewall} may be blocking LAN sharing`}
+                        </div>
+                        <div class="mt-[3px] text-[11.5px] text-ink-2">
+                          Other devices can’t find this one or connect to it until the ports are open. Run this in a terminal{firewall.firewall === 'Windows Firewall' ? ' as administrator' : ''}:
+                        </div>
+                        <code class="mt-2 block rounded-[3px] bg-black/30 px-2 py-1 font-mono text-[10.5px] text-ink-2 select-all">{firewall.command}</code>
+                        <div class="mt-2">
+                          <Btn variant="ghost" onclick={dismissFirewallHint}>Already allowed — don’t show again</Btn>
+                        </div>
+                      </div>
+                    {/if}
                     <div class="bg-bg-0 pb-1">
                       <SettingsRow label="Port" helper="TCP port peers connect to. Falls back to a random port if taken.">
                         {#snippet control()}
