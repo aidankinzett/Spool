@@ -14,15 +14,14 @@
 
 use serde::Serialize;
 
-/// UDP port the discovery announce uses (`lan/discovery.rs`).
-const DISCOVERY_PORT: u16 = 47631;
-
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum FirewallState {
     /// No firewall found, or its rules allow the ports.
     Ok,
-    /// A firewall is active and the ports are not open.
+    /// A firewall is active and the ports are not open. Only reported on
+    /// Linux, where `firewalld` can be queried without elevation.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     Blocked,
     /// A firewall is active but its rules can't be read without elevation.
     Unknown,
@@ -117,7 +116,7 @@ fn is_virtual_zone(zone: &str) -> bool {
 #[cfg(target_os = "linux")]
 fn check(port: u16) -> FirewallStatus {
     let tcp = format!("{port}/tcp");
-    let udp = format!("{DISCOVERY_PORT}/udp");
+    let udp = format!("{}/udp", crate::lan::discovery::DISCOVERY_PORT);
 
     if let Some((true, state)) = run_tool("firewall-cmd", &["--state"]) {
         if state.trim() == "running" {
