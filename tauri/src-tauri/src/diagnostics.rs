@@ -196,3 +196,53 @@ fn install_hint_umu(distro: &Distro) -> String {
         Distro::Other => "# See the guide below".to_string(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const STEAMOS: &str = "NAME=\"SteamOS\"\nID=steamos\nID_LIKE=arch\nVERSION_ID=3.5\n";
+
+    #[test]
+    fn extract_field_strips_quotes() {
+        let content = "NAME=\"Ubuntu\"\nID=ubuntu\n";
+        assert_eq!(extract_field(content, "NAME"), "Ubuntu");
+        assert_eq!(extract_field(content, "ID"), "ubuntu");
+    }
+
+    #[test]
+    fn extract_field_does_not_match_a_longer_key() {
+        // `ID` must not be satisfied by `ID_LIKE` or `VERSION_ID`.
+        assert_eq!(extract_field("ID_LIKE=arch\nVERSION_ID=3\n", "ID"), "");
+        assert_eq!(extract_field(STEAMOS, "ID"), "steamos");
+        assert_eq!(extract_field(STEAMOS, "ID_LIKE"), "arch");
+    }
+
+    #[test]
+    fn extract_field_missing_key_is_empty() {
+        assert_eq!(extract_field("", "ID"), "");
+        assert_eq!(extract_field("FOO=bar\n", "ID"), "");
+    }
+
+    #[test]
+    fn install_hint_is_never_empty_for_any_distro() {
+        for d in [
+            Distro::SteamOS,
+            Distro::Arch,
+            Distro::Fedora,
+            Distro::Debian,
+            Distro::Suse,
+            Distro::Other,
+        ] {
+            assert!(!install_hint_umu(&d).is_empty());
+        }
+    }
+
+    #[cfg(not(target_arch = "aarch64"))]
+    #[test]
+    fn steamos_hint_does_not_suggest_a_package_install() {
+        let hint = install_hint_umu(&Distro::SteamOS);
+        assert!(hint.starts_with('#'), "read-only root: {hint}");
+        assert!(install_hint_umu(&Distro::Fedora).contains("dnf"));
+    }
+}

@@ -266,3 +266,54 @@ async fn run_impl(
         "The guided installer runs Windows installers through Proton and is only available on Linux. On Windows, run the installer directly and use Add Game.".into(),
     ))
 }
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+
+    fn dosdevices(names: &[&str]) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        for n in names {
+            std::fs::write(dir.path().join(n), b"").unwrap();
+        }
+        dir
+    }
+
+    #[test]
+    fn picks_d_when_only_system_drives_exist() {
+        let dir = dosdevices(&["c:", "z:"]);
+        assert_eq!(pick_free_drive_letter(dir.path()), Some('d'));
+    }
+
+    #[test]
+    fn skips_letters_already_mounted_including_device_entries() {
+        let dir = dosdevices(&["c:", "d:", "e::", "z:"]);
+        assert_eq!(pick_free_drive_letter(dir.path()), Some('f'));
+    }
+
+    #[test]
+    fn letter_matching_is_case_insensitive() {
+        let dir = dosdevices(&["D:"]);
+        assert_eq!(pick_free_drive_letter(dir.path()), Some('e'));
+    }
+
+    #[test]
+    fn ignores_entries_that_are_not_drive_mappings() {
+        let dir = dosdevices(&["d", "readme"]);
+        assert_eq!(pick_free_drive_letter(dir.path()), Some('d'));
+    }
+
+    #[test]
+    fn missing_dosdevices_dir_gives_first_letter() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(pick_free_drive_letter(&dir.path().join("nope")), Some('d'));
+    }
+
+    #[test]
+    fn returns_none_when_every_letter_is_taken() {
+        let names: Vec<String> = ('d'..='y').map(|c| format!("{c}:")).collect();
+        let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+        let dir = dosdevices(&refs);
+        assert_eq!(pick_free_drive_letter(dir.path()), None);
+    }
+}
