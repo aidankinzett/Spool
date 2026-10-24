@@ -531,4 +531,124 @@ mod tests {
         assert!(expand_base("<base>/Saves", None).is_none());
         assert!(expand_base("<base>/Saves", Some("   ")).is_none());
     }
+
+    #[test]
+    fn install_dir_match_needs_a_path_boundary() {
+        // "/games/Hades2" is a different folder from "/games/Hades".
+        assert_eq!(
+            classify("/games/Hades2/save", None, Some("/games/Hades"), None),
+            "/games/Hades2/save"
+        );
+        assert_eq!(
+            classify("/games/Hades", None, Some("/games/Hades/"), None),
+            "<base>"
+        );
+    }
+
+    #[test]
+    fn blank_install_folder_or_home_is_ignored() {
+        assert_eq!(classify("/x/save", None, Some("  "), Some("")), "/x/save");
+    }
+
+    #[test]
+    fn picked_home_itself_is_just_the_token() {
+        assert_eq!(
+            classify("/home/deck/", None, None, Some("/home/deck")),
+            "<home>"
+        );
+    }
+
+    #[test]
+    fn install_dir_wins_over_home_when_the_game_is_installed_under_home() {
+        assert_eq!(
+            classify(
+                "/home/deck/Games/Foo/Saves",
+                None,
+                Some("/home/deck/Games/Foo"),
+                Some("/home/deck")
+            ),
+            "<base>/Saves"
+        );
+    }
+
+    #[test]
+    fn windows_known_folders_match_regardless_of_case_and_user() {
+        assert_eq!(
+            classify(
+                "c:\\users\\Anyone\\appdata\\locallow\\Co\\G",
+                None,
+                None,
+                None
+            ),
+            "<winLocalAppDataLow>/Co/G"
+        );
+        assert_eq!(
+            classify("C:/Users/Anyone/appdata/roaming", None, None, None),
+            "<winAppData>"
+        );
+        // Not a drive-C Users path: stays literal.
+        assert_eq!(
+            classify("D:/Users/Anyone/AppData/Local/G", None, None, None),
+            "D:/Users/Anyone/AppData/Local/G"
+        );
+    }
+
+    #[test]
+    fn similarly_named_folders_are_not_known_folders() {
+        // "AppData/Localized" must not match "AppData/Local".
+        assert_eq!(
+            classify("C:/Users/u/AppData/Localized/G", None, None, None),
+            "<home>/AppData/Localized/G"
+        );
+        assert_eq!(
+            classify("C:/Users/u/Documents2/G", None, None, None),
+            "<home>/Documents2/G"
+        );
+    }
+
+    #[test]
+    fn program_data_inside_a_prefix_is_portable_but_program_files_is_not() {
+        assert_eq!(
+            classify(
+                &format!("{PFX}/drive_c/ProgramData/Co/G"),
+                Some(PFX),
+                None,
+                None
+            ),
+            "<winProgramData>/Co/G"
+        );
+        let pf = format!("{PFX}/drive_c/Program Files/G/Saves");
+        assert_eq!(classify(&pf, Some(PFX), None, None), pf);
+    }
+
+    #[test]
+    fn prefix_root_with_backslashes_and_trailing_slash_still_matches() {
+        assert_eq!(
+            classify(
+                &format!("{PFX}/drive_c/users/steamuser/Documents/G"),
+                Some(&format!("{}\\", PFX.replace('/', "\\"))),
+                None,
+                None
+            ),
+            "<winDocuments>/G"
+        );
+    }
+
+    #[test]
+    fn expand_base_normalises_the_install_folder() {
+        assert_eq!(
+            expand_base("<base>/Saves", Some("D:\\Games\\Foo\\")).as_deref(),
+            Some("D:/Games/Foo/Saves")
+        );
+        assert_eq!(expand_base("<base>/", Some("/g")).as_deref(), Some("/g"));
+    }
+
+    #[test]
+    fn classified_base_templates_round_trip_through_expand_base() {
+        let folder = "/mnt/games/Foo";
+        for picked in ["/mnt/games/Foo", "/mnt/games/Foo/Saves/Slot 1"] {
+            let t = classify(picked, None, Some(folder), None);
+            assert_eq!(expand_base(&t, Some(folder)).as_deref(), Some(picked));
+        }
+    }
 }

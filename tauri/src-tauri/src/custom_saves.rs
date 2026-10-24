@@ -704,4 +704,136 @@ mod tests {
         let (files, _) = apply_override(&data, &ov(&["config"], &[]));
         assert_eq!(files, vec!["<winLocalAppData>/Game/Saved".to_string()]);
     }
+
+    #[test]
+    fn apply_override_without_exclusions_keeps_everything_that_applies() {
+        let data = ManifestSaveData {
+            files: vec![
+                path("<base>/a", &["save"], true),
+                path("<base>/b", &["config"], true),
+                path("<base>/untagged", &[], true),
+            ],
+            registry: vec![path("HKEY_CURRENT_USER/Software/G", &[], true)],
+        };
+        let (files, registry) = apply_override(&data, &ov(&[], &[]));
+        assert_eq!(files.len(), 3);
+        assert_eq!(registry.len(), 1);
+    }
+
+    #[test]
+    fn apply_override_never_drops_untagged_paths_by_tag() {
+        // A path with no tags can't be said to be "only config".
+        let data = ManifestSaveData {
+            files: vec![path("<base>/untagged", &[], true)],
+            registry: vec![],
+        };
+        let (files, _) = apply_override(&data, &ov(&["config", "save"], &[]));
+        assert_eq!(files, vec!["<base>/untagged".to_string()]);
+    }
+
+    #[test]
+    fn apply_override_drops_a_path_only_when_every_tag_is_excluded() {
+        let data = ManifestSaveData {
+            files: vec![
+                path("<base>/both", &["save", "config"], true),
+                path("<base>/cfg2", &["config", "other"], true),
+            ],
+            registry: vec![],
+        };
+        let (files, _) = apply_override(&data, &ov(&["config", "other"], &[]));
+        assert_eq!(files, vec!["<base>/both".to_string()]);
+        let (files, _) = apply_override(&data, &ov(&["save", "config"], &[]));
+        assert_eq!(
+            files,
+            vec!["<base>/cfg2".to_string()],
+            "other is still tagged"
+        );
+    }
+
+    #[test]
+    fn apply_override_path_exclusions_do_not_touch_registry_keys() {
+        let key = "HKEY_CURRENT_USER/Software/G";
+        let data = ManifestSaveData {
+            files: vec![],
+            registry: vec![path(key, &["save"], true)],
+        };
+        let (_, registry) = apply_override(&data, &ov(&[], &[key]));
+        assert_eq!(registry, vec![key.to_string()]);
+    }
+
+    #[test]
+    fn apply_override_registry_keys_that_do_not_apply_are_dropped() {
+        let data = ManifestSaveData {
+            files: vec![],
+            registry: vec![path("HKEY_CURRENT_USER/Software/G", &["save"], false)],
+        };
+        assert!(apply_override(&data, &ov(&[], &[])).1.is_empty());
+    }
+
+    #[test]
+    fn clean_list_trims_drops_blanks_and_dedups_in_order() {
+        let items = ["  b ", "", "a", "b", "   ", "a ", "c"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(clean_list(items), vec!["b", "a", "c"]);
+        assert!(clean_list(vec![]).is_empty());
+    }
+
+    fn native_entry(folder: Option<&str>) -> GameEntry {
+        GameEntry {
+            id: "id".into(),
+            exe_path: "/games/run.sh".into(),
+            game_folder_path: folder.map(str::to_string),
+            ..GameEntry::default()
+        }
+    }
+
+    #[test]
+    fn start_dir_prefers_an_existing_install_folder_over_home() {
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path().to_string_lossy().into_owned();
+        assert_eq!(pick_start_dir(&native_entry(Some(&folder))), Some(folder));
+    }
+
+    #[test]
+    fn start_dir_skips_a_missing_or_blank_install_folder() {
+        let home = dirs::home_dir()
+            .filter(|h| h.is_dir())
+            .map(|h| h.to_string_lossy().into_owned());
+        let missing = "/definitely/not/a/real/folder";
+        assert_eq!(pick_start_dir(&native_entry(Some(missing))), home);
+        assert_eq!(pick_start_dir(&native_entry(Some("  "))), home);
+        assert_eq!(pick_start_dir(&native_entry(None)), home);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn start_dir_opens_deep_in_the_proton_prefix_and_falls_outward() {
+        let pfx = tempfile::tempdir().unwrap();
+        let entry = GameEntry {
+            id: "id".into(),
+            exe_path: "/games/Game.EXE".into(),
+            wine_prefix_path: Some(pfx.path().to_string_lossy().into_owned()),
+            ..GameEntry::default()
+        };
+        // Prefix root exists but has not been initialised yet.
+        assert_eq!(
+            pick_start_dir(&entry),
+            Some(pfx.path().to_string_lossy().into_owned())
+        );
+        // drive_c exists, the user profile does not.
+        std::fs::create_dir_all(pfx.path().join("drive_c")).unwrap();
+        assert_eq!(
+            pick_start_dir(&entry),
+            Some(pfx.path().join("drive_c").to_string_lossy().into_owned())
+        );
+        // Once the profile is generated the picker opens there.
+        let profile = pfx.path().join(crate::proton::WINE_STEAMUSER_PROFILE);
+        std::fs::create_dir_all(&profile).unwrap();
+        assert_eq!(
+            pick_start_dir(&entry),
+            Some(profile.to_string_lossy().into_owned())
+        );
+    }
 }

@@ -133,3 +133,60 @@ describe('buildTimeline', () => {
     expect(unknown.kind === 'session' && unknown.isThisDevice).toBe(true);
   });
 });
+
+describe('activity edge cases', () => {
+  it('sessionUnlocks yields nothing for a session with unparseable times', () => {
+    const items = [live('a', '2026-06-03T10:30:00Z')];
+    expect(sessionUnlocks(session({ started_at: 'bad' }), items)).toEqual([]);
+    expect(sessionUnlocks(session({ ended_at: '' }), items)).toEqual([]);
+  });
+
+  it('sessionUnlocks excludes an unlock exactly at the end of the final-read window', () => {
+    // ended 11:00:00 + 120s = 11:02:00; the window is half-open.
+    const items = [live('in', '2026-06-03T11:01:59Z'), live('edge', '2026-06-03T11:02:00Z')];
+    expect(sessionUnlocks(session(), items).map((a) => a.api_name)).toEqual(['in']);
+  });
+
+  it('a following session cuts the window off before its own baseline lead', () => {
+    const next = Date.parse('2026-06-03T11:00:30Z');
+    const items = [live('mine', '2026-06-03T11:00:20Z'), live('theirs', '2026-06-03T11:00:26Z')];
+    // The next session's watcher starts 5s before its start (11:00:25).
+    expect(sessionUnlocks(session(), items, next).map((a) => a.api_name)).toEqual(['mine']);
+  });
+
+  it('unlockedSince includes an unlock exactly at the cutoff', () => {
+    const items = [live('edge', '2026-06-03T10:00:00Z')];
+    expect(unlockedSince(items, Date.parse('2026-06-03T10:00:00Z'))).toHaveLength(1);
+    expect(unlockedSince(items, Date.parse('2026-06-03T10:00:00.001Z'))).toHaveLength(0);
+  });
+
+  it('buildTimeline skips sessions with an invalid end time and locked achievements', () => {
+    const days = buildTimeline(
+      [session({ ended_at: 'garbage' }), session({ session_id: 'ok' })],
+      [ach('locked', null)],
+      'dev-a',
+    );
+    expect(days).toHaveLength(1);
+    expect(days[0].entries).toHaveLength(1);
+  });
+
+  it('buildTimeline rounds session minutes to the nearest whole minute', () => {
+    const days = buildTimeline([session({ duration_secs: 89 }), session({ session_id: 'b', duration_secs: 91 })], [], null);
+    const minutes = days[0].entries.map((e) => (e.kind === 'session' ? e.minutes : -1)).sort();
+    expect(minutes).toEqual([1, 2]);
+  });
+
+  it('buildTimeline returns no days for no data', () => {
+    expect(buildTimeline([], [], null)).toEqual([]);
+  });
+
+  it('buildTimeline keeps unlocks from the same device but different days apart', () => {
+    const days = buildTimeline(
+      [],
+      [ach('a', '2026-06-01T12:00:00', 'Deck'), ach('b', '2026-06-02T12:00:00', 'Deck')],
+      null,
+    );
+    expect(days).toHaveLength(2);
+    expect(days[0].day).toBeGreaterThan(days[1].day);
+  });
+});

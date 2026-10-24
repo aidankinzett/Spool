@@ -993,4 +993,138 @@ mod tests {
         assert_eq!(std::fs::read(g.join("200.jpg")).unwrap(), b"wide");
         assert_eq!(std::fs::read(g.join("200_hero.png")).unwrap(), b"hero");
     }
+
+    #[test]
+    fn quote_exe_escapes_embedded_quotes() {
+        assert_eq!(quote_exe("C:/a b/spool.exe"), "\"C:/a b/spool.exe\"");
+        assert_eq!(quote_exe("we\"ird"), "\"we\\\"ird\"");
+    }
+
+    #[test]
+    fn launch_options_escape_quotes_in_name_and_path() {
+        assert_eq!(
+            build_launch_options("The \"Best\" Game", "/g/\"x\".exe"),
+            "--run \"The \\\"Best\\\" Game\" \"/g/\\\"x\\\".exe\" --attached"
+        );
+    }
+
+    #[test]
+    fn upsert_leaves_other_entries_alone_and_numbers_new_ones_by_position() {
+        let mut shortcuts = Vec::new();
+        upsert_spool_shortcut(&mut shortcuts, "A", "spool", "/", "a");
+        upsert_spool_shortcut(&mut shortcuts, "B", "spool", "/", "b");
+        let a_before = (shortcuts[0].app_id, shortcuts[0].launch_options.clone());
+        upsert_spool_shortcut(&mut shortcuts, "C", "spool", "/", "c");
+        assert_eq!(shortcuts.len(), 3);
+        assert_eq!(
+            (shortcuts[0].app_id, shortcuts[0].launch_options.clone()),
+            a_before
+        );
+        assert_eq!(shortcuts[2].order, "2");
+        assert_eq!(shortcuts[2].tags, vec!["Spool".to_string()]);
+    }
+
+    #[test]
+    fn upsert_of_an_existing_name_follows_a_moved_spool_exe() {
+        let mut shortcuts = Vec::new();
+        let old = upsert_spool_shortcut(&mut shortcuts, "Hades", "/old/spool", "/old", "x");
+        let new = upsert_spool_shortcut(&mut shortcuts, "Hades", "/new/spool", "/new", "x");
+        assert_ne!(old, new, "the appid is derived from the exe and name");
+        assert_eq!(shortcuts.len(), 1);
+        assert_eq!(shortcuts[0].app_id, new);
+        assert_eq!(shortcuts[0].exe, "\"/new/spool\"");
+        assert_eq!(shortcuts[0].start_dir, "\"/new\"");
+    }
+
+    #[test]
+    fn shortcuts_file_round_trips_and_keeps_a_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config/shortcuts.vdf");
+        assert!(read_shortcuts(&path).unwrap().is_empty(), "absent file");
+
+        let mut shortcuts = Vec::new();
+        upsert_spool_shortcut(&mut shortcuts, "Hades", "/s/spool", "/s", "--run a");
+        upsert_spool_shortcut(&mut shortcuts, "Celeste", "/s/spool", "/s", "--run b");
+        // Gaps in the order field (an entry deleted in Steam) are closed on write.
+        shortcuts[0].order = "7".into();
+        shortcuts[1].order = "9".into();
+        write_shortcuts(&path, &mut shortcuts).unwrap();
+        assert!(!path.with_file_name("shortcuts.vdf.bak").exists());
+
+        let back = read_shortcuts(&path).unwrap();
+        assert_eq!(back.len(), 2);
+        assert_eq!(back[0].app_name, "Hades");
+        assert_eq!(back[0].order, "0");
+        assert_eq!(back[1].order, "1");
+        assert_eq!(back[1].launch_options, "--run b");
+        assert_eq!(back[1].tags, vec!["Spool".to_string()]);
+
+        // A second write keeps the previous file as .bak.
+        write_shortcuts(&path, &mut shortcuts[..1]).unwrap();
+        assert_eq!(read_shortcuts(&path).unwrap().len(), 1);
+        let bak = path.with_file_name("shortcuts.vdf.bak");
+        assert_eq!(read_shortcuts(&bak).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn reading_a_corrupt_shortcuts_file_is_an_error_not_an_empty_list() {
+        // Treating garbage as "no shortcuts" would overwrite the user's list.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shortcuts.vdf");
+        std::fs::write(&path, b"this is not a vdf file").unwrap();
+        assert!(read_shortcuts(&path).is_err());
+    }
+
+    #[test]
+    fn place_grid_art_replaces_a_stale_file_with_another_extension() {
+        let dir = tempfile::tempdir().unwrap();
+        let grid = dir.path().join("grid");
+        std::fs::create_dir_all(&grid).unwrap();
+        std::fs::write(grid.join("77p.jpg"), b"old").unwrap();
+        std::fs::write(grid.join("77_hero.jpg"), b"hero").unwrap();
+        let src = dir.path().join("cover.png");
+        std::fs::write(&src, b"new").unwrap();
+
+        let dest = place_grid_art(&grid, 77, "p", Some(&src)).unwrap().unwrap();
+        assert_eq!(dest, grid.join("77p.png"));
+        assert!(!grid.join("77p.jpg").exists());
+        assert!(grid.join("77_hero.jpg").exists(), "other slot untouched");
+        assert_eq!(std::fs::read(dest).unwrap(), b"new");
+    }
+
+    #[test]
+    fn place_grid_art_skips_missing_sources_without_touching_existing_art() {
+        let dir = tempfile::tempdir().unwrap();
+        let grid = dir.path().join("grid");
+        std::fs::create_dir_all(&grid).unwrap();
+        std::fs::write(grid.join("5p.png"), b"keep").unwrap();
+        assert!(place_grid_art(&grid, 5, "p", None).unwrap().is_none());
+        assert!(
+            place_grid_art(&grid, 5, "p", Some(&dir.path().join("nope.png")))
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(std::fs::read(grid.join("5p.png")).unwrap(), b"keep");
+    }
+
+    #[test]
+    fn place_grid_art_defaults_to_png_for_extensionless_sources() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("cover");
+        std::fs::write(&src, b"img").unwrap();
+        let dest = place_grid_art(&dir.path().join("g"), 9, "", Some(&src))
+            .unwrap()
+            .unwrap();
+        assert_eq!(dest, dir.path().join("g/9.png"));
+    }
+
+    #[test]
+    fn migrate_grid_art_with_nothing_to_move_is_harmless() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("300p.png"), b"x").unwrap();
+        migrate_grid_art(dir.path(), 100, 200);
+        assert!(dir.path().join("300p.png").exists());
+        // A missing grid dir is ignored.
+        migrate_grid_art(&dir.path().join("missing"), 1, 2);
+    }
 }
