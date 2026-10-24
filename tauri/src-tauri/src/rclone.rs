@@ -961,7 +961,7 @@ pub fn start_heartbeat(
     game_name: String,
     started_at: String,
 ) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
+    tokio::spawn(tracing::Instrument::in_current_span(async move {
         loop {
             tokio::time::sleep(HEARTBEAT_INTERVAL).await;
             let Some(remote) = resolve_remote(&app) else {
@@ -997,7 +997,7 @@ pub fn start_heartbeat(
             };
             write_marker(&remote, &marker).await;
         }
-    })
+    }))
 }
 
 /// Identity for a control-plane op: the resolved remote plus this device's id
