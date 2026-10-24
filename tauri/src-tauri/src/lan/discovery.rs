@@ -467,3 +467,77 @@ pub fn spawn_peer_listener(state: Arc<LanState>, our_device_id: String) -> AppRe
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn announce_from_older_peer_without_pairing_port_parses() {
+        let p: AnnouncePacket = serde_json::from_str(
+            r#"{"magic":"spool","version":1,"device_id":"d","device_name":"Deck","game_count":3,"file_server_port":47632}"#,
+        )
+        .unwrap();
+        assert_eq!(p.pairing_port, 0);
+        assert_eq!(p.file_server_port, 47632);
+        assert_eq!(p.game_count, 3);
+    }
+
+    #[test]
+    fn announce_with_unknown_fields_still_parses() {
+        let p: AnnouncePacket =
+            serde_json::from_str(r#"{"device_id":"d","some_future_field":[1,2]}"#).unwrap();
+        assert_eq!(p.device_id, "d");
+        // Missing magic falls back to the struct default, not an empty string.
+        assert_eq!(p.magic, "spool");
+    }
+
+    #[test]
+    fn stray_json_is_not_mistaken_for_an_announce_from_another_app() {
+        // The listener drops packets whose magic differs.
+        let p: AnnouncePacket =
+            serde_json::from_str(r#"{"magic":"other","device_id":"d"}"#).unwrap();
+        assert_ne!(p.magic, "spool");
+    }
+
+    #[test]
+    fn announce_round_trips() {
+        let p = AnnouncePacket {
+            device_id: "d".into(),
+            device_name: "Laptop".into(),
+            game_count: 9,
+            file_server_port: 1234,
+            pairing_port: 5678,
+            ..Default::default()
+        };
+        let back: AnnouncePacket =
+            serde_json::from_slice(&serde_json::to_vec(&p).unwrap()).unwrap();
+        assert_eq!(back.pairing_port, 5678);
+        assert_eq!(back.device_name, "Laptop");
+    }
+
+    #[test]
+    fn snapshot_reports_age_since_last_seen() {
+        let state = LanState::new();
+        let seen = Instant::now() - Duration::from_secs(12);
+        state.peers.lock().unwrap().insert(
+            "d".into(),
+            PeerEntry {
+                peer: LanPeer {
+                    device_id: "d".into(),
+                    device_name: "Deck".into(),
+                    addr: "10.0.0.5".into(),
+                    game_count: 1,
+                    version: 1,
+                    file_server_port: 0,
+                    pairing_port: 0,
+                    last_seen_ago_secs: 0,
+                },
+                last_seen: seen,
+            },
+        );
+        let snap = state.snapshot();
+        assert_eq!(snap.len(), 1);
+        assert!(snap[0].last_seen_ago_secs >= 12);
+    }
+}

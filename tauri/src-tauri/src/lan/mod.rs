@@ -361,3 +361,164 @@ pub struct PeerGameManifest {
     pub genres: Vec<String>,
     pub release_date: Option<DateTime<Utc>>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn state() -> LanUploadsState {
+        LanUploadsState::default()
+    }
+
+    #[test]
+    fn touch_reports_new_session_only_once() {
+        let s = state();
+        assert!(s.touch("s1", "g1", "Game", "10.0.0.2"));
+        assert!(!s.touch("s1", "g1", "Game", "10.0.0.2"));
+        assert!(s.touch("s2", "g1", "Game", "10.0.0.3"));
+        assert_eq!(s.snapshot().len(), 2);
+    }
+
+    #[test]
+    fn register_manifest_sets_total_on_existing_session() {
+        let s = state();
+        assert!(s.touch("s1", "g1", "Game", "10.0.0.2"));
+        // The session already exists, so this is not "new", but the total is applied.
+        assert!(!s.register_manifest("s1", "g1", "Game", "10.0.0.2", 500));
+        let snap = s.snapshot();
+        assert_eq!(snap[0].bytes_total, 500);
+    }
+
+    #[test]
+    fn register_manifest_creates_missing_session() {
+        let s = state();
+        assert!(s.register_manifest("s1", "g1", "Game", "10.0.0.2", 42));
+        assert_eq!(s.snapshot()[0].bytes_total, 42);
+    }
+
+    #[test]
+    fn first_progress_credit_is_never_throttled() {
+        let s = state();
+        s.register_manifest("s1", "g1", "Game", "p", 1000);
+        assert!(s.add_bytes_sent("s1", 10));
+        // An immediate second credit falls inside the throttle window.
+        assert!(!s.add_bytes_sent("s1", 10));
+        assert_eq!(s.snapshot()[0].bytes_sent, 20);
+    }
+
+    #[test]
+    fn add_bytes_for_unknown_session_is_ignored() {
+        let s = state();
+        assert!(!s.add_bytes_sent("nope", 10));
+        assert!(s.snapshot().is_empty());
+    }
+
+    #[test]
+    fn snapshot_clamps_sent_to_total_once_total_is_known() {
+        let s = state();
+        s.register_manifest("s1", "g1", "Game", "p", 100);
+        s.add_bytes_sent("s1", 250);
+        let snap = s.snapshot();
+        assert_eq!(snap[0].bytes_sent, 100);
+    }
+
+    #[test]
+    fn snapshot_does_not_clamp_before_manifest() {
+        let s = state();
+        s.touch("s1", "g1", "Game", "p");
+        s.add_bytes_sent("s1", 250);
+        assert_eq!(s.snapshot()[0].bytes_sent, 250);
+    }
+
+    #[test]
+    fn bytes_sent_saturates_instead_of_overflowing() {
+        let s = state();
+        s.touch("s1", "g1", "Game", "p");
+        s.add_bytes_sent("s1", u64::MAX);
+        s.add_bytes_sent("s1", 5);
+        assert_eq!(s.snapshot()[0].bytes_sent, u64::MAX);
+    }
+
+    #[test]
+    fn cancel_flags_only_the_named_session() {
+        let s = state();
+        s.touch("s1", "g1", "Game", "p");
+        s.touch("s2", "g1", "Game", "p");
+        assert!(s.mark_cancelled("s1"));
+        assert!(!s.mark_cancelled("missing"));
+        assert!(s.is_cancelled("s1"));
+        assert!(!s.is_cancelled("s2"));
+        assert!(!s.is_cancelled("missing"));
+    }
+
+    #[test]
+    fn has_active_upload_ignores_cancelled_and_other_games() {
+        let s = state();
+        assert!(!s.has_active_upload("g1"));
+        s.touch("s1", "g1", "Game", "p");
+        assert!(s.has_active_upload("g1"));
+        assert!(!s.has_active_upload("g2"));
+        s.mark_cancelled("s1");
+        assert!(!s.has_active_upload("g1"));
+    }
+
+    fn entry(folder: Option<String>, shared: bool) -> GameEntry {
+        GameEntry {
+            id: "id".into(),
+            game_name: "Game".into(),
+            game_folder_path: folder,
+            lan_shared: shared,
+            exe_path: "/secret/local/game.exe".into(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn peer_game_is_shareable_only_when_opted_in_with_real_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().to_string_lossy().to_string();
+        assert!(PeerGame::from_entry(&entry(Some(path.clone()), true)).shareable);
+        assert!(!PeerGame::from_entry(&entry(Some(path), false)).shareable);
+        assert!(!PeerGame::from_entry(&entry(None, true)).shareable);
+        assert!(!PeerGame::from_entry(&entry(Some(String::new()), true)).shareable);
+        let missing = dir.path().join("gone").to_string_lossy().to_string();
+        assert!(!PeerGame::from_entry(&entry(Some(missing), true)).shareable);
+    }
+
+    #[test]
+    fn peer_game_is_not_shareable_when_folder_is_a_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("a.txt");
+        std::fs::write(&file, b"x").unwrap();
+        let g = entry(Some(file.to_string_lossy().to_string()), true);
+        assert!(!PeerGame::from_entry(&g).shareable);
+    }
+
+    #[test]
+    fn peer_game_does_not_serialise_local_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let g = entry(Some(dir.path().to_string_lossy().to_string()), true);
+        let json = serde_json::to_string(&PeerGame::from_entry(&g)).unwrap();
+        assert!(!json.contains("/secret/local"));
+        assert!(!json.contains("exe_path"));
+        assert!(!json.contains("game_folder_path"));
+    }
+
+    #[test]
+    fn peer_file_from_older_peer_without_hash_or_mtime_parses() {
+        let f: PeerFile = serde_json::from_str(r#"{"path":"a/b.bin","size":7}"#).unwrap();
+        assert_eq!(f.path, "a/b.bin");
+        assert_eq!(f.size, 7);
+        assert!(f.hash.is_empty());
+        assert_eq!(f.mtime_unix_ms, 0);
+    }
+
+    #[test]
+    fn peer_manifest_tolerates_missing_and_unknown_fields() {
+        let m: PeerGameManifest =
+            serde_json::from_str(r#"{"game_id":"g","total_bytes":3,"future_field":true}"#).unwrap();
+        assert_eq!(m.game_id, "g");
+        assert_eq!(m.total_bytes, 3);
+        assert!(m.files.is_empty());
+    }
+}
