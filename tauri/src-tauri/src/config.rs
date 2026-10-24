@@ -652,6 +652,7 @@ pub fn offline_mode_enabled() -> bool {
 /// side. Simpler than a per-field patch surface, matches a "live save" UX.
 #[tauri::command]
 pub fn update_config(
+    app: AppHandle,
     state: State<'_, SharedConfig>,
     mut data: ConfigData,
 ) -> AppResult<ConfigData> {
@@ -721,7 +722,19 @@ pub fn update_config(
         cfg.data = prev;
         return Err(e);
     }
-    Ok(cfg.data.clone())
+    let saved = cfg.data.clone();
+    drop(cfg);
+
+    // The sync status is maintained passively (one startup probe, then real
+    // ops), so a new remote would otherwise keep showing the old status until
+    // the next restart. Probe it now that the config names it. Spawned so the
+    // save doesn't wait on the network; the probe emits `sync:status-changed`.
+    if cloud_changed {
+        tauri::async_runtime::spawn(async move {
+            crate::rclone::poll_once(&app).await;
+        });
+    }
+    Ok(saved)
 }
 
 /// The current set of library collections. Read on the library window's mount

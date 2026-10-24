@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
-use tauri::State;
+use tauri::{AppHandle, State};
 use tokio::process::Command;
 use tokio::sync::RwLock;
 
@@ -1750,6 +1750,7 @@ pub async fn apply_webdav_remote(
 /// active provider + connection (sans password) so the UI reflects it.
 #[tauri::command]
 pub async fn set_cloud_webdav(
+    app: AppHandle,
     config: State<'_, SharedConfig>,
     url: String,
     username: String,
@@ -1758,11 +1759,15 @@ pub async fn set_cloud_webdav(
 ) -> AppResult<()> {
     // Manual WebDAV (Nextcloud, ownCloud, …) expects the plaintext password.
     apply_webdav_remote(&url, &username, &password, &provider, false).await?;
-    let mut cfg = config.lock().map_err(|_| AppError::LockPoisoned)?;
-    cfg.data.cloud.provider = "webdav".to_string();
-    cfg.data.cloud.webdav_url = url;
-    cfg.data.cloud.webdav_username = username;
-    cfg.save()?;
+    {
+        let mut cfg = config.lock().map_err(|_| AppError::LockPoisoned)?;
+        cfg.data.cloud.provider = "webdav".to_string();
+        cfg.data.cloud.webdav_url = url;
+        cfg.data.cloud.webdav_username = username;
+        cfg.save()?;
+    }
+    // Probe the new remote so the status shows it without a restart.
+    crate::rclone::poll_once(&app).await;
     Ok(())
 }
 
