@@ -1782,13 +1782,6 @@ pub async fn launch_game_inner_steal(
     let run_state = app.state::<RunState>();
     let _guard = run_state.try_acquire(game_id)?;
 
-    // From here until the game has run, a failure must not leave the Game-Mode
-    // session record behind: it would make the Decky forced-close fallback back
-    // up a save that was never restored. Armed only after the in-process launch
-    // slot is ours, so a duplicate launch that fails above can't remove the
-    // record of the session that is already running.
-    let _attempt = crate::session::begin_attempt();
-
     // Hold the machine-wide per-game run lock for the whole session so a disk
     // wipe (uninstall / delete-from-disk) in ANY Spool process can't delete this
     // game's install folder + Proton prefix out from under it mid-play — the
@@ -1801,6 +1794,14 @@ pub async fn launch_game_inner_steal(
                 .into(),
         )
     })?;
+
+    // From here until the game is spawned, a failure must not leave the
+    // Game-Mode session record behind: it would make the Decky forced-close
+    // fallback back up a save that was never restored. Armed only once both the
+    // in-process slot and the per-game run lock are ours. If either is taken,
+    // the game is running (or being removed) elsewhere, and the record on disk
+    // is the one that session's forced-close backup depends on.
+    let _attempt = crate::session::begin_attempt();
 
     // Snapshot what we need from state up front so we don't hold any
     // sync Mutex across the long-running awaits below. We also fold
