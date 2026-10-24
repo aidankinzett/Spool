@@ -2854,6 +2854,177 @@ cloud:
     }
 
     #[test]
+    fn classify_active_staleness_boundary_is_exclusive() {
+        let m = marker(SessionState::Active, "2026-05-31T12:00:00Z", false, "deck");
+        let t0 = parse_ts("2026-05-31T12:00:00Z").unwrap();
+        assert_eq!(
+            classify(Some(&m), "me", t0 + ACTIVE_STALE_SECS - 1, false),
+            Decision::ActiveElsewhere
+        );
+        assert_eq!(
+            classify(Some(&m), "me", t0 + ACTIVE_STALE_SECS, false),
+            Decision::UnsyncedElsewhere
+        );
+    }
+
+    #[test]
+    fn classify_peer_clock_ahead_counts_as_fresh() {
+        // A peer whose clock runs ahead writes a timestamp in our future.
+        let m = marker(SessionState::Active, "2026-05-31T12:30:00Z", false, "deck");
+        let now = parse_ts("2026-05-31T12:00:00Z").unwrap();
+        assert_eq!(
+            classify(Some(&m), "me", now, false),
+            Decision::ActiveElsewhere
+        );
+    }
+
+    #[test]
+    fn classify_unparsable_heartbeat_is_unsynced() {
+        for bad in ["", "yesterday", "2026-05-31 12:00:00"] {
+            let m = marker(SessionState::Active, bad, false, "deck");
+            assert_eq!(
+                classify(Some(&m), "me", 1_800_000_000, false),
+                Decision::UnsyncedElsewhere,
+                "updated_at {bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn marker_from_older_version_defaults_to_unsynced() {
+        // A marker with no `state` (older writer) must warn about unsynced
+        // saves rather than read as a live session.
+        let m: SessionMarker = serde_json::from_str(
+            r#"{"game_name":"Hades","device_id":"deck","updated_at":"2026-05-31T12:00:00Z","future_field":1}"#,
+        )
+        .unwrap();
+        assert_eq!(m.state, SessionState::PendingBackup);
+        let now = parse_ts("2026-05-31T12:00:05Z").unwrap();
+        assert_eq!(
+            classify(Some(&m), "me", now, false),
+            Decision::UnsyncedElsewhere
+        );
+    }
+
+    #[test]
+    fn session_state_uses_kebab_case_on_the_wire() {
+        assert_eq!(
+            serde_json::to_string(&SessionState::PendingBackup).unwrap(),
+            "\"pending-backup\""
+        );
+        assert_eq!(
+            serde_json::from_str::<SessionState>("\"active\"").unwrap(),
+            SessionState::Active
+        );
+    }
+
+    #[test]
+    fn device_blob_from_older_version_parses() {
+        // Only the fields an old writer knew about.
+        let b: DeviceBlob =
+            serde_json::from_str(r#"{"playtime":{"Hades":90},"unknown":true}"#).unwrap();
+        assert_eq!(b.playtime.get("Hades"), Some(&90));
+        assert!(b.backups.is_empty());
+        assert_eq!(b.schema, 0);
+        assert!(serde_json::from_str::<DeviceBlob>("{}").is_ok());
+    }
+
+    #[test]
+    fn history_and_achievement_blobs_parse_empty_objects() {
+        let h: HistoryBlob = serde_json::from_str("{}").unwrap();
+        assert!(h.sessions.is_empty());
+        let a: AchievementsBlob =
+            serde_json::from_str(r#"{"unlocks":[{"game_name":"G"}]}"#).unwrap();
+        assert_eq!(a.unlocks.len(), 1);
+        assert_eq!(a.unlocks[0].unlocked_at, 0);
+    }
+
+    #[test]
+    fn achievement_fold_rows_drop_entries_missing_either_name() {
+        let entry = |game: &str, api: &str| AchievementBlobEntry {
+            game_name: game.into(),
+            api_name: api.into(),
+            unlocked_at: 5,
+        };
+        let blob = AchievementsBlob {
+            device_name: "Deck".into(),
+            unlocks: vec![entry("G", ""), entry("", "A"), entry("G", "A")],
+            schema: 1,
+        };
+        let rows = achievement_fold_rows(vec![("d".into(), blob)], 1);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].api_name, "A");
+    }
+
+    #[test]
+    fn fold_ignores_unparsable_backup_times_and_keeps_first_on_tie() {
+        let mut a = DeviceBlob {
+            device_name: "A".into(),
+            ..Default::default()
+        };
+        a.backups
+            .insert("Hades".into(), "2026-05-01T00:00:00Z".into());
+        a.backups.insert("Broken".into(), "not a date".into());
+        let mut b = DeviceBlob::default();
+        b.backups
+            .insert("Hades".into(), "2026-05-01T00:00:00Z".into());
+
+        let folded = fold_device_totals(&[("a".into(), a), ("b".into(), b)]);
+        assert!(folded["Broken"].latest_backer.is_none());
+        assert_eq!(folded["Hades"].latest_backer.as_deref(), Some("a"));
+    }
+
+    #[test]
+    fn fold_names_backer_by_id_when_device_name_is_blank() {
+        let mut b = DeviceBlob::default();
+        b.backups
+            .insert("Hades".into(), "2026-05-01T00:00:00Z".into());
+        let folded = fold_device_totals(&[("dev-1".into(), b)]);
+        assert_eq!(folded["Hades"].latest_backer_name.as_deref(), Some("dev-1"));
+    }
+
+    #[test]
+    fn badge_backer_is_recorded_only_for_cloud_newer() {
+        let f = Folded {
+            latest_backer: Some("b".into()),
+            latest_backup_ts: Some(0),
+            latest_backer_name: Some("Deck".into()),
+            latest_backup_raw: Some("2026-05-03T00:00:00Z".into()),
+        };
+        let (name, rev) = backer_for_badge("cloud-newer", &f);
+        assert_eq!(name.as_deref(), Some("Deck"));
+        assert_eq!(rev.unwrap().to_rfc3339(), "2026-05-03T00:00:00+00:00");
+        assert_eq!(backer_for_badge("synced", &f), (None, None));
+        assert_eq!(backer_for_badge("local-newer", &f), (None, None));
+    }
+
+    #[test]
+    fn backup_folder_candidates_add_windows_safe_variant_once() {
+        assert_eq!(backup_folder_candidates("Hades"), vec!["Hades".to_string()]);
+        let c = backup_folder_candidates("Doom: Eternal");
+        assert_eq!(c.len(), 2);
+        assert_eq!(c[0], "Doom: Eternal");
+        assert!(!c[1].contains(':'));
+    }
+
+    #[test]
+    fn remote_name_from_yaml_handles_missing_and_unknown_shapes() {
+        let parse = |s: &str| serde_yaml::from_str::<serde_yaml::Value>(s).unwrap();
+        assert_eq!(remote_name_from_yaml(&parse("cloud: {}")), None);
+        assert_eq!(remote_name_from_yaml(&parse("other: 1")), None);
+        assert_eq!(remote_name_from_yaml(&parse("cloud:\n  remote: 5")), None);
+        assert_eq!(
+            remote_name_from_yaml(&parse("cloud:\n  remote:\n    Custom:\n      id: mine")),
+            Some("mine".to_string())
+        );
+        // A tagged map without an `id` has no usable name.
+        assert_eq!(
+            remote_name_from_yaml(&parse("cloud:\n  remote:\n    Custom: {}")),
+            None
+        );
+    }
+
+    #[test]
     fn compute_badge_variants() {
         assert_eq!(compute_badge("me", Some("me")), "synced");
         assert_eq!(compute_badge("me", Some("other")), "cloud-newer");

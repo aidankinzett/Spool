@@ -301,6 +301,62 @@ mod tests {
     }
 
     #[test]
+    fn empty_quoted_argument_is_kept() {
+        let o = parse(r#"-name "" -x"#).unwrap();
+        assert_eq!(o.args, s(&["-name", "", "-x"]));
+    }
+
+    #[test]
+    fn adjacent_quoted_segments_join_into_one_token() {
+        let o = parse(r#"wrap %command% --path="C:\My Games"\save"#).unwrap();
+        assert_eq!(o.args, s(&[r"--path=C:\My Games\save"]));
+    }
+
+    #[test]
+    fn env_value_may_be_empty_or_contain_equals() {
+        let o = parse("EMPTY= A=b=c %command%").unwrap();
+        assert_eq!(
+            o.env,
+            vec![("EMPTY".into(), "".into()), ("A".into(), "b=c".into())]
+        );
+    }
+
+    #[test]
+    fn command_alone_has_no_wrapper_env_or_args() {
+        let o = parse("%command%").unwrap();
+        assert!(o.is_empty());
+    }
+
+    #[test]
+    fn wineprefix_is_only_rejected_as_a_leading_assignment() {
+        // After the wrapper starts, `WINEPREFIX=x` is just an argument to it.
+        let o = parse("env WINEPREFIX=/tmp/x %command%").unwrap();
+        assert_eq!(o.wrapper, s(&["env", "WINEPREFIX=/tmp/x"]));
+        // A quoted name isn't an assignment either.
+        assert!(parse("'WINEPREFIX=/tmp/x' %command%").is_ok());
+        // Game args after %command% are the game's business.
+        assert!(parse("%command% WINEPREFIX=/tmp/x").is_ok());
+    }
+
+    #[test]
+    fn unquoted_command_inside_a_quoted_token_is_an_error_only_when_joined() {
+        assert!(parse("'a %command%' %command%").is_ok());
+        assert!(parse("--x=%command%").is_err());
+    }
+
+    #[test]
+    fn tilde_without_a_slash_is_not_expanded() {
+        let o = parse("~wrap %command%").unwrap();
+        assert_eq!(o.wrapper, s(&["~wrap"]));
+    }
+
+    #[test]
+    fn validate_command_mirrors_parse() {
+        assert!(validate_launch_options("a %command% b".into()).is_ok());
+        assert!(validate_launch_options("a %command% %command%".into()).is_err());
+    }
+
+    #[test]
     fn tilde_expands_in_env_values() {
         let home = dirs::home_dir().unwrap();
         let o = parse("DXVK_CONFIG_FILE=~/dxvk.conf %command%").unwrap();

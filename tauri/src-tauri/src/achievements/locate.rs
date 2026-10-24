@@ -298,4 +298,94 @@ mod tests {
             Some(dir.path().join("bin/steam_settings/achievements.json"))
         );
     }
+
+    #[test]
+    fn roots_without_folders_yield_no_candidates() {
+        assert!(candidate_sources(&Roots::default(), 480).is_empty());
+    }
+
+    #[test]
+    fn program_data_scan_adds_one_dir_per_profile_folder_only() {
+        let pd = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(pd.path().join("Steam/Profile1")).unwrap();
+        std::fs::create_dir_all(pd.path().join("Steam/Profile2")).unwrap();
+        std::fs::write(pd.path().join("Steam/stray.txt"), "").unwrap();
+        let roots = Roots {
+            program_data: Some(pd.path().to_path_buf()),
+            ..Default::default()
+        };
+        let mut dirs = emulator_dirs(&roots, 480);
+        dirs.sort();
+        assert_eq!(
+            dirs,
+            vec![
+                pd.path().join("Steam/Profile1/480"),
+                pd.path().join("Steam/Profile2/480")
+            ]
+        );
+        // No ProgramData/Steam folder at all is fine.
+        let empty = tempfile::tempdir().unwrap();
+        let roots = Roots {
+            program_data: Some(empty.path().to_path_buf()),
+            ..Default::default()
+        };
+        assert!(emulator_dirs(&roots, 480).is_empty());
+    }
+
+    #[test]
+    fn folder_scan_ignores_unusable_appid_files_and_uses_the_next_valid_one() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("steam_appid.txt"), "not a number").unwrap();
+        std::fs::create_dir_all(dir.path().join("bin")).unwrap();
+        std::fs::write(dir.path().join("bin/STEAM_APPID.TXT"), " 730 \n").unwrap();
+        assert_eq!(FolderScan::walk(dir.path()).appid, Some(730));
+
+        let zero = tempfile::tempdir().unwrap();
+        std::fs::write(zero.path().join("steam_appid.txt"), "0").unwrap();
+        assert_eq!(FolderScan::walk(zero.path()).appid, None);
+    }
+
+    #[test]
+    fn folder_scan_stops_at_the_depth_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let near = dir.path().join("a/b/c/d/480");
+        let far = dir.path().join("a/b/c/d/e/f/999");
+        std::fs::create_dir_all(&near).unwrap();
+        std::fs::create_dir_all(&far).unwrap();
+        std::fs::write(near.join("achievements.json"), "{}").unwrap();
+        std::fs::write(far.join("achievements.json"), "{}").unwrap();
+        let scan = FolderScan::walk(dir.path());
+        assert_eq!(scan.sources(480).len(), 1);
+        assert!(scan.sources(999).is_empty());
+    }
+
+    #[test]
+    fn local_save_dir_must_be_named_exactly_the_appid() {
+        let dir = tempfile::tempdir().unwrap();
+        for id in ["480", "4800", "48"] {
+            let d = dir.path().join(id);
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(d.join("achievements.ini"), "").unwrap();
+        }
+        // A directory with the right name but no known file contributes nothing.
+        std::fs::create_dir_all(dir.path().join("sub/10")).unwrap();
+        let scan = FolderScan::walk(dir.path());
+        let found = scan.sources(480);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].path, dir.path().join("480/achievements.ini"));
+        assert_eq!(found[0].format, Format::Ini);
+        assert!(scan.sources(10).is_empty());
+    }
+
+    #[test]
+    fn schema_file_requires_a_steam_settings_parent() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("other")).unwrap();
+        std::fs::write(dir.path().join("other/achievements.json"), "[]").unwrap();
+        std::fs::create_dir_all(dir.path().join("Steam_Settings")).unwrap();
+        std::fs::write(dir.path().join("Steam_Settings/Achievements.json"), "[]").unwrap();
+        assert_eq!(FolderScan::walk(dir.path()).schema_file, None);
+        std::fs::write(dir.path().join("Steam_Settings/achievements.json"), "[]").unwrap();
+        assert!(FolderScan::walk(dir.path()).schema_file.is_some());
+    }
 }

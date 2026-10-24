@@ -124,4 +124,50 @@ mod tests {
         let argv = ["spool", "--headless-server", "--extra"];
         assert_eq!(parse_args(&argv), CliMode::Normal);
     }
+
+    #[test]
+    fn attached_flag_is_found_after_other_trailing_args() {
+        let argv = ["spool", "--run", "G", "E.exe", "--foo", "--attached"];
+        assert_eq!(
+            parse_args(&argv),
+            CliMode::Run {
+                game_name: "G".into(),
+                exe_path: "E.exe".into(),
+                attached: true,
+            }
+        );
+    }
+
+    #[test]
+    fn attached_flag_in_the_positional_slots_is_not_a_flag() {
+        // Position decides: the flag only counts after the name and exe.
+        let argv = ["spool", "--run", "--attached", "E.exe"];
+        assert_eq!(
+            parse_args(&argv),
+            CliMode::Run {
+                game_name: "--attached".into(),
+                exe_path: "E.exe".into(),
+                attached: false,
+            }
+        );
+    }
+
+    #[test]
+    fn run_must_be_the_first_argument() {
+        let argv = ["spool", "--other", "--run", "G", "E.exe"];
+        assert_eq!(parse_args(&argv), CliMode::Normal);
+    }
+
+    #[test]
+    fn empty_game_name_and_exe_are_passed_through() {
+        let argv = ["spool", "--run", "", ""];
+        assert_eq!(
+            parse_args(&argv),
+            CliMode::Run {
+                game_name: String::new(),
+                exe_path: String::new(),
+                attached: false,
+            }
+        );
+    }
 }

@@ -504,4 +504,156 @@ mod tests {
         assert!(parse(Format::Json, b"not json").is_empty());
         assert!(parse(Format::Ini, b"").is_empty());
     }
+
+    #[test]
+    fn plausible_time_boundaries() {
+        assert_eq!(plausible_time(999_999_999), None, "before 2001");
+        assert_eq!(plausible_time(1_000_000_000), Some(1_000_000_000));
+        assert_eq!(plausible_time(0), None);
+        assert_eq!(plausible_time(-5), None);
+        assert_eq!(plausible_time(1_234_567), None, "CreamAPI 7-digit stamp");
+        // The ms heuristic starts strictly above 1e11.
+        assert_eq!(plausible_time(100_000_000_000), Some(100_000_000_000));
+        assert_eq!(plausible_time(100_000_001_000), None, "ms for 1973");
+        assert_eq!(plausible_time(1_700_000_000_999), Some(1_700_000_000));
+    }
+
+    #[test]
+    fn hex_le_u32_rejects_malformed_values() {
+        assert_eq!(hex_le_u32("01000000"), Some(1));
+        assert_eq!(hex_le_u32(" 01000000 "), Some(1));
+        assert_eq!(hex_le_u32("0100000"), None, "7 digits");
+        assert_eq!(hex_le_u32("010000000"), None, "9 digits");
+        assert_eq!(hex_le_u32("0100000g"), None);
+        assert_eq!(hex_le_u32("ffffffff"), Some(u32::MAX as i64));
+    }
+
+    #[test]
+    fn json_value_types_and_key_casing() {
+        let j = r#"{
+            "A": { "Achieved": "true", "UnlockTime": "1700000000" },
+            "B": { "achieved": "1" },
+            "C": { "achieved": 2 },
+            "D": { "achieved": "yes" },
+            "E": { "achieved": null },
+            "F": { "achieved": 1, "unlocktime": 1700000000.9 },
+            "G": 5,
+            "H": "text"
+        }"#;
+        assert_eq!(
+            names(&parse(Format::Json, j.as_bytes())),
+            vec![
+                ("A".into(), Some(1_700_000_000)),
+                ("B".into(), None),
+                ("F".into(), Some(1_700_000_000)),
+            ]
+        );
+    }
+
+    #[test]
+    fn json_progress_needs_a_positive_max() {
+        let j = r#"{
+            "Done": { "curProgress": 5, "maxProgress": 5 },
+            "Over": { "progress": 9, "max_progress": 5 },
+            "Short": { "curProgress": 4, "maxProgress": 5 },
+            "ZeroMax": { "curProgress": 0, "maxProgress": 0 }
+        }"#;
+        assert_eq!(
+            names(&parse(Format::Json, j.as_bytes())),
+            vec![("Done".into(), None), ("Over".into(), None)]
+        );
+    }
+
+    #[test]
+    fn json_array_name_keys_and_unnamed_entries() {
+        let j = r#"[
+            { "apiname": "ByApi", "achieved": 1 },
+            { "id": "ById", "achieved": 1 },
+            { "achieved": 1 },
+            "stray",
+            { "name": "NotEarned", "achieved": 0 }
+        ]"#;
+        assert_eq!(
+            names(&parse(Format::Json, j.as_bytes())),
+            vec![("ByApi".into(), None), ("ById".into(), None)]
+        );
+    }
+
+    #[test]
+    fn json_scalar_root_is_empty() {
+        assert!(parse(Format::Json, b"42").is_empty());
+        assert!(parse(Format::Json, b"\"s\"").is_empty());
+        assert!(parse(Format::Json, b"").is_empty());
+    }
+
+    #[test]
+    fn ini_with_utf8_bom_comments_and_quotes() {
+        let mut bytes = vec![0xEF, 0xBB, 0xBF];
+        bytes.extend_from_slice(
+            b"; a comment\n# another\n[ACH_A]\nAchieved = \"1\"\nUnlockTime = 1700000000\n",
+        );
+        assert_eq!(
+            names(&parse(Format::Ini, &bytes)),
+            vec![("ACH_A".into(), Some(1_700_000_000))]
+        );
+    }
+
+    #[test]
+    fn ini_metadata_sections_and_pre_section_keys_are_not_achievements() {
+        let ini = "Achieved=1\n[Steam]\nAchieved=1\n[SETTINGS]\nAchieved=1\n[Steam64]\nAchieved=1\n[SteamAchievements]\nAchieved=1\n";
+        assert!(parse(Format::Ini, ini.as_bytes()).is_empty());
+    }
+
+    #[test]
+    fn ini_section_matching_is_case_insensitive_and_keeps_name_casing() {
+        let ini = "[ACHIEVE_DATA]\nMixedCase=1\nOff=0\n";
+        assert_eq!(
+            names(&parse(Format::Ini, ini.as_bytes())),
+            vec![("MixedCase".into(), None)]
+        );
+        let hoodlum =
+            "[achievements]\nMixedCase=true\n[achievementsunlocktimes]\nmixedcase=1700000000\n";
+        assert_eq!(
+            names(&parse(Format::Ini, hoodlum.as_bytes())),
+            vec![("MixedCase".into(), Some(1_700_000_000))]
+        );
+    }
+
+    #[test]
+    fn three_dm_state_must_be_exactly_0101() {
+        let ini = "[State]\nA=0101\nB=0100\nC=1\n[Time]\nA=zzzzzzzz\n";
+        // An unreadable time still counts the unlock, with no time.
+        assert_eq!(
+            names(&parse(Format::Ini, ini.as_bytes())),
+            vec![("A".into(), None)]
+        );
+    }
+
+    #[test]
+    fn sse_rejects_short_negative_and_empty_files() {
+        assert!(parse(Format::SseBin, &[]).is_empty());
+        assert!(parse(Format::SseBin, &[1, 0, 0]).is_empty());
+        assert!(parse(Format::SseBin, &(-1i32).to_le_bytes()).is_empty());
+        assert!(parse(Format::SseBin, &0i32.to_le_bytes()).is_empty());
+        // Count says one record but the body is empty.
+        assert!(parse(Format::SseBin, &1i32.to_le_bytes()).is_empty());
+    }
+
+    #[test]
+    fn sse_state_zero_is_not_earned_and_time_is_optional() {
+        let mut bytes = 2i32.to_le_bytes().to_vec();
+        for (crc, value) in [(1u32, 0i32), (2u32, 1i32)] {
+            let mut r = [0u8; 24];
+            r[0..4].copy_from_slice(&crc.to_le_bytes());
+            r[20..24].copy_from_slice(&value.to_le_bytes());
+            bytes.extend_from_slice(&r);
+        }
+        assert_eq!(
+            parse(Format::SseBin, &bytes),
+            vec![Earned {
+                key: Key::Crc(2),
+                unlocked_at: None
+            }]
+        );
+    }
 }

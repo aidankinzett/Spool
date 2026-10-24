@@ -84,30 +84,42 @@ pub fn ensure_config() -> AppResult<()> {
     };
 
     let backup_path = backup_dir().to_string_lossy().to_string();
+    let changed = apply_invariants(&mut v, &backup_path);
+
+    if changed || !file.exists() {
+        write_value(&v)?;
+    }
+
+    Ok(())
+}
+
+/// Pure half of [`ensure_config`]: brings `v` up to the invariants listed
+/// there, given the backup directory. Returns whether anything changed.
+fn apply_invariants(v: &mut Value, backup_path: &str) -> bool {
     let mut changed = false;
 
-    changed |= set_path(&mut v, &["manifest", "enable"], Value::Bool(true));
+    changed |= set_path(v, &["manifest", "enable"], Value::Bool(true));
     changed |= set_path(
-        &mut v,
+        v,
         &["backup", "path"],
-        Value::String(backup_path.clone()),
+        Value::String(backup_path.to_string()),
     );
-    changed |= set_path(&mut v, &["restore", "path"], Value::String(backup_path));
     changed |= set_path(
-        &mut v,
+        v,
+        &["restore", "path"],
+        Value::String(backup_path.to_string()),
+    );
+    changed |= set_path(
+        v,
         &["backup", "format", "chosen"],
         Value::String("simple".into()),
     );
     // Seed the revision count only if absent — the user's Settings value is
     // applied via `set_retention` and must not be clobbered on every startup.
-    changed |= ensure_key_exists(
-        &mut v,
-        &["backup", "retention", "full"],
-        Value::Number(5.into()),
-    );
+    changed |= ensure_key_exists(v, &["backup", "retention", "full"], Value::Number(5.into()));
     // Differentials always off (see invariants above).
     changed |= set_path(
-        &mut v,
+        v,
         &["backup", "retention", "differential"],
         Value::Number(0.into()),
     );
@@ -115,17 +127,17 @@ pub fn ensure_config() -> AppResult<()> {
     // Upgrade a legacy bare-string remote (written by Spool versions that
     // targeted an older ludusavi) to ludusavi 0.31's tagged struct-variant form,
     // so existing installs keep working without re-running cloud setup.
-    changed |= migrate_bare_remote(&mut v);
+    changed |= migrate_bare_remote(v);
 
     // Ensure cloud block exists with at least a remote key; leave existing
     // values intact so a user-configured remote survives a restart.
-    changed |= ensure_key_exists(&mut v, &["cloud", "remote"], Value::Null);
+    changed |= ensure_key_exists(v, &["cloud", "remote"], Value::Null);
 
     // Always use a bare "rclone" name so each Spool process injects its own
     // bundled binary via PATH when spawning ludusavi, rather than storing an
     // absolute AppImage FUSE-mount path that becomes stale when that process exits.
     changed |= set_path(
-        &mut v,
+        v,
         &["apps", "rclone", "path"],
         Value::String("rclone".into()),
     );
@@ -142,16 +154,12 @@ pub fn ensure_config() -> AppResult<()> {
         .to_string();
     let with_timeouts = ensure_rclone_timeouts(&current_args);
     changed |= set_path(
-        &mut v,
+        v,
         &["apps", "rclone", "arguments"],
         Value::String(with_timeouts),
     );
 
-    if changed || !file.exists() {
-        write_value(&v)?;
-    }
-
-    Ok(())
+    changed
 }
 
 /// Write the save-revision retention count (`backup.retention.full`) into the
@@ -1016,6 +1024,153 @@ mod tests {
                 .and_then(|p| p.as_str()),
             Some("/tmp/x")
         );
+    }
+
+    fn yaml(s: &str) -> Value {
+        serde_yaml::from_str(s).unwrap()
+    }
+
+    #[test]
+    fn invariants_on_an_empty_config_set_everything_and_are_idempotent() {
+        let mut v = Value::Mapping(Default::default());
+        assert!(apply_invariants(&mut v, "/data/ludusavi-backup"));
+        let at = |p: &[&str]| get_path(&v, p).cloned();
+        assert_eq!(at(&["manifest", "enable"]), Some(Value::Bool(true)));
+        assert_eq!(
+            at(&["backup", "path"]),
+            Some(Value::String("/data/ludusavi-backup".into()))
+        );
+        assert_eq!(at(&["restore", "path"]), at(&["backup", "path"]));
+        assert_eq!(
+            at(&["backup", "format", "chosen"]),
+            Some(Value::String("simple".into()))
+        );
+        assert_eq!(
+            at(&["backup", "retention", "full"]),
+            Some(Value::Number(5.into()))
+        );
+        assert_eq!(
+            at(&["backup", "retention", "differential"]),
+            Some(Value::Number(0.into()))
+        );
+        assert_eq!(at(&["cloud", "remote"]), Some(Value::Null));
+        assert_eq!(
+            at(&["apps", "rclone", "path"]),
+            Some(Value::String("rclone".into()))
+        );
+        let args = at(&["apps", "rclone", "arguments"]).unwrap();
+        assert!(args.as_str().unwrap().contains("--contimeout"));
+        assert!(
+            !apply_invariants(&mut v, "/data/ludusavi-backup"),
+            "a second pass changes nothing"
+        );
+    }
+
+    #[test]
+    fn invariants_repair_drifted_values_but_keep_user_choices() {
+        let mut v = yaml(
+            r#"
+manifest: { enable: false, url: "https://example.test/manifest.yaml" }
+backup:
+  path: /old/backup
+  format: { chosen: zip, compression: deflate }
+  retention: { full: 7, differential: 3 }
+restore: { path: /elsewhere }
+cloud: { remote: { Dropbox: { id: Dropbox } }, path: Spool/ludusavi-backup }
+apps: { rclone: { path: /tmp/.mount_abc/usr/bin/rclone, arguments: "--tpslimit 2" } }
+customGames: [ { name: Mine } ]
+"#,
+        );
+        assert!(apply_invariants(&mut v, "/new/backup"));
+        let at = |p: &[&str]| get_path(&v, p).cloned();
+        assert_eq!(at(&["manifest", "enable"]), Some(Value::Bool(true)));
+        assert_eq!(
+            at(&["backup", "path"]),
+            Some(Value::String("/new/backup".into()))
+        );
+        assert_eq!(
+            at(&["restore", "path"]),
+            Some(Value::String("/new/backup".into()))
+        );
+        assert_eq!(
+            at(&["backup", "format", "chosen"]),
+            Some(Value::String("simple".into()))
+        );
+        assert_eq!(
+            at(&["backup", "retention", "differential"]),
+            Some(Value::Number(0.into()))
+        );
+        assert_eq!(
+            at(&["apps", "rclone", "path"]),
+            Some(Value::String("rclone".into()))
+        );
+        // Settings the user or other code owns are left alone.
+        assert_eq!(
+            at(&["backup", "retention", "full"]),
+            Some(Value::Number(7.into())),
+            "retention count is not reset on startup"
+        );
+        assert_eq!(
+            at(&["backup", "format", "compression"]),
+            Some(Value::String("deflate".into()))
+        );
+        assert_eq!(
+            at(&["manifest", "url"]),
+            Some(Value::String("https://example.test/manifest.yaml".into()))
+        );
+        assert!(at(&["cloud", "remote", "Dropbox"]).is_some());
+        assert!(at(&["customGames"]).is_some());
+        let args = at(&["apps", "rclone", "arguments"]).unwrap();
+        assert!(args.as_str().unwrap().starts_with("--tpslimit 2"));
+        assert!(args.as_str().unwrap().contains("--contimeout"));
+    }
+
+    #[test]
+    fn invariants_upgrade_a_legacy_bare_remote() {
+        let mut v = yaml("cloud: { remote: Dropbox }");
+        assert!(apply_invariants(&mut v, "/b"));
+        assert_eq!(
+            get_path(&v, &["cloud", "remote"]).cloned(),
+            Some(tagged_remote("Dropbox", "Dropbox"))
+        );
+    }
+
+    #[test]
+    fn invariants_replace_a_non_mapping_root() {
+        let mut v = Value::String("garbage".into());
+        assert!(apply_invariants(&mut v, "/b"));
+        assert_eq!(
+            get_path(&v, &["manifest", "enable"]).cloned(),
+            Some(Value::Bool(true))
+        );
+    }
+
+    #[test]
+    fn retention_edge_values_are_clamped_inclusively() {
+        let mut v = Value::Mapping(Default::default());
+        for (given, want) in [(3u32, 3u64), (10, 10), (u32::MAX, 10), (2, 3)] {
+            apply_retention(&mut v, given);
+            assert_eq!(
+                get_path(&v, &["backup", "retention", "full"]).and_then(|n| n.as_u64()),
+                Some(want),
+                "given {given}"
+            );
+        }
+    }
+
+    #[test]
+    fn set_path_replaces_a_scalar_that_is_in_the_way() {
+        let mut v = yaml("backup: 5");
+        assert!(set_path(
+            &mut v,
+            &["backup", "path"],
+            Value::String("x".into())
+        ));
+        assert_eq!(
+            get_path(&v, &["backup", "path"]).cloned(),
+            Some(Value::String("x".into()))
+        );
+        assert!(!set_path(&mut v, &[], Value::Null), "empty path is a no-op");
     }
 
     // ── Drift guard: validate generated config against the real ludusavi ─────

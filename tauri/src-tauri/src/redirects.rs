@@ -1271,4 +1271,311 @@ backups:
         assert_eq!(origin.os, BackupOs::Windows);
         assert!(origin.paths.iter().any(|p| p.starts_with("G:/")));
     }
+
+    fn tip_of(yaml: &str) -> Option<BackupTip> {
+        read_backup_tip_from_str(yaml)
+    }
+
+    #[test]
+    fn tip_is_none_for_unusable_documents() {
+        assert!(tip_of("").is_none());
+        assert!(tip_of("{{ not yaml").is_none());
+        assert!(tip_of("name: G\n").is_none(), "no backups key");
+        assert!(tip_of("backups: {}\n").is_none(), "backups is not a list");
+        assert!(tip_of("backups: []\n").is_none());
+    }
+
+    #[test]
+    fn tip_skips_entries_missing_a_name_or_a_parseable_date() {
+        let yaml = r#"
+backups:
+  - when: "2026-05-09T00:00:00Z"
+  - name: undated
+  - name: bad-date
+    when: "yesterday"
+  - name: good
+    when: "2026-05-01T00:00:00Z"
+"#;
+        assert_eq!(tip_of(yaml).unwrap().name, "good");
+    }
+
+    #[test]
+    fn tip_keeps_the_first_entry_when_dates_tie() {
+        let yaml = r#"
+backups:
+  - name: first
+    when: "2026-05-01T00:00:00Z"
+  - name: second
+    when: "2026-05-01T00:00:00Z"
+"#;
+        assert_eq!(tip_of(yaml).unwrap().name, "first");
+    }
+
+    #[test]
+    fn tip_can_be_a_differential_child_newer_than_every_full_backup() {
+        let yaml = r#"
+backups:
+  - name: full
+    when: "2026-05-01T00:00:00Z"
+    children:
+      - name: diff
+        when: "2026-05-04T00:00:00Z"
+"#;
+        assert_eq!(tip_of(yaml).unwrap().name, "diff");
+    }
+
+    #[test]
+    fn tip_compares_instants_across_utc_offsets() {
+        // 12:00+10:00 is 02:00Z, earlier than 10:00Z despite the larger clock time.
+        let yaml = r#"
+backups:
+  - name: offset
+    when: "2026-05-01T12:00:00+10:00"
+  - name: utc
+    when: "2026-05-01T10:00:00Z"
+"#;
+        let tip = tip_of(yaml).unwrap();
+        assert_eq!(tip.name, "utc");
+    }
+
+    #[test]
+    fn windows_safe_name_replaces_every_forbidden_character_and_keeps_slashes() {
+        assert_eq!(windows_safe_name(r#"a:b*c?d"e<f>g|h"#), "a_b_c_d_e_f_g_h");
+        assert_eq!(windows_safe_name("a/b\\c"), "a/b\\c");
+        assert_eq!(windows_safe_name(""), "");
+    }
+
+    fn write_mapping(dir: &Path, folder: &str, body: &str) {
+        let d = dir.join(folder);
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("mapping.yaml"), body).unwrap();
+    }
+
+    const ONE_WIN_BACKUP: &str = r#"
+backups:
+  - name: backup-1
+    when: "2026-05-01T00:00:00Z"
+    os: windows
+    files:
+      "C:/Users/me/Saves/a.sav": { size: 1 }
+"#;
+
+    #[test]
+    fn origin_and_tip_are_found_in_the_windows_safe_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        write_mapping(dir.path(), "Lego_ Batman", ONE_WIN_BACKUP);
+        let origin = read_backup_origin(dir.path(), "Lego: Batman").unwrap();
+        assert_eq!(origin.os, BackupOs::Windows);
+        assert_eq!(origin.paths, vec!["C:/Users/me/Saves/a.sav".to_string()]);
+        assert_eq!(
+            read_local_backup_tip(dir.path(), "Lego: Batman")
+                .unwrap()
+                .name,
+            "backup-1"
+        );
+    }
+
+    #[test]
+    fn exact_folder_wins_and_an_unparsable_one_falls_through() {
+        let dir = tempfile::tempdir().unwrap();
+        write_mapping(dir.path(), "G: X", "{{ broken");
+        write_mapping(dir.path(), "G_ X", ONE_WIN_BACKUP);
+        assert!(read_backup_origin(dir.path(), "G: X").is_some());
+        assert!(read_local_backup_tip(dir.path(), "G: X").is_some());
+    }
+
+    #[test]
+    fn missing_mapping_means_no_origin_and_no_tip() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(read_backup_origin(dir.path(), "Nope").is_none());
+        assert!(read_local_backup_tip(dir.path(), "Nope").is_none());
+    }
+
+    #[test]
+    fn origin_unions_the_children_and_tolerates_a_missing_os() {
+        let yaml = r#"
+backups:
+  - name: full
+    when: "2026-05-01T00:00:00Z"
+    files:
+      "C:/a": { size: 1 }
+    children:
+      - name: diff
+        when: "2026-05-02T00:00:00Z"
+        files:
+          "C:/b": { size: 1 }
+"#;
+        let origin = parse_origin(&serde_yaml::from_str(yaml).unwrap()).unwrap();
+        assert_eq!(origin.os, BackupOs::Unknown);
+        assert_eq!(origin.paths, vec!["C:/a".to_string(), "C:/b".to_string()]);
+        assert!(parse_origin(&serde_yaml::from_str("backups: []").unwrap()).is_none());
+        assert_eq!(BackupOs::from_str("WINDOWS"), BackupOs::Windows);
+        assert_eq!(BackupOs::from_str("mac"), BackupOs::Unknown);
+    }
+
+    #[test]
+    fn username_skips_system_profiles_and_uses_the_next_real_one() {
+        let paths: Vec<String> = [
+            "C:/Users/Default/NTUSER.DAT",
+            "C:/Users/All Users/x",
+            "C:/Users/Public/y",
+            "D:/Users/other/z",
+            "C:/Users/akinz/a",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        assert_eq!(windows_username_from_paths(&paths), Some("akinz".into()));
+        assert_eq!(windows_username_from_paths(&[]), None);
+        assert_eq!(
+            windows_username_from_paths(&["C:/Users/".to_string()]),
+            None
+        );
+    }
+
+    #[test]
+    fn user_profile_match_requires_a_path_boundary() {
+        // A user named "me" must not claim "C:/Users/meow/...".
+        let origin = win_origin(&["C:/Users/me/a.sav", "C:/Users/meow/b.sav"]);
+        let redirects = derive_redirects(&origin, Some(&pfx()), None, None, false);
+        assert_eq!(redirects.len(), 1, "{redirects:?}");
+        assert_eq!(redirects[0].source, "C:/Users/me");
+    }
+
+    #[test]
+    fn many_files_under_one_root_produce_one_rule() {
+        let origin = win_origin(&[
+            "C:/Users/akinz/AppData/Local/G/a.sav",
+            "C:/Users/akinz/Documents/G/b.sav",
+            "C:/Users/akinz/Saved Games/G/c.sav",
+        ]);
+        assert_eq!(
+            derive_redirects(&origin, Some(&pfx()), None, None, false).len(),
+            1
+        );
+    }
+
+    #[test]
+    fn windows_paths_need_a_prefix_on_linux() {
+        let origin = win_origin(&["C:/Users/akinz/AppData/Local/G/a.sav"]);
+        assert!(derive_redirects(&origin, None, None, None, false).is_empty());
+    }
+
+    #[test]
+    fn windows_paths_are_never_redirected_on_windows() {
+        let origin = win_origin(&["C:/Users/akinz/AppData/Local/G/a.sav"]);
+        assert!(derive_redirects(&origin, Some(&pfx()), None, Some("akinz"), true).is_empty());
+    }
+
+    #[test]
+    fn backslash_paths_are_treated_like_forward_slash_paths() {
+        let origin =
+            lin_origin(&["\\home\\alice\\prefixes\\abc\\drive_c\\users\\steamuser\\x.sav"]);
+        let local = PathBuf::from("/home/bob/prefixes/abc");
+        let redirects = derive_redirects(&origin, Some(&local), None, None, false);
+        assert_eq!(redirects.len(), 1);
+        assert_eq!(redirects[0].source, "/home/alice/prefixes/abc/drive_c");
+    }
+
+    #[test]
+    fn local_prefix_root_trailing_slash_does_not_cause_a_remap() {
+        let origin = lin_origin(&[
+            "/home/deck/.local/share/Spool/prefixes/abc/drive_c/users/steamuser/a.sav",
+        ]);
+        let local = PathBuf::from("/home/deck/.local/share/Spool/prefixes/abc/");
+        assert!(derive_redirects(&origin, Some(&local), None, None, false).is_empty());
+    }
+
+    #[test]
+    fn classify_format_requires_a_whole_drive_c_segment() {
+        assert!(matches!(
+            classify_format("/home/u/drive_clone/x"),
+            PathFormat::NativeLinux
+        ));
+        match classify_format("/home/u/pfx/drive_c") {
+            PathFormat::WinePrefix { drive_c } => assert_eq!(drive_c, "/home/u/pfx/drive_c"),
+            _ => panic!("a bare drive_c is the prefix root"),
+        }
+        // First occurrence wins when a path nests another prefix-looking folder.
+        match classify_format("/a/drive_c/b/drive_c/c") {
+            PathFormat::WinePrefix { drive_c } => assert_eq!(drive_c, "/a/drive_c"),
+            _ => panic!(),
+        }
+        assert!(matches!(classify_format("c:/x"), PathFormat::Windows));
+        assert!(matches!(classify_format("1:/x"), PathFormat::NativeLinux));
+    }
+
+    #[test]
+    fn install_dir_root_anchor_is_case_insensitive_and_takes_the_first_match() {
+        assert_eq!(
+            install_dir_root("G:/Lib/ultrakill/Saves/ULTRAKILL/s.bin", Some("ULTRAKILL")),
+            "G:/Lib/ultrakill"
+        );
+    }
+
+    #[test]
+    fn install_dir_root_falls_back_when_the_name_is_absent_or_empty() {
+        assert_eq!(
+            install_dir_root("D:/Games/Foo/Bar/Saves/s.bin", Some("Other")),
+            "D:/Games/Foo"
+        );
+        assert_eq!(
+            install_dir_root("D:/Games/Foo/Bar/Saves/s.bin", Some("")),
+            "D:/Games/Foo"
+        );
+        assert_eq!(install_dir_root("D:/s.bin", None), "D:");
+    }
+
+    #[test]
+    fn prefix_to_windows_maps_only_known_roots() {
+        let d = "/p/drive_c";
+        assert_eq!(
+            prefix_path_to_windows("/p/drive_c/users/steamuser/AppData/x", d, Some("bob")),
+            Some(("/p/drive_c/users/steamuser".into(), "C:/Users/bob".into()))
+        );
+        // No usable local username: the profile can't be mapped.
+        assert_eq!(
+            prefix_path_to_windows("/p/drive_c/users/steamuser/x", d, None),
+            None
+        );
+        assert_eq!(
+            prefix_path_to_windows("/p/drive_c/users/steamuser/x", d, Some("")),
+            None
+        );
+        // A look-alike folder name is not the steamuser profile.
+        assert_eq!(
+            prefix_path_to_windows("/p/drive_c/users/steamuser2/x", d, Some("bob")),
+            None
+        );
+        assert_eq!(
+            prefix_path_to_windows("/p/drive_c/Program Files/G/x", d, Some("bob")),
+            None
+        );
+        // Different prefix than the one named: not under it, so no rule.
+        assert_eq!(
+            prefix_path_to_windows("/other/drive_c/ProgramData/x", d, Some("bob")),
+            None
+        );
+    }
+
+    #[test]
+    fn backup_rules_swap_source_and_target_and_drop_prefix_remaps() {
+        let rules = vec![
+            Redirect {
+                kind: "restore".into(),
+                source: "C:/Users/me".into(),
+                target: "/pfx/drive_c/users/steamuser".into(),
+            },
+            Redirect {
+                kind: "restore".into(),
+                source: "/home/alice/pfx/drive_c".into(),
+                target: "/home/bob/pfx/drive_c".into(),
+            },
+        ];
+        let inverted = invert_for_backup(rules);
+        assert_eq!(inverted.len(), 1);
+        assert_eq!(inverted[0].kind, "backup");
+        assert_eq!(inverted[0].source, "/pfx/drive_c/users/steamuser");
+        assert_eq!(inverted[0].target, "C:/Users/me");
+    }
 }

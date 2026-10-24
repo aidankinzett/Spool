@@ -3775,6 +3775,135 @@ mod tests {
         );
     }
 
+    #[test]
+    fn done_outcome_prefers_a_failed_backup_over_a_deferred_one() {
+        assert_eq!(
+            BackupResult {
+                backup_failed: true,
+                backup_deferred: true,
+                ..Default::default()
+            }
+            .outcome(),
+            DoneOutcome::BackupFailed,
+        );
+        assert_eq!(
+            BackupResult {
+                backup_deferred: true,
+                no_saves: true,
+                cloud_upload_failed: true,
+                ..Default::default()
+            }
+            .outcome(),
+            DoneOutcome::BackupDeferred,
+        );
+    }
+
+    #[test]
+    fn baseline_does_not_override_absent_or_unreadable_cloud() {
+        let local = tip("B", 200);
+        // The remote is reachable and has nothing: upload, whatever the baseline.
+        assert_eq!(
+            decide_cloud_sync(Some("A"), Some(&local), &CloudTip::Absent),
+            CloudSyncDecision::FastForwardUpload
+        );
+        // The remote can't be read: never guess, even when local matches the baseline.
+        assert_eq!(
+            decide_cloud_sync(Some("B"), Some(&local), &CloudTip::Unknown),
+            CloudSyncDecision::Diverged
+        );
+        // No local backup and an unreadable cloud is also a prompt.
+        assert_eq!(
+            decide_cloud_sync(Some("A"), None, &CloudTip::Unknown),
+            CloudSyncDecision::Diverged
+        );
+        // No local backup, cloud present: pull, with or without a baseline.
+        let cloud = CloudTip::Present(tip("C", 300));
+        assert_eq!(
+            decide_cloud_sync(Some("A"), None, &cloud),
+            CloudSyncDecision::FastForwardDownload
+        );
+    }
+
+    #[test]
+    fn same_tip_name_is_in_sync_even_if_the_baseline_is_stale() {
+        let local = tip("B", 200);
+        let cloud = CloudTip::Present(tip("B", 200));
+        assert_eq!(
+            decide_cloud_sync(Some("A"), Some(&local), &cloud),
+            CloudSyncDecision::InSync
+        );
+    }
+
+    #[test]
+    fn rescue_is_ignored_once_a_baseline_exists() {
+        let local = tip("R", 900);
+        let cloud = CloudTip::Present(tip("C", 100));
+        // With baseline "A" neither side matches, so the rescue's `from` must
+        // not be substituted for it.
+        let r = unbacked_session::Rescue {
+            from: Some("C".into()),
+            to: "R".into(),
+        };
+        assert_eq!(
+            decide_after_rescue(Some("A"), Some(&local), &cloud, Some(&r)),
+            CloudSyncDecision::Diverged
+        );
+        assert_eq!(
+            decide_after_rescue(None, Some(&local), &cloud, Some(&r)),
+            CloudSyncDecision::FastForwardUpload,
+            "cloud still at the tip the interrupted session started from"
+        );
+    }
+
+    fn api(json: &str) -> crate::ludusavi::ApiOutput {
+        serde_json::from_str(json).unwrap()
+    }
+
+    #[test]
+    fn cloud_conflict_and_sync_failure_are_read_from_ludusavi_errors() {
+        let conflict = api(r#"{"errors":{"cloudConflict":{"local":"a","cloud":"b"}}}"#);
+        assert!(cloud_conflicted(&conflict));
+        assert!(!cloud_sync_failed(&conflict));
+
+        let failed = api(r#"{"errors":{"cloudSyncFailed":{"error":"timeout"}}}"#);
+        assert!(cloud_sync_failed(&failed));
+        assert!(!cloud_conflicted(&failed));
+
+        // Present-but-empty objects still count: the key's presence is the signal.
+        assert!(cloud_conflicted(&api(r#"{"errors":{"cloudConflict":{}}}"#)));
+    }
+
+    #[test]
+    fn clean_ludusavi_output_reports_neither_conflict_nor_failure() {
+        for json in [
+            "{}",
+            r#"{"errors":{}}"#,
+            r#"{"errors":{"cloudConflict":null,"cloudSyncFailed":null}}"#,
+            r#"{"errors":{"unknownGames":["X"]},"overall":{"totalGames":1}}"#,
+        ] {
+            let out = api(json);
+            assert!(!cloud_conflicted(&out), "{json}");
+            assert!(!cloud_sync_failed(&out), "{json}");
+        }
+    }
+
+    #[test]
+    fn seed_compares_game_names_exactly() {
+        let fallback = Utc::now();
+        let started = fallback - chrono::Duration::hours(1);
+        let rec = |game: &str, backed_up: bool| active_record(game, started, backed_up);
+        // Adopted: this process wrote it, same game, still live.
+        assert_eq!(
+            seed_from_record(true, Some(rec("Hades", false)), "Hades", fallback),
+            started
+        );
+        // Names are compared exactly.
+        assert_eq!(
+            seed_from_record(true, Some(rec("hades", false)), "Hades", fallback),
+            fallback
+        );
+    }
+
     fn tip(name: &str, secs: i64) -> redirects::BackupTip {
         redirects::BackupTip {
             name: name.to_string(),
