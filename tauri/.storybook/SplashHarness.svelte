@@ -18,6 +18,8 @@
     message = null,
     cloudUsed = false,
     cloudUploadFailed = false,
+    backupFailed = false,
+    backupDeferred = false,
     sessionMinutes = 1873,
     /** For `error`: emit a backing-up phase first so the splash frames it as a
      * failed *backup* (exit flow) rather than a failed *restore* (launch flow). */
@@ -27,6 +29,8 @@
     message?: string | null;
     cloudUsed?: boolean;
     cloudUploadFailed?: boolean;
+    backupFailed?: boolean;
+    backupDeferred?: boolean;
     sessionMinutes?: number | null;
     errorDuringExit?: boolean;
   } = $props();
@@ -41,6 +45,8 @@
       message: message ?? null,
       cloud_used: cloudUsed,
       cloud_upload_failed: cloudUploadFailed,
+      backup_failed: backupFailed,
+      backup_deferred: backupDeferred,
       session_minutes: EXIT.has(phase) || phase === 'error' ? sessionMinutes : null,
     };
     const events =

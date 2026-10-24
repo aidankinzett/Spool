@@ -38,6 +38,12 @@
   // True on `done` when the session captured no save data at all — no revision
   // was written, so the exit flow must not read as "all saved".
   let noSaves = $state(false);
+  // True on `done` when the post-session backup errored (`backupFailed`) or was
+  // deferred behind another process's backup (`backupDeferred`). No revision was
+  // written either way, so the exit flow must not read as "all saved".
+  let backupFailed = $state(false);
+  let backupDeferred = $state(false);
+  let backupMissed = $derived(backupFailed || backupDeferred);
   let sessionMinutes = $state<number | null>(null);
   // The achievements this launch caught live, shown on the exit flow. The
   // workflow starts only after the splash reports ready, so anything detected
@@ -196,6 +202,13 @@
     const base = baseFn
       ? { kicker: baseFn.kicker, sub: baseFn.sub(game), tone: baseFn.tone }
       : { kicker: phase.toUpperCase(), sub: '', tone: 'accent' };
+    if (phase === 'done' && backupMissed) {
+      return {
+        kicker: backupFailed ? 'BACKUP FAILED' : 'BACKUP DEFERRED',
+        sub: message ?? 'Your save is still on this device — Spool will retry on the next launch',
+        tone: backupFailed ? 'bad' : 'warn',
+      };
+    }
     if (phase === 'done' && noSaves) {
       // Nothing was captured — "ALL SAVED" here would be a flat lie.
       return {
@@ -281,14 +294,20 @@
     const isErr = phase === 'error';
     // No save data means the backup step never wrote anything — mark it 'warn'
     // rather than 'done' so the exit flow doesn't show a completed backup.
-    const backupState = isErr ? 'error' : noSaves ? 'warn' : phase === 'backing-up' ? 'active' : 'done';
+    const backupState = isErr || backupFailed
+      ? 'error'
+      : noSaves || backupDeferred
+        ? 'warn'
+        : phase === 'backing-up'
+          ? 'active'
+          : 'done';
     
     const offline = net === 'offline';
     // During the dedicated upload phase the cloud step is genuinely in flight —
     // show the spinner ('active') even if a passive earlier probe read offline,
     // so the user sees the upload actually happening rather than a stale warn.
     const syncState = !cloudUsed ? 'skipped'
-      : isErr ? 'pending'
+      : isErr || backupMissed ? 'pending'
       : noSaves ? 'skipped'
       : phase === 'uploading' ? 'active'
       : offline ? 'warn'
@@ -298,12 +317,18 @@
 
     const backupDetail = isErr
       ? 'ludusavi error · last good revision kept, nothing lost'
-      : noSaves
+      : backupFailed
+        ? 'Backup failed · your save is still on this device · retries next launch'
+        : backupDeferred
+          ? 'Another backup is in progress · retries next launch'
+          : noSaves
         ? 'No save data found · this game isn\'t tracked, or its save folder is empty'
         : 'New revision written to this device';
     const syncDetail = !cloudUsed
       ? 'No cloud remote configured'
-      : noSaves
+      : backupMissed
+        ? 'Waiting for a local backup · retries next launch'
+        : noSaves
         ? 'Nothing to upload'
         : syncState === 'warn'
         ? 'Couldn\'t reach your cloud remote · 1 revision queued · retries automatically'
@@ -320,7 +345,7 @@
         label: 'Back up saves · this device',
         detail: backupDetail,
         state: backupState,
-        badge: noSaves ? 'NO SAVES' : undefined,
+        badge: backupDeferred ? 'DEFERRED' : noSaves ? 'NO SAVES' : undefined,
       },
       { id: 'sync',   label: 'Sync to cloud', detail: syncDetail, state: syncState },
     ];
@@ -385,6 +410,8 @@
     cloudUsed = ev.cloud_used;
     cloudUploadFailed = ev.cloud_upload_failed;
     noSaves = ev.no_saves;
+    backupFailed = ev.backup_failed;
+    backupDeferred = ev.backup_deferred;
     if (ev.session_minutes != null) sessionMinutes = ev.session_minutes;
     // Once, at the end: each load rescans the game's stats files.
     if (ev.phase === 'done' && ev.game_id && !earnedLoad) void loadEarned(ev.game_id);
@@ -641,13 +668,14 @@
       {@const offline = net === 'offline'}
       {@const uploading = phase === 'uploading'}
       {@const cloudTone = uploading ? '#7ec6ff'
-        : noSaves ? 'rgba(244,244,245,0.36)'
+        : noSaves || backupMissed ? 'rgba(244,244,245,0.36)'
         : offline ? '#f4b66c'
         : phase === 'error' ? '#ff7a7a'
         : phase === 'done' ? '#7ee2a4'
         : phase === 'backing-up' || phase === 'restoring' ? '#7ec6ff'
         : 'rgba(244,244,245,0.36)'}
       {@const cloudLabel = uploading ? 'CLOUD SYNC · UPLOADING'
+        : backupMissed ? 'CLOUD SYNC · ON HOLD'
         : noSaves ? 'CLOUD SYNC · NOTHING TO SYNC'
         : offline ? 'CLOUD SYNC · OFFLINE'
         : phase === 'done' ? 'CLOUD SYNC · UP TO DATE'
@@ -657,6 +685,8 @@
         : 'CLOUD SYNC'}
       {@const cloudNote = uploading
         ? 'Mirroring this revision to your cloud remote — your other devices pick it up next launch.'
+        : backupMissed
+        ? 'No new revision was written, so there is nothing to send to your cloud remote yet. Spool retries next launch.'
         : noSaves
         ? 'No save data was captured, so there was nothing to send to your cloud remote.'
         : offline

@@ -664,6 +664,18 @@ export type RunPhaseEvent = {
    * cloud, so the UI must not report a backup.
    */
   no_saves: boolean;
+  /**
+   * True when the post-session backup errored, so no revision was written. Only
+   * ever true on the done phase. The live save is still on disk and the next
+   * launch retries, but the UI must not report a backup.
+   */
+  backup_failed: boolean;
+  /**
+   * True when the post-session backup was deferred because another Spool process
+   * held the backup lock past the timeout. Only ever true on the done phase.
+   * Nothing was written by this workflow; the next launch reconciles.
+   */
+  backup_deferred: boolean;
 };
 
 /**

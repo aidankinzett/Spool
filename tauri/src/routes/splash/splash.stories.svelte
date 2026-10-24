@@ -43,6 +43,8 @@
       message: { control: 'text' },
       cloudUsed: { control: 'boolean' },
       cloudUploadFailed: { control: 'boolean' },
+      backupFailed: { control: 'boolean' },
+      backupDeferred: { control: 'boolean' },
       sessionMinutes: { control: 'number' },
       errorDuringExit: { control: 'boolean' },
     },
@@ -50,6 +52,8 @@
       phase: 'restoring',
       cloudUsed: true,
       cloudUploadFailed: false,
+      backupFailed: false,
+      backupDeferred: false,
       sessionMinutes: 1873,
       errorDuringExit: false,
     },
@@ -74,6 +78,19 @@
   name="Cloud offline"
   args={{ phase: 'done', cloudUploadFailed: true }}
   parameters={{ tauri: { list_games: [makeGame({ id: 'g1' })], current_sync_status: OFFLINE } }}
+/>
+
+<!-- The post-session backup wrote nothing: errored, or deferred behind another
+     process's backup. Neither may read as "ALL SAVED". -->
+<Story
+  name="Backup failed (done)"
+  args={{ phase: 'done', cloudUsed: true, backupFailed: true }}
+  play={expectKicker('BACKUP FAILED')}
+/>
+<Story
+  name="Backup deferred"
+  args={{ phase: 'done', cloudUsed: true, backupDeferred: true }}
+  play={expectKicker('BACKUP DEFERRED')}
 />
 
 <!-- Errors ----------------------------------------------------------------- -->

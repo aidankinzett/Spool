@@ -97,10 +97,20 @@ struct RunPhaseEvent {
     /// disk. Only ever true on the `done` phase. The UI must not claim a backup
     /// happened — there is no revision and nothing reached the cloud.
     no_saves: bool,
+    /// True when the post-session backup errored, so no revision was written
+    /// this session. Only ever true on the `done` phase. The live save is still
+    /// on disk and the next launch retries, but the UI must not report a backup.
+    backup_failed: bool,
+    /// True when the post-session backup was deferred because another Spool
+    /// process held the backup lock past the timeout. Only ever true on the
+    /// `done` phase. Nothing was written by this workflow. The lock is
+    /// machine-wide, so the holder may be backing up a different game; the next
+    /// launch reconciles this one.
+    backup_deferred: bool,
 }
 
 /// How a session's saves ended up. Drives the terminal `done` phase's wire
-/// flags and its native toast, so the three outcomes can't drift apart.
+/// flags and its native toast, so the outcomes can't drift apart.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum DoneOutcome {
     /// A revision was written locally, and mirrored to the cloud when one is
@@ -110,6 +120,10 @@ enum DoneOutcome {
     UploadFailed,
     /// Nothing was backed up — there was no save data to capture.
     NoSaveData,
+    /// The backup errored; no revision was written this session.
+    BackupFailed,
+    /// The backup lock stayed contended, so this workflow wrote nothing.
+    BackupDeferred,
 }
 
 /// Emit a non-terminal phase. The `done`-only flags are always false here;
@@ -130,6 +144,8 @@ fn emit_phase(
         session_minutes,
         cloud_upload_failed: false,
         no_saves: false,
+        backup_failed: false,
+        backup_deferred: false,
     };
     // Log every transition so a Game-Mode launch is diagnosable from
     // debug.log alone — confirms the workflow advanced past "restoring"
@@ -165,6 +181,22 @@ fn emit_done(ctx: &WorkflowCtx<'_>, outcome: DoneOutcome, cloud_used: bool, sess
             "Session complete",
             format!("{} — no save data tracked", ctx.game_name),
         ),
+        DoneOutcome::BackupFailed => (
+            Some("Backup failed. Your save is still on this device, and Spool will retry on the next launch."),
+            "Backup failed",
+            format!(
+                "{} — your save is still on this device; Spool will retry next launch",
+                ctx.game_name
+            ),
+        ),
+        DoneOutcome::BackupDeferred => (
+            Some("Another backup is in progress. Spool will retry on the next launch."),
+            "Backup deferred",
+            format!(
+                "{} — another backup is in progress; Spool will retry next launch",
+                ctx.game_name
+            ),
+        ),
     };
     let payload = RunPhaseEvent {
         game_id: ctx.game_id.to_string(),
@@ -174,6 +206,8 @@ fn emit_done(ctx: &WorkflowCtx<'_>, outcome: DoneOutcome, cloud_used: bool, sess
         session_minutes: Some(session_minutes),
         cloud_upload_failed: matches!(outcome, DoneOutcome::UploadFailed),
         no_saves: matches!(outcome, DoneOutcome::NoSaveData),
+        backup_failed: matches!(outcome, DoneOutcome::BackupFailed),
+        backup_deferred: matches!(outcome, DoneOutcome::BackupDeferred),
     };
     tracing::info!(
         game_id = ctx.game_id,
@@ -3252,6 +3286,7 @@ pub async fn record_session_headless(
 }
 
 /// What the post-session backup established about this session's saves.
+#[derive(Default)]
 struct BackupResult {
     /// The local revision was written but the cloud upload didn't land.
     cloud_upload_failed: bool,
@@ -3260,17 +3295,29 @@ struct BackupResult {
     /// this device. Either way no revision exists and nothing reached the
     /// cloud, so the terminal phase must not report a backup.
     no_saves: bool,
+    /// The backup errored, so no revision was written this session.
+    backup_failed: bool,
+    /// The backup lock stayed contended past the timeout, so this workflow
+    /// wrote nothing. The lock is machine-wide, so the holder may be backing up
+    /// a different game.
+    backup_deferred: bool,
 }
 
 impl BackupResult {
     /// Which terminal outcome the `done` phase should report.
     ///
+    /// A backup that errored or was deferred outranks everything else: no
+    /// revision was written, so neither "saved" nor an upload verdict applies.
     /// "Nothing was captured" outranks "the upload failed": with no revision
     /// there was never anything to upload, so reporting a cloud failure would
     /// point the user at their remote when the real gap is that this game has
     /// no tracked save location.
     fn outcome(&self) -> DoneOutcome {
-        if self.no_saves {
+        if self.backup_failed {
+            DoneOutcome::BackupFailed
+        } else if self.backup_deferred {
+            DoneOutcome::BackupDeferred
+        } else if self.no_saves {
             DoneOutcome::NoSaveData
         } else if self.cloud_upload_failed {
             DoneOutcome::UploadFailed
@@ -3292,6 +3339,7 @@ async fn phase_backup(
 ) -> AppResult<BackupResult> {
     let session_minutes = timing.minutes;
     let mut cloud_upload_failed = false;
+    let mut backup_failed = false;
     // Re-derive the offline split NOW rather than trusting the launch-time
     // value: the user may have gone offline while the game was running, and
     // a session that ends in offline mode must skip the upload and land on
@@ -3321,8 +3369,8 @@ async fn phase_backup(
         // stays contended past the timeout, defer rather than run unlocked: a
         // concurrent ludusavi/rclone write could corrupt the backup or clobber
         // the remote. Nothing's been written yet, the live save is safe on
-        // disk, and the lock being held means another process is *already*
-        // backing this up — so we flag the save unsynced (local-newer badge +
+        // disk. The lock is machine-wide, so the holder may be backing up a
+        // different game — so we flag the save unsynced (local-newer badge +
         // leave the PendingBackup marker so peers keep warning) and let the next
         // launch reconcile. Playtime was already pushed at record time
         // (phase_launch), so there's nothing to record here.
@@ -3344,8 +3392,8 @@ async fn phase_backup(
                     let _ = ctx.app.emit("library:changed", &ctx.game_id.to_string());
                 }
                 return Ok(BackupResult {
-                    cloud_upload_failed: true,
-                    no_saves,
+                    backup_deferred: true,
+                    ..Default::default()
                 });
             }
         };
@@ -3411,8 +3459,8 @@ async fn phase_backup(
                         );
                         rclone::delete_session_marker(ctx.app, ctx.game_name).await;
                         return Ok(BackupResult {
-                            cloud_upload_failed: false,
                             no_saves: true,
+                            ..Default::default()
                         });
                     }
                 }
@@ -3559,8 +3607,21 @@ async fn phase_backup(
             Err(e) => {
                 // Don't fail the workflow — the user already played the game
                 // successfully and getting a red toast for a flaky network
-                // call would be misleading. Surface it in the log instead.
+                // call would be misleading. The terminal phase reports it as
+                // `BackupFailed` (a warning, not a success).
                 tracing::warn!(game_id = %ctx.game_id, error = %e, "post-session backup failed");
+                backup_failed = true;
+                // The live save is newer than the last backup, so the badge
+                // must not keep saying "synced" — same as the deferred path.
+                if ctx
+                    .app
+                    .state::<SharedLibrary>()
+                    .set_sync_badge(ctx.game_id, "local-newer")
+                    .await
+                    .unwrap_or(false)
+                {
+                    let _ = ctx.app.emit("library:changed", &ctx.game_id.to_string());
+                }
                 // Playtime was already pushed at record time (phase_launch); the
                 // PendingBackup marker stays so peers/next-launch reconcile.
             }
@@ -3575,6 +3636,8 @@ async fn phase_backup(
     Ok(BackupResult {
         cloud_upload_failed,
         no_saves,
+        backup_failed,
+        backup_deferred: false,
     })
 }
 
@@ -3593,8 +3656,11 @@ fn finish(ctx: &WorkflowCtx<'_>, backup: &BackupResult, session_minutes: i32) {
     // fallback is skipped while peers/next-launch reconcile. Both are guarded on
     // the record's own session id (and game name) so a newer session that started
     // since this one can't be clobbered (#273). No-op off Game Mode (no record).
+    // When the backup itself failed or was deferred nothing was written, so the
+    // record is left alone (not flagged backed up) and the Decky fallback can
+    // still try a real backup.
     if let Some(rec) = crate::session::read() {
-        if rec.game == ctx.game_name {
+        if rec.game == ctx.game_name && !backup.backup_failed && !backup.backup_deferred {
             if backup.cloud_upload_failed {
                 crate::session::mark_backed_up_if(&rec.session_id);
             } else {
@@ -3620,8 +3686,8 @@ mod tests {
         // is safe when no revision exists at all (#490).
         assert_eq!(
             BackupResult {
-                cloud_upload_failed: false,
                 no_saves: true,
+                ..Default::default()
             }
             .outcome(),
             DoneOutcome::NoSaveData,
@@ -3633,6 +3699,7 @@ mod tests {
             BackupResult {
                 cloud_upload_failed: true,
                 no_saves: true,
+                ..Default::default()
             }
             .outcome(),
             DoneOutcome::NoSaveData,
@@ -3641,21 +3708,46 @@ mod tests {
 
     #[test]
     fn done_outcome_distinguishes_a_written_revision_from_a_failed_upload() {
-        assert_eq!(
-            BackupResult {
-                cloud_upload_failed: false,
-                no_saves: false,
-            }
-            .outcome(),
-            DoneOutcome::Saved,
-        );
+        assert_eq!(BackupResult::default().outcome(), DoneOutcome::Saved);
         assert_eq!(
             BackupResult {
                 cloud_upload_failed: true,
-                no_saves: false,
+                ..Default::default()
             }
             .outcome(),
             DoneOutcome::UploadFailed,
+        );
+    }
+
+    #[test]
+    fn done_outcome_reports_a_failed_or_deferred_backup_over_everything_else() {
+        // An errored or deferred backup wrote no revision, so it must never
+        // read as "saved", and no upload verdict applies (#504).
+        assert_eq!(
+            BackupResult {
+                backup_failed: true,
+                ..Default::default()
+            }
+            .outcome(),
+            DoneOutcome::BackupFailed,
+        );
+        assert_eq!(
+            BackupResult {
+                backup_deferred: true,
+                ..Default::default()
+            }
+            .outcome(),
+            DoneOutcome::BackupDeferred,
+        );
+        assert_eq!(
+            BackupResult {
+                backup_failed: true,
+                cloud_upload_failed: true,
+                no_saves: true,
+                ..Default::default()
+            }
+            .outcome(),
+            DoneOutcome::BackupFailed,
         );
     }
 
