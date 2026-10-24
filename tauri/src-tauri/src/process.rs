@@ -402,6 +402,8 @@ struct SetupState {
     /// settle timer started under an older value.
     generation: u64,
     last: Option<&'static str>,
+    /// When umu last printed anything; the settle time counts from here.
+    last_output: Option<tokio::time::Instant>,
 }
 
 /// Turns umu-run's output into setup start/finish callbacks. Both output
@@ -436,6 +438,7 @@ impl SetupTracker {
             return;
         }
         let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        st.last_output = Some(tokio::time::Instant::now());
         match umu_setup_status(line) {
             Some(msg) => {
                 st.generation += 1;
@@ -455,7 +458,24 @@ impl SetupTracker {
                 let cb = Arc::clone(cb);
                 let settle = self.settle;
                 tokio::spawn(async move {
-                    tokio::time::sleep(settle).await;
+                    // Wait until umu has been silent for `settle`: output that
+                    // arrives while waiting pushes the deadline back.
+                    loop {
+                        let wait = {
+                            let st = state.lock().unwrap_or_else(|e| e.into_inner());
+                            if st.generation != generation || !st.active {
+                                return;
+                            }
+                            let quiet_since =
+                                st.last_output.unwrap_or_else(tokio::time::Instant::now);
+                            (quiet_since + settle)
+                                .saturating_duration_since(tokio::time::Instant::now())
+                        };
+                        if wait.is_zero() {
+                            break;
+                        }
+                        tokio::time::sleep(wait).await;
+                    }
                     let mut st = state.lock().unwrap_or_else(|e| e.into_inner());
                     if st.generation == generation && st.active {
                         st.active = false;
@@ -819,7 +839,7 @@ mod tests {
         events.lock().unwrap().clone()
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn setup_tracker_reports_consecutive_steps_as_one_setup() {
         // Lines captured from umu-run 1.4.4 on a fresh install.
         let (t, events) = recording_tracker(TEST_SETTLE);
@@ -849,7 +869,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn setup_tracker_stays_quiet_when_umu_has_nothing_to_set_up() {
         let (t, events) = recording_tracker(TEST_SETTLE);
         t.observe("INFO: umu-launcher version 1.4.4");
@@ -859,7 +879,7 @@ mod tests {
         assert!(snapshot(&events).is_empty());
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn setup_tracker_finish_clears_a_setup_cut_off_by_exit() {
         let (t, events) = recording_tracker(TEST_SETTLE);
         t.observe("INFO: Downloading UMU-Proton-10.0-4.tar.gz...");
@@ -871,7 +891,26 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
+    async fn setup_tracker_waits_for_umu_to_go_quiet() {
+        let (t, events) = recording_tracker(TEST_SETTLE);
+        t.observe("INFO: Downloading UMU-Proton-10.0-4.tar.gz...");
+        t.observe("INFO: some other line"); // starts the settle timer
+                                            // Output keeps arriving, each line inside the settle window, so the
+                                            // deadline keeps moving and setup never reads as finished.
+        for _ in 0..5 {
+            tokio::time::sleep(TEST_SETTLE / 2).await;
+            t.observe("progress");
+        }
+        assert_eq!(snapshot(&events), [Some("Downloading Proton…".to_string())]);
+        settled().await;
+        assert_eq!(
+            snapshot(&events),
+            [Some("Downloading Proton…".to_string()), None]
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn setup_tracker_finish_cancels_a_pending_settle() {
         let (t, events) = recording_tracker(TEST_SETTLE);
         t.observe("INFO: Downloading UMU-Proton-10.0-4.tar.gz...");

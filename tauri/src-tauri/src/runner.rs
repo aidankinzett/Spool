@@ -3694,13 +3694,13 @@ fn finish(ctx: &WorkflowCtx<'_>, backup: &BackupResult, session_minutes: i32) {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     #[test]
     fn setup_phase_without_a_message_means_playing() {
         assert_eq!(setup_phase(None), ("playing", None));
         assert_eq!(setup_phase(Some("x")), ("launching", Some("x")));
     }
-
-    use super::*;
 
     #[test]
     fn done_outcome_reports_no_save_data_over_a_failed_upload() {
