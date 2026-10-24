@@ -1795,6 +1795,14 @@ pub async fn launch_game_inner_steal(
         )
     })?;
 
+    // From here until the game is spawned, a failure must not leave the
+    // Game-Mode session record behind: it would make the Decky forced-close
+    // fallback back up a save that was never restored. Armed only once both the
+    // in-process slot and the per-game run lock are ours. If either is taken,
+    // the game is running (or being removed) elsewhere, and the record on disk
+    // is the one that session's forced-close backup depends on.
+    let _attempt = crate::session::begin_attempt();
+
     // Snapshot what we need from state up front so we don't hold any
     // sync Mutex across the long-running awaits below. We also fold
     // the registry-level Run-As-Admin compat flag into the effective
@@ -2983,6 +2991,11 @@ async fn phase_launch(ctx: &WorkflowCtx<'_>, exe_pathbuf: &Path) -> AppResult<Se
         }
     };
 
+    // Game Mode: re-create the session record if an earlier attempt in this
+    // process abandoned it (a cloud conflict that was then resolved). Done
+    // before the suspend watcher starts so its checkpoints have a record.
+    crate::session::ensure_started(ctx.game_name);
+
     // Spawn the session heartbeat: rewrites our marker's `updated_at` every
     // 60s so peers see the session as live. Pass session_start so the heartbeat
     // preserves the real started_at on each tick. Aborted on exit.
@@ -3007,6 +3020,10 @@ async fn phase_launch(ctx: &WorkflowCtx<'_>, exe_pathbuf: &Path) -> AppResult<Se
         suspended_secs.clone(),
     );
 
+    // From the spawn on, the session record must survive a panic or cancellation
+    // of this future (the game may be running). It is dropped again below only
+    // if the game never started or crashed straight away.
+    crate::session::mark_game_started();
     let spawn_result = process::run_game(exe_pathbuf, spec).await;
     let session_end = Utc::now();
 
@@ -3037,6 +3054,7 @@ async fn phase_launch(ctx: &WorkflowCtx<'_>, exe_pathbuf: &Path) -> AppResult<Se
             // Process never started — delete the marker so peers aren't blocked.
             rclone::delete_session_marker(ctx.app, ctx.game_name).await;
             unbacked_session::clear(ctx.game_id).await;
+            crate::session::mark_launch_failed();
             return Err(AppError::Other(format!("Game failed to launch: {e}")));
         }
         Ok(ref result) if result.crash_hint.is_some() => {
@@ -3047,6 +3065,7 @@ async fn phase_launch(ctx: &WorkflowCtx<'_>, exe_pathbuf: &Path) -> AppResult<Se
             // a silent 0-minute session.
             rclone::delete_session_marker(ctx.app, ctx.game_name).await;
             unbacked_session::clear(ctx.game_id).await;
+            crate::session::mark_launch_failed();
             let hint = result.crash_hint.as_deref().unwrap_or_default();
             let log_path = crate::paths::log_file();
             return Err(AppError::Other(format!(
