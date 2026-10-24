@@ -368,7 +368,11 @@ fn resolve_install_dirs(root: &Path, safe_name: &str) -> (PathBuf, PathBuf, bool
         return (preferred_final, preferred_partial, true);
     }
     let final_dir = allocate_install_dir(root, safe_name);
-    let partial = final_dir.with_extension("partial");
+    // Append to the whole name: `with_extension` would replace everything after
+    // the last dot, so "Dr. Mario" would stage in "Dr.partial".
+    let mut partial_name = final_dir.file_name().unwrap_or_default().to_os_string();
+    partial_name.push(".partial");
+    let partial = final_dir.with_file_name(partial_name);
     (final_dir, partial, false)
 }
 
@@ -1832,7 +1836,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "bug: partial dir for a name containing a dot is built with with_extension, which replaces the text after the last dot"]
     fn partial_dir_keeps_the_full_name_for_dotted_game_names() {
         // "Dr. Mario" must resume into "Dr. Mario.partial", the name the resume
         // check looks for, and must not share a partial with "Dr. Strange".
