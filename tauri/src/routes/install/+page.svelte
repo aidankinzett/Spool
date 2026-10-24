@@ -272,9 +272,13 @@
     if (!exePath || !install) return;
     if (trackSaves && !picked) return;
     try {
-      const fallback = baseName(exePath).replace(/\.[^.]+$/, '') || gameName.trim() || 'Untitled Game';
+      // Without save tracking, the candidate highlighted by default must not
+      // name the entry: use the name typed for the install, falling back to
+      // the exe filename.
+      const untrackedName =
+        gameName.trim() || baseName(exePath).replace(/\.[^.]+$/, '') || 'Untitled Game';
       await api.addGame({
-        game_name: picked?.name ?? fallback,
+        game_name: trackSaves && picked ? picked.name : untrackedName,
         exe_path: exePath,
         ...(trackSaves && picked
           ? {
