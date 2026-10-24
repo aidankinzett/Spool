@@ -73,9 +73,13 @@ open_firewall_ports() {
   [ -z "$fw" ] && return 0
 
   echo "==> $fw is active and may block LAN game sharing (UDP 47631, TCP 47632)."
-  if [ -r /dev/tty ]; then
+  [ "$fw" = "firewalld" ] && echo "    (This opens them in firewalld's default zone.)"
+  # Opening /dev/tty fails when there is no controlling terminal (cron, CI),
+  # unlike a readability test, which passes on the device node alone.
+  if exec 3</dev/tty 2>/dev/null; then
     local reply=""
-    read -r -p "    Open these ports now? Needs sudo. [y/N] " reply </dev/tty || true
+    read -r -p "    Open these ports now? Needs sudo. [y/N] " reply <&3 || true
+    exec 3<&-
     if [[ "$reply" =~ ^[Yy] ]]; then
       if bash -c "$cmd"; then
         echo "    Ports opened."

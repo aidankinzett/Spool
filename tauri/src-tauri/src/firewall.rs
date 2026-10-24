@@ -104,6 +104,16 @@ fn parse_active_zones(output: &str) -> Vec<String> {
         .collect()
 }
 
+/// Zones that container and VM runtimes create for their bridges.
+#[cfg(target_os = "linux")]
+fn is_virtual_zone(zone: &str) -> bool {
+    [
+        "docker", "libvirt", "podman", "lxd", "lxc", "incus", "virbr",
+    ]
+    .iter()
+    .any(|p| zone.to_lowercase().starts_with(p))
+}
+
 #[cfg(target_os = "linux")]
 fn check(port: u16) -> FirewallStatus {
     let tcp = format!("{port}/tcp");
@@ -115,6 +125,18 @@ fn check(port: u16) -> FirewallStatus {
                 .map(|(_, out)| parse_active_zones(&out))
                 .unwrap_or_default();
             let open_in = |zone: Option<&str>| {
+                // A zone with target ACCEPT (`trusted`) allows everything.
+                let mut target_args = vec!["--get-target"];
+                let zone_arg = zone.map(|z| format!("--zone={z}"));
+                if let Some(z) = &zone_arg {
+                    target_args.insert(0, z.as_str());
+                }
+                if matches!(
+                    run_tool("firewall-cmd", &target_args),
+                    Some((true, t)) if t.trim() == "ACCEPT"
+                ) {
+                    return true;
+                }
                 [&tcp, &udp].iter().all(|spec| {
                     let mut args = Vec::new();
                     let zone_arg = zone.map(|z| format!("--zone={z}"));
@@ -136,8 +158,12 @@ fn check(port: u16) -> FirewallStatus {
             if open {
                 return FirewallStatus::ok();
             }
+            // Container and VM bridges are listed as zones too; the command
+            // should target the LAN zone, not one of them.
             let zone_flag = zones
-                .first()
+                .iter()
+                .find(|z| !is_virtual_zone(z))
+                .or(zones.first())
                 .map(|z| format!(" --zone={z}"))
                 .unwrap_or_default();
             return FirewallStatus {
@@ -170,25 +196,21 @@ fn check(_port: u16) -> FirewallStatus {
         .map(|p| p.display().to_string())
         .unwrap_or_else(|_| "spool.exe".into());
 
-    // The rule must exist and point at this exe: a rule left over from an
-    // install in another folder doesn't cover this binary. The verbose output
-    // is localised, but the program path in it is not, so match on that.
-    let output = std::process::Command::new("netsh")
-        .args([
-            "advfirewall",
-            "firewall",
-            "show",
-            "rule",
-            "name=Spool",
-            "verbose",
-        ])
+    // An enabled inbound allow rule named Spool must point at this exe (a
+    // rule left over from an install in another folder doesn't cover it).
+    // PowerShell's rule objects are not localised, unlike netsh's output.
+    const SCRIPT: &str = "Get-NetFirewallRule -DisplayName 'Spool' -ErrorAction SilentlyContinue \
+        | Where-Object { $_.Enabled -eq 'True' -and $_.Action -eq 'Allow' -and $_.Direction -eq 'Inbound' } \
+        | Get-NetFirewallApplicationFilter | ForEach-Object { $_.Program }";
+    let output = std::process::Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command", SCRIPT])
         .creation_flags(CREATE_NO_WINDOW)
         .output();
     if let Ok(o) = &output {
         if o.status.success()
             && String::from_utf8_lossy(&o.stdout)
-                .to_lowercase()
-                .contains(&exe.to_lowercase())
+                .lines()
+                .any(|l| l.trim().eq_ignore_ascii_case(&exe))
         {
             return FirewallStatus::ok();
         }
