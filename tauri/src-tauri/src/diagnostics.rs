@@ -64,22 +64,9 @@ pub fn check_dependencies(config: State<'_, crate::config::SharedConfig>) -> Vec
 
 fn check_umu_run(configured: &str, distro: &Distro) -> DepStatus {
     // umu-run is NOT bundled — it's a Python app with system lib32/vulkan deps.
-    // Resolution: config override → /usr/bin/umu-run → PATH.
-    if !configured.is_empty() {
-        let p = std::path::PathBuf::from(configured);
-        if p.is_file() {
-            return found("umu-run", configured, DepSource::System);
-        }
-    }
-    let well_known = std::path::Path::new("/usr/bin/umu-run");
-    if well_known.is_file() {
-        return found(
-            "umu-run",
-            well_known.to_str().unwrap_or(""),
-            DepSource::System,
-        );
-    }
-    if let Some(p) = paths::find_system_binary("umu-run") {
+    // Same resolution as a launch, so the doctor reports whatever a launch
+    // would use (including the install script's copy and Heroic's).
+    if let Ok(p) = crate::proton::resolve_umu_run(Some(configured)) {
         return found("umu-run", &p.to_string_lossy(), DepSource::System);
     }
     let mut status = missing("umu-run", install_hint_umu(distro));
@@ -175,20 +162,23 @@ fn extract_field<'a>(content: &'a str, key: &str) -> &'a str {
 
 // ── Per-distro install hints ──────────────────────────────────────────────────
 
+/// The install script also downloads umu-run when none is found; re-running it
+/// on an existing install refreshes the AppImage and fetches umu.
+const INSTALL_SCRIPT_CMD: &str = "curl -fsSL https://raw.githubusercontent.com/aidankinzett/Spool/master/scripts/install-appimage.sh | bash";
+
 fn install_hint_umu(distro: &Distro) -> String {
     // No distro packages umu-launcher for aarch64, and the ARM handheld images
     // that ship a Proton build have a read-only root anyway — so the per-distro
-    // package commands below can't work there. umu itself runs fine on aarch64;
-    // the usual way to get one is Heroic, which downloads its own copy into its
-    // tools dir. `resolve_umu_run` finds that automatically, so reaching this
-    // hint on ARM means Heroic isn't installed either.
+    // package commands below can't work there. umu itself runs fine on aarch64:
+    // re-running the install script downloads upstream's architecture-
+    // independent zipapp into Spool's data dir, which `resolve_umu_run` finds.
     if cfg!(target_arch = "aarch64") {
-        return "# Install Heroic, or point Spool at an existing umu-run below".to_string();
+        return INSTALL_SCRIPT_CMD.to_string();
     }
     match distro {
-        // SteamOS root is read-only and AUR isn't available, so there's no
-        // one-line package install — the docs link covers the home-dir build.
-        Distro::SteamOS => "# SteamOS root is read-only — see the guide below".to_string(),
+        // SteamOS root is read-only and AUR isn't available, so the install
+        // script's home-dir copy is the one-line option there.
+        Distro::SteamOS => INSTALL_SCRIPT_CMD.to_string(),
         Distro::Arch => "paru -S umu-launcher".to_string(),
         Distro::Fedora => "sudo dnf install umu-launcher".to_string(),
         Distro::Debian => "# Not in apt yet — see the guide below".to_string(),
@@ -242,7 +232,10 @@ mod tests {
     #[test]
     fn steamos_hint_does_not_suggest_a_package_install() {
         let hint = install_hint_umu(&Distro::SteamOS);
-        assert!(hint.starts_with('#'), "read-only root: {hint}");
+        assert!(
+            hint.contains("install-appimage.sh"),
+            "read-only root: {hint}"
+        );
         assert!(install_hint_umu(&Distro::Fedora).contains("dnf"));
     }
 }

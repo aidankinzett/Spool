@@ -231,6 +231,14 @@ pub fn proton_prefixes_dir() -> PathBuf {
     app_data_dir().join("prefixes")
 }
 
+/// `umu-run` placed by the Linux install script (`scripts/install-appimage.sh`)
+/// on machines with no system umu-launcher: upstream's zipapp, which is pure
+/// Python and so runs on both x86_64 and aarch64.
+#[allow(dead_code)]
+pub fn spool_umu_run() -> PathBuf {
+    app_data_dir().join("tools").join("umu").join("umu-run")
+}
+
 /// Default root for games installed through the guided Windows-installer flow
 /// (`guided_install.rs`): `~/.local/share/Spool/games/<name>` on Linux. Each
 /// install gets its own subfolder, mounted into the Wine prefix as a drive so

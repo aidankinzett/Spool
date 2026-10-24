@@ -9,13 +9,33 @@
 # Usage:
 #   ./install-appimage.sh              # install / update
 #   ./install-appimage.sh --uninstall  # remove the AppImage + launcher entry
+#   ./install-appimage.sh --no-umu     # skip the umu-launcher step
 #
 # One-liner (no clone needed):
 #   curl -fsSL https://raw.githubusercontent.com/aidankinzett/Spool/master/scripts/install-appimage.sh | bash
 #
+# Spool launches Windows games on Linux through umu-launcher (`umu-run`), which
+# isn't bundled in the AppImage. If none is found (system package, PATH, or
+# Heroic's copy), this downloads upstream's zipapp release into Spool's data
+# dir, where Spool looks for it. The zipapp is pure Python, so the same file
+# works on x86_64 and aarch64; it needs python3 >= 3.10.
+#
 # Env overrides:
 #   INSTALL_DIR   where the AppImage lands (default: ~/Applications)
 set -euo pipefail
+
+INSTALL_UMU=1
+UNINSTALL=0
+for arg in "$@"; do
+  case "$arg" in
+    --uninstall) UNINSTALL=1 ;;
+    --no-umu) INSTALL_UMU=0 ;;
+    *)
+      echo "Unknown option: $arg" >&2
+      exit 1
+      ;;
+  esac
+done
 
 REPO="aidankinzett/Spool"
 
@@ -38,6 +58,83 @@ APPIMAGE_PATH="$INSTALL_DIR/$ASSET"
 DESKTOP_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
 DESKTOP_PATH="$DESKTOP_DIR/spool.desktop"
 ICON_ROOT="${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor"
+# Must match `paths::spool_umu_run()` (dirs::data_local_dir() + Spool/tools/umu).
+UMU_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/Spool/tools/umu"
+UMU_RELEASE_API="https://api.github.com/repos/Open-Wine-Components/umu-launcher/releases/latest"
+
+download() { # <url> <dest>
+  if command -v curl &>/dev/null; then
+    curl -fL --progress-bar -o "$2" "$1"
+  elif command -v wget &>/dev/null; then
+    wget -q --show-progress -O "$2" "$1"
+  else
+    echo "Error: need curl or wget to download." >&2
+    return 1
+  fi
+}
+
+fetch_stdout() { # <url>
+  if command -v curl &>/dev/null; then
+    curl -fsSL "$1"
+  else
+    wget -qO- "$1"
+  fi
+}
+
+# Same order as `proton::resolve_umu_run`, minus the Settings override and
+# Spool's own copy (which this script refreshes).
+find_external_umu() {
+  local config_home="${XDG_CONFIG_HOME:-$HOME/.config}"
+  local c
+  for c in \
+    /usr/bin/umu-run \
+    "$(command -v umu-run 2>/dev/null || true)" \
+    "$config_home/heroic/tools/runtimes/umu/umu-run" \
+    "$HOME/.var/app/com.heroicgameslauncher.hgl/config/heroic/tools/runtimes/umu/umu-run"; do
+    if [ -n "$c" ] && [ -f "$c" ] && [ "$c" != "$UMU_DIR/umu-run" ]; then
+      echo "$c"
+      return 0
+    fi
+  done
+  return 1
+}
+
+install_umu() {
+  local existing
+  if existing="$(find_external_umu)"; then
+    echo "==> umu-launcher found at $existing; skipping download."
+    return 0
+  fi
+  if ! python3 -c 'import sys; sys.exit(sys.version_info < (3, 10))' &>/dev/null; then
+    echo "==> Skipping umu-launcher: it needs python3 >= 3.10, which wasn't found." >&2
+    echo "    Windows games won't launch until umu-run is installed." >&2
+    return 0
+  fi
+
+  echo "==> Downloading umu-launcher (needed to run Windows games through Proton)..."
+  local url
+  url="$(fetch_stdout "$UMU_RELEASE_API" |
+    grep -o '"browser_download_url": *"[^"]*-zipapp\.tar"' |
+    head -1 | sed -E 's/.*"(https[^"]*)"/\1/' || true)"
+  if [ -z "$url" ]; then
+    echo "    Couldn't find the umu-launcher zipapp release; skipping." >&2
+    return 0
+  fi
+  echo "    $url"
+
+  local work
+  work="$(mktemp -d)"
+  if ! download "$url" "$work/umu.tar" || ! tar -xf "$work/umu.tar" -C "$work" umu/umu-run; then
+    echo "    umu-launcher download failed; skipping." >&2
+    rm -rf "$work"
+    return 0
+  fi
+  mkdir -p "$UMU_DIR"
+  chmod +x "$work/umu/umu-run"
+  mv -f "$work/umu/umu-run" "$UMU_DIR/umu-run"
+  rm -rf "$work"
+  echo "    Installed to $UMU_DIR/umu-run"
+}
 
 # ── Refresh the desktop/icon caches so the launcher notices changes ───────────
 refresh_caches() {
@@ -57,9 +154,10 @@ refresh_caches() {
 }
 
 # ── Uninstall ─────────────────────────────────────────────────────────────────
-if [ "${1:-}" = "--uninstall" ]; then
+if [ "$UNINSTALL" -eq 1 ]; then
   echo "==> Removing Spool..."
   rm -f "$APPIMAGE_PATH" "$DESKTOP_PATH"
+  rm -rf "$UMU_DIR"
   find "$ICON_ROOT" -name 'spool.png' -delete 2>/dev/null || true
   refresh_caches
   echo "Done. Spool has been removed."
@@ -72,14 +170,7 @@ echo "==> Downloading the latest Spool AppImage..."
 echo "    $DOWNLOAD_URL"
 TMP_DL="$(mktemp "$INSTALL_DIR/.Spool.XXXXXX.AppImage")"
 trap 'rm -f "$TMP_DL"' EXIT
-if command -v curl &>/dev/null; then
-  curl -fL --progress-bar -o "$TMP_DL" "$DOWNLOAD_URL"
-elif command -v wget &>/dev/null; then
-  wget -q --show-progress -O "$TMP_DL" "$DOWNLOAD_URL"
-else
-  echo "Error: need curl or wget to download." >&2
-  exit 1
-fi
+download "$DOWNLOAD_URL" "$TMP_DL"
 chmod +x "$TMP_DL"
 mv -f "$TMP_DL" "$APPIMAGE_PATH"
 trap - EXIT
@@ -171,6 +262,10 @@ fi
 chmod +x "$DESKTOP_PATH"
 
 refresh_caches
+
+if [ "$INSTALL_UMU" -eq 1 ]; then
+  install_umu
+fi
 
 echo ""
 echo "Done. Spool is in your application launcher."
