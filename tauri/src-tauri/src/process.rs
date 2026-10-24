@@ -388,13 +388,13 @@ fn umu_setup_status(line: &str) -> Option<&'static str> {
 /// Turns umu-run's output into setup start/finish callbacks. Both output
 /// streams feed one tracker; the callback runs under its lock so a "finished"
 /// can't be reordered ahead of the "started" it follows.
-struct SetupTracker {
+pub(crate) struct SetupTracker {
     cb: Option<SetupCallback>,
     active: Mutex<bool>,
 }
 
 impl SetupTracker {
-    fn new(cb: Option<SetupCallback>) -> Self {
+    pub(crate) fn new(cb: Option<SetupCallback>) -> Self {
         Self {
             cb,
             active: Mutex::new(false),
@@ -403,7 +403,7 @@ impl SetupTracker {
 
     /// Reports `Some(message)` for a setup line, and `None` once, on the first
     /// other line after one.
-    fn observe(&self, line: &str) {
+    pub(crate) fn observe(&self, line: &str) {
         let Some(cb) = self.cb.as_ref() else { return };
         if line.trim().is_empty() {
             return;
@@ -423,7 +423,7 @@ impl SetupTracker {
     }
 
     /// Ends any setup still showing, e.g. when umu exits mid-download.
-    fn finish(&self) {
+    pub(crate) fn finish(&self) {
         let Some(cb) = self.cb.as_ref() else { return };
         let mut active = self.active.lock().unwrap_or_else(|e| e.into_inner());
         if *active {

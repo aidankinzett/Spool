@@ -2887,6 +2887,15 @@ async fn reconcile_cloud_conflict(
     Ok(())
 }
 
+/// The run phase and message to show for umu's setup status: a message while it
+/// downloads or unpacks, `playing` once it finishes.
+fn setup_phase(msg: Option<&str>) -> (&'static str, Option<&str>) {
+    match msg {
+        Some(m) => ("launching", Some(m)),
+        None => ("playing", None),
+    }
+}
+
 /// Phase 2: spawn the game and wait for it to exit. Target validation and the
 /// session claim already happened in [`preflight`]; saves are restored. Owns the
 /// session heartbeat + suspend-watcher lifecycle, flips the marker to
@@ -2947,9 +2956,9 @@ async fn phase_launch(ctx: &WorkflowCtx<'_>, exe_pathbuf: &Path) -> AppResult<Se
     let setup_cb: process::SetupCallback = {
         let app = ctx.app.clone();
         let game_id = ctx.game_id.to_string();
-        std::sync::Arc::new(move |msg: Option<&str>| match msg {
-            Some(m) => emit_phase(&app, &game_id, "launching", Some(m), cloud_configured, None),
-            None => emit_phase(&app, &game_id, "playing", None, cloud_configured, None),
+        std::sync::Arc::new(move |msg: Option<&str>| {
+            let (phase, message) = setup_phase(msg);
+            emit_phase(&app, &game_id, phase, message, cloud_configured, None);
         })
     };
     let spec = if ctx.launch.use_proton {
@@ -3685,6 +3694,56 @@ fn finish(ctx: &WorkflowCtx<'_>, backup: &BackupResult, session_minutes: i32) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn umu_first_run_output_becomes_launching_messages_then_playing() {
+        // Lines captured from umu-run 1.4.4 on a fresh install, fed through the
+        // same tracker + mapping `phase_launch` uses.
+        let events =
+            std::sync::Arc::new(std::sync::Mutex::new(Vec::<(String, Option<String>)>::new()));
+        let sink = std::sync::Arc::clone(&events);
+        let cb: process::SetupCallback = std::sync::Arc::new(move |msg| {
+            let (phase, message) = setup_phase(msg);
+            sink.lock()
+                .unwrap()
+                .push((phase.to_string(), message.map(String::from)));
+        });
+        let tracker = process::SetupTracker::new(Some(cb));
+        for line in [
+            "INFO: umu-launcher version 1.4.4",
+            "INFO: Downloading UMU-Proton-10.0-4.sha512sum...",
+            "INFO: Downloading UMU-Proton-10.0-4.tar.gz...",
+            "INFO: UMU-Proton-10.0-4.tar.gz: SHA512 is OK",
+            "INFO: Extracting UMU-Proton-10.0-4.tar.gz...",
+            "INFO: Using UMU-Proton-10.0-4",
+            "INFO: Downloading steamrt3 (3.0.20261021.266025), please wait...",
+            "INFO: Running 'UMU-Proton-10.0-4' using runtime 'sniper'",
+        ] {
+            tracker.observe(line);
+        }
+        tracker.finish();
+
+        let launching = |m: &str| ("launching".to_string(), Some(m.to_string()));
+        let playing = ("playing".to_string(), None);
+        assert_eq!(
+            *events.lock().unwrap(),
+            [
+                launching("Downloading Proton…"),
+                launching("Downloading Proton…"),
+                playing.clone(),
+                launching("Unpacking Proton…"),
+                playing.clone(),
+                launching("Downloading Steam Linux Runtime…"),
+                playing,
+            ]
+        );
+    }
+
+    #[test]
+    fn setup_phase_without_a_message_means_playing() {
+        assert_eq!(setup_phase(None), ("playing", None));
+        assert_eq!(setup_phase(Some("x")), ("launching", Some("x")));
+    }
+
     use super::*;
 
     #[test]
