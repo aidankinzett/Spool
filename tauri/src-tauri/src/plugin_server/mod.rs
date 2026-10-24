@@ -274,22 +274,34 @@ pub async fn serve() -> AppResult<()> {
 /// CORS then allows only the Decky UI origin, so even a request that got
 /// through couldn't have its response read by another site. Requests with no
 /// `Origin` (the plugin's Python backend, `<img>` loads) pass the second check.
+///
+/// Browsers also omit `Origin` on simple cross-origin GETs, so another site can
+/// still trigger a GET it can't read the result of. Keep GET handlers free of
+/// side effects beyond idempotent reads (the achievement scan only imports
+/// unlocks already on disk). Any other process on the machine can reach the
+/// server too; this guards against web pages, not local processes.
 fn harden(router: Router, port: u16) -> Router {
     let cors = CorsLayer::new()
         .allow_origin(HeaderValue::from_static(DECKY_UI_ORIGIN))
         .allow_methods([Method::GET, Method::POST, Method::DELETE])
         .allow_headers([header::CONTENT_TYPE]);
+    let hosts = Arc::new([format!("127.0.0.1:{port}"), format!("localhost:{port}")]);
     router
         .layer(cors)
-        .layer(middleware::from_fn_with_state(port, guard_host_and_origin))
+        .layer(middleware::from_fn_with_state(hosts, guard_host_and_origin))
 }
 
-async fn guard_host_and_origin(State(port): State<u16>, req: Request, next: Next) -> Response {
+async fn guard_host_and_origin(
+    State(hosts): State<Arc<[String; 2]>>,
+    req: Request,
+    next: Next,
+) -> Response {
+    // Host names are case-insensitive.
     let host_ok = req
         .headers()
         .get(header::HOST)
         .and_then(|h| h.to_str().ok())
-        .is_some_and(|h| h == format!("127.0.0.1:{port}") || h == format!("localhost:{port}"));
+        .is_some_and(|h| hosts.iter().any(|allowed| h.eq_ignore_ascii_case(allowed)));
     if !host_ok {
         return (StatusCode::FORBIDDEN, "unexpected Host").into_response();
     }
@@ -356,7 +368,7 @@ mod tests {
         // The plugin's Python backend and `<img>` loads send no Origin.
         assert_eq!(call(Method::GET, "/status", &[HOST]).await.status(), 200);
         assert_eq!(call(Method::POST, "/fold", &[HOST]).await.status(), 200);
-        let localhost = [("host", "localhost:47650")];
+        let localhost = [("host", "LocalHost:47650")];
         assert_eq!(call(Method::GET, "/status", &localhost).await.status(), 200);
     }
 
