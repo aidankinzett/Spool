@@ -360,7 +360,7 @@ async fn listen_loop(
                 .map(|e| e.peer.device_name != packet.device_name)
                 .unwrap_or(false);
             let pairing_changed = entry
-                .map(|e| (e.peer.pairing_port == 0) != (packet.pairing_port == 0))
+                .map(|e| e.peer.pairing_port != packet.pairing_port)
                 .unwrap_or(false);
             peers.insert(
                 packet.device_id.clone(),

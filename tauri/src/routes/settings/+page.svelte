@@ -633,6 +633,8 @@
       stopPairTimer();
       if (ev.payload === 'paired') {
         toasts.show({ kind: 'ok', label: 'CLOUD · SHARE', title: 'Cloud setup shared', sub: 'The other device now has this remote.' });
+      } else if (ev.payload === 'failed') {
+        toasts.show({ kind: 'bad', label: 'CLOUD · SHARE', title: "Couldn't share cloud setup", sub: 'This device could not read its cloud remote. Start sharing again to retry.' });
       } else if (ev.payload === 'locked') {
         toasts.show({ kind: 'warn', label: 'CLOUD · SHARE', title: 'Sharing stopped', sub: 'Too many wrong codes. Start sharing again to get a new one.' });
       }

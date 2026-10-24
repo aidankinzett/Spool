@@ -129,13 +129,14 @@
   async function joinPairing() {
     if (!pairPeer || pairing || pairCode.length !== 6) return;
     pairing = true;
+    const peerName = pairPeer.device_name;
     try {
       await api.joinCloudPairing(pairPeer.device_id, pairCode);
       config = await api.getConfig();
       cloudConnected = true;
       pairCode = '';
       pairPeerId = null;
-      toasts.show({ kind: 'ok', label: 'CLOUD', title: 'Cloud setup copied', sub: `From ${pairPeer.device_name}.` });
+      toasts.show({ kind: 'ok', label: 'CLOUD', title: 'Cloud setup copied', sub: `From ${peerName}.` });
       idx += 1; // on to the cloud step, which now shows the remote as connected
     } catch (e) {
       toasts.show({ kind: 'bad', label: 'CLOUD · PAIRING', title: "Couldn't copy cloud setup", sub: String(e) });
@@ -463,7 +464,7 @@
                 <div class="w-[140px]">
                   <TextField bind:value={pairCode} placeholder="123456" mono full />
                 </div>
-                <Btn variant="primary" accent={ACCENT} onclick={joinPairing} disabled={pairing || !/^d{6}$/.test(pairCode)}>
+                <Btn variant="primary" accent={ACCENT} onclick={joinPairing} disabled={pairing || !/^\d{6}$/.test(pairCode)}>
                   {#snippet icon()}<Check size={14} />{/snippet}
                   {pairing ? 'Copying…' : 'Copy cloud setup'}
                 </Btn>

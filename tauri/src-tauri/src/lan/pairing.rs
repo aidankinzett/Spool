@@ -201,13 +201,16 @@ fn derive_keys(shared: &[u8]) -> ([u8; 32], [u8; 32]) {
 }
 
 /// `nonce || ciphertext`.
-fn seal(key: &[u8; 32], plaintext: &[u8]) -> Vec<u8> {
+fn seal(key: &[u8; 32], plaintext: &[u8]) -> AppResult<Vec<u8>> {
     let cipher = ChaCha20Poly1305::new(Key::from_slice(key));
     let nonce = ChaCha20Poly1305::generate_nonce(&mut OsRng);
     let mut out = nonce.to_vec();
-    // Encrypting an in-memory buffer only fails past the AEAD length limit.
-    out.extend(cipher.encrypt(&nonce, plaintext).unwrap_or_default());
-    out
+    out.extend(
+        cipher
+            .encrypt(&nonce, plaintext)
+            .map_err(|_| AppError::Other("encryption failed".into()))?,
+    );
+    Ok(out)
 }
 
 fn open(key: &[u8; 32], blob: &[u8]) -> Option<Vec<u8>> {
@@ -270,7 +273,12 @@ pub(super) async fn handle_finish(
             *g = None;
             return Err(PairError::Closed);
         };
-        let Some(p) = w.pending.take().filter(|p| p.session == req.session) else {
+        // Only consume the pending handshake when the session matches, so a stray
+        // request with a wrong session can't discard the real joiner's.
+        if !w.pending.as_ref().is_some_and(|p| p.session == req.session) {
+            return Err(PairError::Rejected);
+        }
+        let Some(p) = w.pending.take() else {
             return Err(PairError::Rejected);
         };
         if open(&p.joiner_key, &proof).as_deref() != Some(PROOF) {
@@ -289,15 +297,29 @@ pub(super) async fn handle_finish(
         let g = config.lock().map_err(|_| PairError::Internal)?;
         g.data.clone()
     };
-    let setup = export_setup(&cfg).await.map_err(|e| {
-        tracing::warn!(error = %e, "cloud pairing: could not export the remote");
-        PairError::Internal
-    })?;
-    let json = serde_json::to_vec(&setup).map_err(|_| PairError::Internal)?;
-    let _ = app.emit("pairing:ended", "paired");
-    Ok(FinishResp {
-        payload: b64().encode(seal(&host_key, &json)),
-    })
+    // The proof verified and the window is already closed, so any failure from
+    // here on ends the pairing; tell the host UI so it stops showing the code.
+    let sealed = async {
+        let setup = export_setup(&cfg).await.map_err(|e| {
+            tracing::warn!(error = %e, "cloud pairing: could not export the remote");
+            PairError::Internal
+        })?;
+        let json = serde_json::to_vec(&setup).map_err(|_| PairError::Internal)?;
+        seal(&host_key, &json).map_err(|_| PairError::Internal)
+    }
+    .await;
+    match sealed {
+        Ok(blob) => {
+            let _ = app.emit("pairing:ended", "paired");
+            Ok(FinishResp {
+                payload: b64().encode(blob),
+            })
+        }
+        Err(e) => {
+            let _ = app.emit("pairing:ended", "failed");
+            Err(e)
+        }
+    }
 }
 
 /// Reads the configured remote out of rclone's config into a [`CloudSetup`].
@@ -457,7 +479,7 @@ async fn fetch_setup(host: &str, port: u16, code: &str) -> AppResult<CloudSetup>
         .post(format!("{base}/pair/finish"))
         .json(&FinishReq {
             session: start.session,
-            proof: b64().encode(seal(&joiner_key, PROOF)),
+            proof: b64().encode(seal(&joiner_key, PROOF)?),
         })
         .send()
         .await
@@ -620,7 +642,7 @@ mod tests {
     #[test]
     fn seal_round_trips_and_rejects_wrong_key() {
         let (k1, k2) = derive_keys(b"shared secret");
-        let blob = seal(&k1, b"hello");
+        let blob = seal(&k1, b"hello").unwrap();
         assert_eq!(open(&k1, &blob).as_deref(), Some(&b"hello"[..]));
         assert!(open(&k2, &blob).is_none());
         assert!(open(&k1, &blob[..5]).is_none());
@@ -648,7 +670,7 @@ mod tests {
         // The proof the joiner sends only verifies under the matching key.
         let (joiner_key, _) = derive_keys(&ka);
         let (host_key_for_wrong_code, _) = derive_keys(&kb);
-        assert!(open(&host_key_for_wrong_code, &seal(&joiner_key, PROOF)).is_none());
+        assert!(open(&host_key_for_wrong_code, &seal(&joiner_key, PROOF).unwrap()).is_none());
     }
 
     #[test]
