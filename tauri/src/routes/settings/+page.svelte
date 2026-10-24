@@ -341,6 +341,12 @@
     }
   }
 
+  async function setHomeLayout(layout: ConfigData['home_layout']) {
+    if (!config) return;
+    config.home_layout = layout;
+    if (await persist()) await emit('config:home-layout-changed');
+  }
+
   async function setUiMode(mode: ConfigData['ui_mode']) {
     if (!config) return;
     config.ui_mode = mode;
@@ -879,6 +885,24 @@
                           { value: 'auto', label: 'Auto' },
                           { value: 'desktop', label: 'Desktop' },
                           { value: 'touch', label: 'Gamepad' },
+                        ]}
+                      />
+                    </div>
+                  {/snippet}
+                </SettingsRow>
+                <SettingsRow
+                  label="Home layout"
+                  helper="How the desktop library's Home page arranges recently played games and the full library. Shelf: wide capsules and a cover grid. Spotlight: a large banner for your last game. List: a sortable table."
+                >
+                  {#snippet control()}
+                    <div class="flex justify-end">
+                      <Segmented
+                        value={config!.home_layout}
+                        onchange={(v) => setHomeLayout(v as ConfigData['home_layout'])}
+                        options={[
+                          { value: 'shelf', label: 'Shelf' },
+                          { value: 'spotlight', label: 'Spotlight' },
+                          { value: 'list', label: 'List' },
                         ]}
                       />
                     </div>
