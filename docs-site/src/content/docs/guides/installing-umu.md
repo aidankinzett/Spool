@@ -21,7 +21,7 @@ once.
 ## Using the Spool install script
 
 The Linux install script downloads umu-launcher for you when it can't find an
-existing `umu-run` (system package, `PATH`, or Heroic's copy). It fetches
+existing `umu-run` (in `/usr/bin` or Heroic's tools folder). It fetches
 upstream's zipapp release — a single pure-Python file, so the same download
 works on x86_64 and ARM64 — into `~/.local/share/Spool/tools/umu/umu-run`,
 where Spool looks for it. No root access is needed, so this also works on
@@ -32,7 +32,14 @@ curl -fsSL https://raw.githubusercontent.com/aidankinzett/Spool/master/scripts/i
 ```
 
 Re-running the script on an existing install also updates that copy of umu.
-Pass `--no-umu` to skip this step (`... | bash -s -- --no-umu`). A package
+To install only umu-launcher and leave your Spool install alone (for example if
+you installed Spool from the AUR), pass `--umu-only`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/aidankinzett/Spool/master/scripts/install-appimage.sh | bash -s -- --umu-only
+```
+
+Pass `--no-umu` to skip the umu step instead. A package
 from your distribution, below, gets updated with the rest of the system
 instead.
 

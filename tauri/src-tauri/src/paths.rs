@@ -234,7 +234,6 @@ pub fn proton_prefixes_dir() -> PathBuf {
 /// `umu-run` placed by the Linux install script (`scripts/install-appimage.sh`)
 /// on machines with no system umu-launcher: upstream's zipapp, which is pure
 /// Python and so runs on both x86_64 and aarch64.
-#[allow(dead_code)]
 pub fn spool_umu_run() -> PathBuf {
     app_data_dir().join("tools").join("umu").join("umu-run")
 }

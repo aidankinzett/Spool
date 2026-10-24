@@ -10,13 +10,14 @@
 #   ./install-appimage.sh              # install / update
 #   ./install-appimage.sh --uninstall  # remove the AppImage + launcher entry
 #   ./install-appimage.sh --no-umu     # skip the umu-launcher step
+#   ./install-appimage.sh --umu-only   # only install umu-launcher, leave the AppImage alone
 #
 # One-liner (no clone needed):
 #   curl -fsSL https://raw.githubusercontent.com/aidankinzett/Spool/master/scripts/install-appimage.sh | bash
 #
 # Spool launches Windows games on Linux through umu-launcher (`umu-run`), which
-# isn't bundled in the AppImage. If none is found (system package, PATH, or
-# Heroic's copy), this downloads upstream's zipapp release into Spool's data
+# isn't bundled in the AppImage. If none is found (in /usr/bin or Heroic's
+# tools dir), this downloads upstream's zipapp release into Spool's data
 # dir, where Spool looks for it. The zipapp is pure Python, so the same file
 # works on x86_64 and aarch64; it needs python3 >= 3.10.
 #
@@ -25,11 +26,13 @@
 set -euo pipefail
 
 INSTALL_UMU=1
+UMU_ONLY=0
 UNINSTALL=0
 for arg in "$@"; do
   case "$arg" in
     --uninstall) UNINSTALL=1 ;;
     --no-umu) INSTALL_UMU=0 ;;
+    --umu-only) UMU_ONLY=1 ;;
     *)
       echo "Unknown option: $arg" >&2
       exit 1
@@ -81,17 +84,19 @@ fetch_stdout() { # <url>
   fi
 }
 
-# Same order as `proton::resolve_umu_run`, minus the Settings override and
-# Spool's own copy (which this script refreshes).
+# The locations `proton::resolve_umu_run` checks that don't depend on the
+# environment. PATH is left out: this shell's PATH can include dirs added by
+# shell rc files that Spool, started from the app launcher or Steam Game Mode,
+# doesn't see. Spool checks its own copy after PATH, so downloading it alongside
+# a PATH install changes nothing when Spool can see that install.
 find_external_umu() {
   local config_home="${XDG_CONFIG_HOME:-$HOME/.config}"
   local c
   for c in \
     /usr/bin/umu-run \
-    "$(command -v umu-run 2>/dev/null || true)" \
     "$config_home/heroic/tools/runtimes/umu/umu-run" \
     "$HOME/.var/app/com.heroicgameslauncher.hgl/config/heroic/tools/runtimes/umu/umu-run"; do
-    if [ -n "$c" ] && [ -f "$c" ] && [ "$c" != "$UMU_DIR/umu-run" ]; then
+    if [ -f "$c" ]; then
       echo "$c"
       return 0
     fi
@@ -122,18 +127,23 @@ install_umu() {
   fi
   echo "    $url"
 
+  # Stage next to the destination so the final mv is a same-filesystem rename.
+  # Every step is guarded: the AppImage is already installed by this point, so
+  # a umu failure is reported as a warning rather than failing the script.
   local work
-  work="$(mktemp -d)"
-  if ! download "$url" "$work/umu.tar" || ! tar -xf "$work/umu.tar" -C "$work" umu/umu-run; then
-    echo "    umu-launcher download failed; skipping." >&2
-    rm -rf "$work"
+  if ! mkdir -p "$UMU_DIR" || ! work="$(mktemp -d "$UMU_DIR/.download.XXXXXX")"; then
+    echo "    Couldn't create $UMU_DIR; skipping umu-launcher." >&2
     return 0
   fi
-  mkdir -p "$UMU_DIR"
-  chmod +x "$work/umu/umu-run"
-  mv -f "$work/umu/umu-run" "$UMU_DIR/umu-run"
+  if download "$url" "$work/umu.tar" &&
+    tar -xf "$work/umu.tar" -C "$work" umu/umu-run &&
+    chmod +x "$work/umu/umu-run" &&
+    mv -f "$work/umu/umu-run" "$UMU_DIR/umu-run"; then
+    echo "    Installed to $UMU_DIR/umu-run"
+  else
+    echo "    umu-launcher install failed; skipping." >&2
+  fi
   rm -rf "$work"
-  echo "    Installed to $UMU_DIR/umu-run"
 }
 
 # ── Refresh the desktop/icon caches so the launcher notices changes ───────────
@@ -161,6 +171,11 @@ if [ "$UNINSTALL" -eq 1 ]; then
   find "$ICON_ROOT" -name 'spool.png' -delete 2>/dev/null || true
   refresh_caches
   echo "Done. Spool has been removed."
+  exit 0
+fi
+
+if [ "$UMU_ONLY" -eq 1 ]; then
+  install_umu
   exit 0
 fi
 

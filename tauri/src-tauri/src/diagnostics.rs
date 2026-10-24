@@ -162,9 +162,10 @@ fn extract_field<'a>(content: &'a str, key: &str) -> &'a str {
 
 // ── Per-distro install hints ──────────────────────────────────────────────────
 
-/// The install script also downloads umu-run when none is found; re-running it
-/// on an existing install refreshes the AppImage and fetches umu.
-const INSTALL_SCRIPT_CMD: &str = "curl -fsSL https://raw.githubusercontent.com/aidankinzett/Spool/master/scripts/install-appimage.sh | bash";
+/// The install script downloads umu-run when none is found. `--umu-only` skips
+/// the AppImage install, so this doesn't add a second copy of Spool for users
+/// who installed it another way.
+const INSTALL_SCRIPT_CMD: &str = "curl -fsSL https://raw.githubusercontent.com/aidankinzett/Spool/master/scripts/install-appimage.sh | bash -s -- --umu-only";
 
 fn install_hint_umu(distro: &Distro) -> String {
     // No distro packages umu-launcher for aarch64, and the ARM handheld images
