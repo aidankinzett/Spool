@@ -25,6 +25,7 @@ bun run tauri build        # Release binary + NSIS installer
 
 # Backend checks (from tauri/src-tauri)
 cargo check
+cargo fmt --check                           # CI fails on unformatted code; run `cargo fmt` to fix
 cargo clippy --all-targets -- -D warnings   # CI fails on any warning
 cargo test --all                            # run on Linux/WSL — see note below
 

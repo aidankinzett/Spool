@@ -218,7 +218,13 @@ jobs:
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy
+          components: clippy, rustfmt
+
+      # Formatting is platform-independent, so it's checked once, here, ahead of
+      # the slower dependency install and compile steps.
+      - name: Cargo fmt
+        working-directory: tauri/src-tauri
+        run: cargo fmt --check
 
       - name: Setup sccache
         uses: mozilla-actions/sccache-action@v0.0.11
