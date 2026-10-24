@@ -2887,6 +2887,15 @@ async fn reconcile_cloud_conflict(
     Ok(())
 }
 
+/// The run phase and message to show for umu's setup status: a message while it
+/// downloads or unpacks, `playing` once it finishes.
+fn setup_phase(msg: Option<&str>) -> (&'static str, Option<&str>) {
+    match msg {
+        Some(m) => ("launching", Some(m)),
+        None => ("playing", None),
+    }
+}
+
 /// Phase 2: spawn the game and wait for it to exit. Target validation and the
 /// session claim already happened in [`preflight`]; saves are restored. Owns the
 /// session heartbeat + suspend-watcher lifecycle, flips the marker to
@@ -2947,9 +2956,9 @@ async fn phase_launch(ctx: &WorkflowCtx<'_>, exe_pathbuf: &Path) -> AppResult<Se
     let setup_cb: process::SetupCallback = {
         let app = ctx.app.clone();
         let game_id = ctx.game_id.to_string();
-        std::sync::Arc::new(move |msg: Option<&str>| match msg {
-            Some(m) => emit_phase(&app, &game_id, "launching", Some(m), cloud_configured, None),
-            None => emit_phase(&app, &game_id, "playing", None, cloud_configured, None),
+        std::sync::Arc::new(move |msg: Option<&str>| {
+            let (phase, message) = setup_phase(msg);
+            emit_phase(&app, &game_id, phase, message, cloud_configured, None);
         })
     };
     let spec = if ctx.launch.use_proton {
@@ -3686,6 +3695,12 @@ fn finish(ctx: &WorkflowCtx<'_>, backup: &BackupResult, session_minutes: i32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn setup_phase_without_a_message_means_playing() {
+        assert_eq!(setup_phase(None), ("playing", None));
+        assert_eq!(setup_phase(Some("x")), ("launching", Some("x")));
+    }
 
     #[test]
     fn done_outcome_reports_no_save_data_over_a_failed_upload() {

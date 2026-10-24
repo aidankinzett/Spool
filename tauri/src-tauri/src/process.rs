@@ -27,6 +27,7 @@ use crate::proton;
 use std::collections::VecDeque;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tokio::process::Command;
 
 /// How many lines of a Proton child's output reach `debug.log` per launch.
@@ -385,49 +386,120 @@ fn umu_setup_status(line: &str) -> Option<&'static str> {
     }
 }
 
+/// How long umu must stay free of setup lines before setup counts as finished.
+/// Steps are separated by short non-setup lines (`SHA512 is OK`, `Using …`), so
+/// finishing on the first of those would flip the phase to `playing` between
+/// every download and unpack.
+const SETUP_SETTLE: Duration = Duration::from_secs(2);
+
+#[derive(Default)]
+struct SetupState {
+    /// A setup message is currently showing.
+    active: bool,
+    /// A settle timer is running for the showing message.
+    settling: bool,
+    /// Bumped by every new setup line and by `finish`, which cancels any
+    /// settle timer started under an older value.
+    generation: u64,
+    last: Option<&'static str>,
+    /// When umu last printed anything; the settle time counts from here.
+    last_output: Option<tokio::time::Instant>,
+}
+
 /// Turns umu-run's output into setup start/finish callbacks. Both output
 /// streams feed one tracker; the callback runs under its lock so a "finished"
-/// can't be reordered ahead of the "started" it follows.
+/// can't be reordered ahead of the "started" it follows. "Finished" is reported
+/// once umu has been quiet for [`SETUP_SETTLE`], so consecutive steps read as
+/// one setup.
 struct SetupTracker {
     cb: Option<SetupCallback>,
-    active: Mutex<bool>,
+    settle: Duration,
+    state: Arc<Mutex<SetupState>>,
 }
 
 impl SetupTracker {
     fn new(cb: Option<SetupCallback>) -> Self {
+        Self::with_settle(cb, SETUP_SETTLE)
+    }
+
+    fn with_settle(cb: Option<SetupCallback>, settle: Duration) -> Self {
         Self {
             cb,
-            active: Mutex::new(false),
+            settle,
+            state: Arc::new(Mutex::new(SetupState::default())),
         }
     }
 
-    /// Reports `Some(message)` for a setup line, and `None` once, on the first
-    /// other line after one.
+    /// Reports `Some(message)` when a setup step starts, and `None` once setup
+    /// has been quiet for the settle time. Must run inside a tokio runtime.
     fn observe(&self, line: &str) {
         let Some(cb) = self.cb.as_ref() else { return };
         if line.trim().is_empty() {
             return;
         }
-        let mut active = self.active.lock().unwrap_or_else(|e| e.into_inner());
+        let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        st.last_output = Some(tokio::time::Instant::now());
         match umu_setup_status(line) {
             Some(msg) => {
-                *active = true;
-                cb(Some(msg));
+                st.generation += 1;
+                st.settling = false;
+                // Repeated steps with the same message (a checksum download
+                // then the archive) are one message to the user.
+                if !(st.active && st.last == Some(msg)) {
+                    cb(Some(msg));
+                }
+                st.active = true;
+                st.last = Some(msg);
             }
-            None if *active => {
-                *active = false;
-                cb(None);
+            None if st.active && !st.settling => {
+                st.settling = true;
+                let generation = st.generation;
+                let state = Arc::clone(&self.state);
+                let cb = Arc::clone(cb);
+                let settle = self.settle;
+                tokio::spawn(async move {
+                    // Wait until umu has been silent for `settle`: output that
+                    // arrives while waiting pushes the deadline back.
+                    loop {
+                        let wait = {
+                            let st = state.lock().unwrap_or_else(|e| e.into_inner());
+                            if st.generation != generation || !st.active {
+                                return;
+                            }
+                            let quiet_since =
+                                st.last_output.unwrap_or_else(tokio::time::Instant::now);
+                            (quiet_since + settle)
+                                .saturating_duration_since(tokio::time::Instant::now())
+                        };
+                        if wait.is_zero() {
+                            break;
+                        }
+                        tokio::time::sleep(wait).await;
+                    }
+                    let mut st = state.lock().unwrap_or_else(|e| e.into_inner());
+                    if st.generation == generation && st.active {
+                        st.active = false;
+                        st.settling = false;
+                        st.last = None;
+                        cb(None);
+                    }
+                });
             }
             None => {}
         }
     }
 
-    /// Ends any setup still showing, e.g. when umu exits mid-download.
+    /// Ends any setup still showing, e.g. when umu exits mid-download, and
+    /// cancels a pending settle timer so it can't fire after the caller moves
+    /// on to the next phase.
     fn finish(&self) {
         let Some(cb) = self.cb.as_ref() else { return };
-        let mut active = self.active.lock().unwrap_or_else(|e| e.into_inner());
-        if *active {
-            *active = false;
+        let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        st.generation += 1;
+        st.settling = false;
+        st.last = None;
+        if st.active {
+            st.active = false;
             cb(None);
         }
     }
@@ -748,59 +820,117 @@ mod tests {
         assert_eq!(status("fixme: downloading patch list"), None);
     }
 
-    fn recording_tracker() -> (SetupTracker, Arc<Mutex<Vec<Option<String>>>>) {
-        let events = Arc::new(Mutex::new(Vec::new()));
+    type Events = Arc<Mutex<Vec<Option<String>>>>;
+
+    fn recording_tracker(settle: Duration) -> (SetupTracker, Events) {
+        let events: Events = Arc::new(Mutex::new(Vec::new()));
         let sink = Arc::clone(&events);
         let cb: SetupCallback = Arc::new(move |m| sink.lock().unwrap().push(m.map(String::from)));
-        (SetupTracker::new(Some(cb)), events)
+        (SetupTracker::with_settle(Some(cb), settle), events)
     }
 
-    #[test]
-    fn setup_tracker_reports_start_then_a_single_finish() {
-        let (t, events) = recording_tracker();
-        t.observe("starting up");
-        t.observe("INFO: Downloading UMU-Proton-10.0-4.tar.gz...");
-        t.observe("INFO: Extracting UMU-Proton-10.0-4.tar.gz...");
-        t.observe("INFO: Using UMU-Proton-10.0-4");
-        t.observe("more output");
-        t.finish();
+    const TEST_SETTLE: Duration = Duration::from_millis(40);
+
+    async fn settled() {
+        tokio::time::sleep(TEST_SETTLE * 4).await;
+    }
+
+    fn snapshot(events: &Events) -> Vec<Option<String>> {
+        events.lock().unwrap().clone()
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn setup_tracker_reports_consecutive_steps_as_one_setup() {
+        // Lines captured from umu-run 1.4.4 on a fresh install.
+        let (t, events) = recording_tracker(TEST_SETTLE);
+        for line in [
+            "INFO: umu-launcher version 1.4.4",
+            "INFO: Downloading UMU-Proton-10.0-4.sha512sum...",
+            "INFO: Downloading UMU-Proton-10.0-4.tar.gz...",
+            "INFO: UMU-Proton-10.0-4.tar.gz: SHA512 is OK",
+            "INFO: Extracting UMU-Proton-10.0-4.tar.gz...",
+            "INFO: Using UMU-Proton-10.0-4",
+            "INFO: Downloading steamrt3 (3.0.20261021.266025), please wait...",
+            "INFO: Running 'UMU-Proton-10.0-4' using runtime 'sniper'",
+        ] {
+            t.observe(line);
+        }
+        settled().await;
+        // One message per distinct step, and a single finish: no `playing`
+        // between steps, and the checksum + archive downloads read as one.
         assert_eq!(
-            *events.lock().unwrap(),
+            snapshot(&events),
             [
                 Some("Downloading Proton…".to_string()),
                 Some("Unpacking Proton…".to_string()),
+                Some("Downloading Steam Linux Runtime…".to_string()),
                 None,
             ]
         );
     }
 
-    #[test]
-    fn setup_tracker_finish_clears_a_setup_cut_off_by_exit() {
-        let (t, events) = recording_tracker();
-        t.observe("Downloading UMU-Proton");
+    #[tokio::test(start_paused = true)]
+    async fn setup_tracker_stays_quiet_when_umu_has_nothing_to_set_up() {
+        let (t, events) = recording_tracker(TEST_SETTLE);
+        t.observe("INFO: umu-launcher version 1.4.4");
+        t.observe("INFO: Using UMU-Proton-10.0-4");
+        settled().await;
+        t.finish();
+        assert!(snapshot(&events).is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn setup_tracker_finish_clears_a_setup_cut_off_by_exit() {
+        let (t, events) = recording_tracker(TEST_SETTLE);
+        t.observe("INFO: Downloading UMU-Proton-10.0-4.tar.gz...");
         t.finish();
         t.finish();
-        assert_eq!(events.lock().unwrap().len(), 2, "one start, one finish");
+        assert_eq!(
+            snapshot(&events),
+            [Some("Downloading Proton…".to_string()), None]
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn setup_tracker_waits_for_umu_to_go_quiet() {
+        let (t, events) = recording_tracker(TEST_SETTLE);
+        t.observe("INFO: Downloading UMU-Proton-10.0-4.tar.gz...");
+        t.observe("INFO: some other line"); // starts the settle timer
+                                            // Output keeps arriving, each line inside the settle window, so the
+                                            // deadline keeps moving and setup never reads as finished.
+        for _ in 0..5 {
+            tokio::time::sleep(TEST_SETTLE / 2).await;
+            t.observe("progress");
+        }
+        assert_eq!(snapshot(&events), [Some("Downloading Proton…".to_string())]);
+        settled().await;
+        assert_eq!(
+            snapshot(&events),
+            [Some("Downloading Proton…".to_string()), None]
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn setup_tracker_finish_cancels_a_pending_settle() {
+        let (t, events) = recording_tracker(TEST_SETTLE);
+        t.observe("INFO: Downloading UMU-Proton-10.0-4.tar.gz...");
+        t.observe("INFO: Using UMU-Proton-10.0-4"); // starts the settle timer
+        t.finish();
+        settled().await;
+        assert_eq!(
+            snapshot(&events),
+            [Some("Downloading Proton…".to_string()), None],
+            "the timer must not report a second finish after finish()"
+        );
     }
 
     #[tokio::test]
     async fn relay_observes_carriage_return_progress_and_lines_past_the_log_cap() {
-        let mut input = b"Downloading Proton
- 10%
- 50%
-done
-"
-        .to_vec();
+        let mut input = b"Downloading Proton\r 10%\r 50%\rdone\n".to_vec();
         for _ in 0..UMU_RELAY_LINE_CAP + 5 {
-            input.extend_from_slice(
-                b"noise
-",
-            );
+            input.extend_from_slice(b"noise\n");
         }
-        input.extend_from_slice(
-            b"Extracting late
-",
-        );
+        input.extend_from_slice(b"Extracting late\n");
 
         let seen = Arc::new(Mutex::new(Vec::<String>::new()));
         let sink = Arc::clone(&seen);
@@ -816,9 +946,8 @@ done
         .await;
 
         let seen = seen.lock().unwrap();
-        // The first piece arrives at the `\r`, before any newline.
-        assert_eq!(seen[0], "Downloading Proton");
-        assert_eq!(seen[1], " 10%");
+        // Pieces end at `\r` as well as `\n`: the first arrives before any newline.
+        assert_eq!(seen[..4], ["Downloading Proton", " 10%", " 50%", "done"]);
         assert_eq!(seen.last().map(String::as_str), Some("Extracting late"));
     }
 
