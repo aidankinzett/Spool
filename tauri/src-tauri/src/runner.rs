@@ -2953,6 +2953,17 @@ async fn phase_launch(ctx: &WorkflowCtx<'_>, exe_pathbuf: &Path) -> AppResult<Se
         .iter()
         .map(|(k, v)| (k.as_str(), v.as_str()))
         .collect();
+    // umu-run downloads its runtime / Proton on a first launch with no other
+    // sign of life. Show that as a `launching` message, then go back to
+    // `playing` once it finishes.
+    let setup_cb: process::SetupCallback = {
+        let app = ctx.app.clone();
+        let game_id = ctx.game_id.to_string();
+        std::sync::Arc::new(move |msg: Option<&str>| match msg {
+            Some(m) => emit_phase(&app, &game_id, "launching", Some(m), cloud_configured, None),
+            None => emit_phase(&app, &game_id, "playing", None, cloud_configured, None),
+        })
+    };
     let spec = if ctx.launch.use_proton {
         process::LaunchSpec::Proton {
             umu_run: ctx
@@ -2966,6 +2977,7 @@ async fn phase_launch(ctx: &WorkflowCtx<'_>, exe_pathbuf: &Path) -> AppResult<Se
             extra_args: &options.args,
             extra_env: &option_env,
             wrapper: &options.wrapper,
+            on_setup: Some(setup_cb),
         }
     } else {
         process::LaunchSpec::Native {

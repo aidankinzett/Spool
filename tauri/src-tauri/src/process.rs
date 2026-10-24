@@ -75,11 +75,17 @@ fn push_tail(buf: &mut VecDeque<String>, line: String) {
 /// After an oversized line the relay resynchronises at the next newline and
 /// carries on. `emit` writes one kept line to tracing at that stream's own level
 /// — stdout at INFO, stderr at WARN.
+///
+/// `observe` sees every piece of output regardless of the log cap, so status
+/// tracking keeps working after the cap is hit. Pieces end at `\n` or `\r`:
+/// a progress bar redraws one line with `\r`, and waiting for the newline
+/// would only report it once the download had finished.
 async fn relay_umu_stream<R>(
     mut reader: R,
     stream: &'static str,
     tail: Option<Arc<Mutex<VecDeque<String>>>>,
     emit: impl Fn(&str) + Send,
+    observe: impl Fn(&str) + Send,
 ) where
     R: tokio::io::AsyncRead + Unpin + Send,
 {
@@ -108,6 +114,8 @@ async fn relay_umu_stream<R>(
     let mut line: Vec<u8> = Vec::new();
     // The current line has passed the byte cap: swallow the rest of it.
     let mut dropping = false;
+    // Start of the piece of `line` since the last `\r`, not yet observed.
+    let mut piece_start = 0usize;
 
     loop {
         let n = match reader.read(&mut chunk).await {
@@ -116,20 +124,27 @@ async fn relay_umu_stream<R>(
             Err(_) => break,
         };
         for &byte in &chunk[..n] {
-            if byte == b'\n' {
+            if byte == b'\r' && !dropping {
+                observe(&String::from_utf8_lossy(&line[piece_start.min(line.len())..]));
+                line.push(byte);
+                piece_start = line.len();
+            } else if byte == b'\n' {
                 if dropping {
                     oversized += 1;
                 } else {
                     if line.last() == Some(&b'\r') {
                         line.pop();
                     }
+                    observe(&String::from_utf8_lossy(&line[piece_start.min(line.len())..]));
                     deliver(&line);
                 }
                 line.clear();
+                piece_start = 0;
                 dropping = false;
             } else if !dropping {
                 if line.len() >= UMU_RELAY_LINE_MAX_BYTES {
                     line.clear();
+                    piece_start = 0;
                     dropping = true;
                 } else {
                     line.push(byte);
@@ -141,6 +156,7 @@ async fn relay_umu_stream<R>(
     if dropping {
         oversized += 1;
     } else if !line.is_empty() {
+        observe(&String::from_utf8_lossy(&line[piece_start.min(line.len())..]));
         deliver(&line);
     }
 
@@ -328,7 +344,89 @@ pub enum LaunchSpec<'a> {
         extra_env: &'a [(&'a str, &'a str)],
         /// Wrapper program + args placed in front of the umu-run command.
         wrapper: &'a [String],
+        /// Told when umu-run is downloading or unpacking its runtime or Proton
+        /// (`Some(message)`), and when that finishes (`None`).
+        on_setup: Option<SetupCallback>,
     },
+}
+
+/// Callback for umu-run's setup status; see [`SetupTracker`].
+pub type SetupCallback = Arc<dyn Fn(Option<&str>) + Send + Sync>;
+
+/// Classifies a piece of umu-run output as runtime/Proton setup work. umu logs
+/// these as `INFO: Downloading UMU-Proton-10.0-4.tar.gz...`, `INFO: Downloading
+/// steamrt3 (…), please wait...` and `INFO: Extracting …` on stderr. Only lines
+/// that *begin* with the verb (after umu's `INFO: ` prefix) count, so a Wine or
+/// game line that merely mentions a download isn't mistaken for umu setup.
+fn umu_setup_status(line: &str) -> Option<&'static str> {
+    let l = line.trim_start();
+    let l = l.strip_prefix("INFO: ").unwrap_or(l).to_ascii_lowercase();
+    let runtime = l.contains("steamrt");
+    if l.starts_with("downloading") {
+        Some(if runtime {
+            "Downloading Steam Linux Runtime…"
+        } else {
+            "Downloading Proton…"
+        })
+    } else if l.starts_with("extracting") || l.starts_with("unpacking") {
+        Some(if runtime {
+            "Unpacking Steam Linux Runtime…"
+        } else {
+            "Unpacking Proton…"
+        })
+    } else if l.starts_with("verifying") {
+        Some("Verifying Steam Linux Runtime…")
+    } else {
+        None
+    }
+}
+
+/// Turns umu-run's output into setup start/finish callbacks. Both output
+/// streams feed one tracker; the callback runs under its lock so a "finished"
+/// can't be reordered ahead of the "started" it follows.
+struct SetupTracker {
+    cb: Option<SetupCallback>,
+    active: Mutex<bool>,
+}
+
+impl SetupTracker {
+    fn new(cb: Option<SetupCallback>) -> Self {
+        Self {
+            cb,
+            active: Mutex::new(false),
+        }
+    }
+
+    /// Reports `Some(message)` for a setup line, and `None` once, on the first
+    /// other line after one.
+    fn observe(&self, line: &str) {
+        let Some(cb) = self.cb.as_ref() else { return };
+        if line.trim().is_empty() {
+            return;
+        }
+        let mut active = self.active.lock().unwrap_or_else(|e| e.into_inner());
+        match umu_setup_status(line) {
+            Some(msg) => {
+                *active = true;
+                cb(Some(msg));
+            }
+            None if *active => {
+                *active = false;
+                cb(None);
+            }
+            None => {}
+        }
+    }
+
+    /// Ends any setup still showing, e.g. when umu exits mid-download.
+    fn finish(&self) {
+        let Some(cb) = self.cb.as_ref() else { return };
+        let mut active = self.active.lock().unwrap_or_else(|e| e.into_inner());
+        if *active {
+            *active = false;
+            cb(None);
+        }
+    }
 }
 
 /// `program args…`, or `wrapper[0] wrapper[1..]… program args…` when a
@@ -400,6 +498,7 @@ pub async fn run_game(exe_path: &Path, spec: LaunchSpec<'_>) -> AppResult<GameEx
             extra_args,
             extra_env,
             wrapper,
+            on_setup,
         } => {
             let launch = proton::build_umu_launch(
                 umu_run,
@@ -440,10 +539,17 @@ pub async fn run_game(exe_path: &Path, spec: LaunchSpec<'_>) -> AppResult<GameEx
                 None => AppError::Other(format!("failed to start game via Proton: {e}")),
             })?;
 
+            let setup = Arc::new(SetupTracker::new(on_setup));
+
             let stdout_handle = child.stdout.take().map(|s| {
-                tokio::spawn(relay_umu_stream(s, "stdout", None, |line| {
-                    tracing::info!(target: "umu", "{}", line)
-                }))
+                let setup = Arc::clone(&setup);
+                tokio::spawn(relay_umu_stream(
+                    s,
+                    "stdout",
+                    None,
+                    |line| tracing::info!(target: "umu", "{}", line),
+                    move |piece| setup.observe(piece),
+                ))
             });
 
             // Relay stderr to debug.log and, unlike stdout, keep the tail for
@@ -454,10 +560,15 @@ pub async fn run_game(exe_path: &Path, spec: LaunchSpec<'_>) -> AppResult<GameEx
             let stderr_buf: Arc<Mutex<VecDeque<String>>> = Arc::new(Mutex::new(VecDeque::new()));
             let stderr_handle = child.stderr.take().map({
                 let tail = Arc::clone(&stderr_buf);
+                let setup = Arc::clone(&setup);
                 move |s| {
-                    tokio::spawn(relay_umu_stream(s, "stderr", Some(tail), |line| {
-                        tracing::warn!(target: "umu", "{}", line)
-                    }))
+                    tokio::spawn(relay_umu_stream(
+                        s,
+                        "stderr",
+                        Some(tail),
+                        |line| tracing::warn!(target: "umu", "{}", line),
+                        move |piece| setup.observe(piece),
+                    ))
                 }
             });
 
@@ -473,6 +584,9 @@ pub async fn run_game(exe_path: &Path, spec: LaunchSpec<'_>) -> AppResult<GameEx
             if let Some(h) = stderr_handle {
                 let _ = h.await;
             }
+            // Both relays are done, so no further setup callbacks can race
+            // whatever phase the caller emits next.
+            setup.finish();
 
             let code = status.code().unwrap_or(-1);
             tracing::info!(
@@ -604,6 +718,95 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
 
+    #[test]
+    fn umu_setup_status_matches_real_umu_output() {
+        // Lines captured from umu-run 1.4.4 on a fresh install.
+        let status = |l| umu_setup_status(l);
+        assert_eq!(
+            status("INFO: Downloading UMU-Proton-10.0-4.tar.gz..."),
+            Some("Downloading Proton…")
+        );
+        assert_eq!(
+            status("INFO: Downloading steamrt3 (3.0.20261021.266025), please wait..."),
+            Some("Downloading Steam Linux Runtime…")
+        );
+        assert_eq!(
+            status("INFO: Extracting UMU-Proton-10.0-4.tar.gz..."),
+            Some("Unpacking Proton…")
+        );
+        assert_eq!(
+            status("INFO: Verifying integrity of sniper_platform_3.0.20261021.266025..."),
+            Some("Verifying Steam Linux Runtime…")
+        );
+        assert_eq!(status("INFO: UMU-Proton-10.0-4.tar.gz: SHA512 is OK"), None);
+        assert_eq!(status("INFO: Using UMU-Proton-10.0-4"), None);
+        // A game or Wine line that only mentions a download isn't umu setup.
+        assert_eq!(status("fixme: downloading patch list"), None);
+    }
+
+    fn recording_tracker() -> (SetupTracker, Arc<Mutex<Vec<Option<String>>>>) {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&events);
+        let cb: SetupCallback = Arc::new(move |m| sink.lock().unwrap().push(m.map(String::from)));
+        (SetupTracker::new(Some(cb)), events)
+    }
+
+    #[test]
+    fn setup_tracker_reports_start_then_a_single_finish() {
+        let (t, events) = recording_tracker();
+        t.observe("starting up");
+        t.observe("INFO: Downloading UMU-Proton-10.0-4.tar.gz...");
+        t.observe("INFO: Extracting UMU-Proton-10.0-4.tar.gz...");
+        t.observe("INFO: Using UMU-Proton-10.0-4");
+        t.observe("more output");
+        t.finish();
+        assert_eq!(
+            *events.lock().unwrap(),
+            [
+                Some("Downloading Proton…".to_string()),
+                Some("Unpacking Proton…".to_string()),
+                None,
+            ]
+        );
+    }
+
+    #[test]
+    fn setup_tracker_finish_clears_a_setup_cut_off_by_exit() {
+        let (t, events) = recording_tracker();
+        t.observe("Downloading UMU-Proton");
+        t.finish();
+        t.finish();
+        assert_eq!(events.lock().unwrap().len(), 2, "one start, one finish");
+    }
+
+    #[tokio::test]
+    async fn relay_observes_carriage_return_progress_and_lines_past_the_log_cap() {
+        let mut input = b"Downloading Proton
+ 10%
+ 50%
+done
+".to_vec();
+        for _ in 0..UMU_RELAY_LINE_CAP + 5 {
+            input.extend_from_slice(b"noise
+");
+        }
+        input.extend_from_slice(b"Extracting late
+");
+
+        let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+        let sink = Arc::clone(&seen);
+        relay_umu_stream(input.as_slice(), "stdout", None, |_| {}, move |p| {
+            sink.lock().unwrap().push(p.to_string());
+        })
+        .await;
+
+        let seen = seen.lock().unwrap();
+        // The first piece arrives at the `\r`, before any newline.
+        assert_eq!(seen[0], "Downloading Proton");
+        assert_eq!(seen[1], " 10%");
+        assert_eq!(seen.last().map(String::as_str), Some("Extracting late"));
+    }
+
     fn argv(cmd: &Command) -> Vec<String> {
         let std = cmd.as_std();
         std::iter::once(std.get_program())
@@ -660,9 +863,15 @@ mod tests {
         let tail = Arc::new(Mutex::new(VecDeque::new()));
         let relayed = Arc::new(Mutex::new(Vec::<String>::new()));
         let sink = Arc::clone(&relayed);
-        relay_umu_stream(blob.as_slice(), "stderr", Some(Arc::clone(&tail)), move |line| {
-            sink.lock().unwrap().push(line.to_string());
-        })
+        relay_umu_stream(
+            blob.as_slice(),
+            "stderr",
+            Some(Arc::clone(&tail)),
+            move |line| {
+                sink.lock().unwrap().push(line.to_string());
+            },
+            |_| {},
+        )
         .await;
 
         assert!(relayed.lock().unwrap().is_empty(), "oversized line never relayed");
@@ -678,9 +887,15 @@ mod tests {
 
         let relayed = Arc::new(Mutex::new(Vec::<String>::new()));
         let sink = Arc::clone(&relayed);
-        relay_umu_stream(input.as_slice(), "stdout", None, move |line| {
-            sink.lock().unwrap().push(line.to_string());
-        })
+        relay_umu_stream(
+            input.as_slice(),
+            "stdout",
+            None,
+            move |line| {
+                sink.lock().unwrap().push(line.to_string());
+            },
+            |_| {},
+        )
         .await;
 
         assert_eq!(*relayed.lock().unwrap(), ["before", "after"]);

@@ -170,6 +170,7 @@ async fn run_impl(
                 extra_args: &[],
                 extra_env: &[("WINE_LARGE_ADDRESS_AWARE", "1")],
                 wrapper: &[],
+                on_setup: None,
             },
         )
         .await
@@ -223,6 +224,7 @@ async fn init_prefix(
             extra_args: &[],
             extra_env: &[],
             wrapper: &[],
+            on_setup: None,
         },
     )
     .await;
