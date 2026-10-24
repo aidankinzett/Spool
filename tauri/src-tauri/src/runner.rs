@@ -3019,6 +3019,10 @@ async fn phase_launch(ctx: &WorkflowCtx<'_>, exe_pathbuf: &Path) -> AppResult<Se
         suspended_secs.clone(),
     );
 
+    // From the spawn on, the session record must survive a panic or cancellation
+    // of this future (the game may be running). It is dropped again below only
+    // if the game never started or crashed straight away.
+    crate::session::mark_game_started();
     let spawn_result = process::run_game(exe_pathbuf, spec).await;
     let session_end = Utc::now();
 
@@ -3049,6 +3053,7 @@ async fn phase_launch(ctx: &WorkflowCtx<'_>, exe_pathbuf: &Path) -> AppResult<Se
             // Process never started — delete the marker so peers aren't blocked.
             rclone::delete_session_marker(ctx.app, ctx.game_name).await;
             unbacked_session::clear(ctx.game_id).await;
+            crate::session::mark_launch_failed();
             return Err(AppError::Other(format!("Game failed to launch: {e}")));
         }
         Ok(ref result) if result.crash_hint.is_some() => {
@@ -3059,6 +3064,7 @@ async fn phase_launch(ctx: &WorkflowCtx<'_>, exe_pathbuf: &Path) -> AppResult<Se
             // a silent 0-minute session.
             rclone::delete_session_marker(ctx.app, ctx.game_name).await;
             unbacked_session::clear(ctx.game_id).await;
+            crate::session::mark_launch_failed();
             let hint = result.crash_hint.as_deref().unwrap_or_default();
             let log_path = crate::paths::log_file();
             return Err(AppError::Other(format!(
@@ -3067,7 +3073,7 @@ async fn phase_launch(ctx: &WorkflowCtx<'_>, exe_pathbuf: &Path) -> AppResult<Se
                 log_path.display()
             )));
         }
-        Ok(_) => crate::session::mark_game_ran(),
+        Ok(_) => {}
     }
 
     // ── Update last_played + playtime (best-effort) ───────────────────

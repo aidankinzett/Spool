@@ -106,12 +106,13 @@ fn write_start_at(
     steam_appid: u32,
     started_at: DateTime<Utc>,
 ) -> AppResult<String> {
-    let _guard = lock_session();
-    write_record_at(path, game, steam_appid, started_at)
+    let guard = lock_session();
+    write_record_at(&guard, path, game, steam_appid, started_at)
 }
 
-/// Writes a fresh record. The caller holds [`lock_session`].
+/// Writes a fresh record. Taking the guard makes the caller hold the lock.
 fn write_record_at(
+    _lock: &SessionGuard,
     path: &Path,
     game: &str,
     steam_appid: u32,
@@ -224,30 +225,44 @@ fn clear_if_at(path: &Path, expected_id: &str) {
     }
 }
 
-/// Set once the game process has actually run in the current launch attempt.
-static GAME_RAN: AtomicBool = AtomicBool::new(false);
+/// True from the moment a launch attempt starts spawning the game until the
+/// attempt is found to have failed. The attempt guard reads it when it drops.
+///
+/// One flag for the whole process is enough: `launch_game_inner_steal` arms the
+/// guard only after taking the single in-process launch slot, so attempts never
+/// overlap, and the previous attempt's guard has dropped before the next one
+/// resets the flag.
+static GAME_STARTED: AtomicBool = AtomicBool::new(false);
 
-/// Records that the game process ran, so the attempt's [`AttemptGuard`] leaves
-/// the session record for the backup to reconcile.
-pub fn mark_game_ran() {
-    GAME_RAN.store(true, Ordering::Relaxed);
+/// Called just before the game is spawned. From here the session record has to
+/// outlive a panic or cancellation of the launch, because the game may be
+/// running and the Decky forced-close backup depends on the record.
+pub fn mark_game_started() {
+    GAME_STARTED.store(true, Ordering::Relaxed);
 }
 
-/// Starts a launch attempt. When the returned guard drops and the game never
-/// ran, the session record is removed (see [`abandon_unlaunched`]). Hold it for
-/// the whole attempt, after the launch slot has been acquired.
+/// Called when the spawn failed or the game crashed straight away: the attempt
+/// is treated as never started, and its guard removes the record.
+pub fn mark_launch_failed() {
+    GAME_STARTED.store(false, Ordering::Relaxed);
+}
+
+/// Starts a launch attempt. When the returned guard drops and the game was
+/// never started, the session record is removed (see [`abandon_unlaunched_at`]).
+/// Hold it for the whole attempt, after the launch slot has been acquired.
 pub fn begin_attempt() -> AttemptGuard {
-    GAME_RAN.store(false, Ordering::Relaxed);
+    GAME_STARTED.store(false, Ordering::Relaxed);
     AttemptGuard
 }
 
 /// Removes this process's session record if the launch attempt ends without the
-/// game having run — whether it returned an error, panicked or was cancelled.
+/// game having been started — whether it returned an error, panicked or was
+/// cancelled before the spawn.
 pub struct AttemptGuard;
 
 impl Drop for AttemptGuard {
     fn drop(&mut self) {
-        if !GAME_RAN.load(Ordering::Relaxed) {
+        if !GAME_STARTED.load(Ordering::Relaxed) {
             abandon_unlaunched_at(
                 &crate::paths::active_session_file(),
                 wrote_start_this_process(),
@@ -256,7 +271,7 @@ impl Drop for AttemptGuard {
     }
 }
 
-/// Drops the record for a launch that failed before the game ran (the cloud was
+/// Drops the record for a launch that failed before the game started (the cloud was
 /// unreachable, another device holds the session, the restore failed, the exe
 /// wouldn't start, …). The record is written when the attached `--run` starts,
 /// ahead of the workflow, with `backed_up = false`; if it stayed on disk, Steam
@@ -290,6 +305,7 @@ pub fn ensure_started(game_name: &str) {
         return;
     }
     let Some(exe) = crate::paths::spool_executable() else {
+        tracing::warn!("no Spool executable path; can't rewrite the active-session record");
         return;
     };
     let appid = compute_steam_appid(&exe.to_string_lossy(), game_name);
@@ -311,11 +327,11 @@ fn ensure_started_at(
     steam_appid: u32,
     now: DateTime<Utc>,
 ) -> AppResult<bool> {
-    let _guard = lock_session();
+    let guard = lock_session();
     if read_at(path).is_some_and(|rec| rec.game == game && !rec.backed_up) {
         return Ok(false);
     }
-    write_record_at(path, game, steam_appid, now)?;
+    write_record_at(&guard, path, game, steam_appid, now)?;
     Ok(true)
 }
 
