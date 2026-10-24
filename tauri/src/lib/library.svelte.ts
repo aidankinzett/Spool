@@ -1006,7 +1006,8 @@ export function createLibrary() {
       .catch((e) => console.error('[collections] listener failed:', e));
 
     listen<RunPhaseEvent>('run:phase', (event) => {
-      const { game_id, phase, message, cloud_used, no_saves } = event.payload;
+      const { game_id, phase, message, cloud_used, no_saves, backup_failed, backup_deferred } =
+        event.payload;
       if (phase === 'done' || phase === 'error') {
         runningId = null;
         runningPhase = null;
@@ -1043,7 +1044,17 @@ export function createLibrary() {
         }
       } else if (phase === 'done') {
         const game = games.find((g) => g.id === game_id);
-        if (message) {
+        if (backup_failed || backup_deferred) {
+          // No revision was written this session, so this must not read as a
+          // success. Warn toasts are sticky until dismissed.
+          toasts.show({
+            kind: 'warn',
+            label: 'LUDUSAVI',
+            title: backup_failed ? 'Backup failed' : 'Backup deferred',
+            sub: game && message ? `${game.game_name} · ${message}` : (message ?? ''),
+            catalog: game ? fmtCatalog(game.catalog_number) : undefined,
+          });
+        } else if (message) {
           // A message on `done` means backup succeeded but cloud upload failed.
           toasts.show({
             kind: 'warn',
