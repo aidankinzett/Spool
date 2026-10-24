@@ -82,7 +82,7 @@ pelite = "0.10"
 # poll-based (no pump) and covers Xbox-style + Steam-virtual pads. The feature is
 # Windows-only — Linux (evdev) / macOS (IOKit) ignore it and still build.
 gilrs = { version = "0.11.2", default-features = false, features = ["xinput"] }
-sysinfo = { version = "0.39.3", default-features = false, features = ["disk"] }
+sysinfo = { version = "0.39.3", default-features = false, features = ["disk", "system"] }
 
 # Unix-only: libc for killpg(2) — kills the entire ludusavi process group
 # (including any shelled-out rclone) when the run_blocking timeout fires.

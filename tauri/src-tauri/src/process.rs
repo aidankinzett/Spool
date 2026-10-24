@@ -20,14 +20,20 @@
 //! never open a window — the process shows in Task Manager and then
 //! dies. Matching the non-elevated path's cwd keeps the two launch
 //! routes behaving identically.
+//!
+//! Both native paths then wait out a launcher handoff ([`wait_for_handoff`]):
+//! some games' exe starts the real game as a separate process and exits
+//! (e.g. an Epic Online Services bootstrap), so the session continues while
+//! any process running from the install folder is alive.
 
 use crate::error::{AppError, AppResult};
 use crate::launch_options::LaunchOptions;
 use crate::proton;
 use std::collections::VecDeque;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 use tokio::process::Command;
 
 /// How many lines of a Proton child's output reach `debug.log` per launch.
@@ -337,6 +343,10 @@ pub enum LaunchSpec<'a> {
     Native {
         run_as_admin: bool,
         options: &'a LaunchOptions,
+        /// The game's install folder. After the spawned process exits, the
+        /// launch waits for any process running from this folder (or the exe's
+        /// own folder when the exe isn't inside it); see [`handoff_watch_dir`].
+        install_dir: Option<&'a Path>,
     },
     Proton {
         umu_run: &'a Path,
@@ -535,12 +545,20 @@ pub async fn run_game(exe_path: &Path, spec: LaunchSpec<'_>) -> AppResult<GameEx
         LaunchSpec::Native {
             run_as_admin,
             options,
+            install_dir,
         } => {
+            let start = tokio::time::Instant::now();
+            let started_at = unix_secs_now();
+            let watch_dir = handoff_watch_dir(exe_path, install_dir).map(resolve_watch_dir);
+
             if cfg!(windows) && run_as_admin {
                 if !options.is_empty() {
                     tracing::warn!("launch options are not applied to an elevated launch");
                 }
                 let code = run_elevated(exe_path).await?;
+                if let Some(dir) = &watch_dir {
+                    wait_for_handoff(dir, started_at, start.elapsed()).await;
+                }
                 return Ok(GameExitResult {
                     code,
                     crash_hint: None,
@@ -560,6 +578,10 @@ pub async fn run_game(exe_path: &Path, spec: LaunchSpec<'_>) -> AppResult<GameEx
                 .wait()
                 .await
                 .map_err(|e| AppError::Other(format!("failed waiting on game: {e}")))?;
+
+            if let Some(dir) = &watch_dir {
+                wait_for_handoff(dir, started_at, start.elapsed()).await;
+            }
 
             Ok(GameExitResult {
                 code: status.code().unwrap_or(-1),
@@ -701,6 +723,177 @@ pub async fn run_game(exe_path: &Path, spec: LaunchSpec<'_>) -> AppResult<GameEx
     }
 }
 
+/// A spawned exe that exits within this long may be a launcher handing off to
+/// the real game, so [`wait_for_handoff`] keeps looking for the game's process
+/// for [`HANDOFF_GRACE`] before ending the session.
+const HANDOFF_QUICK_EXIT: Duration = Duration::from_secs(60);
+/// How long to look for a handed-off game process after a quick exit. An
+/// Epic Online Services bootstrap can take a few seconds to start the game.
+const HANDOFF_GRACE: Duration = Duration::from_secs(15);
+/// Process-list poll interval while waiting on a handoff.
+const HANDOFF_POLL: Duration = Duration::from_secs(2);
+/// Slack on the "started after the launch" check. Process start times are
+/// whole seconds, and on Linux are derived from boot time plus clock ticks.
+const HANDOFF_START_SLACK_SECS: u64 = 2;
+
+fn unix_secs_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
+/// The folder whose processes count as "the game" once the spawned exe exits:
+/// the install folder when the exe is inside it (a launcher in the root often
+/// starts `Binaries/Win64/Game.exe`), else the exe's own folder. A filesystem
+/// root is never used, since it would match every process on the drive.
+pub(crate) fn handoff_watch_dir(exe: &Path, install_dir: Option<&Path>) -> Option<PathBuf> {
+    let not_root = |d: &&Path| !d.as_os_str().is_empty() && d.parent().is_some();
+    let dir = install_dir
+        .filter(not_root)
+        .filter(|d| exe_in_dir(exe, d))
+        .or_else(|| exe.parent().filter(not_root))?;
+    Some(dir.to_path_buf())
+}
+
+/// On Linux, `/proc/<pid>/exe` is the path with symlinks resolved, so the
+/// watch folder is resolved the same way (e.g. a `~/Games` symlink or a Deck
+/// SD-card mount path). Left as-is on Windows, where the process path keeps
+/// the drive letter a mapped drive was launched from and `canonicalize`
+/// would turn it into a UNC path.
+fn resolve_watch_dir(dir: PathBuf) -> PathBuf {
+    #[cfg(unix)]
+    {
+        std::fs::canonicalize(&dir).unwrap_or(dir)
+    }
+    #[cfg(not(unix))]
+    {
+        dir
+    }
+}
+
+/// Whether `exe` lives under `dir`. Compared per path component, and
+/// case-insensitively on Windows.
+fn exe_in_dir(exe: &Path, dir: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        let lower = |p: &Path| PathBuf::from(p.to_string_lossy().to_lowercase());
+        lower(exe).starts_with(lower(dir))
+    }
+    #[cfg(not(windows))]
+    {
+        exe.starts_with(dir)
+    }
+}
+
+/// Refreshes the process list and returns the exe of a process (other than
+/// Spool) that started at or after `started_at` (unix seconds) and runs from
+/// `dir`, if there is one. Processes that were already running before the
+/// launch don't count, so a resident process in a shared folder, or an
+/// earlier instance of the game, can't hold the session open.
+fn find_process_in_dir(sys: &mut System, dir: &Path, started_at: u64) -> Option<PathBuf> {
+    sys.refresh_processes_specifics(
+        ProcessesToUpdate::All,
+        true,
+        ProcessRefreshKind::nothing()
+            .without_tasks()
+            .with_exe(UpdateKind::OnlyIfNotSet),
+    );
+    let own_pid = std::process::id();
+    let since = started_at.saturating_sub(HANDOFF_START_SLACK_SECS);
+    sys.processes()
+        .iter()
+        .filter(|(pid, p)| pid.as_u32() != own_pid && p.start_time() >= since)
+        .find_map(|(pid, p)| {
+            let exe = match p.exe().filter(|e| !e.as_os_str().is_empty()) {
+                Some(e) => e.to_path_buf(),
+                None => image_path_limited(pid.as_u32())?,
+            };
+            exe_in_dir(&exe, dir).then_some(exe)
+        })
+}
+
+/// A process's exe path read with a `PROCESS_QUERY_LIMITED_INFORMATION`
+/// handle. sysinfo reads the path through the process's module list, which
+/// needs `PROCESS_VM_READ`; that isn't granted for an elevated process when
+/// Spool isn't elevated (a Run-As-Admin launch) or for one that restricts
+/// handle access, and sysinfo then reports an empty path.
+#[cfg(windows)]
+fn image_path_limited(pid: u32) -> Option<PathBuf> {
+    use std::os::windows::ffi::OsStringExt;
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
+        PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+
+    // SAFETY: the handle is checked for null and closed before returning; the
+    // buffer outlives the call and `len` holds its capacity in u16s.
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if handle.is_null() {
+            return None;
+        }
+        let mut buf = vec![0u16; 32_768];
+        let mut len = buf.len() as u32;
+        let ok = QueryFullProcessImageNameW(handle, PROCESS_NAME_WIN32, buf.as_mut_ptr(), &mut len);
+        CloseHandle(handle);
+        (ok != 0 && len > 0)
+            .then(|| PathBuf::from(std::ffi::OsString::from_wide(&buf[..len as usize])))
+    }
+}
+
+#[cfg(not(windows))]
+fn image_path_limited(_pid: u32) -> Option<PathBuf> {
+    None
+}
+
+/// Called after the spawned game process exits. Returns once no process that
+/// started since the launch (`started_at`, unix seconds) is running from
+/// `dir`. When the spawned process ran for less than [`HANDOFF_QUICK_EXIT`],
+/// it first gives the game [`HANDOFF_GRACE`] to show up, since a launcher may
+/// exit before the process it started appears.
+async fn wait_for_handoff(dir: &Path, started_at: u64, ran_for: Duration) {
+    let grace_until =
+        (ran_for < HANDOFF_QUICK_EXIT).then(|| tokio::time::Instant::now() + HANDOFF_GRACE);
+    let mut sys = Some(System::new());
+    let mut waiting = false;
+    loop {
+        let dir_owned = dir.to_path_buf();
+        let mut s = sys.take().unwrap_or_default();
+        let Ok((s, found)) = tokio::task::spawn_blocking(move || {
+            let found = find_process_in_dir(&mut s, &dir_owned, started_at);
+            (s, found)
+        })
+        .await
+        else {
+            return;
+        };
+        sys = Some(s);
+
+        match found {
+            Some(exe) => {
+                if !waiting {
+                    tracing::info!(
+                        process = %exe.display(),
+                        "launcher exited but the game is still running; waiting for it"
+                    );
+                    waiting = true;
+                }
+            }
+            None if waiting => {
+                tracing::info!("handed-off game process exited");
+                return;
+            }
+            None => {
+                if !grace_until.is_some_and(|t| tokio::time::Instant::now() < t) {
+                    return;
+                }
+            }
+        }
+        tokio::time::sleep(HANDOFF_POLL).await;
+    }
+}
+
 /// Spawns the game via `ShellExecuteExW` with the `runas` verb. Triggers
 /// the UAC prompt; blocks the calling thread until the elevated process
 /// exits. Wrapped in `spawn_blocking` by the caller so the async runtime
@@ -793,6 +986,76 @@ async fn run_elevated(_exe_path: &Path) -> AppResult<i32> {
 mod tests {
     use super::*;
     use std::collections::HashMap;
+
+    #[cfg(not(windows))]
+    #[test]
+    fn handoff_watch_dir_prefers_the_install_folder_containing_the_exe() {
+        let exe = Path::new("/games/Foo/Binaries/Win64/Foo.exe");
+        assert_eq!(
+            handoff_watch_dir(exe, Some(Path::new("/games/Foo"))),
+            Some(PathBuf::from("/games/Foo"))
+        );
+        // Install folder that doesn't contain the exe → the exe's own folder.
+        assert_eq!(
+            handoff_watch_dir(exe, Some(Path::new("/games/Bar"))),
+            Some(PathBuf::from("/games/Foo/Binaries/Win64"))
+        );
+        // A sibling whose name shares a prefix isn't "inside".
+        assert_eq!(
+            handoff_watch_dir(exe, Some(Path::new("/games/Fo"))),
+            Some(PathBuf::from("/games/Foo/Binaries/Win64"))
+        );
+        assert_eq!(
+            handoff_watch_dir(exe, None),
+            Some(PathBuf::from("/games/Foo/Binaries/Win64"))
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn handoff_watch_dir_never_watches_a_filesystem_root() {
+        assert_eq!(handoff_watch_dir(Path::new("/game"), None), None);
+        assert_eq!(
+            handoff_watch_dir(Path::new("/Foo/game"), Some(Path::new("/"))),
+            Some(PathBuf::from("/Foo"))
+        );
+        assert_eq!(handoff_watch_dir(Path::new("game"), None), None);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn find_process_in_dir_only_counts_processes_started_since_the_launch() {
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let exe = std::fs::read_link(format!("/proc/{}/exe", child.id())).unwrap();
+        let dir = exe.parent().unwrap().to_path_buf();
+        let launched = unix_secs_now();
+
+        let mut sys = System::new();
+        let found = find_process_in_dir(&mut sys, &dir, launched);
+        // A launch in the future: everything running now predates it.
+        let later = find_process_in_dir(&mut sys, &dir, launched + 3600);
+        child.kill().unwrap();
+        let _ = child.wait();
+
+        assert!(found.is_some_and(|p| p.starts_with(&dir)));
+        assert_eq!(later, None);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn exe_in_dir_ignores_case_and_separator_style_on_windows() {
+        assert!(exe_in_dir(
+            Path::new(r"E:\Spool\Alan Wake Remastered\Game_f_x64_EOS.exe"),
+            Path::new("e:/spool/alan wake remastered/"),
+        ));
+        assert!(!exe_in_dir(
+            Path::new(r"E:\Spool\Alan Wake Remastered 2\Game.exe"),
+            Path::new(r"E:\Spool\Alan Wake Remastered"),
+        ));
+    }
 
     #[test]
     fn umu_setup_status_matches_real_umu_output() {
