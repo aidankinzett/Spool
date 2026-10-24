@@ -1,11 +1,12 @@
-//! Achievement detection from Steam-emulator stats files.
+//! Achievement detection from Steam- and Epic-emulator stats files.
 //!
-//! Spool has no Steam login, so it reads the files an emulator bundled with the
-//! game already writes (Goldberg / GSE, EMPRESS, CODEX, RUNE, Reloaded, 3DM,
-//! Skidrow, SmartSteamEmu, CreamAPI, OnlineFix). [`locate`] lists where each
-//! one writes, [`parse`] reads the formats, and [`schema`] supplies display
-//! names and icons from the Steam Web API or the game's own
-//! `steam_settings/achievements.json`.
+//! Spool has no Steam or Epic login, so it reads the files an emulator bundled
+//! with the game already writes (Goldberg / GSE, EMPRESS, CODEX, RUNE,
+//! Reloaded, 3DM, Skidrow, SmartSteamEmu, CreamAPI, OnlineFix, and RUNE's
+//! Epic Online Services emulator). [`locate`] lists where each one writes,
+//! [`parse`] reads the formats, and [`schema`] supplies display names and
+//! icons from the Steam Web API, the game's own
+//! `steam_settings/achievements.json`, or (for Epic games) egdata.app.
 //!
 //! During a play session [`SessionWatch`] polls the candidate files every
 //! [`POLL`]. The earned set at launch is the baseline (imported silently); an
@@ -33,7 +34,7 @@ use parse::{Earned, Key};
 use schema::Schema;
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -50,16 +51,20 @@ const GAME_FOLDER_RESCAN_TICKS: u32 = 30;
 struct GameContext {
     game_id: String,
     game_name: String,
-    appid: u64,
+    /// The Steam app id Steam emulators key their files by.
+    appid: Option<u64>,
+    /// The `AppName` RUNE's Epic emulator keys its file by.
+    epic_app: Option<String>,
+    exe_path: PathBuf,
     roots: Roots,
     game_folder: Option<PathBuf>,
     folder_scan: Option<FolderScan>,
 }
 
 impl GameContext {
-    /// `None` when no Steam app id is known (no `steam_appid.txt` in the
-    /// install folder and no `steam_id` on the entry) — emulator files are
-    /// keyed by it.
+    /// `None` when neither a Steam app id (`steam_appid.txt` in the install
+    /// folder, or the entry's `steam_id`) nor an Epic emulator `AppName` is
+    /// known — emulator files are keyed by one of them.
     /// Walks the install folder (cached), so call it off the async runtime.
     fn for_entry(entry: &GameEntry) -> Option<Self> {
         let game_folder = entry
@@ -71,10 +76,20 @@ impl GameContext {
         // The emulator's own app id wins: its save folder is keyed by it, and
         // the library's `steam_id` (from metadata matching) can be another
         // edition's.
+        let epic_app = folder_scan
+            .as_ref()
+            .and_then(|s| s.epic.as_ref())
+            .map(|e| e.app_name.clone());
+        // With an Epic emulator in the folder, the entry's `steam_id` only
+        // says which Steam game matched the name; no Steam emulator writes
+        // under it.
         let appid = folder_scan
             .as_ref()
             .and_then(|s| s.appid)
-            .or(entry.steam_id.filter(|id| *id > 0))?;
+            .or(entry.steam_id.filter(|id| *id > 0 && epic_app.is_none()));
+        if appid.is_none() && epic_app.is_none() {
+            return None;
+        }
         let prefix = crate::proton::resolve_prefix_root(
             crate::proton::exe_needs_proton(&entry.exe_path),
             entry.wine_prefix_path.as_deref(),
@@ -88,6 +103,8 @@ impl GameContext {
             game_id: entry.id.clone(),
             game_name: entry.game_name.clone(),
             appid,
+            epic_app,
+            exe_path: PathBuf::from(&entry.exe_path),
             roots,
             game_folder,
             folder_scan,
@@ -108,12 +125,72 @@ impl GameContext {
     /// Every file worth reading: the emulator locations plus any local saves
     /// in the install folder.
     fn sources(&self) -> Vec<Source> {
-        let mut out = locate::candidate_sources(&self.roots, self.appid);
-        if let Some(scan) = &self.folder_scan {
-            out.extend(scan.sources(self.appid));
+        let mut out = Vec::new();
+        if let Some(appid) = self.appid {
+            out.extend(locate::candidate_sources(&self.roots, appid));
+            if let Some(scan) = &self.folder_scan {
+                out.extend(scan.sources(appid));
+            }
+        }
+        if let Some(app) = &self.epic_app {
+            out.extend(locate::epic_candidate_sources(&self.roots, app));
         }
         out
     }
+
+    /// The cached schema, without fetching. Reads a file, so call it off the
+    /// async runtime.
+    fn cached_schema(&self) -> Option<Schema> {
+        match &self.epic_app {
+            Some(app) => schema::load_cached_epic(app),
+            None => self.appid.and_then(schema::load_cached),
+        }
+    }
+
+    /// The schema, fetched if the cache is missing or stale. An Epic
+    /// emulator's achievement ids are Epic's, so a game that ships one only
+    /// uses an egdata schema; a Steam schema's API names wouldn't match.
+    async fn ensure_schema(&self, http: &reqwest::Client, api_key: &str) -> Option<Schema> {
+        if let Some(app) = &self.epic_app {
+            let exe = self.exe_path.clone();
+            let dir = self
+                .folder_scan
+                .as_ref()
+                .and_then(|s| s.epic.as_ref())
+                .map(|e| e.dir.clone());
+            return schema::ensure_epic(http, app, move || epic_exes(&exe, dir.as_deref())).await;
+        }
+        let appid = self.appid?;
+        schema::ensure(http, appid, self.local_schema_file().as_deref(), api_key).await
+    }
+}
+
+/// Executables that may hold the game's EOS ids, most likely first: the
+/// entry's exe when it sits beside the Epic emulator's ini, the other exes
+/// there, then the entry's exe when it's elsewhere (often a launcher).
+fn epic_exes(entry_exe: &Path, ini_dir: Option<&Path>) -> Vec<PathBuf> {
+    let in_dir = ini_dir.is_some_and(|d| entry_exe.parent() == Some(d));
+    let mut out = Vec::new();
+    if in_dir {
+        out.push(entry_exe.to_path_buf());
+    }
+    if let Some(rd) = ini_dir.and_then(|d| std::fs::read_dir(d).ok()) {
+        let mut beside: Vec<PathBuf> = rd
+            .flatten()
+            .filter(|e| {
+                let name = e.file_name().to_string_lossy().to_ascii_lowercase();
+                name.ends_with(".exe") && !name.starts_with("unins")
+            })
+            .map(|e| e.path())
+            .filter(|p| p != entry_exe)
+            .collect();
+        beside.sort();
+        out.extend(beside);
+    }
+    if !in_dir {
+        out.push(entry_exe.to_path_buf());
+    }
+    out
 }
 
 fn read_source(src: &Source) -> Vec<Earned> {
@@ -314,7 +391,8 @@ impl Watcher {
         }
         tracing::info!(
             game = %self.ctx.game_name,
-            appid = self.ctx.appid,
+            appid = ?self.ctx.appid,
+            epic_app = ?self.ctx.epic_app,
             sources = self.files.sources.len(),
             already_earned = self.seen.len(),
             "achievement watcher started"
@@ -324,8 +402,7 @@ impl Watcher {
     async fn tick(&mut self, force: bool) {
         self.ticks += 1;
         if self.ticks.is_multiple_of(GAME_FOLDER_RESCAN_TICKS) {
-            if let Some(folder) = self.ctx.game_folder.clone() {
-                let appid = self.ctx.appid;
+            if let (Some(folder), Some(appid)) = (self.ctx.game_folder.clone(), self.ctx.appid) {
                 let found =
                     tokio::task::spawn_blocking(move || FolderScan::walk(&folder).sources(appid))
                         .await
@@ -522,8 +599,8 @@ impl Watcher {
         let config = load_config();
 
         let cached = {
-            let appid = ctx.appid;
-            tokio::task::spawn_blocking(move || schema::load_cached(appid))
+            let ctx = ctx.clone();
+            tokio::task::spawn_blocking(move || ctx.cached_schema())
                 .await
                 .ok()
                 .flatten()
@@ -532,13 +609,9 @@ impl Watcher {
         {
             let slot = schema_slot.clone();
             let http = http_client(&app);
-            let (appid, local, key) = (
-                ctx.appid,
-                ctx.local_schema_file(),
-                config.steam_web_api_key.clone(),
-            );
+            let (ctx, key) = (ctx.clone(), config.steam_web_api_key.clone());
             tokio::spawn(tracing::Instrument::in_current_span(async move {
-                if let Some(s) = schema::ensure(&http, appid, local.as_deref(), &key).await {
+                if let Some(s) = ctx.ensure_schema(&http, &key).await {
                     if let Ok(mut g) = slot.lock() {
                         *g = Some(s);
                     }
@@ -596,8 +669,10 @@ pub struct AchievementView {
 pub struct GameAchievements {
     /// The Steam app id the files are keyed by, `None` when unknown.
     pub appid: Option<u64>,
-    /// `"steam"`, `"local"`, or `None` when no schema is available (the list
-    /// then holds only unlocked achievements, by API name).
+    /// The Epic emulator's `AppName`, when the game ships one.
+    pub epic_app: Option<String>,
+    /// `"steam"`, `"local"`, `"epic"`, or `None` when no schema is available
+    /// (the list then holds only unlocked achievements, by API name).
     pub schema_source: Option<String>,
     pub total: usize,
     pub unlocked: usize,
@@ -647,16 +722,10 @@ pub async fn scan_game_achievements(
     let game_name = entry.game_name.clone();
     let Some(ctx) = GameContext::load(entry).await else {
         let rows = library.achievement_unlocks_for(&game_name).await?;
-        return Ok((merge(None, None, rows), false));
+        return Ok((merge(None, None, None, rows), false));
     };
     let config = load_config();
-    let schema = schema::ensure(
-        http,
-        ctx.appid,
-        ctx.local_schema_file().as_deref(),
-        &config.steam_web_api_key,
-    )
-    .await;
+    let schema = ctx.ensure_schema(http, &config.steam_web_api_key).await;
 
     let earned = {
         let ctx = ctx.clone();
@@ -676,11 +745,15 @@ pub async fn scan_game_achievements(
     let imported = !library.insert_achievement_unlocks(&rows).await?.is_empty();
 
     let rows = library.achievement_unlocks_for(&ctx.game_name).await?;
-    Ok((merge(Some(ctx.appid), schema.as_ref(), rows), imported))
+    Ok((
+        merge(ctx.appid, ctx.epic_app, schema.as_ref(), rows),
+        imported,
+    ))
 }
 
 fn merge(
     appid: Option<u64>,
+    epic_app: Option<String>,
     schema: Option<&Schema>,
     rows: Vec<AchievementUnlock>,
 ) -> GameAchievements {
@@ -755,6 +828,7 @@ fn merge(
     }
     GameAchievements {
         appid,
+        epic_app,
         schema_source: schema.map(|s| s.source.clone()),
         total: items.len(),
         unlocked: items.iter().filter(|i| i.unlocked_at.is_some()).count(),
@@ -770,7 +844,9 @@ mod tests {
         GameContext {
             game_id: "g".into(),
             game_name: "Game".into(),
-            appid: 480,
+            appid: Some(480),
+            epic_app: None,
+            exe_path: PathBuf::new(),
             roots: Roots::default(),
             game_folder: None,
             folder_scan: None,
@@ -792,7 +868,28 @@ mod tests {
             source: "steam".into(),
             fetched_at: 0,
             achievements: vec![entry("ACH_A"), entry("ACH_B")],
+            ..Default::default()
         }
+    }
+
+    #[test]
+    fn epic_exes_puts_the_ini_folder_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let game = dir.path().join("game");
+        std::fs::create_dir_all(&game).unwrap();
+        for f in ["Game.exe", "b.exe", "unins000.exe", "notes.txt"] {
+            std::fs::write(game.join(f), "").unwrap();
+        }
+        let launcher = dir.path().join("Launcher.exe");
+        assert_eq!(
+            epic_exes(&launcher, Some(&game)),
+            [game.join("Game.exe"), game.join("b.exe"), launcher.clone()]
+        );
+        assert_eq!(
+            epic_exes(&game.join("b.exe"), Some(&game)),
+            [game.join("b.exe"), game.join("Game.exe")]
+        );
+        assert_eq!(epic_exes(&launcher, None), [launcher]);
     }
 
     #[test]
@@ -846,6 +943,7 @@ mod tests {
         // casing; OLD: only the Deck.
         let out = merge(
             Some(480),
+            None,
             Some(&schema()),
             vec![row("ach_b", 5), peer("ACH_B", 4), peer("OLD", 3)],
         );
@@ -863,6 +961,7 @@ mod tests {
         // When this device has the earliest unlock, no device is shown.
         let out = merge(
             Some(480),
+            None,
             Some(&schema()),
             vec![row("ACH_B", 2), peer("ACH_B", 4)],
         );
@@ -884,6 +983,7 @@ mod tests {
             device_name: if device.is_empty() { "" } else { "Steam Deck" }.into(),
         };
         let out = merge(
+            None,
             None,
             None,
             vec![

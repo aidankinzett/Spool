@@ -532,6 +532,7 @@ export function makeAchievements(): GameAchievements {
   ];
   return {
     appid: 292030,
+    epic_app: null,
     schema_source: 'steam',
     total: items.length,
     unlocked: items.filter((i) => i.unlocked_at !== null).length,

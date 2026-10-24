@@ -1,7 +1,8 @@
-//! Achievement schema (display names, descriptions, icons) for a Steam app id.
+//! Achievement schema (display names, descriptions, icons) for a Steam app id
+//! or an Epic game.
 //!
 //! Emulator state files carry only API names, so the schema supplies
-//! everything shown to the user. Two sources, in order:
+//! everything shown to the user. For a Steam app id, two sources, in order:
 //!
 //! 1. **Steam Web API** `ISteamUserStats/GetSchemaForGame`, when the user has
 //!    set a Steam Web API key (Settings → Achievements). Icons are Steam CDN
@@ -12,9 +13,18 @@
 //!    are copied into app data because the webview's asset scope only covers
 //!    Spool's own folder.
 //!
-//! The result is cached per app id under `achievement-schemas/` and refreshed
-//! after [`MAX_AGE_SECS`]. In offline mode only the cache and the local file
-//! are used.
+//! An Epic game's schema comes from **egdata.app**, a community database of
+//! the Epic Games Store, which serves a sandbox's achievement definitions
+//! without authentication (`/sandboxes/<id>/achievements`). The emulator only
+//! knows the game's `AppName`, so the sandbox id is found by reading the
+//! 32-hex-digit ids the game exe passes to the EOS SDK (product, sandbox and
+//! deployment ids, among others) and trying each one; the id that answers is
+//! kept in the cached schema. Only achievements the Epic store displays are
+//! listed there.
+//!
+//! The result is cached per game under `achievement-schemas/` (`<appid>.json`
+//! or `epic-<AppName>.json`) and refreshed after [`MAX_AGE_SECS`]. In offline
+//! mode only the cache and the local file are used.
 
 use crate::error::{AppError, AppResult};
 use serde::{Deserialize, Serialize};
@@ -25,13 +35,20 @@ use std::path::{Path, PathBuf};
 const SCHEMA_URL: &str = "https://api.steampowered.com/ISteamUserStats/GetSchemaForGame/v2/";
 const PERCENT_URL: &str =
     "https://api.steampowered.com/ISteamUserStats/GetGlobalAchievementPercentagesForApp/v2/";
+const EGDATA_URL: &str = "https://api.egdata.app/sandboxes";
+
+/// At most this many ids from the exe are tried against egdata.
+/// Each try is one small request, and the search stops at the first hit.
+const MAX_SANDBOX_TRIES: usize = 48;
+/// Executables larger than this aren't read for ids.
+const MAX_EXE_BYTES: u64 = 512 * 1024 * 1024;
 
 /// A cached schema is refetched after this long (achievements are sometimes
 /// added in updates; percentages drift).
 const MAX_AGE_SECS: i64 = 14 * 24 * 60 * 60;
 
-/// How long to wait after a failed Steam schema fetch before trying again.
-const STEAM_RETRY_SECS: u64 = 6 * 60 * 60;
+/// How long to wait after a failed schema fetch before trying again.
+const RETRY_SECS: u64 = 6 * 60 * 60;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SchemaEntry {
@@ -42,17 +59,22 @@ pub struct SchemaEntry {
     /// Steam CDN URL, or an absolute path under app data for a local schema.
     pub icon: Option<String>,
     pub icon_gray: Option<String>,
-    /// Share of Steam players who have unlocked it, 0–100.
+    /// Share of the store's players who have unlocked it, 0–100.
     pub global_percent: Option<f64>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
 pub struct Schema {
+    /// The Steam app id; 0 for an Epic schema.
     pub appid: u64,
-    /// `"steam"` or `"local"`.
+    /// `"steam"`, `"local"`, or `"epic"`.
     pub source: String,
     pub fetched_at: i64,
     pub achievements: Vec<SchemaEntry>,
+    /// The Epic sandbox id egdata answered for, so a refresh needn't re-read
+    /// the exe.
+    pub sandbox_id: Option<String>,
 }
 
 impl Schema {
@@ -81,38 +103,68 @@ pub(crate) fn cache_dir() -> PathBuf {
     crate::paths::app_data_dir().join("achievement-schemas")
 }
 
-fn cache_file(appid: u64) -> PathBuf {
-    cache_dir().join(format!("{appid}.json"))
+/// The cache key (file stem) for an Epic game, with anything that isn't safe
+/// in a file name replaced.
+fn epic_key(app_name: &str) -> String {
+    let safe: String = app_name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    format!("epic-{safe}")
 }
 
-/// Marker whose mtime records the last failed Steam fetch for `appid` (bad or
-/// expired key, network down, or an app Steam has no achievements for).
-fn failed_marker(appid: u64) -> PathBuf {
-    cache_dir().join(format!("{appid}.steam-failed"))
+fn cache_file(key: &str) -> PathBuf {
+    cache_dir().join(format!("{key}.json"))
 }
 
-/// True for [`STEAM_RETRY_SECS`] after a failed Steam fetch, so a bad key
-/// doesn't send a request on every detail-pane load.
-fn steam_backed_off(appid: u64) -> bool {
-    std::fs::metadata(failed_marker(appid))
+/// Marker whose mtime records the last failed fetch of `key` from `source`
+/// (for Steam: bad or expired key, network down, or an app Steam has no
+/// achievements for; for egdata: no id in the exe that it knows).
+fn failed_marker(key: &str, source: &str) -> PathBuf {
+    cache_dir().join(format!("{key}.{source}-failed"))
+}
+
+/// True for [`RETRY_SECS`] after a failed fetch, so a bad key or an unknown
+/// game doesn't send requests on every detail-pane load.
+fn backed_off(marker: &Path) -> bool {
+    std::fs::metadata(marker)
         .and_then(|m| m.modified())
         .ok()
         .and_then(|t| t.elapsed().ok())
-        .is_some_and(|age| age.as_secs() < STEAM_RETRY_SECS)
+        .is_some_and(|age| age.as_secs() < RETRY_SECS)
 }
 
-pub fn load_cached(appid: u64) -> Option<Schema> {
-    let text = std::fs::read_to_string(cache_file(appid)).ok()?;
+fn mark_failed(marker: &Path) {
+    let _ = std::fs::create_dir_all(cache_dir());
+    let _ = std::fs::write(marker, b"");
+}
+
+fn load_key(key: &str) -> Option<Schema> {
+    let text = std::fs::read_to_string(cache_file(key)).ok()?;
     serde_json::from_str(&text).ok()
 }
 
-fn save_cached(schema: &Schema) {
-    let path = cache_file(schema.appid);
+pub fn load_cached(appid: u64) -> Option<Schema> {
+    load_key(&appid.to_string())
+}
+
+pub fn load_cached_epic(app_name: &str) -> Option<Schema> {
+    load_key(&epic_key(app_name))
+}
+
+fn save_cached(key: &str, schema: &Schema) {
+    let path = cache_file(key);
     let _ = std::fs::create_dir_all(cache_dir());
     match serde_json::to_vec_pretty(schema) {
         Ok(bytes) => {
             if let Err(e) = crate::paths::write_atomic(&path, &bytes, false) {
-                tracing::warn!(error = %e, appid = schema.appid, "achievements: couldn't cache schema");
+                tracing::warn!(error = %e, key, "achievements: couldn't cache schema");
             }
         }
         Err(e) => tracing::warn!(error = %e, "achievements: couldn't serialise schema"),
@@ -128,10 +180,12 @@ pub async fn ensure(
     local_file: Option<&Path>,
     api_key: &str,
 ) -> Option<Schema> {
-    let cached = load_cached(appid);
+    let key = appid.to_string();
+    let marker = failed_marker(&key, "steam");
+    let cached = load_key(&key);
     let now = chrono::Utc::now().timestamp();
     let offline = crate::config::offline_mode_enabled();
-    let steam_due = !api_key.trim().is_empty() && !offline && !steam_backed_off(appid);
+    let steam_due = !api_key.trim().is_empty() && !offline && !backed_off(&marker);
     if let Some(c) = &cached {
         let fresh = now - c.fetched_at < MAX_AGE_SECS;
         // A local schema is upgraded to Steam's as soon as a key is set.
@@ -144,14 +198,13 @@ pub async fn ensure(
     if steam_due {
         match fetch_steam(http, appid, api_key.trim()).await {
             Ok(schema) => {
-                let _ = std::fs::remove_file(failed_marker(appid));
-                save_cached(&schema);
+                let _ = std::fs::remove_file(&marker);
+                save_cached(&key, &schema);
                 return Some(schema);
             }
             Err(e) => {
                 tracing::warn!(error = %e, appid, "achievements: Steam schema fetch failed");
-                let _ = std::fs::create_dir_all(cache_dir());
-                let _ = std::fs::write(failed_marker(appid), b"");
+                mark_failed(&marker);
             }
         }
     }
@@ -168,11 +221,257 @@ pub async fn ensure(
                     apply_percentages(&mut schema, &pct);
                 }
             }
-            save_cached(&schema);
+            save_cached(&key, &schema);
             return Some(schema);
         }
     }
     cached
+}
+
+/// The schema for an Epic game: a fresh cache entry if there is one, else a
+/// fetch from egdata.app, else a stale cache entry. `list_exes` names the
+/// executables to read for candidate sandbox ids; it runs on the blocking
+/// pool, and only when no cached id still works.
+pub async fn ensure_epic(
+    http: &reqwest::Client,
+    app_name: &str,
+    list_exes: impl FnOnce() -> Vec<PathBuf> + Send + 'static,
+) -> Option<Schema> {
+    let key = epic_key(app_name);
+    let marker = failed_marker(&key, "egdata");
+    let cached = load_key(&key);
+    let now = chrono::Utc::now().timestamp();
+    let offline = crate::config::offline_mode_enabled();
+    if let Some(c) = &cached {
+        if offline || now - c.fetched_at < MAX_AGE_SECS {
+            return cached;
+        }
+    }
+    if offline || backed_off(&marker) {
+        return cached;
+    }
+
+    // The cached sandbox id is tried first; the exes are only read when there
+    // is none or egdata no longer answers for it.
+    let mut ids: Vec<String> = cached.iter().filter_map(|c| c.sandbox_id.clone()).collect();
+    let mut list_exes = Some(list_exes);
+    let mut next = 0;
+    let found = loop {
+        if next == ids.len() {
+            let Some(list) = list_exes.take() else {
+                break None;
+            };
+            let scanned = tokio::task::spawn_blocking(move || sandbox_candidates(&list()))
+                .await
+                .unwrap_or_default();
+            for id in scanned {
+                if !ids.contains(&id) {
+                    ids.push(id);
+                }
+            }
+            continue;
+        }
+        match fetch_egdata(http, &ids[next]).await {
+            Ok(Some(schema)) => break Some(schema),
+            // Not a sandbox id egdata knows; try the next.
+            Ok(None) => next += 1,
+            Err(e) => {
+                tracing::warn!(error = %e, app_name, "achievements: egdata schema fetch failed");
+                break None;
+            }
+        }
+    };
+    if let Some(schema) = found {
+        let _ = std::fs::remove_file(&marker);
+        save_cached(&key, &schema);
+        return Some(schema);
+    }
+    tracing::info!(
+        app_name,
+        tried = next,
+        "achievements: no egdata schema found"
+    );
+    mark_failed(&marker);
+    cached
+}
+
+/// `Ok(None)` when egdata has no achievements under `sandbox_id`, including
+/// a client error for an id that isn't a sandbox id. Rate limiting, server
+/// errors and network failures are `Err`, which stops the search.
+async fn fetch_egdata(http: &reqwest::Client, sandbox_id: &str) -> AppResult<Option<Schema>> {
+    let res = http
+        .get(format!("{EGDATA_URL}/{sandbox_id}/achievements"))
+        .send()
+        .await
+        .map_err(net)?;
+    let status = res.status();
+    if status.is_client_error() && status != reqwest::StatusCode::TOO_MANY_REQUESTS {
+        return Ok(None);
+    }
+    if !status.is_success() {
+        return Err(AppError::Other(format!("egdata returned {status}")));
+    }
+    let body: Value = res.json().await.map_err(net)?;
+    Ok(egdata_schema(&body, sandbox_id))
+}
+
+/// Maps egdata's response (a list of achievement sets, the base game's and
+/// one per add-on) onto a schema, base set first.
+fn egdata_schema(body: &Value, sandbox_id: &str) -> Option<Schema> {
+    let mut sets: Vec<&Value> = body.as_array()?.iter().collect();
+    sets.sort_by_key(|s| !s.get("isBase").and_then(Value::as_bool).unwrap_or(false));
+    let text = |v: &Value, keys: &[&str]| {
+        keys.iter()
+            .filter_map(|k| v.get(*k).and_then(Value::as_str))
+            .find(|s| !s.trim().is_empty())
+            .unwrap_or_default()
+            .to_string()
+    };
+    let url = |v: &Value, k: &str| {
+        v.get(k)
+            .and_then(Value::as_str)
+            .filter(|s| s.starts_with("http"))
+            .map(str::to_string)
+    };
+    let achievements: Vec<_> = sets
+        .iter()
+        .filter_map(|s| s.get("achievements")?.as_array())
+        .flatten()
+        .filter_map(|v| {
+            Some(SchemaEntry {
+                api_name: v.get("name")?.as_str()?.to_string(),
+                display_name: text(v, &["unlockedDisplayName", "lockedDisplayName"]),
+                description: text(v, &["unlockedDescription", "lockedDescription"]),
+                hidden: truthy(v.get("hidden")),
+                icon: url(v, "unlockedIconLink"),
+                icon_gray: url(v, "lockedIconLink"),
+                global_percent: v.get("completedPercent").and_then(Value::as_f64),
+            })
+        })
+        .collect();
+    if achievements.is_empty() {
+        return None;
+    }
+    Some(Schema {
+        appid: 0,
+        source: "epic".into(),
+        fetched_at: chrono::Utc::now().timestamp(),
+        achievements,
+        sandbox_id: Some(sandbox_id.to_string()),
+    })
+}
+
+/// Distinct 32-hex-digit ids found in `exes`, in the order given and then
+/// file order, capped at [`MAX_SANDBOX_TRIES`]. Each exe is read in chunks,
+/// so a large one isn't held in memory.
+fn sandbox_candidates(exes: &[PathBuf]) -> Vec<String> {
+    use std::io::Read;
+    let mut out: Vec<String> = Vec::new();
+    let mut buf = vec![0u8; 1024 * 1024];
+    for exe in exes {
+        if std::fs::metadata(exe).map_or(true, |m| m.len() > MAX_EXE_BYTES) {
+            continue;
+        }
+        let Ok(mut file) = std::fs::File::open(exe) else {
+            continue;
+        };
+        let mut scanner = HexScanner::default();
+        while let Ok(n) = file.read(&mut buf) {
+            if n == 0 {
+                break;
+            }
+            scanner.feed(&buf[..n]);
+        }
+        for id in scanner.finish() {
+            if !out.contains(&id) {
+                out.push(id);
+            }
+        }
+        if out.len() >= MAX_SANDBOX_TRIES {
+            break;
+        }
+    }
+    out.truncate(MAX_SANDBOX_TRIES);
+    out
+}
+
+/// Lower-case 32-hex-digit runs not touching other letters or digits, stored
+/// as ASCII or as UTF-16LE.
+#[cfg(test)]
+fn hex_ids(bytes: &[u8]) -> Vec<String> {
+    let mut scanner = HexScanner::default();
+    scanner.feed(bytes);
+    scanner.finish()
+}
+
+/// One character stream being searched for ids.
+#[derive(Default)]
+struct HexRun {
+    run: Vec<u8>,
+    /// Length of the current run of hex digits, which may exceed `run`.
+    len: usize,
+    /// Whether the character before the current run was neither a letter nor
+    /// a digit.
+    touching: bool,
+}
+
+impl HexRun {
+    fn feed(&mut self, c: u8, out: &mut Vec<String>) {
+        if matches!(c, b'0'..=b'9' | b'a'..=b'f') {
+            if self.len < 32 {
+                self.run.push(c);
+            }
+            self.len += 1;
+        } else {
+            self.end(!c.is_ascii_alphanumeric(), out);
+            self.touching = c.is_ascii_alphanumeric();
+        }
+    }
+
+    fn end(&mut self, bounded_after: bool, out: &mut Vec<String>) {
+        if self.len == 32 && !self.touching && bounded_after {
+            out.push(String::from_utf8_lossy(&self.run).into_owned());
+        }
+        self.run.clear();
+        self.len = 0;
+    }
+}
+
+/// Finds ids in a byte stream fed in chunks: one ASCII stream and two
+/// UTF-16LE streams (code units starting at even and at odd offsets).
+#[derive(Default)]
+struct HexScanner {
+    ascii: HexRun,
+    utf16: [HexRun; 2],
+    /// The low byte of each UTF-16 stream's unfinished code unit.
+    pending: [Option<u8>; 2],
+    pos: usize,
+    out: Vec<String>,
+}
+
+impl HexScanner {
+    fn feed(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.ascii.feed(b, &mut self.out);
+            let lane = self.pos % 2;
+            let other = 1 - lane;
+            if let Some(low) = self.pending[other].take() {
+                // A code unit outside ASCII reads as a separator.
+                let c = if b == 0 { low } else { 0 };
+                self.utf16[other].feed(c, &mut self.out);
+            }
+            self.pending[lane] = Some(b);
+            self.pos += 1;
+        }
+    }
+
+    fn finish(mut self) -> Vec<String> {
+        self.ascii.end(true, &mut self.out);
+        for lane in &mut self.utf16 {
+            lane.end(true, &mut self.out);
+        }
+        self.out
+    }
 }
 
 /// The request URL is dropped from the message: it carries the API key as a
@@ -232,6 +531,7 @@ async fn fetch_steam(http: &reqwest::Client, appid: u64, key: &str) -> AppResult
         source: "steam".into(),
         fetched_at: chrono::Utc::now().timestamp(),
         achievements: list.iter().filter_map(steam_entry).collect(),
+        sandbox_id: None,
     };
     // Steam answers `{"game":{}}` for apps it has no stats for. Treated as a
     // failure so the game's own steam_settings schema is used instead.
@@ -349,6 +649,7 @@ fn read_local(appid: u64, file: &Path) -> Option<Schema> {
         source: "local".into(),
         fetched_at: chrono::Utc::now().timestamp(),
         achievements,
+        sandbox_id: None,
     })
 }
 
@@ -404,6 +705,7 @@ mod tests {
                 icon_gray: None,
                 global_percent: None,
             }],
+            ..Default::default()
         };
         assert!(s.find("ACH_ONE").is_some());
         assert!(s.find_crc(crc32fast::hash(b"Ach_One")).is_some());
@@ -463,6 +765,7 @@ mod tests {
             source: "steam".into(),
             fetched_at: 0,
             achievements: vec![entry("A", Some(99.0)), entry("B", None)],
+            ..Default::default()
         };
         let pct = HashMap::from([("B".to_string(), 12.5)]);
         apply_percentages(&mut s, &pct);
@@ -520,8 +823,91 @@ mod tests {
             source: "steam".into(),
             fetched_at: 0,
             achievements: vec![entry("ach_a", "lower"), entry("ACH_A", "upper")],
+            ..Default::default()
         };
         assert_eq!(s.find("ACH_A").unwrap().display_name, "upper");
         assert_eq!(s.find("Ach_A").unwrap().display_name, "lower");
+    }
+
+    #[test]
+    fn egdata_sets_map_base_first() {
+        let ach = |name: &str| {
+            json!({
+                "name": name, "hidden": false,
+                "unlockedDisplayName": format!("{name} title"), "lockedDisplayName": "x",
+                "unlockedDescription": "", "lockedDescription": "Do the thing.",
+                "unlockedIconLink": "https://cdn/u.png", "lockedIconLink": "https://cdn/l.png",
+                "completedPercent": 82
+            })
+        };
+        let body = json!([
+            { "isBase": false, "achievements": [ach("DLC1")] },
+            { "isBase": true, "achievements": [ach("01"), ach("02")] }
+        ]);
+        let s = egdata_schema(&body, "sb").unwrap();
+        assert_eq!(s.source, "epic");
+        assert_eq!(s.sandbox_id.as_deref(), Some("sb"));
+        let names: Vec<_> = s.achievements.iter().map(|a| a.api_name.as_str()).collect();
+        assert_eq!(names, ["01", "02", "DLC1"]);
+        let a = &s.achievements[0];
+        assert_eq!(a.display_name, "01 title");
+        assert_eq!(
+            a.description, "Do the thing.",
+            "empty unlocked text falls back"
+        );
+        assert_eq!(a.icon.as_deref(), Some("https://cdn/u.png"));
+        assert_eq!(a.icon_gray.as_deref(), Some("https://cdn/l.png"));
+        assert_eq!(a.global_percent, Some(82.0));
+
+        assert!(egdata_schema(&json!([]), "sb").is_none());
+        assert!(egdata_schema(&json!({ "error": "x" }), "sb").is_none());
+    }
+
+    #[test]
+    fn hex_ids_finds_bounded_ascii_and_utf16_ids() {
+        let id = "2e92a78949e2474aa89271b8b893f3b0";
+        let mut bytes = b"\0junk\0".to_vec();
+        bytes.extend_from_slice(id.as_bytes());
+        bytes.push(0);
+        // Too long, upper case, and touching a letter: all ignored.
+        bytes.extend_from_slice(b"\x002e92a78949e2474aa89271b8b893f3b0ff\0");
+        bytes.extend_from_slice(b"\x002E92A78949E2474AA89271B8B893F3B0\0");
+        bytes.extend_from_slice(b"\0x47a73210e3894e45a52a037968f37137\0");
+        for u in "b839067d7a114eb18d4fbba8890d6f00".encode_utf16() {
+            bytes.extend_from_slice(&u.to_le_bytes());
+        }
+        bytes.extend_from_slice(&[0, 0]);
+        assert_eq!(
+            hex_ids(&bytes),
+            [id.to_string(), "b839067d7a114eb18d4fbba8890d6f00".into()]
+        );
+        // At the very end of the file.
+        assert_eq!(hex_ids(id.as_bytes()), [id.to_string()]);
+    }
+
+    #[test]
+    fn hex_scanner_finds_ids_split_across_chunks() {
+        let id = "2e92a78949e2474aa89271b8b893f3b0";
+        let mut bytes = b"\0".to_vec();
+        bytes.extend_from_slice(id.as_bytes());
+        bytes.push(b'\n');
+        for u in id.encode_utf16() {
+            bytes.extend_from_slice(&u.to_le_bytes());
+        }
+        // Every split point, including mid-code-unit.
+        for split in 0..=bytes.len() {
+            let mut s = HexScanner::default();
+            s.feed(&bytes[..split]);
+            s.feed(&bytes[split..]);
+            assert_eq!(s.finish(), [id, id], "split at {split}");
+        }
+        // A run longer than 32 digits is not an id, however long.
+        assert!(hex_ids(&[b'a'; 100]).is_empty());
+    }
+
+    #[test]
+    fn epic_key_is_a_safe_file_stem() {
+        assert_eq!(epic_key("AlanWakeRemastered"), "epic-AlanWakeRemastered");
+        assert_eq!(epic_key("A*b?c<d>|\"e"), "epic-A_b_c_d___e");
     }
 }
