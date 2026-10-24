@@ -2988,6 +2988,7 @@ async fn phase_launch(ctx: &WorkflowCtx<'_>, exe_pathbuf: &Path) -> AppResult<Se
         process::LaunchSpec::Native {
             run_as_admin: ctx.launch.run_as_admin,
             options,
+            install_dir: ctx.game_folder(),
         }
     };
 
