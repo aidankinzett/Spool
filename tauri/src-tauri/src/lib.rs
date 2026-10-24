@@ -1010,7 +1010,9 @@ mod tests {
         assert!(log.exists());
         assert_eq!(std::fs::metadata(&log).unwrap().len(), 0);
         assert_eq!(
-            std::fs::metadata(dir.path().join("debug.log.1")).unwrap().len(),
+            std::fs::metadata(dir.path().join("debug.log.1"))
+                .unwrap()
+                .len(),
             LOG_ROTATE_BYTES + 1
         );
     }
