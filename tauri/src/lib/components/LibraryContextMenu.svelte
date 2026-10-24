@@ -145,7 +145,12 @@
   async function openFolder() {
     const g = dismiss();
     const f = folderForGame(g);
-    if (f) await api.openPath(f);
+    if (!f) return;
+    try {
+      await api.openPath(f);
+    } catch (e) {
+      toasts.show({ kind: 'bad', label: 'LIBRARY', title: "Couldn't open folder", sub: String(e) });
+    }
   }
 
   async function generateArmouryLauncher() {

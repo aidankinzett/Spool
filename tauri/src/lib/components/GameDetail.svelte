@@ -217,7 +217,12 @@
 
   async function openFolder() {
     const folder = folderForGame(game);
-    if (folder) await api.openPath(folder);
+    if (!folder) return;
+    try {
+      await api.openPath(folder);
+    } catch (e) {
+      toasts.show({ kind: 'bad', label: 'LIBRARY', title: "Couldn't open folder", sub: String(e) });
+    }
   }
 
   async function copyToClipboard(text: string) {

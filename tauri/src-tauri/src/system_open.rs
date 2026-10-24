@@ -21,10 +21,76 @@
 use crate::error::{AppError, AppResult};
 use url::Url;
 
-/// Open `path` (a file or directory) with the OS default handler.
+/// Open the folder at `path` in the OS file manager.
+///
+/// Like [`open_url`], the argument comes from the webview and reaches an
+/// opener that dispatches on scheme, so it must be an absolute filesystem path:
+/// `steam://run/440` or `file:///…` would otherwise launch whatever handles
+/// that scheme. It must also be an existing directory. The opener runs whatever
+/// it is given, so an absolute path to an executable or script would be
+/// launched; every caller opens a folder, so files are refused.
 #[tauri::command]
 pub async fn open_path(path: String) -> AppResult<()> {
+    let path = validate_open_path(&path, cfg!(windows))?;
+    require_existing_dir(&path).await?;
     spawn_opener(&path)
+}
+
+/// Fail unless `path` is an existing directory (symlinks are followed).
+async fn require_existing_dir(path: &str) -> AppResult<()> {
+    let is_dir = tokio::fs::metadata(path)
+        .await
+        .map(|m| m.is_dir())
+        .unwrap_or(false);
+    if is_dir {
+        Ok(())
+    } else {
+        Err(AppError::Other(format!(
+            "not an existing folder, so not opening it: {path}"
+        )))
+    }
+}
+
+/// Check `raw` is an absolute filesystem path for the host OS and return it
+/// unchanged for the opener.
+///
+/// `windows` selects the rule set (the caller passes `cfg!(windows)`); it is a
+/// parameter rather than a `cfg` so both rule sets are tested on every host.
+/// Unix paths must start with `/`. Windows paths must start with a drive letter
+/// and separator (`C:\`, `C:/`) or be UNC (`\\server\share`, `\\?\C:\…`,
+/// `//server/share`). A string with a URL scheme matches neither, and since an
+/// absolute path never starts with `-` it cannot be read as an option either.
+fn validate_open_path(raw: &str, windows: bool) -> AppResult<String> {
+    if raw.trim().is_empty() {
+        return Err(AppError::Other("no path to open".into()));
+    }
+    if raw.contains('\0') {
+        return Err(AppError::Other("path contains a NUL byte".into()));
+    }
+    // `\\.\` names a local device (pipes, raw volumes), never a folder to open.
+    // `\\?\` stays valid: it is just the long-path prefix.
+    if windows && (raw.starts_with("\\\\.\\") || raw.starts_with("//./")) {
+        return Err(AppError::Other(format!(
+            "refusing to open a device path: {raw}"
+        )));
+    }
+    let absolute = if windows {
+        let b = raw.as_bytes();
+        let drive = b.len() >= 3
+            && b[0].is_ascii_alphabetic()
+            && b[1] == b':'
+            && matches!(b[2], b'\\' | b'/');
+        drive || raw.starts_with("\\\\") || raw.starts_with("//")
+    } else {
+        raw.starts_with('/')
+    };
+    if absolute {
+        Ok(raw.to_string())
+    } else {
+        Err(AppError::Other(format!(
+            "refusing to open a path that isn't absolute: {raw}"
+        )))
+    }
 }
 
 /// Open an external `url` in the user's default browser.
@@ -108,7 +174,106 @@ fn spawn_opener(target: &str) -> AppResult<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::validate_external_url;
+    use super::{require_existing_dir, validate_external_url, validate_open_path};
+
+    #[tokio::test]
+    async fn open_path_requires_an_existing_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path().to_string_lossy().into_owned();
+        assert!(require_existing_dir(&folder).await.is_ok());
+
+        // A file (an executable or script would be launched by the opener) and
+        // a missing path are both refused.
+        let file = dir.path().join("game.exe");
+        std::fs::write(&file, b"").unwrap();
+        assert!(require_existing_dir(&file.to_string_lossy()).await.is_err());
+        let missing = dir.path().join("nope");
+        assert!(require_existing_dir(&missing.to_string_lossy())
+            .await
+            .is_err());
+    }
+
+    #[test]
+    fn open_path_accepts_unix_absolute_paths() {
+        for p in [
+            "/home/me/Games/Hades",
+            "/",
+            "/tmp/with space/x",
+            "//double/slash",
+        ] {
+            assert_eq!(validate_open_path(p, false).unwrap(), p);
+        }
+    }
+
+    #[test]
+    fn open_path_accepts_windows_drive_and_unc_paths() {
+        for p in [
+            r"C:\Games\Hades",
+            "D:/Games/Hades",
+            r"c:\lower",
+            r"\\server\share\Games",
+            r"\\?\C:\Very\Long\Path",
+            "//server/share/Games",
+        ] {
+            assert_eq!(validate_open_path(p, true).unwrap(), p);
+        }
+    }
+
+    #[test]
+    fn open_path_rejects_urls_on_both_rule_sets() {
+        // The point of the check: a scheme-bearing string must never reach the
+        // opener through the path command.
+        for p in [
+            "steam://run/440",
+            "file:///etc/passwd",
+            "mailto:someone@example.com",
+            "https://example.com",
+            "vscode://file/etc/passwd",
+            "javascript:alert(1)",
+        ] {
+            assert!(validate_open_path(p, false).is_err(), "unix accepted {p}");
+            assert!(validate_open_path(p, true).is_err(), "windows accepted {p}");
+        }
+    }
+
+    #[test]
+    fn open_path_rejects_relative_and_malformed_input() {
+        for p in [
+            "",
+            "   ",
+            "relative/path",
+            "./x",
+            "../x",
+            "~/Games",
+            "-version",
+            "--help",
+            "a\0b",
+        ] {
+            assert!(validate_open_path(p, false).is_err(), "unix accepted {p:?}");
+            assert!(
+                validate_open_path(p, true).is_err(),
+                "windows accepted {p:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn open_path_rejects_windows_device_paths() {
+        for p in [r"\\.\pipe\spool", r"\\.\C:", "//./pipe/spool"] {
+            assert!(validate_open_path(p, true).is_err(), "accepted {p}");
+        }
+    }
+
+    #[test]
+    fn open_path_rules_are_per_platform() {
+        // A drive path is not absolute on Unix (it would parse as a `c:` scheme
+        // for xdg-open), and a Unix path is not absolute on Windows.
+        assert!(validate_open_path(r"C:\Games", false).is_err());
+        assert!(validate_open_path("/home/me", true).is_err());
+        // Drive-relative and rooted-without-drive Windows forms are not absolute.
+        assert!(validate_open_path("C:Games", true).is_err());
+        assert!(validate_open_path(r"\Games", true).is_err());
+    }
 
     #[test]
     fn accepts_http_and_https() {
