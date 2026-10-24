@@ -21,15 +21,34 @@
 use crate::error::{AppError, AppResult};
 use url::Url;
 
-/// Open `path` (a file or directory) with the OS default handler.
+/// Open the folder at `path` in the OS file manager.
 ///
 /// Like [`open_url`], the argument comes from the webview and reaches an
 /// opener that dispatches on scheme, so it must be an absolute filesystem path:
 /// `steam://run/440` or `file:///…` would otherwise launch whatever handles
-/// that scheme.
+/// that scheme. It must also be an existing directory. The opener runs whatever
+/// it is given, so an absolute path to an executable or script would be
+/// launched; every caller opens a folder, so files are refused.
 #[tauri::command]
 pub async fn open_path(path: String) -> AppResult<()> {
-    spawn_opener(&validate_open_path(&path, cfg!(windows))?)
+    let path = validate_open_path(&path, cfg!(windows))?;
+    require_existing_dir(&path).await?;
+    spawn_opener(&path)
+}
+
+/// Fail unless `path` is an existing directory (symlinks are followed).
+async fn require_existing_dir(path: &str) -> AppResult<()> {
+    let is_dir = tokio::fs::metadata(path)
+        .await
+        .map(|m| m.is_dir())
+        .unwrap_or(false);
+    if is_dir {
+        Ok(())
+    } else {
+        Err(AppError::Other(format!(
+            "not an existing folder, so not opening it: {path}"
+        )))
+    }
 }
 
 /// Check `raw` is an absolute filesystem path for the host OS and return it
@@ -47,6 +66,13 @@ fn validate_open_path(raw: &str, windows: bool) -> AppResult<String> {
     }
     if raw.contains('\0') {
         return Err(AppError::Other("path contains a NUL byte".into()));
+    }
+    // `\\.\` names a local device (pipes, raw volumes), never a folder to open.
+    // `\\?\` stays valid: it is just the long-path prefix.
+    if windows && (raw.starts_with("\\\\.\\") || raw.starts_with("//./")) {
+        return Err(AppError::Other(format!(
+            "refusing to open a device path: {raw}"
+        )));
     }
     let absolute = if windows {
         let b = raw.as_bytes();
@@ -148,7 +174,24 @@ fn spawn_opener(target: &str) -> AppResult<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{validate_external_url, validate_open_path};
+    use super::{require_existing_dir, validate_external_url, validate_open_path};
+
+    #[tokio::test]
+    async fn open_path_requires_an_existing_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path().to_string_lossy().into_owned();
+        assert!(require_existing_dir(&folder).await.is_ok());
+
+        // A file (an executable or script would be launched by the opener) and
+        // a missing path are both refused.
+        let file = dir.path().join("game.exe");
+        std::fs::write(&file, b"").unwrap();
+        assert!(require_existing_dir(&file.to_string_lossy()).await.is_err());
+        let missing = dir.path().join("nope");
+        assert!(require_existing_dir(&missing.to_string_lossy())
+            .await
+            .is_err());
+    }
 
     #[test]
     fn open_path_accepts_unix_absolute_paths() {
@@ -211,6 +254,13 @@ mod tests {
                 validate_open_path(p, true).is_err(),
                 "windows accepted {p:?}"
             );
+        }
+    }
+
+    #[test]
+    fn open_path_rejects_windows_device_paths() {
+        for p in [r"\\.\pipe\spool", r"\\.\C:", "//./pipe/spool"] {
+            assert!(validate_open_path(p, true).is_err(), "accepted {p}");
         }
     }
 
