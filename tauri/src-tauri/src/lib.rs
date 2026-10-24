@@ -35,6 +35,7 @@ mod decky_install;
 mod diagnostics;
 mod drives;
 mod error;
+mod firewall;
 mod gamemode;
 mod gamepad;
 mod guided_install;
@@ -335,6 +336,7 @@ pub fn run() {
             move_install::cancel_move,
             move_install::current_move,
             diagnostics::check_dependencies,
+            firewall::check_lan_firewall,
             // proton / linux launch
             proton::list_proton_versions,
             proton::install_proton_deps,

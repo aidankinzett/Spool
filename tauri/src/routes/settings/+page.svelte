@@ -30,7 +30,7 @@
   import { confirmSteamRestart } from '$lib/steamRestart';
   import { isNewerVersion } from '$lib/format';
   import { checkForUpdateInteractive } from '$lib/updater';
-  import type { ConfigData, DepStatus, FolderCapacity, LanPeer, OfflinePrepProgress, ProtonVersion, SyncStatus } from '$lib/types';
+  import type { ConfigData, DepStatus, FirewallStatus, FolderCapacity, LanPeer, OfflinePrepProgress, ProtonVersion, SyncStatus } from '$lib/types';
   import AppChrome from '$lib/components/AppChrome.svelte';
   import MonoLabel from '$lib/components/MonoLabel.svelte';
   import Btn from '$lib/components/Btn.svelte';
@@ -160,6 +160,7 @@
   let isLinux = $state(false);
   let protonVersions = $state<ProtonVersion[]>([]);
   let deps = $state<DepStatus[]>([]);
+  let firewall = $state<FirewallStatus | null>(null);
   let depsLoading = $state(false);
 
   let deckyPlugin = $state<DeckyPluginInfo | null>(null);
@@ -563,6 +564,24 @@
     config.library_folders = prev.map((f) => ({ ...f, default_install: f.path === path }));
     if (!(await persist())) config.library_folders = prev;
   }
+
+  // Re-check the firewall when sharing is switched on or the port changes.
+  // The delay lets `persist` write the new port before the backend reads it.
+  $effect(() => {
+    if (!config?.lan_share_enabled) {
+      firewall = null;
+      return;
+    }
+    void config.lan_share_port;
+    const t = setTimeout(async () => {
+      try {
+        firewall = await api.checkLanFirewall();
+      } catch (e) {
+        console.error('[settings] checkLanFirewall failed:', e);
+      }
+    }, 400);
+    return () => clearTimeout(t);
+  });
 
   function onLanPortCommit() {
     if (!config) return;
@@ -1496,6 +1515,19 @@
                   </div>
 
                   {#if config.lan_share_enabled}
+                    {#if firewall && firewall.state !== 'ok'}
+                      <div class="border-t border-dashed border-line-1 px-[18px] py-[12px]">
+                        <div class="text-[12px] font-medium text-ink-0">
+                          {firewall.state === 'blocked'
+                            ? `${firewall.firewall} is blocking LAN sharing`
+                            : `${firewall.firewall} may be blocking LAN sharing`}
+                        </div>
+                        <div class="mt-[3px] text-[11.5px] text-ink-2">
+                          Other devices can’t find this one or connect to it until the ports are open. Run this in a terminal{firewall.firewall === 'Windows Firewall' ? ' as administrator' : ''}:
+                        </div>
+                        <code class="mt-2 block rounded-[3px] bg-black/30 px-2 py-1 font-mono text-[10.5px] text-ink-2 select-all">{firewall.command}</code>
+                      </div>
+                    {/if}
                     <div class="bg-bg-0 pb-1">
                       <SettingsRow label="Port" helper="TCP port peers connect to. Falls back to a random port if taken.">
                         {#snippet control()}

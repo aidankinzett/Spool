@@ -718,6 +718,15 @@ export type DepStatus = {
   install_docs_url: string;
 };
 
+/** Mirrors `FirewallStatus` in src-tauri/src/firewall.rs. */
+export type FirewallStatus = {
+  state: 'ok' | 'blocked' | 'unknown';
+  /** `firewalld`, `ufw` or `Windows Firewall`; "" when none was found. */
+  firewall: string;
+  /** Command that opens the LAN sharing ports, or "" when nothing is needed. */
+  command: string;
+};
+
 export type NewGame = {
   game_name: string;
   exe_path: string;
