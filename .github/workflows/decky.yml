@@ -12,6 +12,8 @@ on:
       - "tauri/src-tauri/src/lib.rs"
       - "tauri/src-tauri/src/paths.rs"
       - "tauri/src-tauri/Cargo.toml"
+      - "tauri/src/lib/activity.ts"
+      - "tauri/src/lib/types.ts"
       - ".github/workflows/decky.yml"
   pull_request:
     paths:
@@ -21,6 +23,8 @@ on:
       - "tauri/src-tauri/src/lib.rs"
       - "tauri/src-tauri/src/paths.rs"
       - "tauri/src-tauri/Cargo.toml"
+      - "tauri/src/lib/activity.ts"
+      - "tauri/src/lib/types.ts"
       - ".github/workflows/decky.yml"
 
 defaults:
@@ -39,6 +43,10 @@ jobs:
           bun-version: 1.3.13
       - name: Install
         run: bun install --frozen-lockfile
+      # The rollup TypeScript plugin reports type errors as warnings and still
+      # emits the bundle, so typecheck separately to fail on them.
+      - name: Typecheck
+        run: bun run typecheck
       - name: Build
         run: bun run build
       - name: Verify bundle exists
