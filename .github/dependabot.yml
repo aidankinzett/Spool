@@ -33,7 +33,7 @@ updates:
         update-types:
           - "major"
 
-  - package-ecosystem: "npm"
+  - package-ecosystem: "bun"
     directory: "/tauri"
     schedule:
       interval: weekly
@@ -46,7 +46,7 @@ updates:
         update-types:
           - "major"
 
-  - package-ecosystem: "npm"
+  - package-ecosystem: "bun"
     directory: "/decky"
     schedule:
       interval: weekly
@@ -59,7 +59,7 @@ updates:
         update-types:
           - "major"
 
-  - package-ecosystem: "npm"
+  - package-ecosystem: "bun"
     directory: "/docs-site"
     schedule:
       interval: weekly
