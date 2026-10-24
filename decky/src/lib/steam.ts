@@ -11,7 +11,7 @@ export const useParams = Object.values(ReactRouter).find((val) =>
 ) as <T>() => T;
 
 export function steamApps(): SteamApps | undefined {
-  return (SteamClient as unknown as { Apps?: SteamApps }).Apps;
+  return (window.SteamClient as unknown as { Apps?: SteamApps }).Apps;
 }
 
 // Steam's ELibraryAssetType. We set the four that matter for a polished tile
@@ -161,7 +161,7 @@ export async function resolveSteamGameId(appid: number): Promise<string> {
 //      is why it silently did nothing before.
 // Returns the method that was used (for logging).
 export function runSteamGame(gameid: string): string {
-  const client = SteamClient as unknown as {
+  const client = window.SteamClient as unknown as {
     Apps?: { RunGame?: (g: string, s: string, a: number, b: number) => void };
     URL?: { ExecuteSteamURL?: (url: string) => void };
   };

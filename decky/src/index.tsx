@@ -112,7 +112,7 @@ export default definePlugin(() => {
   // panel, which unmounts when the QAM closes). On a stop, let the backend
   // decide whether a forced-close fallback backup is needed. Starts and stops
   // also drive the achievement-toast poller.
-  const sub = SteamClient.GameSessions.RegisterForAppLifetimeNotifications(
+  const sub = window.SteamClient.GameSessions.RegisterForAppLifetimeNotifications(
     (n) => {
       // Spool's non-Steam shortcut appids are `crc32(...) | 0x80000000`, so
       // the high bit is set. Steam surfaces those through `unAppID` as a
