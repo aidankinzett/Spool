@@ -3,12 +3,14 @@
    * First-run onboarding — a four-step flow presented as a modal over the
    * (empty) library on a fresh install:
    *
-   *   Welcome → Cover art → Cloud saves → Game Mode companion (Linux + Decky)
+   *   Welcome → Cover art → Other devices → Cloud saves → Game Mode companion (Linux + Decky)
    *
    * The Decky step only appears on Linux when Decky Loader is present, mirroring
    * the design's `decky_present` gate. The cloud step connects for real inline
    * (OAuth authorize / WebDAV credentials / custom rclone remote), reusing the
-   * same backend commands as Settings → Saves. Cloud and Decky are skippable.
+   * same backend commands as Settings → Saves. The "other devices" step pairs over the LAN with a device that already has a cloud
+   * remote (see `lan/pairing.rs`) and hands off to the cloud step already connected.
+   * Devices, cloud and Decky are skippable.
    *
    * Presentation is a modal rather than a separate window so it behaves
    * identically in the desktop and Game Mode (touch) layouts — the same reason
@@ -20,6 +22,7 @@
    * Mono, graphite surface, brand spool accent).
    */
   import { onMount } from 'svelte';
+  import { listen } from '@tauri-apps/api/event';
   import {
     Check,
     ChevronLeft,
@@ -30,12 +33,13 @@
     Gamepad2,
     Grid2x2,
     KeyRound,
+    MonitorSmartphone,
     Shield,
     Sparkles,
   } from '@lucide/svelte';
   import { api, type DeckyPluginInfo } from '$lib/api';
   import { toasts } from '$lib/toasts.svelte';
-  import type { ConfigData } from '$lib/types';
+  import type { ConfigData, LanPeer } from '$lib/types';
   import Btn from '$lib/components/Btn.svelte';
   import Toggle from '$lib/components/Toggle.svelte';
   import TextField from '$lib/components/TextField.svelte';
@@ -62,16 +66,17 @@
   const deckyPresent = $derived(
     isLinux && !!deckyPlugin?.supported && !!deckyPlugin?.deckyPresent,
   );
-  type StepId = 'welcome' | 'covers' | 'cloud' | 'decky';
+  type StepId = 'welcome' | 'covers' | 'devices' | 'cloud' | 'decky';
   const steps = $derived<StepId[]>([
     'welcome',
     'covers',
+    'devices',
     'cloud',
     ...(deckyPresent ? (['decky'] as StepId[]) : []),
   ]);
   const stepId = $derived(steps[Math.min(idx, steps.length - 1)]);
   const isLast = $derived(idx === steps.length - 1);
-  const skippable = $derived(stepId === 'cloud' || stepId === 'decky');
+  const skippable = $derived(stepId === 'devices' || stepId === 'cloud' || stepId === 'decky');
   const primaryLabel = $derived(
     stepId === 'welcome' ? 'Get started' : isLast ? 'Finish' : 'Continue',
   );
@@ -93,6 +98,52 @@
   const chosenProvider = $derived(
     CLOUD_PROVIDERS.find((p) => p.v === config?.cloud_provider) ?? null,
   );
+
+  // ── Other-devices step ──────────────────────────────────────────────────
+  let peers = $state<LanPeer[]>([]);
+  let pairPeerId = $state<string | null>(null);
+  let pairCode = $state('');
+  let pairing = $state(false);
+
+  // Peers with an open pairing window (the "Share cloud setup" button on a device
+  // that already has a remote).
+  const pairablePeers = $derived(peers.filter((p) => p.pairing_port > 0));
+  const pairPeer = $derived(pairablePeers.find((p) => p.device_id === pairPeerId) ?? null);
+
+  async function refreshPeers() {
+    try {
+      peers = await api.listLanPeers();
+    } catch (e) {
+      console.error('[onboarding] listLanPeers failed:', e);
+    }
+  }
+
+  onMount(() => {
+    refreshPeers();
+    const un = listen('lan:peers-changed', refreshPeers);
+    return () => {
+      un.then((f) => f());
+    };
+  });
+
+  async function joinPairing() {
+    if (!pairPeer || pairing || pairCode.length !== 6) return;
+    pairing = true;
+    const peerName = pairPeer.device_name;
+    try {
+      await api.joinCloudPairing(pairPeer.device_id, pairCode);
+      config = await api.getConfig();
+      cloudConnected = true;
+      pairCode = '';
+      pairPeerId = null;
+      toasts.show({ kind: 'ok', label: 'CLOUD', title: 'Cloud setup copied', sub: `From ${peerName}.` });
+      idx += 1; // on to the cloud step, which now shows the remote as connected
+    } catch (e) {
+      toasts.show({ kind: 'bad', label: 'CLOUD · PAIRING', title: "Couldn't copy cloud setup", sub: String(e) });
+    } finally {
+      pairing = false;
+    }
+  }
 
   // ── Decky step ──────────────────────────────────────────────────────────
   let deckyInstalling = $state(false);
@@ -370,6 +421,54 @@
             </div>
             {#if !config.steamgriddb_enabled}
               <p class="mt-3 text-[11.5px] text-ink-3">You can turn this on anytime in Settings → Cover artwork.</p>
+            {/if}
+          </div>
+
+        {:else if stepId === 'devices'}
+          <div>
+            {@render stepHead('Your other devices', 'Already use Spool somewhere else? Open it there and copy its cloud setup over, so you only sign in once. Skip this if this is your first device.')}
+
+            <ol class="mb-4 flex list-none flex-col gap-2 p-0 text-[12.5px] leading-[1.5] text-ink-2">
+              <li>1. On your other device, open Spool → Settings → Cloud saves.</li>
+              <li>2. Choose <span class="text-ink-1">Share cloud setup</span>. It shows a 6-digit code.</li>
+              <li>3. Pick that device below and enter the code. Both devices must be on the same network.</li>
+            </ol>
+
+            {#if pairablePeers.length === 0}
+              <div class="flex items-center gap-[10px] rounded-md border border-line-2 bg-bg-2" style:padding="12px 14px">
+                <span class="flex text-ink-3"><MonitorSmartphone size={16} /></span>
+                <span class="text-[12.5px] text-ink-2">Looking for a device that's sharing its cloud setup…</span>
+              </div>
+            {:else if !pairPeer}
+              <div class="flex flex-col gap-2">
+                {#each pairablePeers as p (p.device_id)}
+                  <button
+                    type="button"
+                    onclick={() => (pairPeerId = p.device_id)}
+                    class="flex cursor-pointer items-center gap-[10px] rounded-md border border-line-2 bg-bg-2 text-left transition-colors hover:border-line-3"
+                    style:padding="12px 14px"
+                  >
+                    <span class="flex text-ink-2"><MonitorSmartphone size={16} /></span>
+                    <span class="flex-1 text-[13px] font-semibold text-ink-0">{p.device_name}</span>
+                    <span class="font-mono text-[9.5px] uppercase tracking-[0.06em] text-ink-3">{p.addr}</span>
+                  </button>
+                {/each}
+              </div>
+            {:else}
+              <div class="mb-[14px] flex items-center gap-[10px] rounded-md border border-line-2 bg-bg-2" style:padding="10px 14px">
+                <div class="min-w-0 flex-1 text-[13px] font-semibold">{pairPeer.device_name}</div>
+                <Btn variant="ghost" onclick={() => { pairPeerId = null; pairCode = ''; }}>Change</Btn>
+              </div>
+              <div class="mb-1.5 text-[12px] font-medium text-ink-1">Code shown on {pairPeer.device_name}</div>
+              <div class="flex items-center gap-[10px]">
+                <div class="w-[140px]">
+                  <TextField bind:value={pairCode} placeholder="123456" mono full />
+                </div>
+                <Btn variant="primary" accent={ACCENT} onclick={joinPairing} disabled={pairing || !/^\d{6}$/.test(pairCode)}>
+                  {#snippet icon()}<Check size={14} />{/snippet}
+                  {pairing ? 'Copying…' : 'Copy cloud setup'}
+                </Btn>
+              </div>
             {/if}
           </div>
 

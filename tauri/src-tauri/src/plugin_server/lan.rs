@@ -244,6 +244,7 @@ mod tests {
                     game_count: 0,
                     version: 1,
                     file_server_port: port,
+                    pairing_port: 0,
                     last_seen_ago_secs: 0,
                 },
                 last_seen: Instant::now(),

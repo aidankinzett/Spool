@@ -36,6 +36,7 @@
 pub(crate) mod discovery;
 pub(crate) mod install;
 pub(crate) mod manifest_cache;
+pub(crate) mod pairing;
 pub(crate) mod server;
 
 pub use discovery::{spawn_discovery, LanState};

@@ -196,6 +196,7 @@ export const SAMPLE_PEERS: LanPeer[] = [
     game_count: 14,
     version: 1,
     file_server_port: 47632,
+    pairing_port: 0,
     last_seen_ago_secs: 2,
   },
   {
@@ -205,6 +206,7 @@ export const SAMPLE_PEERS: LanPeer[] = [
     game_count: 7,
     version: 1,
     file_server_port: 47632,
+    pairing_port: 0,
     last_seen_ago_secs: 5,
   },
 ];

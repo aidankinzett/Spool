@@ -2228,7 +2228,7 @@ pub(crate) async fn poll_once(app: &AppHandle) {
 /// `remote_name` must match the bare-string name that `apply_cloud` in
 /// `ludusavi_config.rs` writes into ludusavi's `config.yaml` — that is what
 /// `rclone lsd <remote>:` (the reachability probe) will look up.
-fn oauth_remote(provider: &str) -> Option<(&'static str, &'static str)> {
+pub(crate) fn oauth_remote(provider: &str) -> Option<(&'static str, &'static str)> {
     match provider {
         "google-drive" => Some(("drive", "GoogleDrive")),
         "dropbox" => Some(("dropbox", "Dropbox")),

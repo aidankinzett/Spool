@@ -1,6 +1,7 @@
 //! UDP broadcast discovery + the background-task orchestration that wires
 //! the announce/listen/reaper loops together with the HTTP server.
 
+use super::pairing::CloudPairing;
 use super::server::start_http_server;
 use super::{LanUploadsState, UploadSession};
 use crate::config::SharedConfig;
@@ -41,6 +42,10 @@ struct AnnouncePacket {
     /// HTTP file server port on the announcing peer. `0` = "discovery
     /// only, not accepting transfers" (e.g. server failed to bind).
     file_server_port: u16,
+    /// HTTP port to pair on while this device has a cloud-setup pairing window
+    /// open (Settings → Cloud saves → "Share cloud setup"); `0` = not pairing.
+    /// Separate from `file_server_port`, which is `0` whenever game sharing is off.
+    pairing_port: u16,
 }
 
 impl Default for AnnouncePacket {
@@ -52,6 +57,7 @@ impl Default for AnnouncePacket {
             device_name: String::new(),
             game_count: 0,
             file_server_port: 0,
+            pairing_port: 0,
         }
     }
 }
@@ -66,6 +72,8 @@ pub struct LanPeer {
     pub game_count: u32,
     pub version: u32,
     pub file_server_port: u16,
+    /// Non-zero while the peer has a cloud-setup pairing window open.
+    pub pairing_port: u16,
     /// Seconds since the peer was last heard from (0 = just now).
     pub last_seen_ago_secs: u64,
 }
@@ -287,6 +295,11 @@ async fn announce_loop(
             device_name: device_name.clone(),
             game_count,
             file_server_port,
+            pairing_port: if app.state::<CloudPairing>().is_open() {
+                server_port.load(Ordering::Relaxed)
+            } else {
+                0
+            },
         };
         if let Ok(payload) = serde_json::to_vec(&packet) {
             if let Err(e) = socket.send_to(&payload, target).await {
@@ -346,6 +359,9 @@ async fn listen_loop(
             let name_changed = entry
                 .map(|e| e.peer.device_name != packet.device_name)
                 .unwrap_or(false);
+            let pairing_changed = entry
+                .map(|e| e.peer.pairing_port != packet.pairing_port)
+                .unwrap_or(false);
             peers.insert(
                 packet.device_id.clone(),
                 PeerEntry {
@@ -356,12 +372,13 @@ async fn listen_loop(
                         game_count: packet.game_count,
                         version: packet.version,
                         file_server_port: packet.file_server_port,
+                        pairing_port: packet.pairing_port,
                         last_seen_ago_secs: 0,
                     },
                     last_seen: Instant::now(),
                 },
             );
-            is_new || count_changed || port_changed || name_changed
+            is_new || count_changed || port_changed || name_changed || pairing_changed
         };
         if changed {
             on_change();
