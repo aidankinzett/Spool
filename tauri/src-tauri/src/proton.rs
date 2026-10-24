@@ -796,6 +796,7 @@ pub async fn run_exe_in_prefix_core(
             extra_args: &[],
             extra_env: &[("WINE_LARGE_ADDRESS_AWARE", "1")],
             wrapper: &[],
+            on_setup: None,
         },
     )
     .await?;

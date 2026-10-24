@@ -328,7 +328,27 @@ pub enum LaunchSpec<'a> {
         extra_env: &'a [(&'a str, &'a str)],
         /// Wrapper program + args placed in front of the umu-run command.
         wrapper: &'a [String],
+        /// Told when umu-run is downloading or unpacking its runtime or Proton
+        /// (`Some(message)`), and when that finishes (`None`).
+        on_setup: Option<SetupCallback>,
     },
+}
+
+/// Callback for umu-run's first-run setup status; see [`umu_setup_status`].
+pub type SetupCallback = Arc<dyn Fn(Option<&str>) + Send + Sync>;
+
+/// Classifies a line of umu-run output as runtime/Proton setup work. umu logs
+/// a line when it downloads or unpacks the Steam Linux Runtime or a Proton
+/// build, which can take minutes on a first launch with no other sign of life.
+fn umu_setup_status(line: &str) -> Option<&'static str> {
+    let l = line.to_ascii_lowercase();
+    if l.contains("download") {
+        Some("Downloading Proton runtime (first launch only)…")
+    } else if l.contains("extract") || l.contains("unpack") {
+        Some("Unpacking Proton runtime (first launch only)…")
+    } else {
+        None
+    }
 }
 
 /// `program args…`, or `wrapper[0] wrapper[1..]… program args…` when a
@@ -400,6 +420,7 @@ pub async fn run_game(exe_path: &Path, spec: LaunchSpec<'_>) -> AppResult<GameEx
             extra_args,
             extra_env,
             wrapper,
+            on_setup,
         } => {
             let launch = proton::build_umu_launch(
                 umu_run,
@@ -440,9 +461,32 @@ pub async fn run_game(exe_path: &Path, spec: LaunchSpec<'_>) -> AppResult<GameEx
                 None => AppError::Other(format!("failed to start game via Proton: {e}")),
             })?;
 
+            // Both streams report setup status; `setup_active` makes sure the
+            // "finished" signal fires once, on the first non-setup line after.
+            let setup_active = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let report_setup = {
+                let setup_active = Arc::clone(&setup_active);
+                move |line: &str| {
+                    let Some(cb) = on_setup.as_ref() else { return };
+                    match umu_setup_status(line) {
+                        Some(msg) => {
+                            setup_active.store(true, std::sync::atomic::Ordering::Relaxed);
+                            cb(Some(msg));
+                        }
+                        None => {
+                            if setup_active.swap(false, std::sync::atomic::Ordering::Relaxed) {
+                                cb(None);
+                            }
+                        }
+                    }
+                }
+            };
+
             let stdout_handle = child.stdout.take().map(|s| {
-                tokio::spawn(relay_umu_stream(s, "stdout", None, |line| {
-                    tracing::info!(target: "umu", "{}", line)
+                let report = report_setup.clone();
+                tokio::spawn(relay_umu_stream(s, "stdout", None, move |line| {
+                    tracing::info!(target: "umu", "{}", line);
+                    report(line);
                 }))
             });
 
@@ -455,8 +499,9 @@ pub async fn run_game(exe_path: &Path, spec: LaunchSpec<'_>) -> AppResult<GameEx
             let stderr_handle = child.stderr.take().map({
                 let tail = Arc::clone(&stderr_buf);
                 move |s| {
-                    tokio::spawn(relay_umu_stream(s, "stderr", Some(tail), |line| {
-                        tracing::warn!(target: "umu", "{}", line)
+                    tokio::spawn(relay_umu_stream(s, "stderr", Some(tail), move |line| {
+                        tracing::warn!(target: "umu", "{}", line);
+                        report_setup(line);
                     }))
                 }
             });
@@ -603,6 +648,17 @@ async fn run_elevated(_exe_path: &Path) -> AppResult<i32> {
 mod tests {
     use super::*;
     use std::collections::HashMap;
+
+    #[test]
+    fn umu_setup_status_matches_download_and_unpack_lines() {
+        assert!(umu_setup_status("Downloading UMU-Proton-9.0-4 ...")
+            .unwrap()
+            .starts_with("Downloading"));
+        assert!(umu_setup_status("Extracting steamrt3 archive")
+            .unwrap()
+            .starts_with("Unpacking"));
+        assert_eq!(umu_setup_status("steamrt3 is up to date"), None);
+    }
 
     fn argv(cmd: &Command) -> Vec<String> {
         let std = cmd.as_std();
