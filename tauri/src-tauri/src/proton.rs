@@ -333,8 +333,9 @@ fn heroic_umu_candidates(config_dir: &Path, home: &Path) -> Vec<PathBuf> {
 }
 
 /// Locate the `umu-run` launcher: config override → `/usr/bin/umu-run` → PATH
-/// → Heroic's bundled copy. The system paths come first so an explicitly
-/// installed umu always wins over another launcher's private copy.
+/// → the copy the install script downloads (`paths::spool_umu_run`) → Heroic's
+/// bundled copy. The system paths come first so an explicitly installed umu
+/// always wins over a private copy.
 pub fn resolve_umu_run(override_path: Option<&str>) -> AppResult<PathBuf> {
     if let Some(o) = override_path {
         let trimmed = o.trim();
@@ -356,6 +357,10 @@ pub fn resolve_umu_run(override_path: Option<&str>) -> AppResult<PathBuf> {
                 return Ok(candidate);
             }
         }
+    }
+    let spool_copy = paths::spool_umu_run();
+    if spool_copy.is_file() {
+        return Ok(spool_copy);
     }
     if let (Some(config_dir), Some(home)) = (dirs::config_dir(), dirs::home_dir()) {
         for candidate in heroic_umu_candidates(&config_dir, &home) {
