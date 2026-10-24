@@ -30,7 +30,10 @@ use crate::lan::{install::LanDownloadState, LanState};
 use crate::library::Library;
 use crate::ludusavi::LudusaviClient;
 use axum::{
-    response::Json,
+    extract::{Request, State},
+    http::{header, HeaderValue, Method, StatusCode},
+    middleware::{self, Next},
+    response::{IntoResponse, Json, Response},
     routing::{delete, get, post},
     Router,
 };
@@ -38,6 +41,11 @@ use serde_json::{json, Value};
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tower_http::{cors::CorsLayer, services::ServeDir};
+
+/// The only browser origin allowed to call this server: the Decky UI runs in
+/// Steam's CEF under this origin. Requests from the plugin's Python backend
+/// carry no `Origin` header and are not affected.
+const DECKY_UI_ORIGIN: &str = "https://steamloopback.host";
 
 // ── Server state ─────────────────────────────────────────────────────────────
 
@@ -207,10 +215,6 @@ pub async fn serve() -> AppResult<()> {
             "/achievement-icons",
             ServeDir::new(crate::achievements::schema::cache_dir()),
         )
-        // The Decky UI runs under https://steamloopback.host, so its JSON
-        // fetches are cross-origin and need CORS. `<img>` covers are not
-        // CORS-gated and load without this.
-        .layer(CorsLayer::permissive())
         .with_state(state);
 
     // Bind a loopback TCP port. Prefer a stable one so the plugin can find us;
@@ -234,6 +238,7 @@ pub async fn serve() -> AppResult<()> {
         .local_addr()
         .map_err(|e| AppError::Other(format!("plugin http local_addr: {e}")))?
         .port();
+    let router = harden(router, port);
 
     // Publish the resolved port so the Decky plugin (Python backend + React
     // UI) can reach us. An absent file means the server is not running.
@@ -250,6 +255,62 @@ pub async fn serve() -> AppResult<()> {
         .map_err(|e| AppError::Other(format!("plugin http serve: {e}")))?;
 
     Ok(())
+}
+
+/// Applies the browser-facing protections to the whole router.
+///
+/// This server has no authentication and exposes destructive endpoints
+/// (delete/uninstall a game, restore a save revision, set a Proton path), so
+/// any web page open in a browser on the same machine must not be able to
+/// call it. Two checks, run before the handlers:
+///
+///   * `Host` must be this loopback address and port. A DNS-rebinding page
+///     reaches the server under its own hostname, which fails this.
+///   * A request that carries an `Origin` header must come from the Decky UI.
+///     Browsers attach `Origin` to cross-origin requests and to every POST, so
+///     another site's `fetch` (including a "simple" POST that skips the CORS
+///     preflight) is rejected here.
+///
+/// CORS then allows only the Decky UI origin, so even a request that got
+/// through couldn't have its response read by another site. Requests with no
+/// `Origin` (the plugin's Python backend, `<img>` loads) pass the second check.
+///
+/// Browsers also omit `Origin` on simple cross-origin GETs, so another site can
+/// still trigger a GET it can't read the result of. Keep GET handlers free of
+/// side effects beyond idempotent reads (the achievement scan only imports
+/// unlocks already on disk). Any other process on the machine can reach the
+/// server too; this guards against web pages, not local processes.
+fn harden(router: Router, port: u16) -> Router {
+    let cors = CorsLayer::new()
+        .allow_origin(HeaderValue::from_static(DECKY_UI_ORIGIN))
+        .allow_methods([Method::GET, Method::POST, Method::DELETE])
+        .allow_headers([header::CONTENT_TYPE]);
+    let hosts = Arc::new([format!("127.0.0.1:{port}"), format!("localhost:{port}")]);
+    router
+        .layer(cors)
+        .layer(middleware::from_fn_with_state(hosts, guard_host_and_origin))
+}
+
+async fn guard_host_and_origin(
+    State(hosts): State<Arc<[String; 2]>>,
+    req: Request,
+    next: Next,
+) -> Response {
+    // Host names are case-insensitive.
+    let host_ok = req
+        .headers()
+        .get(header::HOST)
+        .and_then(|h| h.to_str().ok())
+        .is_some_and(|h| hosts.iter().any(|allowed| h.eq_ignore_ascii_case(allowed)));
+    if !host_ok {
+        return (StatusCode::FORBIDDEN, "unexpected Host").into_response();
+    }
+    if let Some(origin) = req.headers().get(header::ORIGIN) {
+        if origin.as_bytes() != DECKY_UI_ORIGIN.as_bytes() {
+            return (StatusCode::FORBIDDEN, "origin not allowed").into_response();
+        }
+    }
+    next.run(req).await
 }
 
 async fn get_status() -> Json<Value> {
@@ -271,4 +332,118 @@ fn ludusavi_prep(log_tag: &str) -> Result<(std::path::PathBuf, std::path::PathBu
         tracing::warn!(error = %e, "{log_tag}: ensure_config warning");
     }
     Ok((ludusavi_exe, crate::paths::ludusavi_config_dir()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::Body;
+    use tower::ServiceExt;
+
+    const PORT: u16 = 47650;
+
+    fn app() -> Router {
+        let router = Router::new()
+            .route("/status", get(get_status))
+            .route("/games/{id}", delete(|| async { "deleted" }))
+            .route("/fold", post(|| async { "folded" }));
+        harden(router, PORT)
+    }
+
+    async fn call(method: Method, uri: &str, headers: &[(&str, &str)]) -> Response {
+        let mut req = Request::builder().method(method).uri(uri);
+        for (k, v) in headers {
+            req = req.header(*k, *v);
+        }
+        app()
+            .oneshot(req.body(Body::empty()).unwrap())
+            .await
+            .unwrap()
+    }
+
+    const HOST: (&str, &str) = ("host", "127.0.0.1:47650");
+
+    #[tokio::test]
+    async fn plain_loopback_requests_without_an_origin_pass() {
+        // The plugin's Python backend and `<img>` loads send no Origin.
+        assert_eq!(call(Method::GET, "/status", &[HOST]).await.status(), 200);
+        assert_eq!(call(Method::POST, "/fold", &[HOST]).await.status(), 200);
+        let localhost = [("host", "LocalHost:47650")];
+        assert_eq!(call(Method::GET, "/status", &localhost).await.status(), 200);
+    }
+
+    #[tokio::test]
+    async fn the_decky_ui_origin_is_allowed_and_may_read_the_response() {
+        let res = call(Method::GET, "/status", &[HOST, ("origin", DECKY_UI_ORIGIN)]).await;
+        assert_eq!(res.status(), 200);
+        assert_eq!(
+            res.headers()
+                .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+                .unwrap(),
+            DECKY_UI_ORIGIN
+        );
+    }
+
+    #[tokio::test]
+    async fn another_sites_origin_is_rejected_for_reads_and_writes() {
+        for origin in ["https://evil.example", "http://localhost:3000", "null"] {
+            for (method, uri) in [
+                (Method::GET, "/status"),
+                (Method::POST, "/fold"),
+                (Method::DELETE, "/games/abc"),
+            ] {
+                let res = call(method.clone(), uri, &[HOST, ("origin", origin)]).await;
+                assert_eq!(res.status(), 403, "{method} {uri} from {origin}");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_dns_rebinding_host_is_rejected() {
+        for host in [
+            "evil.example:47650",
+            "127.0.0.1:1",
+            "127.0.0.1",
+            "localhost",
+        ] {
+            let res = call(Method::GET, "/status", &[("host", host)]).await;
+            assert_eq!(res.status(), 403, "Host: {host}");
+        }
+        assert_eq!(call(Method::GET, "/status", &[]).await.status(), 403);
+    }
+
+    #[tokio::test]
+    async fn preflight_is_answered_only_for_the_decky_ui() {
+        let allowed = call(
+            Method::OPTIONS,
+            "/fold",
+            &[
+                HOST,
+                ("origin", DECKY_UI_ORIGIN),
+                ("access-control-request-method", "POST"),
+                ("access-control-request-headers", "content-type"),
+            ],
+        )
+        .await;
+        assert!(allowed.status().is_success());
+        assert_eq!(
+            allowed
+                .headers()
+                .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+                .unwrap(),
+            DECKY_UI_ORIGIN
+        );
+
+        let denied = call(
+            Method::OPTIONS,
+            "/fold",
+            &[
+                HOST,
+                ("origin", "https://evil.example"),
+                ("access-control-request-method", "POST"),
+            ],
+        )
+        .await;
+        assert_eq!(denied.status(), 403);
+    }
 }
