@@ -1766,8 +1766,12 @@ pub async fn set_cloud_webdav(
         cfg.data.cloud.webdav_username = username;
         cfg.save()?;
     }
-    // Probe the new remote so the status shows it without a restart.
-    crate::rclone::poll_once(&app).await;
+    // Probe the new remote so the status shows it without a restart. Spawned so
+    // an unreachable server doesn't leave the Connect button waiting on the
+    // probe timeout; the probe emits `sync:status-changed`.
+    tauri::async_runtime::spawn(async move {
+        crate::rclone::poll_once(&app).await;
+    });
     Ok(())
 }
 

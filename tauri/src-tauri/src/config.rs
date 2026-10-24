@@ -688,6 +688,10 @@ pub fn update_config(
         || cfg.data.cloud.remote != data.cloud.remote
         || cfg.data.cloud.rclone_args != data.cloud.rclone_args
         || crate::rclone::base_path(&cfg.data) != crate::rclone::base_path(&data);
+    // The reachability probe is `rclone lsd <remote>:`, so only the provider and
+    // remote decide its result — not the base folder or extra rclone args.
+    let remote_changed = cfg.data.cloud.provider != data.cloud.provider
+        || cfg.data.cloud.remote != data.cloud.remote;
     let retention_changed = cfg.data.save_retention_full != data.save_retention_full;
 
     if cloud_changed {
@@ -726,10 +730,11 @@ pub fn update_config(
     drop(cfg);
 
     // The sync status is maintained passively (one startup probe, then real
-    // ops), so a new remote would otherwise keep showing the old status until
-    // the next restart. Probe it now that the config names it. Spawned so the
-    // save doesn't wait on the network; the probe emits `sync:status-changed`.
-    if cloud_changed {
+    // ops), so a different provider or remote would otherwise keep showing the
+    // old status until the next restart. Probe it now that the config names it.
+    // Spawned so the save doesn't wait on the network; the probe emits
+    // `sync:status-changed`. Only reached once the save has succeeded.
+    if remote_changed {
         tauri::async_runtime::spawn(async move {
             crate::rclone::poll_once(&app).await;
         });

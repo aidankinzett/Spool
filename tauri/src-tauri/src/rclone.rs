@@ -49,6 +49,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -2178,6 +2179,10 @@ pub fn publish_offline_mode_status(app: &AppHandle) {
 /// keeps the status current between these without spending a request per
 /// minute on an idle remote.
 pub(crate) async fn poll_once(app: &AppHandle) {
+    // Probes can overlap (a config edit while the startup probe or an earlier
+    // edit's probe is still running). Only the newest one applies its result,
+    // so a slow probe against the old remote can't overwrite a newer status.
+    let seq = PROBE_SEQ.fetch_add(1, Ordering::SeqCst) + 1;
     // Offline mode: deliberately paused. Don't probe (it would fail and paint
     // the icon red as if something were broken) — report the paused state.
     let offline_mode = {
@@ -2218,8 +2223,15 @@ pub(crate) async fn poll_once(app: &AppHandle) {
         }
     };
 
+    if PROBE_SEQ.load(Ordering::SeqCst) != seq {
+        tracing::debug!("sync probe: superseded by a newer probe, dropping result");
+        return;
+    }
     apply_status(app, new_status);
 }
+
+/// Sequence number of the most recently started [`poll_once`] probe.
+static PROBE_SEQ: AtomicU64 = AtomicU64::new(0);
 
 // ── OAuth remote authentication ─────────────────────────────────────────────
 
