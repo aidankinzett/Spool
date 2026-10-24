@@ -328,8 +328,6 @@
       ? 'No cloud remote configured'
       : backupMissed
         ? 'Waiting for a local backup · retries next launch'
-        : backupMissed
-        ? 'No new revision was written, so there is nothing to send to your cloud remote yet. Spool retries next launch.'
         : noSaves
         ? 'Nothing to upload'
         : syncState === 'warn'

@@ -103,8 +103,9 @@ struct RunPhaseEvent {
     backup_failed: bool,
     /// True when the post-session backup was deferred because another Spool
     /// process held the backup lock past the timeout. Only ever true on the
-    /// `done` phase. Nothing was written by this workflow; the process holding
-    /// the lock is already backing the game up, and the next launch reconciles.
+    /// `done` phase. Nothing was written by this workflow. The lock is
+    /// machine-wide, so the holder may be backing up a different game; the next
+    /// launch reconciles this one.
     backup_deferred: bool,
 }
 
@@ -3297,8 +3298,8 @@ struct BackupResult {
     /// The backup errored, so no revision was written this session.
     backup_failed: bool,
     /// The backup lock stayed contended past the timeout, so this workflow
-    /// wrote nothing. Another process holding the lock is already backing the
-    /// game up.
+    /// wrote nothing. The lock is machine-wide, so the holder may be backing up
+    /// a different game.
     backup_deferred: bool,
 }
 
@@ -3368,8 +3369,8 @@ async fn phase_backup(
         // stays contended past the timeout, defer rather than run unlocked: a
         // concurrent ludusavi/rclone write could corrupt the backup or clobber
         // the remote. Nothing's been written yet, the live save is safe on
-        // disk, and the lock being held means another process is *already*
-        // backing this up — so we flag the save unsynced (local-newer badge +
+        // disk. The lock is machine-wide, so the holder may be backing up a
+        // different game — so we flag the save unsynced (local-newer badge +
         // leave the PendingBackup marker so peers keep warning) and let the next
         // launch reconcile. Playtime was already pushed at record time
         // (phase_launch), so there's nothing to record here.
@@ -3610,6 +3611,17 @@ async fn phase_backup(
                 // `BackupFailed` (a warning, not a success).
                 tracing::warn!(game_id = %ctx.game_id, error = %e, "post-session backup failed");
                 backup_failed = true;
+                // The live save is newer than the last backup, so the badge
+                // must not keep saying "synced" — same as the deferred path.
+                if ctx
+                    .app
+                    .state::<SharedLibrary>()
+                    .set_sync_badge(ctx.game_id, "local-newer")
+                    .await
+                    .unwrap_or(false)
+                {
+                    let _ = ctx.app.emit("library:changed", &ctx.game_id.to_string());
+                }
                 // Playtime was already pushed at record time (phase_launch); the
                 // PendingBackup marker stays so peers/next-launch reconcile.
             }
