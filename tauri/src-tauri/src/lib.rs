@@ -579,7 +579,12 @@ fn rotate_oversized_log_locked(log: &std::path::Path) {
 /// Returns the non-blocking worker guard; binding it to the call frame
 /// keeps the writer alive and flushes buffered lines at shutdown.
 fn init_tracing() -> tracing_appender::non_blocking::WorkerGuard {
-    use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+    use tracing_subscriber::{
+        fmt::{self, format::FmtSpan},
+        layer::SubscriberExt,
+        util::SubscriberInitExt,
+        EnvFilter,
+    };
 
     let log_dir = paths::app_data_dir();
     let _ = std::fs::create_dir_all(&log_dir);
@@ -605,6 +610,9 @@ fn init_tracing() -> tracing_appender::non_blocking::WorkerGuard {
             fmt::layer()
                 .with_ansi(false)
                 .with_target(true)
+                // One line when a span closes, with its busy/idle time: gives a
+                // duration for each run-workflow phase in the log.
+                .with_span_events(FmtSpan::CLOSE)
                 .with_writer(file_writer),
         )
         .init();

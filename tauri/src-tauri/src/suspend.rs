@@ -43,7 +43,11 @@ pub fn start_suspend_watcher(
 ) -> JoinHandle<()> {
     #[cfg(target_os = "linux")]
     {
-        tokio::spawn(linux::watch(app, game_name, suspended_secs))
+        tokio::spawn(tracing::Instrument::in_current_span(linux::watch(
+            app,
+            game_name,
+            suspended_secs,
+        )))
     }
     #[cfg(not(target_os = "linux"))]
     {

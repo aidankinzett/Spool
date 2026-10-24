@@ -472,7 +472,7 @@ impl SessionWatch {
         let (stop, mut stopped) = tokio::sync::watch::channel(false);
         let task = {
             let (app, game_id, slot) = (app.clone(), game_id.to_string(), slot.clone());
-            tokio::spawn(async move {
+            tokio::spawn(tracing::Instrument::in_current_span(async move {
                 let Some(watcher) = Watcher::start(app, &game_id).await else {
                     return;
                 };
@@ -492,7 +492,7 @@ impl SessionWatch {
                         w.tick(false).await;
                     }
                 }
-            })
+            }))
         };
         Self {
             task,
@@ -537,13 +537,13 @@ impl Watcher {
                 ctx.local_schema_file(),
                 config.steam_web_api_key.clone(),
             );
-            tokio::spawn(async move {
+            tokio::spawn(tracing::Instrument::in_current_span(async move {
                 if let Some(s) = schema::ensure(&http, appid, local.as_deref(), &key).await {
                     if let Ok(mut g) = slot.lock() {
                         *g = Some(s);
                     }
                 }
-            });
+            }));
         }
 
         let sources = {

@@ -2450,6 +2450,11 @@ struct SessionTiming {
     minutes: i32,
 }
 
+// The span carries the game's identity so every line logged underneath it —
+// including the bare events in `rclone.rs` / `proc_lock.rs`, which know nothing
+// about the game — reads `run_workflow{game_id=… game_name=…}: …` in the shared
+// `debug.log`, where several Spool processes interleave their output.
+#[tracing::instrument(name = "run_workflow", skip_all, fields(game_id = game_id, game_name = game_name))]
 #[allow(clippy::too_many_arguments)]
 async fn run_workflow(
     app: &AppHandle,
@@ -2462,7 +2467,7 @@ async fn run_workflow(
     steal_lock: bool,
     skip_rescue: bool,
 ) -> AppResult<()> {
-    tracing::info!(game_id, game_name, "starting run workflow");
+    tracing::info!("starting run workflow");
 
     let ctx = WorkflowCtx::new(
         app,
@@ -2508,7 +2513,7 @@ async fn run_workflow(
     let backup = phase_backup(&ctx, no_saves, &timing).await?;
     finish(&ctx, &backup, timing.minutes);
 
-    tracing::info!(game_name, "run workflow complete");
+    tracing::info!("run workflow complete");
     Ok(())
 }
 
@@ -2524,6 +2529,7 @@ async fn run_workflow(
 ///
 /// The message suffixes below are what the frontend regexes on for the
 /// "Play here instead" override (which re-runs with `steal_lock`).
+#[tracing::instrument(skip_all)]
 async fn preflight(ctx: &WorkflowCtx<'_>, exe_pathbuf: &Path, steal_lock: bool) -> AppResult<()> {
     if !exe_pathbuf.is_file() {
         return Err(AppError::Other(format!(
@@ -2582,6 +2588,7 @@ async fn preflight(ctx: &WorkflowCtx<'_>, exe_pathbuf: &Path, steal_lock: bool) 
 /// Phase 1: restore saves before launch. Returns whether ludusavi found no
 /// saves to restore (a fresh game, fine). Any failure after the session claim
 /// releases our marker so peers aren't blocked by a session that never started.
+#[tracing::instrument(skip_all)]
 async fn phase_restore(ctx: &WorkflowCtx<'_>, skip_rescue: bool) -> AppResult<bool> {
     // One offline-mode read for the whole phase: the restore flag, the phase
     // messages, and the baseline advance must all agree.
@@ -2896,6 +2903,7 @@ async fn reconcile_cloud_conflict(
 /// session claim already happened in [`preflight`]; saves are restored. Owns the
 /// session heartbeat + suspend-watcher lifecycle, flips the marker to
 /// `pending-backup` on exit, and records playtime / last-played.
+#[tracing::instrument(skip_all)]
 async fn phase_launch(ctx: &WorkflowCtx<'_>, exe_pathbuf: &Path) -> AppResult<SessionTiming> {
     let (cloud_configured, _) = ctx.cloud_split();
     emit_phase(
@@ -3332,6 +3340,7 @@ impl BackupResult {
 /// local disk either way — so the result reports what actually happened rather
 /// than failing: whether the cloud upload (`--cloud-sync`) fell short of a
 /// written revision, and whether there was any save data to capture at all.
+#[tracing::instrument(skip_all)]
 async fn phase_backup(
     ctx: &WorkflowCtx<'_>,
     no_saves: bool,
