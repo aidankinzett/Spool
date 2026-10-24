@@ -126,7 +126,8 @@ export const api = {
     invoke('set_collections', { collections }),
   appPlatform: (): Promise<string> => invoke('app_platform'),
   checkDependencies: (): Promise<DepStatus[]> => invoke('check_dependencies'),
-  checkLanFirewall: (): Promise<FirewallStatus> => invoke('check_lan_firewall'),
+  checkLanFirewall: (port: number): Promise<FirewallStatus> =>
+    invoke('check_lan_firewall', { port }),
 
   // Gamepad presence — drives the "switch to Gamepad layout?" prompt.
   anyGamepadConnected: (): Promise<boolean> => invoke('any_gamepad_connected'),
