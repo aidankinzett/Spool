@@ -7,6 +7,7 @@
     Cloud,
     CloudOff,
     Download,
+    House,
     Loader2,
     Package,
     Plus,
@@ -18,7 +19,7 @@
   import { openView } from '$lib/nav';
   import { api, assetUrl, peerAssetUrl } from '$lib/api';
   import { fmtCatalog, relDate } from '$lib/format';
-  import type { DisplayGame, GameEntry } from '$lib/types';
+  import type { DisplayGame, GameEntry, HomeLayout } from '$lib/types';
   import { isSyntheticPeerId, shareableSources, type Library } from '$lib/library.svelte';
   import AppChrome from '$lib/components/AppChrome.svelte';
   import MonoLabel from '$lib/components/MonoLabel.svelte';
@@ -29,7 +30,9 @@
   import TransferPill from '$lib/components/TransferPill.svelte';
   import TransfersPanel from '$lib/components/TransfersPanel.svelte';
   import LanDownloadProgress from '$lib/components/LanDownloadProgress.svelte';
+  import LibraryHome from '$lib/components/LibraryHome.svelte';
   import { gamepadScope } from '$lib/gamepad';
+  import { listen } from '@tauri-apps/api/event';
 
   let { lib }: { lib: Library } = $props();
 
@@ -39,6 +42,10 @@
   let lanOpen = $state(false);
   let transfersOpen = $state(false);
   let ctxMenu = $state<{ game: GameEntry; x: number; y: number } | null>(null);
+  // The library opens on Home; picking a game (sidebar row or Home tile) swaps
+  // the right pane to its detail page until Home is clicked again.
+  let homeOpen = $state(true);
+  let homeLayout = $state<HomeLayout>('shelf');
   // Sidebar rows whose peer-served cover failed to load (peer offline / 404) —
   // they fall back to the letter tile instead of a broken image.
   const coverErrors = new SvelteSet<string>();
@@ -116,6 +123,38 @@
   onMount(() => {
     api.appPlatform().then((p) => (isLinux = p === 'linux'));
   });
+
+  // Home layout lives in config.json; Settings is a separate window, so it
+  // emits an event when the choice changes.
+  onMount(() => {
+    const load = () =>
+      api
+        .getConfig()
+        .then((c) => (homeLayout = c.home_layout))
+        .catch((e) => console.error('[library] home layout load failed:', e));
+    load();
+    const unlisten = listen('config:home-layout-changed', load);
+    return () => {
+      unlisten.then((f) => f());
+    };
+  });
+
+  function openGame(id: string) {
+    lib.selectedId = id;
+    homeOpen = false;
+  }
+
+  // Home's Play button: show the detail page first so the run phases are
+  // visible on its Play button, then launch. Failures also arrive as a
+  // run:phase error, which the detail page shows.
+  async function playFromHome(id: string) {
+    openGame(id);
+    try {
+      await api.launchGame(id);
+    } catch (e) {
+      console.error('[runner] launch failed:', e);
+    }
+  }
 
   onMount(() => {
     document.addEventListener('mousedown', handleLanOutside, true);
@@ -432,6 +471,26 @@
         </div>
       </div>
 
+      <!-- Home -->
+      <div class="px-2 pb-1">
+        <button
+          type="button"
+          data-gp-autofocus={homeOpen ? '' : undefined}
+          onclick={() => (homeOpen = true)}
+          class="relative flex w-full cursor-pointer items-center gap-2.5 rounded-sm border-none py-1.5 pl-3 pr-2 text-left transition-colors hover:bg-white/[0.025]"
+          style:background={homeOpen ? 'var(--color-bg-3)' : 'transparent'}
+        >
+          {#if homeOpen}
+            <span
+              class="absolute left-0 top-1/2 h-4 w-[3px] -translate-y-1/2 rounded-full"
+              style:background="var(--color-spool)"
+            ></span>
+          {/if}
+          <House size={13} class={homeOpen ? 'text-ink-0' : 'text-ink-2'} />
+          <span class="flex-1 text-[12.5px] font-medium text-ink-0">Home</span>
+        </button>
+      </div>
+
       <!-- Collections nav -->
       <CollectionsNav {lib} />
 
@@ -489,7 +548,7 @@
           <p class="px-4 py-3 text-[12px] text-ink-3">No matches.</p>
         {:else}
           {#each lib.filteredGames as g, i (g.id)}
-            {@const selected = lib.selectedId === g.id}
+            {@const selected = !homeOpen && lib.selectedId === g.id}
             {@const peer = g.peer_source ?? null}
             {@const peerOnly = isSyntheticPeerId(g.id)}
             {@const memberOf = lib.collectionsForGame(g.id)}
@@ -518,8 +577,8 @@
               data-testid="game-row"
               data-game-name={g.game_name}
               data-game-id={g.id}
-              data-gp-autofocus={(lib.selectedId ? selected : i === 0) ? '' : undefined}
-              onclick={() => (lib.selectedId = g.id)}
+              data-gp-autofocus={!homeOpen && (lib.selectedId ? selected : i === 0) ? '' : undefined}
+              onclick={() => openGame(g.id)}
               oncontextmenu={(e) => openContextMenu(e, g)}
               draggable={!peerOnly}
               ondragstart={(e) => {
@@ -636,7 +695,15 @@
     </aside>
 
     <!-- ── Detail pane ──────────────────────────────────────────────── -->
-    {#if lib.selectedGame}
+    {#if homeOpen && lib.loaded && lib.displayGames.length > 0}
+      <LibraryHome
+        {lib}
+        layout={homeLayout}
+        onOpen={openGame}
+        onPlay={playFromHome}
+        onContext={openContextMenu}
+      />
+    {:else if lib.selectedGame}
       <div class="flex min-h-0 min-w-0 flex-col">
         <!-- Collections membership strip (real entries only; a peer-only row has
              no local game to add to a collection). -->

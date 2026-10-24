@@ -32,6 +32,23 @@
 <!-- Desktop: sidebar list + detail pane. -->
 <Story name="Desktop" args={{ layout: 'desktop' }} />
 
+<!-- Desktop Home view, one story per Settings → Display → Home layout. -->
+<Story
+  name="Desktop · Home shelf"
+  args={{ layout: 'desktop' }}
+  parameters={{ tauri: { list_games: SAMPLE_LIBRARY, get_config: makeConfig({ home_layout: 'shelf' }), current_sync_status: ONLINE, list_collections: SAMPLE_COLLECTIONS } }}
+/>
+<Story
+  name="Desktop · Home spotlight"
+  args={{ layout: 'desktop' }}
+  parameters={{ tauri: { list_games: SAMPLE_LIBRARY, get_config: makeConfig({ home_layout: 'spotlight' }), current_sync_status: ONLINE, list_collections: SAMPLE_COLLECTIONS } }}
+/>
+<Story
+  name="Desktop · Home list"
+  args={{ layout: 'desktop' }}
+  parameters={{ tauri: { list_games: SAMPLE_LIBRARY, get_config: makeConfig({ home_layout: 'list' }), current_sync_status: ONLINE, list_collections: SAMPLE_COLLECTIONS } }}
+/>
+
 <!-- Desktop with LAN peers visible. -->
 <Story
   name="Desktop · with peers"

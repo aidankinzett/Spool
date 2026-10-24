@@ -94,6 +94,7 @@ export function makeConfig(over: Partial<ConfigData> = {}): ConfigData {
     umu_run_path: '',
     default_proton_path: '',
     ui_mode: 'auto',
+    home_layout: 'shelf',
     tray_intro_seen: true,
     onboarding_completed: true,
     decky_update_notified_version: '',

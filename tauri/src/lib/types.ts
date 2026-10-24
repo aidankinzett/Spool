@@ -1,6 +1,9 @@
 /** Mirror of the Rust `UiMode` enum (serde rename_all = "lowercase"). */
 export type UiMode = 'auto' | 'desktop' | 'touch';
 
+/** Mirror of the Rust `HomeLayout` enum (serde rename_all = "kebab-case"). */
+export type HomeLayout = 'shelf' | 'spotlight' | 'list';
+
 // Mirror of the Rust `ConfigData` struct in src-tauri/src/config.rs.
 // Keep field names in lockstep — serde uses these exact snake_case names.
 export type ConfigData = {
@@ -29,6 +32,8 @@ export type ConfigData = {
   default_proton_path: string;
 
   ui_mode: UiMode;
+  /** Layout of the desktop library's Home view. */
+  home_layout: HomeLayout;
 
   /** True after the close-to-tray intro toast has been shown once. */
   tray_intro_seen: boolean;

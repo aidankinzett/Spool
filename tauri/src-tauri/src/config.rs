@@ -27,6 +27,21 @@ pub enum UiMode {
     Touch,
 }
 
+/// Layout of the desktop library's Home view. Serialized kebab-case to match
+/// the `HomeLayout` union in types.ts.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum HomeLayout {
+    /// Recently played row of wide capsules, then a cover grid of every game.
+    #[default]
+    Shelf,
+    /// The last-played game as a large banner, then the rest of the recent
+    /// row and the cover grid.
+    Spotlight,
+    /// Recently played row, then every game as a sortable table.
+    List,
+}
+
 /// On-disk shape. Every field has a default so older config.json files
 /// without newer fields parse cleanly via `#[serde(default)]`.
 ///
@@ -57,6 +72,9 @@ pub struct ConfigData {
     /// Touch-optimised UI mode (handheld). Resolved to a concrete
     /// desktop/touch density at boot by `lib/uiMode.svelte.ts`.
     pub ui_mode: UiMode,
+
+    /// Layout of the desktop library's Home view.
+    pub home_layout: HomeLayout,
 
     /// Set to true after the user has been shown the "Spool is in the tray"
     /// intro toast at least once. Defaults to false on legacy configs (and
@@ -140,6 +158,7 @@ impl Default for ConfigData {
             device_id: String::new(),
             device_name: String::new(),
             ui_mode: UiMode::default(),
+            home_layout: HomeLayout::default(),
             tray_intro_seen: false,
             onboarding_completed: false,
             decky_update_notified_version: String::new(),
