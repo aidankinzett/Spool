@@ -459,6 +459,8 @@ pub fn resolve_rclone_path() -> Option<std::path::PathBuf> {
     resolve_sidecar_path("rclone")
 }
 
+// Only the Linux Decky installer calls this now.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub fn find_system_binary(name: &str) -> Option<std::path::PathBuf> {
     let exe_name = if cfg!(windows) {
         format!("{}.exe", name)
