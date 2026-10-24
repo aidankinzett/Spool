@@ -147,7 +147,7 @@ Paths below use `%LOCALAPPDATA%\Spool\` (Windows). The root resolves cross-platf
 | `launchers/` | Per-game `.exe` launcher stubs (Armoury Crate, Windows) |
 | `lan-games/` | Fallback install root for LAN downloads when no library folders are configured |
 | ludusavi `config.yaml` + `ludusavi-backup/` | Spool-owned, managed by `ludusavi_config.rs`; backup/restore paths must match for cloud sync |
-| `achievement-schemas/` | Cached achievement schemas per Steam app id (`<appid>.json`), plus icons copied from a game's `steam_settings` (`<appid>-icons/`) |
+| `achievement-schemas/` | Cached achievement schemas per Steam app id (`<appid>.json`) or Epic game (`epic-<AppName>.json`), icons copied from a game's `steam_settings` (`<appid>-icons/`), and fetch-backoff markers (`*-failed`) |
 | `unbacked-sessions/` | Per-game markers for sessions whose saves haven't been backed up yet (`unbacked_session.rs`) |
 | `prefixes/` *(Linux)* | Per-game Proton/Wine prefixes (`proton.rs`) |
 | `debug.log` | App log |

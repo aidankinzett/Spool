@@ -28,7 +28,7 @@ mod parse;
 pub mod schema;
 
 use crate::error::{AppError, AppResult};
-use crate::library::{AchievementUnlock, GameEntry, Library, SharedLibrary};
+use crate::library::{AchievementUnlock, GameEntry, SharedLibrary};
 use locate::{FolderScan, Roots, Source};
 use parse::{Earned, Key};
 use schema::Schema;
@@ -141,15 +141,16 @@ impl GameContext {
     /// The cached schema, without fetching. Reads a file, so call it off the
     /// async runtime.
     fn cached_schema(&self) -> Option<Schema> {
-        match &self.epic_app {
-            Some(app) => schema::load_cached_epic(app),
-            None => self.appid.and_then(schema::load_cached),
-        }
+        self.epic_app
+            .as_deref()
+            .and_then(schema::load_cached_epic)
+            .or_else(|| self.appid.and_then(schema::load_cached))
     }
 
     /// The schema, fetched if the cache is missing or stale. An Epic
-    /// emulator's achievement ids are Epic's, so a game that ships one only
-    /// uses an egdata schema; a Steam schema's API names wouldn't match.
+    /// emulator's achievement ids are Epic's, so egdata is asked first when
+    /// one is found. The Steam schema is the fallback; `appid` is only set
+    /// for such a game when a Steam emulator ships beside it.
     async fn ensure_schema(&self, http: &reqwest::Client, api_key: &str) -> Option<Schema> {
         if let Some(app) = &self.epic_app {
             let exe = self.exe_path.clone();
@@ -158,10 +159,25 @@ impl GameContext {
                 .as_ref()
                 .and_then(|s| s.epic.as_ref())
                 .map(|e| e.dir.clone());
-            return schema::ensure_epic(http, app, move || epic_exes(&exe, dir.as_deref())).await;
+            let epic =
+                schema::ensure_epic(http, app, move || epic_exes(&exe, dir.as_deref())).await;
+            if epic.is_some() {
+                return epic;
+            }
         }
         let appid = self.appid?;
         schema::ensure(http, appid, self.local_schema_file().as_deref(), api_key).await
+    }
+}
+
+/// Path equality, ignoring case on Windows, where the library's paths and the
+/// folder walk's can differ only in case.
+fn same_path(a: &Path, b: &Path) -> bool {
+    if cfg!(windows) {
+        a.to_string_lossy()
+            .eq_ignore_ascii_case(&b.to_string_lossy())
+    } else {
+        a == b
     }
 }
 
@@ -169,7 +185,7 @@ impl GameContext {
 /// entry's exe when it sits beside the Epic emulator's ini, the other exes
 /// there, then the entry's exe when it's elsewhere (often a launcher).
 fn epic_exes(entry_exe: &Path, ini_dir: Option<&Path>) -> Vec<PathBuf> {
-    let in_dir = ini_dir.is_some_and(|d| entry_exe.parent() == Some(d));
+    let in_dir = ini_dir.is_some_and(|d| entry_exe.parent().is_some_and(|p| same_path(p, d)));
     let mut out = Vec::new();
     if in_dir {
         out.push(entry_exe.to_path_buf());
@@ -182,7 +198,7 @@ fn epic_exes(entry_exe: &Path, ini_dir: Option<&Path>) -> Vec<PathBuf> {
                 name.ends_with(".exe") && !name.starts_with("unins")
             })
             .map(|e| e.path())
-            .filter(|p| p != entry_exe)
+            .filter(|p| !same_path(p, entry_exe))
             .collect();
         beside.sort();
         out.extend(beside);
@@ -534,8 +550,8 @@ impl Watcher {
 pub struct SessionWatch {
     task: tokio::task::JoinHandle<()>,
     stop: tokio::sync::watch::Sender<bool>,
-    /// `None` until the baseline has been taken, and for a game with no known
-    /// Steam app id.
+    /// `None` until the baseline has been taken, and for a game with neither
+    /// a known Steam app id nor an Epic emulator.
     watcher: Arc<tokio::sync::Mutex<Option<Watcher>>>,
 }
 
@@ -590,8 +606,8 @@ impl SessionWatch {
 }
 
 impl Watcher {
-    /// Builds the watcher and takes the baseline. `None` when the game has no
-    /// known Steam app id.
+    /// Builds the watcher and takes the baseline. `None` when the game has
+    /// neither a known Steam app id nor an Epic emulator.
     async fn start(app: AppHandle, game_id: &str) -> Option<Self> {
         let library = app.state::<SharedLibrary>().inner().clone();
         let entry = library.find(game_id).await.ok().flatten()?;
@@ -716,7 +732,7 @@ pub async fn get_game_achievements(
 /// imported any unlocks, for the caller to publish them to other devices.
 pub async fn scan_game_achievements(
     http: &reqwest::Client,
-    library: &Library,
+    library: &SharedLibrary,
     entry: GameEntry,
 ) -> AppResult<(GameAchievements, bool)> {
     let game_name = entry.game_name.clone();
@@ -725,7 +741,11 @@ pub async fn scan_game_achievements(
         return Ok((merge(None, None, None, rows), false));
     };
     let config = load_config();
-    let schema = ctx.ensure_schema(http, &config.steam_web_api_key).await;
+    let schema = if ctx.epic_app.is_some() {
+        background_epic_schema(http, library, &ctx, config.steam_web_api_key).await
+    } else {
+        ctx.ensure_schema(http, &config.steam_web_api_key).await
+    };
 
     let earned = {
         let ctx = ctx.clone();
@@ -749,6 +769,39 @@ pub async fn scan_game_achievements(
         merge(ctx.appid, ctx.epic_app, schema.as_ref(), rows),
         imported,
     ))
+}
+
+/// The cached schema for a game with an Epic emulator, starting a fetch in
+/// the background when it's missing or stale. Finding an Epic game's schema
+/// can mean reading its exes and querying egdata for several ids, which the
+/// card shouldn't wait on; when the fetch caches something new, the
+/// `achievements_version` bump makes an open card reload.
+async fn background_epic_schema(
+    http: &reqwest::Client,
+    library: &SharedLibrary,
+    ctx: &GameContext,
+    api_key: String,
+) -> Option<Schema> {
+    let cached = {
+        let ctx = ctx.clone();
+        tokio::task::spawn_blocking(move || ctx.cached_schema())
+            .await
+            .ok()
+            .flatten()
+    };
+    if cached.as_ref().is_some_and(schema::is_fresh) {
+        return cached;
+    }
+    let (http, library, ctx, before) = (http.clone(), library.clone(), ctx.clone(), cached.clone());
+    tokio::spawn(tracing::Instrument::in_current_span(async move {
+        let fetched = ctx.ensure_schema(&http, &api_key).await;
+        if fetched.is_some() && fetched != before {
+            if let Err(e) = library.bump_achievements_version().await {
+                tracing::warn!(error = %e, "achievements: couldn't signal the new schema");
+            }
+        }
+    }));
+    cached
 }
 
 fn merge(

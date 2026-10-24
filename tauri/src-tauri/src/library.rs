@@ -1407,6 +1407,16 @@ impl Library {
         Ok(changed)
     }
 
+    /// Bumps the `achievements_version` counter without changing any unlock,
+    /// so an open achievements card reloads (e.g. once a schema it had to
+    /// fetch in the background is cached).
+    pub async fn bump_achievements_version(&self) -> AppResult<()> {
+        sqlx::query("UPDATE meta SET v = v + 1 WHERE k = 'achievements_version'")
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     /// Current value of the `achievements_version` counter, bumped by every
     /// insert or update of `achievement_unlocks` in any Spool process.
     pub async fn achievements_version(&self) -> AppResult<i64> {

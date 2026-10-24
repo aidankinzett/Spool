@@ -139,10 +139,10 @@
       </button>
     {/if}
 
-    {#if !hasTotal && data?.epic_app != null}
+    {#if !hasTotal && data?.epic_app != null && data.appid == null}
       <p class="mb-0 mt-3 text-[11.5px] text-ink-3">
-        This Epic game's achievement list wasn't found on egdata.app, so only unlocked achievements
-        are shown, by ID.
+        Spool couldn't get this Epic game's achievement list from egdata.app, so only unlocked
+        achievements are shown, by ID.
       </p>
     {:else if !hasTotal}
       <p class="mb-0 mt-3 text-[11.5px] text-ink-3">

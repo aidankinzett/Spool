@@ -49,6 +49,8 @@ const MAX_AGE_SECS: i64 = 14 * 24 * 60 * 60;
 
 /// How long to wait after a failed schema fetch before trying again.
 const RETRY_SECS: u64 = 6 * 60 * 60;
+/// How long to wait after egdata was rate limited, erroring or unreachable.
+const ERROR_RETRY_SECS: u64 = 15 * 60;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SchemaEntry {
@@ -125,19 +127,37 @@ fn cache_file(key: &str) -> PathBuf {
 
 /// Marker whose mtime records the last failed fetch of `key` from `source`
 /// (for Steam: bad or expired key, network down, or an app Steam has no
-/// achievements for; for egdata: no id in the exe that it knows).
+/// achievements for; for `egdata`: no id in the exe that it knows; for
+/// `egdata-error`: egdata rate limited, erroring or unreachable).
 fn failed_marker(key: &str, source: &str) -> PathBuf {
     cache_dir().join(format!("{key}.{source}-failed"))
 }
 
-/// True for [`RETRY_SECS`] after a failed fetch, so a bad key or an unknown
-/// game doesn't send requests on every detail-pane load.
-fn backed_off(marker: &Path) -> bool {
+/// True for `secs` after a failed fetch, so a bad key or an unknown game
+/// doesn't send requests on every detail-pane load.
+fn backed_off(marker: &Path, secs: u64) -> bool {
     std::fs::metadata(marker)
         .and_then(|m| m.modified())
         .ok()
         .and_then(|t| t.elapsed().ok())
-        .is_some_and(|age| age.as_secs() < RETRY_SECS)
+        .is_some_and(|age| age.as_secs() < secs)
+}
+
+/// Whether `schema` can be used without refetching it.
+pub fn is_fresh(schema: &Schema) -> bool {
+    crate::config::offline_mode_enabled()
+        || chrono::Utc::now().timestamp() - schema.fetched_at < MAX_AGE_SECS
+}
+
+/// One lock per Epic game, so the session watcher and a detail-pane scan
+/// don't read the same exe and query egdata at the same time. The second
+/// caller waits and then finds the first one's result in the cache.
+fn epic_lock(key: &str) -> std::sync::Arc<tokio::sync::Mutex<()>> {
+    static LOCKS: std::sync::LazyLock<
+        std::sync::Mutex<HashMap<String, std::sync::Arc<tokio::sync::Mutex<()>>>>,
+    > = std::sync::LazyLock::new(Default::default);
+    let mut locks = LOCKS.lock().unwrap_or_else(|e| e.into_inner());
+    locks.entry(key.to_string()).or_default().clone()
 }
 
 fn mark_failed(marker: &Path) {
@@ -185,7 +205,7 @@ pub async fn ensure(
     let cached = load_key(&key);
     let now = chrono::Utc::now().timestamp();
     let offline = crate::config::offline_mode_enabled();
-    let steam_due = !api_key.trim().is_empty() && !offline && !backed_off(&marker);
+    let steam_due = !api_key.trim().is_empty() && !offline && !backed_off(&marker, RETRY_SECS);
     if let Some(c) = &cached {
         let fresh = now - c.fetched_at < MAX_AGE_SECS;
         // A local schema is upgraded to Steam's as soon as a key is set.
@@ -238,16 +258,18 @@ pub async fn ensure_epic(
     list_exes: impl FnOnce() -> Vec<PathBuf> + Send + 'static,
 ) -> Option<Schema> {
     let key = epic_key(app_name);
+    let lock = epic_lock(&key);
+    let _guard = lock.lock().await;
     let marker = failed_marker(&key, "egdata");
+    let error_marker = failed_marker(&key, "egdata-error");
     let cached = load_key(&key);
-    let now = chrono::Utc::now().timestamp();
-    let offline = crate::config::offline_mode_enabled();
-    if let Some(c) = &cached {
-        if offline || now - c.fetched_at < MAX_AGE_SECS {
-            return cached;
-        }
+    if cached.as_ref().is_some_and(is_fresh) {
+        return cached;
     }
-    if offline || backed_off(&marker) {
+    if crate::config::offline_mode_enabled()
+        || backed_off(&marker, RETRY_SECS)
+        || backed_off(&error_marker, ERROR_RETRY_SECS)
+    {
         return cached;
     }
 
@@ -276,13 +298,17 @@ pub async fn ensure_epic(
             // Not a sandbox id egdata knows; try the next.
             Ok(None) => next += 1,
             Err(e) => {
+                // Retried sooner than an exhausted search: the right id may
+                // not have been reached.
                 tracing::warn!(error = %e, app_name, "achievements: egdata schema fetch failed");
-                break None;
+                mark_failed(&error_marker);
+                return cached;
             }
         }
     };
     if let Some(schema) = found {
         let _ = std::fs::remove_file(&marker);
+        let _ = std::fs::remove_file(&error_marker);
         save_cached(&key, &schema);
         return Some(schema);
     }
@@ -295,17 +321,22 @@ pub async fn ensure_epic(
     cached
 }
 
-/// `Ok(None)` when egdata has no achievements under `sandbox_id`, including
-/// a client error for an id that isn't a sandbox id. Rate limiting, server
-/// errors and network failures are `Err`, which stops the search.
+/// `Ok(None)` when egdata has no achievements under `sandbox_id`: a 404, or
+/// a 400 / 422 for an id it can't parse. Any other failure (rate limiting,
+/// an access block, server errors, network failures) is `Err`, which stops
+/// the search.
 async fn fetch_egdata(http: &reqwest::Client, sandbox_id: &str) -> AppResult<Option<Schema>> {
+    use reqwest::StatusCode;
     let res = http
         .get(format!("{EGDATA_URL}/{sandbox_id}/achievements"))
         .send()
         .await
         .map_err(net)?;
     let status = res.status();
-    if status.is_client_error() && status != reqwest::StatusCode::TOO_MANY_REQUESTS {
+    if matches!(
+        status,
+        StatusCode::NOT_FOUND | StatusCode::BAD_REQUEST | StatusCode::UNPROCESSABLE_ENTITY
+    ) {
         return Ok(None);
     }
     if !status.is_success() {
@@ -381,6 +412,12 @@ fn sandbox_candidates(exes: &[PathBuf]) -> Vec<String> {
                 break;
             }
             scanner.feed(&buf[..n]);
+            // The rest of the file can't add an id that would be tried.
+            let new: std::collections::HashSet<_> =
+                scanner.out.iter().filter(|id| !out.contains(id)).collect();
+            if out.len() + new.len() >= MAX_SANDBOX_TRIES {
+                break;
+            }
         }
         for id in scanner.finish() {
             if !out.contains(&id) {
@@ -873,6 +910,9 @@ mod tests {
         bytes.extend_from_slice(b"\x002e92a78949e2474aa89271b8b893f3b0ff\0");
         bytes.extend_from_slice(b"\x002E92A78949E2474AA89271B8B893F3B0\0");
         bytes.extend_from_slice(b"\0x47a73210e3894e45a52a037968f37137\0");
+        // A UTF-16 NUL first: on its own, the `7` + `\0` above reads as a
+        // UTF-16 `7` touching the id.
+        bytes.extend_from_slice(&[0, 0]);
         for u in "b839067d7a114eb18d4fbba8890d6f00".encode_utf16() {
             bytes.extend_from_slice(&u.to_le_bytes());
         }

@@ -256,6 +256,8 @@ fn parse_ini(text: &str) -> Vec<Earned> {
 
     // RUNE's Epic emulator: [Achievements] NAME = unlocked, no times, and no
     // other sections. A file with more sections is one of the layouts below.
+    // Only the literal `unlocked` counts, so metadata such as `Count=1` in a
+    // lone section isn't taken for an achievement.
     let only_achievements = ini
         .iter()
         .all(|(s, _)| s.is_empty() || s.eq_ignore_ascii_case("Achievements"));
@@ -263,7 +265,7 @@ fn parse_ini(text: &str) -> Vec<Earned> {
         for name in raw_keys(text, "Achievements") {
             if state
                 .get(&name.to_ascii_lowercase())
-                .is_some_and(|v| truthy(v) || v.trim().eq_ignore_ascii_case("unlocked"))
+                .is_some_and(|v| v.trim().eq_ignore_ascii_case("unlocked"))
             {
                 out.push(Earned {
                     key: Key::Name(name),
@@ -489,6 +491,9 @@ mod tests {
             names(&parse(Format::Ini, mixed.as_bytes())),
             vec![("ACH_X".into(), None)]
         );
+        // Metadata in a lone [Achievements] section isn't an unlock.
+        let meta = "[Achievements]\nCount=1\nVersion=1\n";
+        assert!(parse(Format::Ini, meta.as_bytes()).is_empty());
     }
 
     #[test]
