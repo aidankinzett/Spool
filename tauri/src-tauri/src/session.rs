@@ -106,6 +106,17 @@ fn write_start_at(
     steam_appid: u32,
     started_at: DateTime<Utc>,
 ) -> AppResult<String> {
+    let _guard = lock_session();
+    write_record_at(path, game, steam_appid, started_at)
+}
+
+/// Writes a fresh record. The caller holds [`lock_session`].
+fn write_record_at(
+    path: &Path,
+    game: &str,
+    steam_appid: u32,
+    started_at: DateTime<Utc>,
+) -> AppResult<String> {
     let session_id = format!("{steam_appid}-{}", started_at.timestamp_millis());
     let rec = ActiveSession {
         game: game.to_string(),
@@ -115,7 +126,6 @@ fn write_start_at(
         backed_up: false,
         suspended_secs: 0,
     };
-    let _guard = lock_session();
     crate::paths::write_atomic(path, &serde_json::to_vec_pretty(&rec)?, false)?;
     Ok(session_id)
 }
@@ -214,40 +224,65 @@ fn clear_if_at(path: &Path, expected_id: &str) {
     }
 }
 
-/// Drops this process's record for a launch that failed before the game ran
-/// (the cloud was unreachable, another device holds the session, the restore
-/// failed, the exe wouldn't start, …). The record is written when the attached
-/// `--run` starts, ahead of the workflow, with `backed_up = false`; if it stayed
-/// on disk, Steam reporting the shortcut stopped would make the Decky plugin run
-/// its forced-close backup against a save that was never restored, which can
-/// make a stale local save the newest backup.
-///
-/// Only removes a record this process wrote, for this game, that isn't already
-/// flagged backed up. [`ensure_started`] writes it again if the workflow is
-/// retried (after a conflict is resolved, or "play here anyway").
-pub fn abandon_unlaunched(game_name: &str) {
-    abandon_unlaunched_at(
-        &crate::paths::active_session_file(),
-        wrote_start_this_process(),
-        game_name,
-    );
+/// Set once the game process has actually run in the current launch attempt.
+static GAME_RAN: AtomicBool = AtomicBool::new(false);
+
+/// Records that the game process ran, so the attempt's [`AttemptGuard`] leaves
+/// the session record for the backup to reconcile.
+pub fn mark_game_ran() {
+    GAME_RAN.store(true, Ordering::Relaxed);
 }
 
-fn abandon_unlaunched_at(path: &Path, owned: bool, game_name: &str) {
+/// Starts a launch attempt. When the returned guard drops and the game never
+/// ran, the session record is removed (see [`abandon_unlaunched`]). Hold it for
+/// the whole attempt, after the launch slot has been acquired.
+pub fn begin_attempt() -> AttemptGuard {
+    GAME_RAN.store(false, Ordering::Relaxed);
+    AttemptGuard
+}
+
+/// Removes this process's session record if the launch attempt ends without the
+/// game having run — whether it returned an error, panicked or was cancelled.
+pub struct AttemptGuard;
+
+impl Drop for AttemptGuard {
+    fn drop(&mut self) {
+        if !GAME_RAN.load(Ordering::Relaxed) {
+            abandon_unlaunched_at(
+                &crate::paths::active_session_file(),
+                wrote_start_this_process(),
+            );
+        }
+    }
+}
+
+/// Drops the record for a launch that failed before the game ran (the cloud was
+/// unreachable, another device holds the session, the restore failed, the exe
+/// wouldn't start, …). The record is written when the attached `--run` starts,
+/// ahead of the workflow, with `backed_up = false`; if it stayed on disk, Steam
+/// reporting the shortcut stopped would make the Decky plugin run its
+/// forced-close backup against a save that was never restored, which can make a
+/// stale local save the newest backup.
+///
+/// Only removes a record this process wrote (`owned`) that isn't already
+/// flagged backed up. [`ensure_started`] writes it again if the workflow is
+/// retried in the same process, which happens after a cloud conflict is
+/// resolved.
+fn abandon_unlaunched_at(path: &Path, owned: bool) {
     if !owned {
         return;
     }
     let _guard = lock_session();
     if let Some(rec) = read_at(path) {
-        if rec.game == game_name && !rec.backed_up {
+        if !rec.backed_up {
             let _ = std::fs::remove_file(path);
         }
     }
 }
 
-/// Makes sure the record exists for a game that is about to be spawned. A
-/// first attempt already has the record from startup, so this does nothing; a
-/// retry after [`abandon_unlaunched`] writes it again, so the forced-close
+/// Makes sure a live record exists for a game that is about to be spawned. A
+/// first attempt already has the one written at startup, so this does nothing;
+/// a retry after the attempt was abandoned writes it again, so the forced-close
 /// fallback still covers the retried session. No-op unless this process is an
 /// attached `--run` launch that wrote the record.
 pub fn ensure_started(game_name: &str) {
@@ -268,20 +303,19 @@ pub fn ensure_started(game_name: &str) {
     }
 }
 
+/// Writes the record unless a live one (same game, not yet backed up) is
+/// already there. One lock covers the check and the write.
 fn ensure_started_at(
     path: &Path,
     game: &str,
     steam_appid: u32,
     now: DateTime<Utc>,
 ) -> AppResult<bool> {
-    let present = {
-        let _guard = lock_session();
-        read_at(path).is_some_and(|rec| rec.game == game)
-    };
-    if present {
+    let _guard = lock_session();
+    if read_at(path).is_some_and(|rec| rec.game == game && !rec.backed_up) {
         return Ok(false);
     }
-    write_start_at(path, game, steam_appid, now)?;
+    write_record_at(path, game, steam_appid, now)?;
     Ok(true)
 }
 
@@ -423,33 +457,29 @@ mod tests {
     fn abandoning_a_launch_that_never_started_removes_its_record() {
         let (dir, path) = temp_record("abandon");
         write_start_at(&path, "Hades", 0x8000_0001, Utc::now()).unwrap();
-        abandon_unlaunched_at(&path, true, "Hades");
+        abandon_unlaunched_at(&path, true);
         assert!(read_at(&path).is_none());
         std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
-    fn abandoning_leaves_records_it_does_not_own() {
+    fn abandoning_leaves_records_it_does_not_own_or_that_are_backed_up() {
         let (dir, path) = temp_record("abandon-keep");
         let id = write_start_at(&path, "Hades", 0x8000_0001, Utc::now()).unwrap();
 
         // A desktop process never wrote the record, so it must not touch it.
-        abandon_unlaunched_at(&path, false, "Hades");
-        assert!(read_at(&path).is_some());
-
-        // A different game's record is left alone.
-        abandon_unlaunched_at(&path, true, "Celeste");
+        abandon_unlaunched_at(&path, false);
         assert!(read_at(&path).is_some());
 
         // A record already flagged backed up is a finished session, not a
         // failed launch.
         mark_backed_up_if_at(&path, &id);
-        abandon_unlaunched_at(&path, true, "Hades");
+        abandon_unlaunched_at(&path, true);
         assert!(read_at(&path).unwrap().backed_up);
 
         // Nothing on disk is fine.
         let _ = std::fs::remove_file(&path);
-        abandon_unlaunched_at(&path, true, "Hades");
+        abandon_unlaunched_at(&path, true);
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -461,17 +491,23 @@ mod tests {
             .with_timezone(&Utc);
         let retry = first + chrono::Duration::minutes(3);
 
-        write_start_at(&path, "Hades", 0x8000_0001, first).unwrap();
+        let id = write_start_at(&path, "Hades", 0x8000_0001, first).unwrap();
         // A first attempt keeps the record written at startup.
         assert!(!ensure_started_at(&path, "Hades", 0x8000_0001, retry).unwrap());
         assert_eq!(read_at(&path).unwrap().started_at, first);
 
         // After the failed attempt was abandoned, the retry writes a fresh one.
-        abandon_unlaunched_at(&path, true, "Hades");
+        abandon_unlaunched_at(&path, true);
         assert!(ensure_started_at(&path, "Hades", 0x8000_0001, retry).unwrap());
         let rec = read_at(&path).unwrap();
         assert_eq!(rec.started_at, retry);
         assert!(!rec.backed_up);
+
+        // A record already flagged backed up is not a live session: replace it.
+        mark_backed_up_if_at(&path, &rec.session_id);
+        assert!(ensure_started_at(&path, "Hades", 0x8000_0001, retry).unwrap());
+        assert!(!read_at(&path).unwrap().backed_up);
+        let _ = id;
 
         // A leftover record for another game is replaced.
         assert!(ensure_started_at(&path, "Celeste", 0x8000_0002, retry).unwrap());
