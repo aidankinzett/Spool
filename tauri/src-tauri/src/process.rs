@@ -353,15 +353,29 @@ pub enum LaunchSpec<'a> {
 /// Callback for umu-run's setup status; see [`SetupTracker`].
 pub type SetupCallback = Arc<dyn Fn(Option<&str>) + Send + Sync>;
 
-/// Classifies a piece of umu-run output as runtime/Proton setup work. Only
-/// lines that *begin* with the verb count, so a Wine or game line that merely
-/// mentions a download isn't mistaken for umu fetching its runtime.
+/// Classifies a piece of umu-run output as runtime/Proton setup work. umu logs
+/// these as `INFO: Downloading UMU-Proton-10.0-4.tar.gz...`, `INFO: Downloading
+/// steamrt3 (…), please wait...` and `INFO: Extracting …` on stderr. Only lines
+/// that *begin* with the verb (after umu's `INFO: ` prefix) count, so a Wine or
+/// game line that merely mentions a download isn't mistaken for umu setup.
 fn umu_setup_status(line: &str) -> Option<&'static str> {
-    let l = line.trim_start().to_ascii_lowercase();
+    let l = line.trim_start();
+    let l = l.strip_prefix("INFO: ").unwrap_or(l).to_ascii_lowercase();
+    let runtime = l.contains("steamrt");
     if l.starts_with("downloading") {
-        Some("Downloading Proton runtime…")
+        Some(if runtime {
+            "Downloading Steam Linux Runtime…"
+        } else {
+            "Downloading Proton…"
+        })
     } else if l.starts_with("extracting") || l.starts_with("unpacking") {
-        Some("Unpacking Proton runtime…")
+        Some(if runtime {
+            "Unpacking Steam Linux Runtime…"
+        } else {
+            "Unpacking Proton…"
+        })
+    } else if l.starts_with("verifying") {
+        Some("Verifying Steam Linux Runtime…")
     } else {
         None
     }
@@ -705,18 +719,29 @@ mod tests {
     use std::collections::HashMap;
 
     #[test]
-    fn umu_setup_status_matches_lines_that_start_with_the_verb() {
+    fn umu_setup_status_matches_real_umu_output() {
+        // Lines captured from umu-run 1.4.4 on a fresh install.
+        let status = |l| umu_setup_status(l);
         assert_eq!(
-            umu_setup_status("Downloading UMU-Proton-9.0-4 ..."),
-            Some("Downloading Proton runtime…")
+            status("INFO: Downloading UMU-Proton-10.0-4.tar.gz..."),
+            Some("Downloading Proton…")
         );
         assert_eq!(
-            umu_setup_status("  Extracting steamrt3 archive"),
-            Some("Unpacking Proton runtime…")
+            status("INFO: Downloading steamrt3 (3.0.20261021.266025), please wait..."),
+            Some("Downloading Steam Linux Runtime…")
         );
-        assert_eq!(umu_setup_status("steamrt3 is up to date"), None);
+        assert_eq!(
+            status("INFO: Extracting UMU-Proton-10.0-4.tar.gz..."),
+            Some("Unpacking Proton…")
+        );
+        assert_eq!(
+            status("INFO: Verifying integrity of sniper_platform_3.0.20261021.266025..."),
+            Some("Verifying Steam Linux Runtime…")
+        );
+        assert_eq!(status("INFO: UMU-Proton-10.0-4.tar.gz: SHA512 is OK"), None);
+        assert_eq!(status("INFO: Using UMU-Proton-10.0-4"), None);
         // A game or Wine line that only mentions a download isn't umu setup.
-        assert_eq!(umu_setup_status("fixme: downloading patch list"), None);
+        assert_eq!(status("fixme: downloading patch list"), None);
     }
 
     fn recording_tracker() -> (SetupTracker, Arc<Mutex<Vec<Option<String>>>>) {
@@ -730,16 +755,16 @@ mod tests {
     fn setup_tracker_reports_start_then_a_single_finish() {
         let (t, events) = recording_tracker();
         t.observe("starting up");
-        t.observe("Downloading steamrt3");
-        t.observe("Extracting steamrt3");
-        t.observe("steamrt3 ready");
+        t.observe("INFO: Downloading UMU-Proton-10.0-4.tar.gz...");
+        t.observe("INFO: Extracting UMU-Proton-10.0-4.tar.gz...");
+        t.observe("INFO: Using UMU-Proton-10.0-4");
         t.observe("more output");
         t.finish();
         assert_eq!(
             *events.lock().unwrap(),
             [
-                Some("Downloading Proton runtime…".to_string()),
-                Some("Unpacking Proton runtime…".to_string()),
+                Some("Downloading Proton…".to_string()),
+                Some("Unpacking Proton…".to_string()),
                 None,
             ]
         );
