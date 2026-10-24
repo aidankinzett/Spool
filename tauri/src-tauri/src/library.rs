@@ -1410,10 +1410,11 @@ impl Library {
     /// Current value of the `achievements_version` counter, bumped by every
     /// insert or update of `achievement_unlocks` in any Spool process.
     pub async fn achievements_version(&self) -> AppResult<i64> {
-        let v: i64 =
-            sqlx::query_scalar("SELECT COALESCE((SELECT v FROM meta WHERE k = 'achievements_version'), 0)")
-                .fetch_one(&self.pool)
-                .await?;
+        let v: i64 = sqlx::query_scalar(
+            "SELECT COALESCE((SELECT v FROM meta WHERE k = 'achievements_version'), 0)",
+        )
+        .fetch_one(&self.pool)
+        .await?;
         Ok(v)
     }
 
@@ -2501,7 +2502,12 @@ mod tests {
             device_name: "Deck".into(),
             ..rows[0].clone()
         };
-        assert_eq!(lib.fold_achievement_unlocks(&[peer], "dev-a").await.unwrap(), 1);
+        assert_eq!(
+            lib.fold_achievement_unlocks(&[peer], "dev-a")
+                .await
+                .unwrap(),
+            1
+        );
         assert_eq!(lib.achievement_unlocks_for("G").await.unwrap().len(), 2);
     }
 

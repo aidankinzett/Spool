@@ -209,12 +209,7 @@ fn emit_done(ctx: &WorkflowCtx<'_>, outcome: DoneOutcome, cloud_used: bool, sess
         backup_failed: matches!(outcome, DoneOutcome::BackupFailed),
         backup_deferred: matches!(outcome, DoneOutcome::BackupDeferred),
     };
-    tracing::info!(
-        game_id = ctx.game_id,
-        phase = "done",
-        ?message,
-        "run:phase"
-    );
+    tracing::info!(game_id = ctx.game_id, phase = "done", ?message, "run:phase");
     if let Err(e) = ctx.app.emit("run:phase", &payload) {
         tracing::warn!(phase = "done", error = %e, "failed to emit run:phase");
     }
@@ -1878,14 +1873,7 @@ pub async fn launch_game_inner_steal(
     };
 
     if let Err(e) = &result {
-        emit_phase(
-            app,
-            game_id,
-            "error",
-            Some(&e.to_string()),
-            false,
-            None,
-        );
+        emit_phase(app, game_id, "error", Some(&e.to_string()), false, None);
         // Surface the failure via the OS notification centre too —
         // most workflow errors happen while the user is mid-launch
         // with Spool tucked into the tray.

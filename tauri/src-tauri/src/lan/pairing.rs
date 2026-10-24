@@ -352,11 +352,10 @@ async fn export_setup(cfg: &ConfigData) -> AppResult<CloudSetup> {
     }
 
     if provider == "webdav" {
-        let yaml: serde_yaml::Value =
-            std::fs::read_to_string(crate::paths::ludusavi_config_file())
-                .ok()
-                .and_then(|s| serde_yaml::from_str(&s).ok())
-                .ok_or_else(|| AppError::Other("ludusavi config unreadable".into()))?;
+        let yaml: serde_yaml::Value = std::fs::read_to_string(crate::paths::ludusavi_config_file())
+            .ok()
+            .and_then(|s| serde_yaml::from_str(&s).ok())
+            .ok_or_else(|| AppError::Other("ludusavi config unreadable".into()))?;
         let name = crate::rclone::remote_name_from_yaml(&yaml)
             .ok_or_else(|| AppError::Other("no WebDAV remote configured".into()))?;
         let remote = dump

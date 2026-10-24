@@ -921,10 +921,7 @@ mod tests {
 
     #[test]
     fn heroic_umu_candidates_cover_native_and_flatpak_layouts() {
-        let c = heroic_umu_candidates(
-            Path::new("/home/tester/.config"),
-            Path::new("/home/tester"),
-        );
+        let c = heroic_umu_candidates(Path::new("/home/tester/.config"), Path::new("/home/tester"));
         assert_eq!(
             c,
             vec![

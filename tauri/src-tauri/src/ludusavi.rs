@@ -1241,7 +1241,9 @@ fn spawn_manifest_refresh(cache: ManifestCache, ludusavi_exe: PathBuf) {
                 tracing::info!(games = m.len(), "ludusavi manifest refreshed");
                 *cache.write().await = Some(Arc::new(m));
             }
-            Err(e) => tracing::warn!(error = %e, "background manifest refresh produced nothing usable"),
+            Err(e) => {
+                tracing::warn!(error = %e, "background manifest refresh produced nothing usable")
+            }
         }
     });
 }
@@ -1887,7 +1889,10 @@ Aliased Game:
         assert_eq!(fe.when.len(), 2);
         assert!(hades.install_dir.contains_key("Hades"));
         assert_eq!(hades.steam.as_ref().map(|s| s.id), Some(1145360));
-        assert_eq!(hades.id.as_ref().and_then(|i| i.lutris.as_deref()), Some("hades"));
+        assert_eq!(
+            hades.id.as_ref().and_then(|i| i.lutris.as_deref()),
+            Some("hades")
+        );
         // An alias-only entry parses to an empty ManifestEntry rather than
         // failing the whole map. `run_find` canonicalises names, so it's never
         // looked up under the alias anyway.

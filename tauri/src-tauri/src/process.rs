@@ -125,7 +125,9 @@ async fn relay_umu_stream<R>(
         };
         for &byte in &chunk[..n] {
             if byte == b'\r' && !dropping {
-                observe(&String::from_utf8_lossy(&line[piece_start.min(line.len())..]));
+                observe(&String::from_utf8_lossy(
+                    &line[piece_start.min(line.len())..],
+                ));
                 line.push(byte);
                 piece_start = line.len();
             } else if byte == b'\n' {
@@ -135,7 +137,9 @@ async fn relay_umu_stream<R>(
                     if line.last() == Some(&b'\r') {
                         line.pop();
                     }
-                    observe(&String::from_utf8_lossy(&line[piece_start.min(line.len())..]));
+                    observe(&String::from_utf8_lossy(
+                        &line[piece_start.min(line.len())..],
+                    ));
                     deliver(&line);
                 }
                 line.clear();
@@ -156,7 +160,9 @@ async fn relay_umu_stream<R>(
     if dropping {
         oversized += 1;
     } else if !line.is_empty() {
-        observe(&String::from_utf8_lossy(&line[piece_start.min(line.len())..]));
+        observe(&String::from_utf8_lossy(
+            &line[piece_start.min(line.len())..],
+        ));
         deliver(&line);
     }
 
@@ -279,9 +285,7 @@ fn appimage_env_ops() -> Vec<EnvOp> {
             let val = val.to_string_lossy();
             let cleaned: Vec<&str> = val
                 .split(':')
-                .filter(|p| {
-                    !p.is_empty() && !p.starts_with(&appdir) && !p.contains("/.mount_")
-                })
+                .filter(|p| !p.is_empty() && !p.starts_with(&appdir) && !p.contains("/.mount_"))
                 .collect();
             if cleaned.is_empty() {
                 ops.push(EnvOp::Remove(var));
@@ -785,19 +789,30 @@ mod tests {
  10%
  50%
 done
-".to_vec();
+"
+        .to_vec();
         for _ in 0..UMU_RELAY_LINE_CAP + 5 {
-            input.extend_from_slice(b"noise
-");
+            input.extend_from_slice(
+                b"noise
+",
+            );
         }
-        input.extend_from_slice(b"Extracting late
-");
+        input.extend_from_slice(
+            b"Extracting late
+",
+        );
 
         let seen = Arc::new(Mutex::new(Vec::<String>::new()));
         let sink = Arc::clone(&seen);
-        relay_umu_stream(input.as_slice(), "stdout", None, |_| {}, move |p| {
-            sink.lock().unwrap().push(p.to_string());
-        })
+        relay_umu_stream(
+            input.as_slice(),
+            "stdout",
+            None,
+            |_| {},
+            move |p| {
+                sink.lock().unwrap().push(p.to_string());
+            },
+        )
         .await;
 
         let seen = seen.lock().unwrap();
@@ -874,8 +889,14 @@ done
         )
         .await;
 
-        assert!(relayed.lock().unwrap().is_empty(), "oversized line never relayed");
-        assert!(tail.lock().unwrap().is_empty(), "oversized line never buffered");
+        assert!(
+            relayed.lock().unwrap().is_empty(),
+            "oversized line never relayed"
+        );
+        assert!(
+            tail.lock().unwrap().is_empty(),
+            "oversized line never buffered"
+        );
     }
 
     #[tokio::test]

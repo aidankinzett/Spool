@@ -1507,17 +1507,19 @@ fn achievement_fold_rows(
         .into_iter()
         .flat_map(|(device_id, blob)| {
             let device_name = blob.device_name;
-            blob.unlocks.into_iter().map(move |u| crate::library::AchievementUnlock {
-                game_name: u.game_name,
-                api_name: u.api_name,
-                unlocked_at: u.unlocked_at,
-                detected_at,
-                live: 0,
-                display_name: None,
-                icon: None,
-                device_id: device_id.clone(),
-                device_name: device_name.clone(),
-            })
+            blob.unlocks
+                .into_iter()
+                .map(move |u| crate::library::AchievementUnlock {
+                    game_name: u.game_name,
+                    api_name: u.api_name,
+                    unlocked_at: u.unlocked_at,
+                    detected_at,
+                    live: 0,
+                    display_name: None,
+                    icon: None,
+                    device_id: device_id.clone(),
+                    device_name: device_name.clone(),
+                })
         })
         .filter(|r| !r.game_name.is_empty() && !r.api_name.is_empty())
         .collect()
@@ -1565,7 +1567,10 @@ pub async fn fold_achievements_throttled(app: &AppHandle) {
     let library = app.state::<SharedLibrary>().inner().clone();
     let changed = fold_achievements(&remote, &library, &our_device_id).await;
     if changed > 0 {
-        tracing::info!(changed, "achievement fold: imported unlocks from other devices");
+        tracing::info!(
+            changed,
+            "achievement fold: imported unlocks from other devices"
+        );
     }
 }
 
@@ -1996,7 +2001,10 @@ pub async fn fold_devices_from_config() -> bool {
         tracing::info!(new_sessions, "headless fold: imported peer play sessions");
     }
     if new_unlocks > 0 {
-        tracing::info!(new_unlocks, "headless fold: imported peer achievement unlocks");
+        tracing::info!(
+            new_unlocks,
+            "headless fold: imported peer achievement unlocks"
+        );
     }
     // Re-derive playtime/last-played from the timeline (replaces the device-blob
     // playtime fold). Runs after the join so the just-folded sessions are present.
@@ -2112,7 +2120,10 @@ async fn run_startup_fold(app: &AppHandle) {
         tracing::info!(new_sessions, "startup fold: imported peer play sessions");
     }
     if new_unlocks > 0 {
-        tracing::info!(new_unlocks, "startup fold: imported peer achievement unlocks");
+        tracing::info!(
+            new_unlocks,
+            "startup fold: imported peer achievement unlocks"
+        );
     }
     // Re-derive playtime/last-played from the timeline (now including any peer
     // sessions just folded in) — this is what replaces the device-blob playtime
