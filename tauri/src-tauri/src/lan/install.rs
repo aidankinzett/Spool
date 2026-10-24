@@ -24,6 +24,29 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 /// on the same LAN should respond in milliseconds; anything past this is
 /// almost certainly a dropped peer or a firewall hole.
 const PEER_FETCH_TIMEOUT: Duration = Duration::from_secs(5);
+/// Total cap on the manifest fetch. The host's `/manifest` handler walks
+/// the game folder and blake3-hashes every byte on the first request:
+/// about 1 s/GB on an SSD, but several times that on a hard drive, so a
+/// large game can take well over the 5 minutes this used to allow. Two
+/// hours covers a few hundred GB at hard-drive speeds and still bounds a
+/// host that accepts the connection but never answers.
+const MANIFEST_FETCH_TIMEOUT: Duration = Duration::from_secs(2 * 60 * 60);
+
+/// Client for the manifest fetch only. Unlike the shared client it has a
+/// connect timeout and aggressive TCP keepalive, so an unreachable peer
+/// fails in seconds and a peer that vanishes mid-hash is noticed in about
+/// a minute. Built per install on both the GUI and the Decky plugin
+/// server paths, since the latter has its own plain client.
+fn manifest_client() -> AppResult<reqwest::Client> {
+    reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .tcp_keepalive(Duration::from_secs(15))
+        .tcp_keepalive_interval(Duration::from_secs(10))
+        .tcp_keepalive_retries(3)
+        .build()
+        .map_err(|e| AppError::Other(format!("manifest http client: {e}")))
+}
+
 /// How many files to stream from a peer at once. 4 is a sweet spot:
 /// enough to keep gigabit pipes full when games are full of tiny files,
 /// few enough that a peer's HTTP server (or a residential router) isn't
@@ -1383,9 +1406,10 @@ pub(crate) async fn begin_install(
     };
     // Claim the single install slot and hold it for the whole operation.
     // The guard is moved into the spawned transfer task below, so the
-    // slot stays occupied across the manifest fetch: a concurrent `begin_install` is rejected,
-    // `request_cancel` can find this session, and a manifest-fetch
-    // failure routes through `update`/`set` to emit a terminal event.
+    // slot stays occupied across the manifest fetch: a concurrent
+    // `begin_install` is rejected, `request_cancel` can find this
+    // session, and a manifest-fetch failure routes through
+    // `update`/`set` to emit a terminal event.
     // The guard's token-gated `Drop` releases the slot on every exit
     // (success, error, cancel, panic, or the early returns below).
     let slot_guard = download_state.try_start(placeholder.clone())?;
@@ -1393,19 +1417,20 @@ pub(crate) async fn begin_install(
 
     // Fetch the manifest. The host blake3-hashes the folder on first
     // request, which takes ~1 s/GB on an SSD and far longer on a hard
-    // drive, so there is no total timeout: the client's connect timeout
-    // and TCP keepalive catch an unreachable or vanished peer, and the
-    // cancel poll below lets the user abort. Pass our
-    // session token so the sender can register the upload session
-    // immediately and show the game in their Transfers panel while we
-    // are still in the "Fetching manifest…" phase.
+    // drive, so the total timeout is long (`MANIFEST_FETCH_TIMEOUT`) and
+    // a dedicated client (`manifest_client`) catches an unreachable or
+    // vanished peer sooner. Pass our session token so the sender can
+    // register the upload session immediately and show the game in
+    // their Transfers panel while we are still in the "Fetching
+    // manifest…" phase.
     let manifest_url = format!(
         "http://{peer_addr}:{peer_port}/games/{game_id}/manifest?session={}",
         urlencoding::encode(&install_token),
     );
     let manifest_fetch = async {
-        let resp = http
+        let resp = manifest_client()?
             .get(&manifest_url)
+            .timeout(MANIFEST_FETCH_TIMEOUT)
             .send()
             .await
             .map_err(|e| AppError::Other(format!("GET manifest: {}", format_reqwest_error(&e))))?;
@@ -1421,9 +1446,10 @@ pub(crate) async fn begin_install(
     };
 
     // Race the manifest fetch (which can run for minutes while the host
-    // hashes a large game) against a short cancel-poll. The fetch's HTTP request itself isn't
-    // cancellable, so without this a user who taps Cancel on a wedged
-    // "Fetching manifest…" would wait the full timeout. Since the slot
+    // hashes a large game) against a short cancel-poll. The fetch's
+    // HTTP request itself isn't cancellable, so without this a user who
+    // taps Cancel on a wedged "Fetching manifest…" would wait out the
+    // whole timeout. Since the slot
     // is held by *this* install and `try_start` cleared the cancel flag,
     // an observed `is_canceled()` means our own token was cancelled via
     // `request_cancel`. `tokio::select!` drops the losing branch's

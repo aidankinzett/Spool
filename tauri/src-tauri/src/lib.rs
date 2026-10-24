@@ -282,12 +282,6 @@ pub fn run() {
         // RequestBuilder::timeout for per-request limits.
         .manage::<reqwest::Client>(
             reqwest::Client::builder()
-                // An unreachable peer fails fast; whole-request limits stay
-                // per-call. Keepalive probes let a vanished peer surface as
-                // an error on requests that deliberately have no total
-                // timeout (the LAN manifest fetch).
-                .connect_timeout(std::time::Duration::from_secs(10))
-                .tcp_keepalive(std::time::Duration::from_secs(30))
                 .build()
                 .expect("reqwest client build"),
         )
