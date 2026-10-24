@@ -16,6 +16,7 @@ import type {
   GameEntry,
   MoveProgress,
   DepStatus,
+  FirewallStatus,
   LanPeer,
   NewGame,
   PeerGame,
@@ -125,6 +126,8 @@ export const api = {
     invoke('set_collections', { collections }),
   appPlatform: (): Promise<string> => invoke('app_platform'),
   checkDependencies: (): Promise<DepStatus[]> => invoke('check_dependencies'),
+  checkLanFirewall: (port: number): Promise<FirewallStatus> =>
+    invoke('check_lan_firewall', { port }),
 
   // Gamepad presence — drives the "switch to Gamepad layout?" prompt.
   anyGamepadConnected: (): Promise<boolean> => invoke('any_gamepad_connected'),

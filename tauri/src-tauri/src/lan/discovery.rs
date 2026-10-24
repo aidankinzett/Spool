@@ -18,7 +18,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::net::UdpSocket;
 
 const BROADCAST_ADDR: Ipv4Addr = Ipv4Addr::BROADCAST;
-const DISCOVERY_PORT: u16 = 47631;
+pub(crate) const DISCOVERY_PORT: u16 = 47631;
 const PROTOCOL_VERSION: u32 = 1;
 const ANNOUNCE_INTERVAL: Duration = Duration::from_secs(5);
 const PEER_STALE_AFTER: Duration = Duration::from_secs(30);
