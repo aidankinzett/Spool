@@ -3294,6 +3294,221 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn replace_keeps_every_runtime_field_of_the_live_row() {
+        // The editor's copy holds defaults for every out-of-band field; none
+        // of the live values may be lost, whatever its type.
+        let lib = Library::open_in_memory().await.unwrap();
+        let when = DateTime::parse_from_rfc3339("2026-03-04T05:06:07Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let mut live = sample("a", "Hades");
+        live.last_played_at = Some(when);
+        live.playtime_minutes = 77;
+        live.save_backup_count = 4;
+        live.save_last_backed_up_at = Some(when);
+        live.save_backup_size_mb = 3.5;
+        live.sync_badge = Some("cloud-newer".into());
+        live.cloud_sync_baseline = Some("backup-1".into());
+        live.save_last_backer_device = Some("Deck".into());
+        live.save_cloud_revision_at = Some(when);
+        live.accent_color = Some("#112233".into());
+        live.install_size_mb = 900.0;
+        live.cover_image_path = Some("c.jpg".into());
+        live.hero_image_path = Some("h.jpg".into());
+        live.custom_save = Some(CustomSave {
+            files: vec!["<base>/Saves".into()],
+            registry: vec![],
+        });
+        live.manifest_override = Some(ManifestOverride {
+            excluded_tags: vec!["config".into()],
+            excluded_paths: vec![],
+        });
+        live.steam_id = Some(1145360);
+        live.metadata_fetched = true;
+        live.installed = true;
+        live.steam_app_id = Some(42);
+        lib.insert(live.clone()).await.unwrap();
+
+        let mut stale = sample("a", "Hades");
+        stale.installed = true;
+        assert!(lib.replace(&stale).await.unwrap());
+
+        let after = serde_json::to_value(lib.find("a").await.unwrap().unwrap()).unwrap();
+        let before = serde_json::to_value(&live).unwrap();
+        for f in RUNTIME_FIELDS {
+            assert_eq!(after[f], before[f], "runtime field {f} was clobbered");
+        }
+    }
+
+    #[tokio::test]
+    async fn replace_of_a_missing_id_matches_nothing() {
+        let lib = Library::open_in_memory().await.unwrap();
+        assert!(!lib.replace(&sample("ghost", "Nope")).await.unwrap());
+        assert_eq!(lib.count().await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn update_fields_edge_cases() {
+        let lib = Library::open_in_memory().await.unwrap();
+        lib.insert(sample("a", "Hades")).await.unwrap();
+        // Nothing to write, and an unknown id, both report no match.
+        assert!(!lib.update_fields("a", &[]).await.unwrap());
+        assert!(!lib
+            .update_fields("ghost", &[("sync_badge", json!("synced"))])
+            .await
+            .unwrap());
+
+        // Several fields in one call, with a null clearing an Option.
+        lib.set_sync_badge("a", "synced").await.unwrap();
+        lib.update_fields(
+            "a",
+            &[
+                ("sync_badge", Value::Null),
+                ("genres", json!(["Roguelike", "Action"])),
+                ("playtime_minutes", json!(12)),
+            ],
+        )
+        .await
+        .unwrap();
+        let e = lib.find("a").await.unwrap().unwrap();
+        assert_eq!(e.sync_badge, None);
+        assert_eq!(e.genres, vec!["Roguelike", "Action"]);
+        assert_eq!(e.playtime_minutes, 12);
+    }
+
+    #[tokio::test]
+    async fn backup_stats_without_a_size_keep_the_recorded_size() {
+        let lib = Library::open_in_memory().await.unwrap();
+        lib.insert(sample("a", "Hades")).await.unwrap();
+        lib.record_backup_stats("a", 2, Some(Utc::now()), Some(8.0))
+            .await
+            .unwrap();
+        lib.record_backup_stats("a", 3, None, None).await.unwrap();
+        let e = lib.find("a").await.unwrap().unwrap();
+        assert_eq!(e.save_backup_count, 3);
+        assert_eq!(e.save_backup_size_mb, 8.0);
+        assert_eq!(e.save_last_backed_up_at, None, "None clears the timestamp");
+    }
+
+    #[tokio::test]
+    async fn set_art_only_touches_the_given_fields() {
+        let lib = Library::open_in_memory().await.unwrap();
+        lib.insert(sample("a", "Hades")).await.unwrap();
+        lib.set_art("a", Some("c.jpg"), Some("h.jpg"), Some("#fff"))
+            .await
+            .unwrap();
+        lib.set_art("a", None, Some("h2.jpg"), None).await.unwrap();
+        let e = lib.find("a").await.unwrap().unwrap();
+        assert_eq!(e.cover_image_path.as_deref(), Some("c.jpg"));
+        assert_eq!(e.hero_image_path.as_deref(), Some("h2.jpg"));
+        assert_eq!(e.accent_color.as_deref(), Some("#fff"));
+        // No fields at all is a no-op, not an error.
+        assert!(!lib.set_art("a", None, None, None).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn conditional_backfill_writes_only_when_expected() {
+        let lib = Library::open_in_memory().await.unwrap();
+        lib.insert(sample("a", "Hades")).await.unwrap();
+
+        assert!(lib.set_accent_if_empty("a", "#111").await.unwrap());
+        assert!(!lib.set_accent_if_empty("a", "#222").await.unwrap());
+        assert!(!lib.replace_accent("a", "#999", "#333").await.unwrap());
+        assert!(lib.replace_accent("a", "#111", "#333").await.unwrap());
+        assert_eq!(
+            lib.find("a")
+                .await
+                .unwrap()
+                .unwrap()
+                .accent_color
+                .as_deref(),
+            Some("#333")
+        );
+
+        assert!(lib.set_install_size_if_empty("a", 10.0).await.unwrap());
+        assert!(!lib.set_install_size_if_empty("a", 99.0).await.unwrap());
+        assert_eq!(lib.find("a").await.unwrap().unwrap().install_size_mb, 10.0);
+    }
+
+    #[tokio::test]
+    async fn recompute_playtime_does_not_bump_version_when_unchanged() {
+        // The startup fold calls this for every game; a same-value write would
+        // make every start emit library:changed.
+        let lib = Library::open_in_memory().await.unwrap();
+        lib.insert(sample("a", "Hades")).await.unwrap();
+        lib.insert_session(&session("d:1", "d", "Hades", "2026-05-01T10:00:00Z", 10))
+            .await
+            .unwrap();
+        assert!(lib.recompute_playtime("Hades").await.unwrap());
+        let v = lib.version().await.unwrap();
+        assert!(!lib.recompute_playtime("Hades").await.unwrap());
+        assert_eq!(lib.version().await.unwrap(), v);
+        assert_eq!(lib.recompute_all_playtime().await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn recompute_playtime_floors_to_minutes_and_updates_every_matching_row() {
+        let lib = Library::open_in_memory().await.unwrap();
+        lib.insert(sample("a", "Hades")).await.unwrap();
+        lib.insert(sample("b", "Hades")).await.unwrap();
+        lib.insert(sample("c", "Celeste")).await.unwrap();
+        let mut s = session("d:1", "d", "Hades", "2026-05-01T10:00:00Z", 1);
+        s.duration_secs = 119;
+        lib.insert_session(&s).await.unwrap();
+
+        assert_eq!(
+            lib.recompute_all_playtime().await.unwrap(),
+            1,
+            "counts games, not rows"
+        );
+        assert_eq!(lib.find("a").await.unwrap().unwrap().playtime_minutes, 1);
+        assert_eq!(lib.find("b").await.unwrap().unwrap().playtime_minutes, 1);
+        assert_eq!(lib.find("c").await.unwrap().unwrap().playtime_minutes, 0);
+    }
+
+    #[tokio::test]
+    async fn insert_keeps_an_explicit_catalog_number() {
+        let lib = Library::open_in_memory().await.unwrap();
+        let mut g = sample("a", "Hades");
+        g.catalog_number = 40;
+        assert_eq!(lib.insert(g).await.unwrap().catalog_number, 40);
+        let next = lib.insert(sample("b", "Celeste")).await.unwrap();
+        assert_eq!(next.catalog_number, 41);
+    }
+
+    #[test]
+    fn backfill_catalog_numbers_keeps_existing_and_fills_gaps_above_max() {
+        let mut v = vec![sample("a", "A"), sample("b", "B"), sample("c", "C")];
+        v[1].catalog_number = 7;
+        backfill_catalog_numbers(&mut v);
+        let nums: Vec<u32> = v.iter().map(|e| e.catalog_number).collect();
+        assert_eq!(nums, vec![8, 7, 9]);
+        let mut empty: Vec<GameEntry> = vec![];
+        backfill_catalog_numbers(&mut empty);
+    }
+
+    #[test]
+    fn dedup_preserve_order_keeps_first_occurrence() {
+        let v: Vec<String> = ["b", "a", "b", "c", "a"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(dedup_preserve_order(&v), vec!["b", "a", "c"]);
+    }
+
+    #[test]
+    fn unsafe_delete_target_rejects_ancestors_of_the_data_dir() {
+        let data = paths::app_data_dir();
+        assert!(is_unsafe_delete_target(&data));
+        if let Some(parent) = data.parent() {
+            assert!(is_unsafe_delete_target(parent));
+        }
+        // A sibling that merely shares a name prefix is not an ancestor.
+        let sibling = std::path::PathBuf::from(format!("{}-games/Hades", data.display()));
+        assert!(!is_unsafe_delete_target(&sibling));
+    }
+
+    #[tokio::test]
     async fn replace_survives_legacy_row_missing_installed() {
         // A row written before `installed` existed lacks the key. The editor
         // save (replace) must NOT write `"installed":null` into it — a

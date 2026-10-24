@@ -409,4 +409,119 @@ mod tests {
         assert!(s.find_crc(crc32fast::hash(b"Ach_One")).is_some());
         assert!(s.find_crc(0).is_none());
     }
+
+    #[test]
+    fn text_of_prefers_english_then_any_language_then_empty() {
+        assert_eq!(text_of(Some(&json!("plain"))), "plain");
+        assert_eq!(
+            text_of(Some(&json!({ "german": "Hallo", "english": "Hi" }))),
+            "Hi"
+        );
+        assert_eq!(text_of(Some(&json!({ "german": "Hallo" }))), "Hallo");
+        assert_eq!(text_of(Some(&json!({ "english": 5 }))), "");
+        assert_eq!(text_of(Some(&json!(7))), "");
+        assert_eq!(text_of(None), "");
+    }
+
+    #[test]
+    fn truthy_accepts_bool_one_and_true_strings_only() {
+        assert!(truthy(Some(&json!(true))));
+        assert!(truthy(Some(&json!(1))));
+        assert!(truthy(Some(&json!("1"))));
+        assert!(truthy(Some(&json!(" 1 "))));
+        assert!(truthy(Some(&json!("TRUE"))));
+        assert!(!truthy(Some(&json!(2))));
+        assert!(!truthy(Some(&json!("yes"))));
+        assert!(!truthy(Some(&json!(null))));
+        assert!(!truthy(None));
+    }
+
+    #[test]
+    fn steam_entry_needs_a_name_and_drops_non_http_icons() {
+        assert!(steam_entry(&json!({ "displayName": "No name" })).is_none());
+        assert!(steam_entry(&json!({ "name": 5 })).is_none());
+        let e =
+            steam_entry(&json!({ "name": "A", "icon": "icons/a.png", "icongray": "" })).unwrap();
+        assert_eq!(e.icon, None);
+        assert_eq!(e.icon_gray, None);
+        assert!(!e.hidden);
+    }
+
+    #[test]
+    fn percentages_overwrite_every_entry_including_clearing_missing_ones() {
+        let entry = |name: &str, pct: Option<f64>| SchemaEntry {
+            api_name: name.into(),
+            display_name: String::new(),
+            description: String::new(),
+            hidden: false,
+            icon: None,
+            icon_gray: None,
+            global_percent: pct,
+        };
+        let mut s = Schema {
+            appid: 1,
+            source: "steam".into(),
+            fetched_at: 0,
+            achievements: vec![entry("A", Some(99.0)), entry("B", None)],
+        };
+        let pct = HashMap::from([("B".to_string(), 12.5)]);
+        apply_percentages(&mut s, &pct);
+        assert_eq!(s.achievements[0].global_percent, None);
+        assert_eq!(s.achievements[1].global_percent, Some(12.5));
+    }
+
+    #[test]
+    fn local_schema_skips_unnamed_entries_and_keeps_http_icons() {
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("achievements.json");
+        std::fs::write(
+            &f,
+            json!([
+                { "displayName": "Nameless" },
+                { "name": "A", "icon": "https://cdn/a.jpg", "icon_gray": "https://cdn/g.jpg" },
+                { "name": "B", "icon": "missing/file.png" }
+            ])
+            .to_string(),
+        )
+        .unwrap();
+        let s = read_local(7, &f).unwrap();
+        assert_eq!(s.appid, 7);
+        assert_eq!(s.achievements.len(), 2);
+        assert_eq!(s.achievements[0].icon.as_deref(), Some("https://cdn/a.jpg"));
+        assert_eq!(
+            s.achievements[0].icon_gray.as_deref(),
+            Some("https://cdn/g.jpg")
+        );
+        assert_eq!(s.achievements[1].icon, None, "unreadable icon file");
+    }
+
+    #[test]
+    fn local_schema_rejects_non_array_or_unreadable_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let obj = dir.path().join("obj.json");
+        std::fs::write(&obj, r#"{"name":"A"}"#).unwrap();
+        assert!(read_local(1, &obj).is_none());
+        assert!(read_local(1, &dir.path().join("missing.json")).is_none());
+    }
+
+    #[test]
+    fn find_prefers_an_exact_match_over_a_case_insensitive_one() {
+        let entry = |name: &str, disp: &str| SchemaEntry {
+            api_name: name.into(),
+            display_name: disp.into(),
+            description: String::new(),
+            hidden: false,
+            icon: None,
+            icon_gray: None,
+            global_percent: None,
+        };
+        let s = Schema {
+            appid: 1,
+            source: "steam".into(),
+            fetched_at: 0,
+            achievements: vec![entry("ach_a", "lower"), entry("ACH_A", "upper")],
+        };
+        assert_eq!(s.find("ACH_A").unwrap().display_name, "upper");
+        assert_eq!(s.find("Ach_A").unwrap().display_name, "lower");
+    }
 }

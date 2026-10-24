@@ -926,6 +926,97 @@ mod tests {
         assert_eq!(data.cloud.base_path, "Spool");
     }
 
+    fn migrated_base(cloud_path: &str) -> (bool, String, String) {
+        let json = serde_json::json!({ "cloud_path": cloud_path }).to_string();
+        let mut data: ConfigData = serde_json::from_str(&json).unwrap();
+        let changed = migrate_cloud_base_path(Some(&json), &mut data);
+        (changed, data.cloud.base_path, data.cloud.path)
+    }
+
+    #[test]
+    fn legacy_cloud_path_without_leaf_becomes_the_base() {
+        let (changed, base, path) = migrated_base("/Games/Saves/");
+        assert!(changed);
+        assert_eq!(base, "Games/Saves");
+        assert_eq!(path, "Games/Saves/ludusavi-backup");
+    }
+
+    #[test]
+    fn legacy_cloud_path_matching_the_default_is_left_alone() {
+        for p in ["Spool/ludusavi-backup", "Spool", "", "   "] {
+            let (changed, base, _) = migrated_base(p);
+            assert!(!changed, "{p:?}");
+            assert_eq!(base, "Spool", "{p:?}");
+        }
+    }
+
+    #[test]
+    fn cloud_base_path_is_not_derived_from_unparsable_or_missing_files() {
+        let mut data: ConfigData =
+            serde_json::from_str(r#"{ "cloud_path": "Mine/ludusavi-backup" }"#).unwrap();
+        assert!(!migrate_cloud_base_path(None, &mut data));
+        // A config recovered from a damaged file: don't guess a base.
+        assert!(!migrate_cloud_base_path(Some("{ not json"), &mut data));
+        assert_eq!(data.cloud.base_path, "Spool");
+    }
+
+    #[test]
+    fn config_with_unknown_keys_still_loads() {
+        // A config written by a newer build must not fail on an older one.
+        let data: ConfigData = serde_json::from_str(
+            r#"{ "cloud_provider": "box", "some_future_setting": {"a": 1}, "lan_future": true }"#,
+        )
+        .unwrap();
+        assert_eq!(data.cloud.provider, "box");
+    }
+
+    #[test]
+    fn lan_install_dir_migration_does_not_steal_an_existing_default() {
+        let mut data = ConfigData {
+            library_folders: vec![LibraryFolder {
+                path: "/games".to_string(),
+                default_install: true,
+                ..Default::default()
+            }],
+            lan: LanConfig {
+                install_dir: "/mnt/sd/lan".to_string(),
+                ..LanConfig::default()
+            },
+            ..Default::default()
+        };
+        assert!(migrate_lan_install_dir(&mut data));
+        assert_eq!(data.library_folders.len(), 2);
+        assert!(data.library_folders[0].default_install);
+        assert!(!data.library_folders[1].default_install);
+        assert_eq!(data.default_install_folder().unwrap().path, "/games");
+    }
+
+    #[test]
+    fn whitespace_only_lan_install_dir_is_cleared_without_adding_a_folder() {
+        let mut data = ConfigData {
+            lan: LanConfig {
+                install_dir: "  ".to_string(),
+                ..LanConfig::default()
+            },
+            ..Default::default()
+        };
+        assert!(migrate_lan_install_dir(&mut data));
+        assert!(data.library_folders.is_empty());
+        assert!(data.lan.install_dir.is_empty());
+    }
+
+    #[test]
+    fn onboarding_flag_is_untouched_once_set_or_when_no_file_exists() {
+        let mut done = ConfigData {
+            onboarding_completed: true,
+            ..Default::default()
+        };
+        assert!(!migrate_onboarding_completed(Some("{}"), &mut done));
+        let mut fresh = ConfigData::default();
+        assert!(!migrate_onboarding_completed(None, &mut fresh));
+        assert!(!fresh.onboarding_completed);
+    }
+
     #[test]
     fn retention_floor_migrates_unsafe_low_values() {
         // Pre-existing configs at 1 or 2 (incl. the old in-place `full == 1`

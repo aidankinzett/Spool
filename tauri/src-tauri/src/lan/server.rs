@@ -1434,4 +1434,177 @@ mod tests {
             "exe equal to the folder yields no segments"
         );
     }
+
+    fn new_cache() -> HashCache {
+        Arc::new(std::sync::RwLock::new(HashMap::new()))
+    }
+
+    fn write_file(path: &Path, bytes: &[u8]) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, bytes).unwrap();
+    }
+
+    #[test]
+    fn walk_lists_relative_forward_slash_paths_with_blake3_hashes() {
+        let dir = tempfile::tempdir().unwrap();
+        write_file(&dir.path().join("a.txt"), b"hello");
+        write_file(&dir.path().join("sub/deeper/b.bin"), b"world!");
+
+        let (mut files, dirty) = walk_game_files_with_hashes(dir.path(), new_cache()).unwrap();
+        files.sort_by(|x, y| x.path.cmp(&y.path));
+        assert!(dirty, "fresh hashes dirty the cache");
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[0].path, "a.txt");
+        assert_eq!(files[0].size, 5);
+        assert_eq!(files[0].hash, blake3::hash(b"hello").to_hex().to_string());
+        assert_eq!(files[1].path, "sub/deeper/b.bin");
+        assert_eq!(files[1].hash, blake3::hash(b"world!").to_hex().to_string());
+        assert!(files[1].mtime_unix_ms > 0);
+    }
+
+    #[test]
+    fn walk_gives_empty_files_an_empty_hash_and_skips_directories() {
+        let dir = tempfile::tempdir().unwrap();
+        write_file(&dir.path().join("empty.dat"), b"");
+        std::fs::create_dir_all(dir.path().join("only-a-dir")).unwrap();
+        let cache = new_cache();
+        let (files, dirty) = walk_game_files_with_hashes(dir.path(), cache.clone()).unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].hash, "");
+        assert_eq!(files[0].size, 0);
+        assert!(!dirty, "nothing was hashed or pruned");
+        assert!(cache.read().unwrap().is_empty());
+    }
+
+    #[test]
+    fn walk_reuses_cached_hash_until_mtime_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("save.dat");
+        write_file(&f, b"v1");
+        let cache = new_cache();
+        let (first, _) = walk_game_files_with_hashes(dir.path(), cache.clone()).unwrap();
+
+        // A steady-state walk is served from the cache and reports clean.
+        // Plant a marker hash to prove the cache (not the file) answered.
+        cache.write().unwrap().get_mut(&f).unwrap().1 = "from-cache".to_string();
+        let (second, dirty) = walk_game_files_with_hashes(dir.path(), cache.clone()).unwrap();
+        assert_eq!(second[0].hash, "from-cache");
+        assert!(!dirty);
+
+        // Same size, new mtime: the cached entry is stale and is rehashed.
+        std::fs::write(&f, b"v2").unwrap();
+        let bumped = std::time::UNIX_EPOCH + Duration::from_secs(1_900_000_000);
+        std::fs::File::options()
+            .write(true)
+            .open(&f)
+            .unwrap()
+            .set_modified(bumped)
+            .unwrap();
+        let (third, dirty) = walk_game_files_with_hashes(dir.path(), cache.clone()).unwrap();
+        assert!(dirty);
+        assert_eq!(third[0].hash, blake3::hash(b"v2").to_hex().to_string());
+        assert_ne!(third[0].hash, first[0].hash);
+        assert_eq!(cache.read().unwrap()[&f].0, bumped);
+    }
+
+    #[test]
+    fn walk_prunes_deleted_files_but_leaves_other_games_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let keep = dir.path().join("keep.dat");
+        let gone = dir.path().join("gone.dat");
+        write_file(&keep, b"k");
+        write_file(&gone, b"g");
+        let cache = new_cache();
+        walk_game_files_with_hashes(dir.path(), cache.clone()).unwrap();
+
+        let other = PathBuf::from("/some/other/game/file");
+        cache
+            .write()
+            .unwrap()
+            .insert(other.clone(), (std::time::UNIX_EPOCH, "x".into()));
+        std::fs::remove_file(&gone).unwrap();
+
+        let (files, dirty) = walk_game_files_with_hashes(dir.path(), cache.clone()).unwrap();
+        assert_eq!(files.len(), 1);
+        assert!(dirty, "pruning a stale entry dirties the cache");
+        let g = cache.read().unwrap();
+        assert!(g.contains_key(&keep));
+        assert!(!g.contains_key(&gone));
+        assert!(g.contains_key(&other));
+    }
+
+    #[test]
+    fn walk_of_a_missing_folder_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(walk_game_files_with_hashes(&dir.path().join("nope"), new_cache()).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn walk_follows_symlinked_files_and_folders() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = tempfile::tempdir().unwrap();
+        write_file(&real.path().join("data/x.bin"), b"linked");
+        std::os::unix::fs::symlink(real.path().join("data"), dir.path().join("link")).unwrap();
+        let (files, _) = walk_game_files_with_hashes(dir.path(), new_cache()).unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, "link/x.bin");
+        assert_eq!(files[0].hash, blake3::hash(b"linked").to_hex().to_string());
+    }
+
+    #[test]
+    fn hash_file_matches_one_shot_hash_across_chunk_boundary() {
+        // Larger than the 64 KiB read buffer, and not a multiple of it.
+        let dir = tempfile::tempdir().unwrap();
+        let data: Vec<u8> = (0..(64 * 1024 * 2 + 123))
+            .map(|i| (i % 251) as u8)
+            .collect();
+        let f = dir.path().join("big");
+        std::fs::write(&f, &data).unwrap();
+        assert_eq!(
+            hash_file_blocking(&f).unwrap(),
+            blake3::hash(&data).to_hex().to_string()
+        );
+    }
+
+    #[test]
+    fn safe_join_edge_cases() {
+        let root = Path::new("/games/Hades");
+        assert_eq!(safe_join(root, "./a"), None, "leading current-dir");
+        assert_eq!(
+            safe_join(root, "a\\..\\..\\b"),
+            None,
+            "backslash parent escape"
+        );
+        assert_eq!(
+            safe_join(root, "\\windows\\x"),
+            None,
+            "backslash-rooted path"
+        );
+        assert_eq!(
+            safe_join(root, "a/./b"),
+            Some(PathBuf::from("/games/Hades/a/b")),
+            "interior current-dir is dropped by path parsing"
+        );
+        assert_eq!(
+            safe_join(root, "a//b"),
+            Some(PathBuf::from("/games/Hades/a/b"))
+        );
+    }
+
+    #[test]
+    fn parse_range_edge_cases() {
+        assert_eq!(parse_range_start("bytes="), None);
+        assert_eq!(parse_range_start("bytes=5"), None, "no dash");
+        assert_eq!(parse_range_start("bytes= 5-"), None, "space before number");
+        assert_eq!(
+            parse_range_start("bytes=99999999999999999999-"),
+            None,
+            "overflows u64"
+        );
+        assert_eq!(
+            parse_range_start("bytes=18446744073709551615-"),
+            Some(u64::MAX)
+        );
+    }
 }

@@ -1788,4 +1788,59 @@ mod tests {
         };
         assert_eq!(first_unsafe_manifest_path(&m), Some("../../evil.exe"));
     }
+
+    #[test]
+    fn install_base_name_sanitises_and_defaults() {
+        assert_eq!(install_base_name(""), "Game");
+        assert_eq!(install_base_name("Doom: Eternal"), "Doom Eternal");
+    }
+
+    #[test]
+    fn allocate_does_not_reuse_a_name_that_exists_as_a_file() {
+        let root = tempdir().unwrap();
+        std::fs::write(root.path().join("Hades"), b"").unwrap();
+        assert_eq!(
+            allocate_install_dir(root.path(), "Hades"),
+            root.path().join("Hades (2)")
+        );
+    }
+
+    #[test]
+    fn resolve_ignores_a_partial_that_is_a_plain_file() {
+        let root = tempdir().unwrap();
+        std::fs::write(root.path().join("Hades.partial"), b"").unwrap();
+        let (_, _, resuming) = resolve_install_dirs(root.path(), "Hades");
+        assert!(!resuming);
+    }
+
+    #[test]
+    fn manifest_with_no_files_or_exe_is_safe() {
+        assert_eq!(
+            first_unsafe_manifest_path(&PeerGameManifest::default()),
+            None
+        );
+    }
+
+    #[test]
+    fn manifest_reports_the_first_unsafe_file_before_the_exe() {
+        let m = PeerGameManifest {
+            files: vec![pf("ok"), pf("../a"), pf("../b")],
+            exe_relative_path: Some("../exe".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(first_unsafe_manifest_path(&m), Some("../a"));
+    }
+
+    #[test]
+    #[ignore = "bug: partial dir for a name containing a dot is built with with_extension, which replaces the text after the last dot"]
+    fn partial_dir_keeps_the_full_name_for_dotted_game_names() {
+        // "Dr. Mario" must resume into "Dr. Mario.partial", the name the resume
+        // check looks for, and must not share a partial with "Dr. Strange".
+        let root = tempdir().unwrap();
+        let (final_dir, partial, _) = resolve_install_dirs(root.path(), "Dr. Mario");
+        assert_eq!(final_dir, root.path().join("Dr. Mario"));
+        assert_eq!(partial, root.path().join("Dr. Mario.partial"));
+        let (_, other, _) = resolve_install_dirs(root.path(), "Dr. Strange");
+        assert_ne!(partial, other);
+    }
 }
