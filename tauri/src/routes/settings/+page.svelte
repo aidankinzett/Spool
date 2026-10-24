@@ -594,6 +594,56 @@
     }
   }
 
+  // ── Share cloud setup (LAN pairing) ──────────────────────────────────────
+  // Opens a short-lived pairing window on this device; a new install on the same
+  // network enters the code during onboarding to copy this cloud remote.
+  const SHAREABLE_PROVIDERS = ['google-drive', 'onedrive', 'dropbox', 'box', 'webdav'];
+  let pairCode = $state<string | null>(null);
+  let pairSecsLeft = $state(0);
+  let pairTimer: ReturnType<typeof setInterval> | undefined;
+
+  function stopPairTimer() {
+    clearInterval(pairTimer);
+    pairTimer = undefined;
+    pairCode = null;
+  }
+
+  async function startPairing() {
+    try {
+      const info = await api.startCloudPairing();
+      pairCode = info.code;
+      pairSecsLeft = info.expires_in_secs;
+      clearInterval(pairTimer);
+      pairTimer = setInterval(() => {
+        pairSecsLeft -= 1;
+        if (pairSecsLeft <= 0) stopPairTimer();
+      }, 1000);
+    } catch (e) {
+      toasts.show({ kind: 'bad', label: 'CLOUD · SHARE', title: "Couldn't start sharing", sub: String(e) });
+    }
+  }
+
+  async function cancelPairing() {
+    stopPairTimer();
+    try { await api.cancelCloudPairing(); } catch (e) { console.warn('[pairing] cancel failed:', e); }
+  }
+
+  onMount(() => {
+    const un = listen<string>('pairing:ended', (ev) => {
+      stopPairTimer();
+      if (ev.payload === 'paired') {
+        toasts.show({ kind: 'ok', label: 'CLOUD · SHARE', title: 'Cloud setup shared', sub: 'The other device now has this remote.' });
+      } else if (ev.payload === 'locked') {
+        toasts.show({ kind: 'warn', label: 'CLOUD · SHARE', title: 'Sharing stopped', sub: 'Too many wrong codes. Start sharing again to get a new one.' });
+      }
+    });
+    return () => {
+      un.then((f) => f());
+      clearInterval(pairTimer);
+      api.cancelCloudPairing().catch(() => {});
+    };
+  });
+
   async function cancelOAuth() {
     try { await api.cancelCloudOAuth(); } catch (e) { console.warn('[oauth] cancel failed:', e); }
     oauthConnecting = false;
@@ -615,6 +665,9 @@
     return remoteExists;
   });
   const cloudOnline = $derived(syncStatus?.reachability === 'online');
+  const canShareCloud = $derived(
+    cloudConfigured && SHAREABLE_PROVIDERS.includes(config?.cloud_provider ?? ''),
+  );
   const deckOk = $derived(
     !isLinux || (!!deckyPlugin?.installed && deps.every(d => d.found))
   );
@@ -1120,6 +1173,25 @@
                           <TextField bind:value={config!.cloud_base_path} placeholder="Spool" mono oncommit={persist} />
                         {/snippet}
                       </SettingsRow>
+
+                      {#if canShareCloud}
+                        <SettingsRow
+                          label="Share cloud setup"
+                          helper="Copy this remote to another Spool device on your network, so you only sign in once. Open Spool on the new device and enter the code during setup."
+                        >
+                          {#snippet control()}
+                            {#if pairCode}
+                              <div class="flex items-center gap-3">
+                                <span class="font-mono text-[20px] tracking-[0.2em] text-ink-0">{pairCode}</span>
+                                <span class="font-mono text-[10px] text-ink-3">{pairSecsLeft}s</span>
+                                <Btn variant="ghost" onclick={cancelPairing}>Cancel</Btn>
+                              </div>
+                            {:else}
+                              <Btn onclick={startPairing}>Share cloud setup</Btn>
+                            {/if}
+                          {/snippet}
+                        </SettingsRow>
+                      {/if}
 
                       <p class="px-3 pt-1 pb-2 text-[11px] leading-relaxed text-ink-2">
                         Syncing large saves over the internet can be slow. For

@@ -415,6 +415,8 @@ export type LanPeer = {
   game_count: number;
   version: number;
   file_server_port: number;
+  /** Non-zero while the peer has a cloud-setup pairing window open. */
+  pairing_port: number;
   last_seen_ago_secs: number;
 };
 

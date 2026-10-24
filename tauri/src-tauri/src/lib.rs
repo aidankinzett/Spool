@@ -288,6 +288,7 @@ pub fn run() {
         .manage::<Arc<LanDownloadState>>(Arc::new(LanDownloadState::default()))
         .manage::<Arc<move_install::MoveState>>(Arc::new(move_install::MoveState::default()))
         .manage::<LanUploadsState>(LanUploadsState::default())
+        .manage::<lan::pairing::CloudPairing>(lan::pairing::CloudPairing::default())
         // Seeded from the persisted hash cache so a restart doesn't re-hash
         // every shared game before its manifest can be served. Managed before
         // the LAN server spawns, so the first request sees the warm cache.
@@ -367,6 +368,9 @@ pub fn run() {
             rclone::cancel_cloud_oauth,
             // lan discovery
             lan::discovery::list_lan_peers,
+            lan::pairing::start_cloud_pairing,
+            lan::pairing::cancel_cloud_pairing,
+            lan::pairing::join_cloud_pairing,
             lan::install::fetch_peer_games,
             lan::install::start_peer_install,
             lan::install::current_peer_download,

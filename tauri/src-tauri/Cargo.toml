@@ -67,6 +67,11 @@ urlencoding = "2"
 # scheme/host instead of matching on the string (see system_open.rs).
 url = "2"
 blake3 = "1"
+# Cloud-setup pairing over the LAN (lan/pairing.rs): a password-authenticated key
+# exchange lets a short on-screen code protect the rclone credentials sent over
+# plain HTTP, and an AEAD encrypts the payload under the derived key.
+spake2 = "0.4"
+chacha20poly1305 = "0.10"
 base64 = "0.23"
 filetime = "0.2"
 serde_yaml = "0.9"

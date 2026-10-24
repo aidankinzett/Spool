@@ -12,7 +12,7 @@ use axum::{
     extract::{ConnectInfo, Path as AxPath, Query as AxQuery, State as AxState},
     http::{header, HeaderMap, StatusCode},
     response::{Json, Response},
-    routing::get,
+    routing::{get, post},
     Router,
 };
 use futures_util::StreamExt as _;
@@ -214,6 +214,30 @@ fn routes() -> Router<ServerState> {
         .route("/games/{id}/cover", get(get_cover_handler))
         .route("/games/{id}/hero", get(get_hero_handler))
         .route("/games/{id}/cancel-check", get(get_cancel_check_handler))
+        .route("/pair/start", post(pair_start_handler))
+        .route("/pair/finish", post(pair_finish_handler))
+}
+
+/// `POST /pair/start` and `/pair/finish` — cloud-setup pairing (see
+/// [`super::pairing`]). Not gated on `lan_share_enabled`: they answer only while
+/// the user has an open pairing window, and 403 otherwise.
+async fn pair_start_handler(
+    AxState(state): AxState<ServerState>,
+    Json(req): Json<super::pairing::StartReq>,
+) -> Result<Json<super::pairing::StartResp>, StatusCode> {
+    super::pairing::handle_start(&state.app, req)
+        .map(Json)
+        .map_err(|e| e.status())
+}
+
+async fn pair_finish_handler(
+    AxState(state): AxState<ServerState>,
+    Json(req): Json<super::pairing::FinishReq>,
+) -> Result<Json<super::pairing::FinishResp>, StatusCode> {
+    super::pairing::handle_finish(&state.app, req)
+        .await
+        .map(Json)
+        .map_err(|e| e.status())
 }
 
 /// Builds the LAN file-server router with its routes bound to `state`.

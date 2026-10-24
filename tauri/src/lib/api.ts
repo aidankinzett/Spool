@@ -224,6 +224,12 @@ export const api = {
 
   // LAN
   listLanPeers: (): Promise<LanPeer[]> => invoke('list_lan_peers'),
+  startCloudPairing: (): Promise<{ code: string; expires_in_secs: number }> =>
+    invoke('start_cloud_pairing'),
+  cancelCloudPairing: (): Promise<void> => invoke('cancel_cloud_pairing'),
+  /** Pair with a peer's open window and apply its cloud setup; resolves to the provider id. */
+  joinCloudPairing: (peerDeviceId: string, code: string): Promise<string> =>
+    invoke('join_cloud_pairing', { peerDeviceId, code }),
   fetchPeerGames: (addr: string, port: number): Promise<PeerGame[]> =>
     invoke('fetch_peer_games', { addr, port }),
   startPeerInstall: (

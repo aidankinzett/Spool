@@ -144,6 +144,7 @@ const PEER_A: LanPeer = {
   game_count: 1,
   version: 1,
   file_server_port: 47632,
+  pairing_port: 0,
   last_seen_ago_secs: 1,
 };
 const PEER_B: LanPeer = { ...PEER_A, device_id: 'dev-b', device_name: 'Desktop', addr: '192.168.1.11' };
