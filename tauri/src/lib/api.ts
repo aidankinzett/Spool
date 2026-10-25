@@ -129,9 +129,6 @@ export const api = {
   checkLanFirewall: (port: number): Promise<FirewallStatus> =>
     invoke('check_lan_firewall', { port }),
 
-  // Gamepad presence — drives the "switch to Gamepad layout?" prompt.
-  anyGamepadConnected: (): Promise<boolean> => invoke('any_gamepad_connected'),
-
   // Decky plugin installer (SteamOS / Linux)
   deckyPluginStatus: (): Promise<DeckyPluginInfo> => invoke('decky_plugin_status'),
   installDeckyPlugin: (): Promise<DeckyInstallOutcome> => invoke('install_decky_plugin'),
