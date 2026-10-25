@@ -1,6 +1,8 @@
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen } from '@testing-library/svelte';
+import { render, screen, fireEvent } from '@testing-library/svelte';
 import type { GameEntry } from '$lib/types';
+import { api } from '$lib/api';
+import { confirmDialog } from '$lib/confirm.svelte';
 import GameDetail from './GameDetail.svelte';
 
 // GameDetail reaches into Tauri (webview windows, IPC) from its action
@@ -12,9 +14,25 @@ vi.mock('@tauri-apps/api/webviewWindow', () => ({
     static getByLabel = vi.fn(async () => null);
   },
 }));
-vi.mock('$lib/api', () => ({
-  api: new Proxy({}, { get: () => vi.fn(() => Promise.resolve()) }),
-  assetUrl: () => '',
+vi.mock('$lib/api', () => {
+  // One mock per method, so a test can assert on the same function the
+  // component called.
+  const fns = new Map<PropertyKey, ReturnType<typeof vi.fn>>();
+  return {
+    api: new Proxy(
+      {},
+      {
+        get: (_, key) => {
+          if (!fns.has(key)) fns.set(key, vi.fn(() => Promise.resolve()));
+          return fns.get(key);
+        },
+      },
+    ),
+    assetUrl: () => '',
+  };
+});
+vi.mock('$lib/confirm.svelte', () => ({
+  confirmDialog: vi.fn(async () => false),
 }));
 vi.mock('$lib/toasts.svelte', () => ({
   toasts: { show: vi.fn(), push: vi.fn(), success: vi.fn(), error: vi.fn(), info: vi.fn() },
@@ -86,7 +104,45 @@ describe('GameDetail', () => {
 
   it('disables Play and reflects the running phase', () => {
     render(GameDetail, {
+      props: { game: makeGame(), runPhase: 'backing-up' },
+    });
+
+    const play = screen.getByTestId('play-button') as HTMLButtonElement;
+    expect(play.disabled).toBe(true);
+    expect(play.textContent).toContain('Backing up');
+  });
+
+  it('turns Play into Stop while playing, and stops after confirming', async () => {
+    vi.mocked(confirmDialog).mockResolvedValueOnce(true);
+    render(GameDetail, {
       props: { game: makeGame(), runPhase: 'playing' },
+    });
+
+    const button = screen.getByTestId('play-button') as HTMLButtonElement;
+    expect(button.disabled).toBe(false);
+    expect(button.textContent).toContain('Stop');
+
+    await fireEvent.click(button);
+    await vi.waitFor(() => expect(api.stopGame).toHaveBeenCalledWith('g1'));
+    expect(button.textContent).toContain('Stopping');
+    expect(button.disabled).toBe(true);
+  });
+
+  it('does not stop when the confirmation is cancelled', async () => {
+    vi.mocked(confirmDialog).mockResolvedValueOnce(false);
+    vi.mocked(api.stopGame).mockClear();
+    render(GameDetail, {
+      props: { game: makeGame(), runPhase: 'playing' },
+    });
+
+    await fireEvent.click(screen.getByTestId('play-button'));
+    await vi.waitFor(() => expect(confirmDialog).toHaveBeenCalled());
+    expect(api.stopGame).not.toHaveBeenCalled();
+  });
+
+  it('keeps a disabled Playing label for a Run-As-Admin launch', () => {
+    render(GameDetail, {
+      props: { game: makeGame({ run_as_admin: true }), runPhase: 'playing' },
     });
 
     const play = screen.getByTestId('play-button') as HTMLButtonElement;

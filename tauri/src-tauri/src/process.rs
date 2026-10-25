@@ -25,16 +25,25 @@
 //! some games' exe starts the real game as a separate process and exits
 //! (e.g. an Epic Online Services bootstrap), so the session continues while
 //! any process running from the install folder is alive.
+//!
+//! A stop request ([`StopCtl`], from the `stop_game` command) ends the session
+//! early: [`stop_processes`] kills the spawned process and its descendants, any
+//! process the handoff wait would count, and for Proton every process running
+//! in the game's Wine prefix. `run_game` then returns as for a normal exit.
+//! The elevated path can't be stopped, since an unelevated Spool can't
+//! terminate an elevated process.
 
 use crate::error::{AppError, AppResult};
 use crate::launch_options::LaunchOptions;
 use crate::proton;
-use std::collections::VecDeque;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 use tokio::process::Command;
+use tokio_util::sync::CancellationToken;
 
 /// How many lines of a Proton child's output reach `debug.log` per launch.
 ///
@@ -195,6 +204,17 @@ pub struct GameExitResult {
     /// crashed before the game window opened (missing DLL, bad prefix, etc.).
     /// `None` for normal-length sessions or clean exits.
     pub crash_hint: Option<String>,
+    /// True when the session ended because of a stop request.
+    pub stopped: bool,
+}
+
+/// Lets the run workflow end a running game early. `token` is cancelled by the
+/// `stop_game` command; `spawned` is set once the game process has started, so
+/// the command can refuse a stop before there is anything to kill.
+#[derive(Clone, Default)]
+pub struct StopCtl {
+    pub token: CancellationToken,
+    pub spawned: Arc<AtomicBool>,
 }
 
 /// Strip AppImage-injected environment pollution from a child command.
@@ -536,6 +556,15 @@ fn wrapped_command<S: AsRef<std::ffi::OsStr>>(
 
 /// Spawns the game and waits for it to exit.
 pub async fn run_game(exe_path: &Path, spec: LaunchSpec<'_>) -> AppResult<GameExitResult> {
+    run_game_stoppable(exe_path, spec, &StopCtl::default()).await
+}
+
+/// [`run_game`], ending the session early when `stop.token` is cancelled.
+pub async fn run_game_stoppable(
+    exe_path: &Path,
+    spec: LaunchSpec<'_>,
+    stop: &StopCtl,
+) -> AppResult<GameExitResult> {
     let cwd = exe_path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
@@ -555,13 +584,17 @@ pub async fn run_game(exe_path: &Path, spec: LaunchSpec<'_>) -> AppResult<GameEx
                 if !options.is_empty() {
                     tracing::warn!("launch options are not applied to an elevated launch");
                 }
+                stop.spawned.store(true, Ordering::SeqCst);
                 let code = run_elevated(exe_path).await?;
                 if let Some(dir) = &watch_dir {
-                    wait_for_handoff(dir, started_at, start.elapsed()).await;
+                    // Not stoppable: the stop request is refused for an
+                    // elevated launch, so the token is never cancelled.
+                    wait_for_handoff(dir, started_at, start.elapsed(), &stop.token).await;
                 }
                 return Ok(GameExitResult {
                     code,
                     crash_hint: None,
+                    stopped: false,
                 });
             }
 
@@ -573,19 +606,32 @@ pub async fn run_game(exe_path: &Path, spec: LaunchSpec<'_>) -> AppResult<GameEx
                 Some(w) => AppError::Other(format!("failed to start launch wrapper {w}: {e}")),
                 None => AppError::Other(format!("failed to start game: {e}")),
             })?;
+            stop.spawned.store(true, Ordering::SeqCst);
 
-            let status = child
-                .wait()
+            let target = StopTarget {
+                root_pid: child.id(),
+                watch_dir: watch_dir.clone(),
+                started_at,
+                wine_prefix: None,
+            };
+            let (status, mut stopped) = wait_or_stop(&mut child, &stop.token, &target)
                 .await
                 .map_err(|e| AppError::Other(format!("failed waiting on game: {e}")))?;
 
-            if let Some(dir) = &watch_dir {
-                wait_for_handoff(dir, started_at, start.elapsed()).await;
+            if !stopped {
+                if let Some(dir) = &watch_dir {
+                    wait_for_handoff(dir, started_at, start.elapsed(), &stop.token).await;
+                    if stop.token.is_cancelled() {
+                        stop_processes(target).await;
+                        stopped = true;
+                    }
+                }
             }
 
             Ok(GameExitResult {
                 code: status.code().unwrap_or(-1),
                 crash_hint: None,
+                stopped,
             })
         }
         LaunchSpec::Proton {
@@ -625,6 +671,7 @@ pub async fn run_game(exe_path: &Path, spec: LaunchSpec<'_>) -> AppResult<GameEx
             );
 
             let start = tokio::time::Instant::now();
+            let started_at = unix_secs_now();
 
             let mut cmd = wrapped_command(wrapper, &launch.program, &launch.args);
             cmd.envs(launch.env).current_dir(cwd);
@@ -636,6 +683,7 @@ pub async fn run_game(exe_path: &Path, spec: LaunchSpec<'_>) -> AppResult<GameEx
                 Some(w) => AppError::Other(format!("failed to start launch wrapper {w}: {e}")),
                 None => AppError::Other(format!("failed to start game via Proton: {e}")),
             })?;
+            stop.spawned.store(true, Ordering::SeqCst);
 
             let setup = Arc::new(SetupTracker::new(on_setup));
 
@@ -670,8 +718,13 @@ pub async fn run_game(exe_path: &Path, spec: LaunchSpec<'_>) -> AppResult<GameEx
                 }
             });
 
-            let status = child
-                .wait()
+            let target = StopTarget {
+                root_pid: child.id(),
+                watch_dir: None,
+                started_at,
+                wine_prefix: Some(prefix_root.to_path_buf()),
+            };
+            let (status, stopped) = wait_or_stop(&mut child, &stop.token, &target)
                 .await
                 .map_err(|e| AppError::Other(format!("failed waiting on Proton game: {e}")))?;
             let elapsed = start.elapsed();
@@ -690,6 +743,7 @@ pub async fn run_game(exe_path: &Path, spec: LaunchSpec<'_>) -> AppResult<GameEx
             tracing::info!(
                 exit_code = code,
                 elapsed_secs = elapsed.as_secs(),
+                stopped,
                 "umu-run process exited"
             );
 
@@ -697,7 +751,7 @@ pub async fn run_game(exe_path: &Path, spec: LaunchSpec<'_>) -> AppResult<GameEx
             // never opened a window — Wine/Proton printed the reason to stderr
             // (missing DLL, broken prefix, etc.). Surface the tail so callers can
             // include it in the error message without the user needing debug.log.
-            let crash_hint = if code != 0 && elapsed.as_secs() < 5 {
+            let crash_hint = if !stopped && code != 0 && elapsed.as_secs() < 5 {
                 let buf = stderr_buf.lock().unwrap_or_else(|e| e.into_inner());
                 let tail = buf
                     .iter()
@@ -718,7 +772,11 @@ pub async fn run_game(exe_path: &Path, spec: LaunchSpec<'_>) -> AppResult<GameEx
                 None
             };
 
-            Ok(GameExitResult { code, crash_hint })
+            Ok(GameExitResult {
+                code,
+                crash_hint,
+                stopped,
+            })
         }
     }
 }
@@ -791,25 +849,22 @@ fn exe_in_dir(exe: &Path, dir: &Path) -> bool {
 /// launch don't count, so a resident process in a shared folder, or an
 /// earlier instance of the game, can't hold the session open.
 fn find_process_in_dir(sys: &mut System, dir: &Path, started_at: u64) -> Option<PathBuf> {
-    sys.refresh_processes_specifics(
-        ProcessesToUpdate::All,
-        true,
-        ProcessRefreshKind::nothing()
-            .without_tasks()
-            .with_exe(UpdateKind::OnlyIfNotSet),
-    );
+    sys.refresh_processes_specifics(ProcessesToUpdate::All, true, stop_refresh_kind(false));
     let own_pid = std::process::id();
     let since = started_at.saturating_sub(HANDOFF_START_SLACK_SECS);
     sys.processes()
         .iter()
         .filter(|(pid, p)| pid.as_u32() != own_pid && p.start_time() >= since)
-        .find_map(|(pid, p)| {
-            let exe = match p.exe().filter(|e| !e.as_os_str().is_empty()) {
-                Some(e) => e.to_path_buf(),
-                None => image_path_limited(pid.as_u32())?,
-            };
-            exe_in_dir(&exe, dir).then_some(exe)
-        })
+        .find_map(|(pid, p)| process_exe(*pid, p).filter(|exe| exe_in_dir(exe, dir)))
+}
+
+/// A process's exe path, falling back to [`image_path_limited`] when sysinfo
+/// couldn't read it.
+fn process_exe(pid: Pid, p: &sysinfo::Process) -> Option<PathBuf> {
+    match p.exe().filter(|e| !e.as_os_str().is_empty()) {
+        Some(e) => Some(e.to_path_buf()),
+        None => image_path_limited(pid.as_u32()),
+    }
 }
 
 /// A process's exe path read with a `PROCESS_QUERY_LIMITED_INFORMATION`
@@ -852,7 +907,13 @@ fn image_path_limited(_pid: u32) -> Option<PathBuf> {
 /// `dir`. When the spawned process ran for less than [`HANDOFF_QUICK_EXIT`],
 /// it first gives the game [`HANDOFF_GRACE`] to show up, since a launcher may
 /// exit before the process it started appears.
-async fn wait_for_handoff(dir: &Path, started_at: u64, ran_for: Duration) {
+/// Also returns early when `stop` is cancelled.
+async fn wait_for_handoff(
+    dir: &Path,
+    started_at: u64,
+    ran_for: Duration,
+    stop: &CancellationToken,
+) {
     let grace_until =
         (ran_for < HANDOFF_QUICK_EXIT).then(|| tokio::time::Instant::now() + HANDOFF_GRACE);
     let mut sys = Some(System::new());
@@ -890,7 +951,201 @@ async fn wait_for_handoff(dir: &Path, started_at: u64, ran_for: Duration) {
                 }
             }
         }
-        tokio::time::sleep(HANDOFF_POLL).await;
+        tokio::select! {
+            () = tokio::time::sleep(HANDOFF_POLL) => {}
+            () = stop.cancelled() => return,
+        }
+    }
+}
+
+/// How long processes get to exit after `SIGTERM` before they're sent
+/// `SIGKILL` (Unix). Windows has no polite equivalent for a process with no
+/// window, so it terminates them straight away.
+#[cfg(unix)]
+const STOP_GRACE: Duration = Duration::from_secs(5);
+
+/// What a stop request kills. See [`collect_stop_pids`].
+#[derive(Clone)]
+struct StopTarget {
+    /// The spawned process (the game, a launch-option wrapper, or umu-run).
+    root_pid: Option<u32>,
+    /// The handoff watch folder, for processes the game started that aren't
+    /// in the spawned process's tree.
+    watch_dir: Option<PathBuf>,
+    /// Unix seconds at the launch. Processes that started earlier are never
+    /// killed, which also guards against a reused PID.
+    started_at: u64,
+    /// The Proton prefix root. Every process whose `WINEPREFIX` (or umu's
+    /// `STEAM_COMPAT_DATA_PATH`) is this folder belongs to the game's Wine
+    /// session, wineserver included.
+    wine_prefix: Option<PathBuf>,
+}
+
+/// Waits for `child` to exit, or kills the game when `stop` is cancelled first.
+/// Returns the exit status and whether the game was stopped.
+async fn wait_or_stop(
+    child: &mut tokio::process::Child,
+    stop: &CancellationToken,
+    target: &StopTarget,
+) -> std::io::Result<(std::process::ExitStatus, bool)> {
+    tokio::select! {
+        status = child.wait() => Ok((status?, false)),
+        () = stop.cancelled() => {
+            stop_processes(target.clone()).await;
+            // Normally already dead from the above; this covers a process
+            // sysinfo couldn't see.
+            let _ = child.start_kill();
+            Ok((child.wait().await?, true))
+        }
+    }
+}
+
+/// Kills every process [`collect_stop_pids`] finds for `target`.
+async fn stop_processes(target: StopTarget) {
+    let _ = tokio::task::spawn_blocking(move || {
+        let mut sys = System::new();
+        sys.refresh_processes_specifics(
+            ProcessesToUpdate::All,
+            true,
+            stop_refresh_kind(target.wine_prefix.is_some()),
+        );
+        let pids = collect_stop_pids(&sys, &target);
+        tracing::info!(count = pids.len(), "stopping game processes");
+        kill_pids(&mut sys, &pids);
+    })
+    .await;
+}
+
+fn stop_refresh_kind(with_environ: bool) -> ProcessRefreshKind {
+    let kind = ProcessRefreshKind::nothing()
+        .without_tasks()
+        .with_exe(UpdateKind::OnlyIfNotSet);
+    if with_environ {
+        kind.with_environ(UpdateKind::OnlyIfNotSet)
+    } else {
+        kind
+    }
+}
+
+/// The processes a stop kills: the spawned process and its descendants, any
+/// process running from the watch folder, and any process in the Wine prefix.
+/// Only processes started since the launch count, and never Spool itself.
+fn collect_stop_pids(sys: &System, target: &StopTarget) -> Vec<Pid> {
+    let since = target.started_at.saturating_sub(HANDOFF_START_SLACK_SECS);
+    let own_pid = Pid::from_u32(std::process::id());
+    let parents: HashMap<Pid, Pid> = sys
+        .processes()
+        .iter()
+        .filter_map(|(pid, p)| p.parent().map(|parent| (*pid, parent)))
+        .collect();
+    let mut pids = target
+        .root_pid
+        .map(|root| descendants_and_self(Pid::from_u32(root), &parents))
+        .unwrap_or_default();
+    for (pid, p) in sys.processes() {
+        let in_dir = target
+            .watch_dir
+            .as_deref()
+            .is_some_and(|dir| process_exe(*pid, p).is_some_and(|exe| exe_in_dir(&exe, dir)));
+        let in_prefix = target
+            .wine_prefix
+            .as_deref()
+            .is_some_and(|prefix| runs_in_prefix(p.environ(), prefix));
+        if in_dir || in_prefix {
+            pids.insert(*pid);
+        }
+    }
+    pids.into_iter()
+        .filter(|pid| *pid != own_pid)
+        .filter(|pid| sys.process(*pid).is_some_and(|p| p.start_time() >= since))
+        .collect()
+}
+
+/// `root` plus every process below it in the `child → parent` map.
+fn descendants_and_self(root: Pid, parents: &HashMap<Pid, Pid>) -> HashSet<Pid> {
+    let mut children: HashMap<Pid, Vec<Pid>> = HashMap::new();
+    for (child, parent) in parents {
+        children.entry(*parent).or_default().push(*child);
+    }
+    let mut found = HashSet::from([root]);
+    let mut queue = vec![root];
+    while let Some(pid) = queue.pop() {
+        for child in children.get(&pid).into_iter().flatten() {
+            if found.insert(*child) {
+                queue.push(*child);
+            }
+        }
+    }
+    found
+}
+
+/// Whether an environment sets `WINEPREFIX` or `STEAM_COMPAT_DATA_PATH` to
+/// `prefix`.
+fn runs_in_prefix(environ: &[std::ffi::OsString], prefix: &Path) -> bool {
+    let want = prefix.to_string_lossy();
+    let want = want.trim_end_matches('/');
+    environ.iter().any(|var| {
+        let var = var.to_string_lossy();
+        ["WINEPREFIX=", "STEAM_COMPAT_DATA_PATH="]
+            .iter()
+            .any(|key| {
+                var.strip_prefix(key)
+                    .is_some_and(|v| v.trim_end_matches('/') == want)
+            })
+    })
+}
+
+#[cfg(unix)]
+fn kill_pids(sys: &mut System, pids: &[Pid]) {
+    use sysinfo::{ProcessStatus, Signal};
+    for pid in pids {
+        if let Some(p) = sys.process(*pid) {
+            p.kill_with(Signal::Term);
+        }
+    }
+    let deadline = std::time::Instant::now() + STOP_GRACE;
+    loop {
+        sys.refresh_processes_specifics(
+            ProcessesToUpdate::Some(pids),
+            true,
+            ProcessRefreshKind::nothing().without_tasks(),
+        );
+        // A zombie has exited and is only waiting to be reaped.
+        let alive: Vec<Pid> = pids
+            .iter()
+            .copied()
+            .filter(|pid| {
+                sys.process(*pid)
+                    .is_some_and(|p| p.status() != ProcessStatus::Zombie)
+            })
+            .collect();
+        if alive.is_empty() {
+            return;
+        }
+        if std::time::Instant::now() >= deadline {
+            tracing::info!(
+                count = alive.len(),
+                "game processes ignored SIGTERM; killing"
+            );
+            for pid in alive {
+                if let Some(p) = sys.process(pid) {
+                    p.kill();
+                }
+            }
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+}
+
+#[cfg(not(unix))]
+fn kill_pids(sys: &mut System, pids: &[Pid]) {
+    for pid in pids {
+        if let Some(p) = sys.process(*pid) {
+            if !p.kill() {
+                tracing::warn!(pid = pid.as_u32(), "failed to terminate game process");
+            }
+        }
     }
 }
 
@@ -1042,6 +1297,118 @@ mod tests {
 
         assert!(found.is_some_and(|p| p.starts_with(&dir)));
         assert_eq!(later, None);
+    }
+
+    #[test]
+    fn descendants_and_self_walks_the_whole_tree() {
+        let pid = Pid::from_u32;
+        // 1 → 2 → 3, 1 → 4; 5 is unrelated, and 6 is its child.
+        let parents = HashMap::from([
+            (pid(2), pid(1)),
+            (pid(3), pid(2)),
+            (pid(4), pid(1)),
+            (pid(6), pid(5)),
+        ]);
+        let found = descendants_and_self(pid(1), &parents);
+        assert_eq!(found, HashSet::from([pid(1), pid(2), pid(3), pid(4)]));
+        assert_eq!(
+            descendants_and_self(pid(3), &parents),
+            HashSet::from([pid(3)])
+        );
+    }
+
+    #[test]
+    fn runs_in_prefix_matches_either_variable() {
+        let env =
+            |vars: &[&str]| -> Vec<std::ffi::OsString> { vars.iter().map(Into::into).collect() };
+        let prefix = Path::new("/home/u/.local/share/Spool/prefixes/abc");
+        assert!(runs_in_prefix(
+            &env(&[
+                "HOME=/home/u",
+                "WINEPREFIX=/home/u/.local/share/Spool/prefixes/abc"
+            ]),
+            prefix
+        ));
+        assert!(runs_in_prefix(
+            &env(&["STEAM_COMPAT_DATA_PATH=/home/u/.local/share/Spool/prefixes/abc/"]),
+            prefix
+        ));
+        assert!(!runs_in_prefix(
+            &env(&["WINEPREFIX=/home/u/.local/share/Spool/prefixes/abcd"]),
+            prefix
+        ));
+        assert!(!runs_in_prefix(
+            &env(&["OTHER=/home/u/.local/share/Spool/prefixes/abc"]),
+            prefix
+        ));
+    }
+
+    /// Stopping a native launch kills the spawned process and the child it
+    /// started, and `run_game_stoppable` returns as stopped.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn stop_kills_the_spawned_process_tree() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let pid_file = dir.path().join("child.pid");
+        let script = dir.path().join("game.sh");
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\nsleep 60 &\necho $! > '{}'\nwait\n",
+                pid_file.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let stop = StopCtl::default();
+        let options = LaunchOptions::default();
+        let run = run_game_stoppable(
+            &script,
+            LaunchSpec::Native {
+                run_as_admin: false,
+                options: &options,
+                install_dir: Some(dir.path()),
+            },
+            &stop,
+        );
+        let trigger = async {
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+            let child_pid = loop {
+                if let Some(pid) = std::fs::read_to_string(&pid_file)
+                    .ok()
+                    .and_then(|s| s.trim().parse::<u32>().ok())
+                {
+                    break pid;
+                }
+                assert!(
+                    tokio::time::Instant::now() < deadline,
+                    "script never started"
+                );
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            };
+            stop.token.cancel();
+            child_pid
+        };
+        let (result, child_pid) =
+            tokio::join!(tokio::time::timeout(Duration::from_secs(20), run), trigger);
+        let result = result.expect("stop timed out").unwrap();
+        assert!(result.stopped);
+
+        // The orphaned `sleep` is reaped by init once it dies.
+        let gone = || {
+            std::fs::read_to_string(format!("/proc/{child_pid}/stat")).map_or(true, |s| {
+                s.rsplit(')')
+                    .next()
+                    .is_some_and(|r| r.trim_start().starts_with('Z'))
+            })
+        };
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !gone() && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(gone(), "child process {child_pid} survived the stop");
     }
 
     #[cfg(windows)]

@@ -46,7 +46,15 @@ use paths as _paths;
 /// allow concurrent launches for different games this becomes a HashMap.
 #[derive(Default)]
 pub struct RunState {
-    current: Mutex<Option<String>>,
+    current: Mutex<Option<RunSlot>>,
+}
+
+/// The game holding the run slot, and how to stop it.
+struct RunSlot {
+    game_id: String,
+    stop: process::StopCtl,
+    /// The launch is elevated (Run-As-Admin), so Spool can't kill it.
+    elevated: bool,
 }
 
 impl RunState {
@@ -54,11 +62,17 @@ impl RunState {
         let mut guard = self.current.lock().map_err(|_| AppError::LockPoisoned)?;
         if let Some(running) = guard.as_ref() {
             return Err(AppError::Other(format!(
-                "Another game is already running (id {running})"
+                "Another game is already running (id {})",
+                running.game_id
             )));
         }
-        *guard = Some(game_id.to_string());
-        Ok(RunGuard { state: self })
+        let stop = process::StopCtl::default();
+        *guard = Some(RunSlot {
+            game_id: game_id.to_string(),
+            stop: stop.clone(),
+            elevated: false,
+        });
+        Ok(RunGuard { state: self, stop })
     }
 }
 
@@ -67,6 +81,19 @@ impl RunState {
 /// and the user could never launch another game until they restarted Spool.
 struct RunGuard<'a> {
     state: &'a RunState,
+    /// Cancelled by [`stop_game`]; passed to the launch.
+    stop: process::StopCtl,
+}
+
+impl RunGuard<'_> {
+    /// Records that the launch is elevated, so [`stop_game`] refuses it.
+    fn mark_elevated(&self) {
+        if let Ok(mut guard) = self.state.current.lock() {
+            if let Some(slot) = guard.as_mut() {
+                slot.elevated = true;
+            }
+        }
+    }
 }
 
 impl Drop for RunGuard<'_> {
@@ -75,6 +102,33 @@ impl Drop for RunGuard<'_> {
             *guard = None;
         }
     }
+}
+
+/// Ends the running game's session early (the detail pane's Stop button). The
+/// workflow kills the game's processes (`process::run_game_stoppable`) and then
+/// continues as for a normal exit: backup, upload, playtime. This only signals
+/// it.
+#[tauri::command]
+pub fn stop_game(run_state: tauri::State<'_, RunState>, game_id: String) -> AppResult<()> {
+    let guard = run_state
+        .current
+        .lock()
+        .map_err(|_| AppError::LockPoisoned)?;
+    let slot = guard
+        .as_ref()
+        .filter(|s| s.game_id == game_id)
+        .ok_or_else(|| AppError::Other("This game isn't running.".into()))?;
+    if slot.elevated {
+        return Err(AppError::Other(
+            "Spool can't stop a game running as administrator. Close it from the game.".into(),
+        ));
+    }
+    if !slot.stop.spawned.load(std::sync::atomic::Ordering::SeqCst) {
+        return Err(AppError::Other("The game hasn't started yet.".into()));
+    }
+    tracing::info!(game_id, "stop requested");
+    slot.stop.token.cancel();
+    Ok(())
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -1780,7 +1834,7 @@ pub async fn launch_game_inner_steal(
     skip_rescue: bool,
 ) -> AppResult<()> {
     let run_state = app.state::<RunState>();
-    let _guard = run_state.try_acquire(game_id)?;
+    let run_guard = run_state.try_acquire(game_id)?;
 
     // Hold the machine-wide per-game run lock for the whole session so a disk
     // wipe (uninstall / delete-from-disk) in ANY Spool process can't delete this
@@ -1863,7 +1917,11 @@ pub async fn launch_game_inner_steal(
 
     let ludusavi_client = app.state::<LudusaviClient>();
     let result = match launch_plan {
-        Ok(launch_plan) => {
+        Ok(mut launch_plan) => {
+            launch_plan.stop = run_guard.stop.clone();
+            if launch_plan.run_as_admin {
+                run_guard.mark_elevated();
+            }
             run_workflow(
                 app,
                 game_id,
@@ -1900,6 +1958,8 @@ struct LaunchPlan {
     /// Parsed per-game launch options (args, env, `%command%` wrapper).
     options: crate::launch_options::LaunchOptions,
     run_as_admin: bool,
+    /// Ends the session early; see [`stop_game`].
+    stop: process::StopCtl,
 }
 
 /// Resolves a [`LaunchPlan`] from the game's settings + app config. Whether
@@ -1950,6 +2010,7 @@ fn build_launch_plan(
             prefix_root,
             options,
             run_as_admin: false,
+            stop: process::StopCtl::default(),
         });
     }
 
@@ -1963,6 +2024,7 @@ fn build_launch_plan(
         prefix_root,
         options,
         run_as_admin: needs_admin,
+        stop: process::StopCtl::default(),
     })
 }
 
@@ -3025,7 +3087,7 @@ async fn phase_launch(ctx: &WorkflowCtx<'_>, exe_pathbuf: &Path) -> AppResult<Se
     // of this future (the game may be running). It is dropped again below only
     // if the game never started or crashed straight away.
     crate::session::mark_game_started();
-    let spawn_result = process::run_game(exe_pathbuf, spec).await;
+    let spawn_result = process::run_game_stoppable(exe_pathbuf, spec, &ctx.launch.stop).await;
     let session_end = Utc::now();
 
     achievement_watch.finish().await;
@@ -3047,6 +3109,7 @@ async fn phase_launch(ctx: &WorkflowCtx<'_>, exe_pathbuf: &Path) -> AppResult<Se
         game_name = ctx.game_name,
         duration_secs = (session_end - session_start).num_seconds(),
         exit_code = spawn_result.as_ref().ok().map(|r| r.code).unwrap_or(-1),
+        stopped = spawn_result.as_ref().is_ok_and(|r| r.stopped),
         "game exited"
     );
 
