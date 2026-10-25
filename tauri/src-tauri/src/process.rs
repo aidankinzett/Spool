@@ -735,16 +735,57 @@ pub async fn run_game_stoppable(
                 started_at,
                 wine_prefix: Some(prefix_root.to_path_buf()),
             };
-            let (status, stopped) = wait_or_stop(&mut child, &stop.token, &target)
+            let (status, mut stopped) = wait_or_stop(&mut child, &stop.token, &target)
                 .await
                 .map_err(|e| AppError::Other(format!("failed waiting on Proton game: {e}")))?;
             let elapsed = start.elapsed();
 
-            if let Some(h) = stdout_handle {
-                join_relay(h, stopped).await;
+            // The spawned process has been reaped, so its PID may now belong to
+            // something else; the prefix match still finds the Wine processes.
+            let leftover = StopTarget {
+                root_pid: None,
+                ..target
+            };
+            let relays: Vec<_> = [stdout_handle, stderr_handle]
+                .into_iter()
+                .flatten()
+                .collect();
+            let aborts: Vec<_> = relays.iter().map(|h| h.abort_handle()).collect();
+            let mut joined = std::pin::pin!(async {
+                for h in relays {
+                    let _ = h.await;
+                }
+            });
+            if !stopped {
+                // A launch-option wrapper can exit while the game it started
+                // keeps the output pipes open, so the session lasts until the
+                // relays end. A stop in that window still has to work.
+                tokio::select! {
+                    () = &mut joined => {}
+                    () = stop.token.cancelled() => {
+                        stop_processes(leftover.clone()).await;
+                        stopped = true;
+                    }
+                }
             }
-            if let Some(h) = stderr_handle {
-                join_relay(h, stopped).await;
+            if stopped {
+                // A process the stop didn't reach may still hold the pipes.
+                if tokio::time::timeout(STOP_RELAY_WAIT, &mut joined)
+                    .await
+                    .is_err()
+                {
+                    tracing::warn!(
+                        "umu-run output still open after the stop; no longer relaying it"
+                    );
+                    for abort in &aborts {
+                        abort.abort();
+                    }
+                }
+            } else if stop.token.is_cancelled() {
+                // The stop landed as the game was exiting: clear anything left
+                // in the prefix and report the session as stopped.
+                stop_processes(leftover).await;
+                stopped = true;
             }
             // Both relays are done, so no further setup callbacks can race
             // whatever phase the caller emits next.
@@ -1229,21 +1270,6 @@ fn runs_in_prefix(environ: &[std::ffi::OsString], prefix: &Path) -> bool {
     })
 }
 
-/// Awaits a umu-run output relay. After a stop, waits at most
-/// [`STOP_RELAY_WAIT`] and then aborts it, since a process the stop didn't
-/// reach may still hold the pipe.
-async fn join_relay<T>(handle: tokio::task::JoinHandle<T>, stopped: bool) {
-    if !stopped {
-        let _ = handle.await;
-        return;
-    }
-    let abort = handle.abort_handle();
-    if tokio::time::timeout(STOP_RELAY_WAIT, handle).await.is_err() {
-        tracing::warn!("umu-run output still open after the stop; no longer relaying it");
-        abort.abort();
-    }
-}
-
 /// Spawns the game via `ShellExecuteExW` with the `runas` verb. Triggers
 /// the UAC prompt; blocks the calling thread until the elevated process
 /// exits. Wrapped in `spawn_blocking` by the caller so the async runtime
@@ -1519,10 +1545,15 @@ mod tests {
             tokio::join!(tokio::time::timeout(Duration::from_secs(30), run), trigger);
         let result = result.expect("stop timed out").unwrap();
         assert!(result.stopped);
+        assert_pid_gone(child_pid);
+    }
 
-        // The orphaned `sleep` is reaped by init once it dies.
+    /// Waits up to 5 s for `pid` to exit. An orphaned process is reaped by
+    /// init once it dies, so a zombie counts as gone.
+    #[cfg(target_os = "linux")]
+    fn assert_pid_gone(pid: u32) {
         let gone = || {
-            std::fs::read_to_string(format!("/proc/{child_pid}/stat")).map_or(true, |s| {
+            std::fs::read_to_string(format!("/proc/{pid}/stat")).map_or(true, |s| {
                 s.rsplit(')')
                     .next()
                     .is_some_and(|r| r.trim_start().starts_with('Z'))
@@ -1532,7 +1563,73 @@ mod tests {
         while !gone() && std::time::Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(50));
         }
-        assert!(gone(), "child process {child_pid} survived the stop");
+        assert!(gone(), "process {pid} survived the stop");
+    }
+
+    /// A Proton launch whose spawned process exits while a process it started
+    /// keeps the output pipes open (a launch-option wrapper, here a fake
+    /// umu-run) can still be stopped: the process is found by its
+    /// `WINEPREFIX` and killed, and the launch returns as stopped.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn stop_works_while_waiting_on_proton_output() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let prefix = dir.path().join("prefix");
+        let pid_file = dir.path().join("child.pid");
+        let umu_run = dir.path().join("umu-run");
+        std::fs::write(
+            &umu_run,
+            format!(
+                "#!/bin/sh\nsleep 60 &\necho $! > '{}'\n",
+                pid_file.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&umu_run, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let game_exe = dir.path().join("Game.exe");
+
+        let stop = StopCtl::default();
+        let run = run_game_stoppable(
+            &game_exe,
+            LaunchSpec::Proton {
+                umu_run: &umu_run,
+                prefix_root: &prefix,
+                proton_path: None,
+                game_id: "stop-test",
+                extra_args: &[],
+                extra_env: &[],
+                wrapper: &[],
+                on_setup: None,
+            },
+            &stop,
+        );
+        let trigger = async {
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+            let child_pid = loop {
+                if let Some(pid) = std::fs::read_to_string(&pid_file)
+                    .ok()
+                    .and_then(|s| s.trim().parse::<u32>().ok())
+                {
+                    break pid;
+                }
+                assert!(
+                    tokio::time::Instant::now() < deadline,
+                    "script never started"
+                );
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            };
+            // Let the fake umu-run exit, so the launch is waiting on the
+            // output relays alone.
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            stop.token.cancel();
+            child_pid
+        };
+        let (result, child_pid) =
+            tokio::join!(tokio::time::timeout(Duration::from_secs(30), run), trigger);
+        let result = result.expect("stop timed out").unwrap();
+        assert!(result.stopped);
+        assert_pid_gone(child_pid);
     }
 
     /// Stopping a native launch kills the spawned process and the child it
