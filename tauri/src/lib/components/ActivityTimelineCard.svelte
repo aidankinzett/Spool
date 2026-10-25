@@ -110,7 +110,10 @@
                   <div class="flex items-center justify-between gap-2.5">
                     <div class="flex min-w-0 items-center gap-2 text-[12.5px] text-ink-1">
                       <Play size={12} class="shrink-0 text-ink-3" />
-                      <span class="truncate">Played {fmtPlaytime(e.minutes)}</span>
+                      <span class="truncate"
+                        >Played {fmtPlaytime(e.minutes)}{#if e.sessionCount > 1}
+                          · {e.sessionCount} sessions{/if}</span
+                      >
                     </div>
                     {#if !e.isThisDevice && e.session.device_name}
                       {@render device(e.session.device_name)}
