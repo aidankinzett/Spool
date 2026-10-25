@@ -171,9 +171,36 @@ describe('activity edge cases', () => {
   });
 
   it('buildTimeline rounds session minutes to the nearest whole minute', () => {
-    const days = buildTimeline([session({ duration_secs: 89 }), session({ session_id: 'b', duration_secs: 91 })], [], null);
+    const days = buildTimeline(
+      [
+        session({ duration_secs: 89 }),
+        session({ session_id: 'b', device_id: 'dev-b', duration_secs: 91 }),
+      ],
+      [],
+      null,
+    );
     const minutes = days[0].entries.map((e) => (e.kind === 'session' ? e.minutes : -1)).sort();
     expect(minutes).toEqual([1, 2]);
+  });
+
+  it('buildTimeline sums a day\'s sessions per device', () => {
+    const t = (h: number) => new Date(2026, 5, 3, h, 0).toISOString();
+    const days = buildTimeline(
+      [
+        session({ session_id: 'a', ended_at: t(10), duration_secs: 60 }),
+        session({ session_id: 'b', ended_at: t(12), duration_secs: 180 }),
+        session({ session_id: 'c', device_id: 'dev-b', ended_at: t(11), duration_secs: 120 }),
+        session({ session_id: 'd', ended_at: new Date(2026, 5, 4, 1, 0).toISOString(), duration_secs: 60 }),
+      ],
+      [],
+      'dev-a',
+    );
+    expect(days).toHaveLength(2);
+    const day = days[1].entries.map((e) => (e.kind === 'session' ? [e.session.device_id, e.minutes, e.sessionCount] : []));
+    expect(day).toEqual([
+      ['dev-a', 4, 2],
+      ['dev-b', 2, 1],
+    ]);
   });
 
   it('buildTimeline returns no days for no data', () => {

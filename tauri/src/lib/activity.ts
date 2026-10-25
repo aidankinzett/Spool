@@ -53,8 +53,11 @@ export function sessionUnlocks(
 export type TimelineEntry =
   | {
       kind: 'session';
+      /** The day's latest session on the device (the group's representative). */
       session: PlaySession;
-      /** Whole minutes played. */
+      /** How many sessions were summed into this entry. */
+      sessionCount: number;
+      /** Whole minutes played, summed over the group. */
       minutes: number;
       isThisDevice: boolean;
       /** Unix ms the entry sorts by (session end). */
@@ -85,8 +88,8 @@ function localMidnight(ms: number): number {
 
 /**
  * Sessions and unlocks grouped by local calendar day, newest day first. Each
- * day has one entry per session (keyed to the day it ended) and one unlocks
- * entry per device that unlocked something that day.
+ * day has one played entry per device (its sessions that ended that day,
+ * summed) and one unlocks entry per device that unlocked something that day.
  */
 export function buildTimeline(
   sessions: PlaySession[],
@@ -101,17 +104,35 @@ export function buildTimeline(
     else days.set(key, [e]);
   };
 
+  // One entry per (day, device): that day's sessions on a device are summed.
+  const played = new Map<string, { session: PlaySession; secs: number; count: number; at: number }>();
   for (const s of sessions) {
     const at = new Date(s.ended_at).getTime();
     if (Number.isNaN(at)) continue;
-    push(at, {
+    const key = `${localMidnight(at)}|${s.device_id}`;
+    const g = played.get(key);
+    if (!g) {
+      played.set(key, { session: s, secs: s.duration_secs, count: 1, at });
+      continue;
+    }
+    g.secs += s.duration_secs;
+    g.count += 1;
+    // The latest session represents the group.
+    if (at > g.at) {
+      g.at = at;
+      g.session = s;
+    }
+  }
+  for (const g of played.values()) {
+    push(g.at, {
       kind: 'session',
-      session: s,
-      minutes: Math.round(s.duration_secs / 60),
+      session: g.session,
+      sessionCount: g.count,
+      minutes: Math.round(g.secs / 60),
       // Until the device id is known, treat every session as this device's so
       // no device chips flash up and then vanish.
-      isThisDevice: thisDeviceId === null || s.device_id === thisDeviceId,
-      at,
+      isThisDevice: thisDeviceId === null || g.session.device_id === thisDeviceId,
+      at: g.at,
     });
   }
 
