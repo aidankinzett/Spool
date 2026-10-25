@@ -405,8 +405,6 @@ pub fn run() {
             // open a path / external URL with the OS default handler (AppImage-safe)
             system_open::open_path,
             system_open::open_url,
-            // gamepad presence (drives the "switch to Gamepad layout?" prompt)
-            gamepad::any_gamepad_connected,
         ])
         .setup(move |app| {
             if attached {
