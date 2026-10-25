@@ -265,6 +265,7 @@
       <GameDetail
         game={selectedGame}
         runPhase={lib.runningId === selectedGame.id ? lib.runningPhase : null}
+        stoppable={lib.runningId === selectedGame.id && lib.runningStoppable}
         backingUp={lib.isBackingUp(selectedGame.id)}
         autofocusPlay
         cloudConfigured={lib.syncStatus.reachability !== 'unconfigured'}

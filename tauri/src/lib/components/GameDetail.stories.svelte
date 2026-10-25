@@ -119,7 +119,7 @@
 />
 
 <!-- Mid-run: Play button is disabled and reflects the live phase label. -->
-<Story name="Playing" args={{ game: makeGame({ playtime_minutes: 1873 }), runPhase: 'playing' }} />
+<Story name="Playing" args={{ game: makeGame({ playtime_minutes: 1873 }), runPhase: 'playing', stoppable: true }} />
 
 <!-- Restoring saves — first phase of the run workflow. -->
 <Story name="Restoring saves" args={{ game: makeGame(), runPhase: 'restoring' }} />

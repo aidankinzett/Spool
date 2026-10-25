@@ -352,6 +352,8 @@ export function createLibrary() {
   // Run tracking
   let runningId = $state<string | null>(null);
   let runningPhase = $state<RunPhase | null>(null);
+  // Whether the running game can be stopped right now (from `run:phase`).
+  let runningStoppable = $state(false);
 
   // Game ids with a forced post-override backup in flight (drives the Play
   // button's "Backing up…" state). Usually holds at most one id — the backup lock
@@ -1006,14 +1008,16 @@ export function createLibrary() {
       .catch((e) => console.error('[collections] listener failed:', e));
 
     listen<RunPhaseEvent>('run:phase', (event) => {
-      const { game_id, phase, message, cloud_used, no_saves, backup_failed, backup_deferred } =
+      const { game_id, phase, message, cloud_used, no_saves, backup_failed, backup_deferred, stoppable } =
         event.payload;
       if (phase === 'done' || phase === 'error') {
         runningId = null;
         runningPhase = null;
+        runningStoppable = false;
       } else {
         runningId = game_id;
         runningPhase = phase;
+        runningStoppable = stoppable;
       }
       if (phase === 'error') {
         // Only one launch-blocking modal is valid at a time. Clear both first
@@ -1307,6 +1311,7 @@ export function createLibrary() {
     get error() { return error; },
     get runningId() { return runningId; },
     get runningPhase() { return runningPhase; },
+    get runningStoppable() { return runningStoppable; },
     /** Whether a forced post-override backup is currently running for this game. */
     isBackingUp(id: string) { return backupsInProgress.has(id); },
     get lanPeers() { return lanPeers; },

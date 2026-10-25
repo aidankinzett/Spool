@@ -53,8 +53,6 @@ pub struct RunState {
 struct RunSlot {
     game_id: String,
     stop: process::StopCtl,
-    /// The launch is elevated (Run-As-Admin), so Spool can't kill it.
-    elevated: bool,
 }
 
 impl RunState {
@@ -70,7 +68,6 @@ impl RunState {
         *guard = Some(RunSlot {
             game_id: game_id.to_string(),
             stop: stop.clone(),
-            elevated: false,
         });
         Ok(RunGuard { state: self, stop })
     }
@@ -83,17 +80,6 @@ struct RunGuard<'a> {
     state: &'a RunState,
     /// Cancelled by [`stop_game`]; passed to the launch.
     stop: process::StopCtl,
-}
-
-impl RunGuard<'_> {
-    /// Records that the launch is elevated, so [`stop_game`] refuses it.
-    fn mark_elevated(&self) {
-        if let Ok(mut guard) = self.state.current.lock() {
-            if let Some(slot) = guard.as_mut() {
-                slot.elevated = true;
-            }
-        }
-    }
 }
 
 impl Drop for RunGuard<'_> {
@@ -118,17 +104,29 @@ pub fn stop_game(run_state: tauri::State<'_, RunState>, game_id: String) -> AppR
         .as_ref()
         .filter(|s| s.game_id == game_id)
         .ok_or_else(|| AppError::Other("This game isn't running.".into()))?;
-    if slot.elevated {
+    // Armed by `phase_launch` once the game is about to start, unless the
+    // launch is elevated (Spool runs unelevated and can't kill it).
+    if !slot.stop.is_armed() {
         return Err(AppError::Other(
-            "Spool can't stop a game running as administrator. Close it from the game.".into(),
+            "This game can't be stopped from Spool right now.".into(),
         ));
-    }
-    if !slot.stop.spawned.load(std::sync::atomic::Ordering::SeqCst) {
-        return Err(AppError::Other("The game hasn't started yet.".into()));
     }
     tracing::info!(game_id, "stop requested");
     slot.stop.token.cancel();
     Ok(())
+}
+
+/// Whether the game holding the run slot is `game_id` and can be stopped.
+/// Sent with every `run:phase` so the UI offers Stop only when the backend
+/// will accept it.
+fn stoppable(app: &AppHandle, game_id: &str) -> bool {
+    let Some(run_state) = app.try_state::<RunState>() else {
+        return false;
+    };
+    run_state.current.lock().is_ok_and(|g| {
+        g.as_ref()
+            .is_some_and(|s| s.game_id == game_id && s.stop.is_armed())
+    })
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -161,6 +159,9 @@ struct RunPhaseEvent {
     /// machine-wide, so the holder may be backing up a different game; the next
     /// launch reconciles this one.
     backup_deferred: bool,
+    /// The game can be stopped from Spool right now (`stop_game` would accept
+    /// it). True only on `playing` phases of a non-elevated launch.
+    stoppable: bool,
 }
 
 /// How a session's saves ended up. Drives the terminal `done` phase's wire
@@ -200,6 +201,7 @@ fn emit_phase(
         no_saves: false,
         backup_failed: false,
         backup_deferred: false,
+        stoppable: phase == "playing" && stoppable(app, game_id),
     };
     // Log every transition so a Game-Mode launch is diagnosable from
     // debug.log alone — confirms the workflow advanced past "restoring"
@@ -262,6 +264,7 @@ fn emit_done(ctx: &WorkflowCtx<'_>, outcome: DoneOutcome, cloud_used: bool, sess
         no_saves: matches!(outcome, DoneOutcome::NoSaveData),
         backup_failed: matches!(outcome, DoneOutcome::BackupFailed),
         backup_deferred: matches!(outcome, DoneOutcome::BackupDeferred),
+        stoppable: false,
     };
     tracing::info!(game_id = ctx.game_id, phase = "done", ?message, "run:phase");
     if let Err(e) = ctx.app.emit("run:phase", &payload) {
@@ -1919,9 +1922,6 @@ pub async fn launch_game_inner_steal(
     let result = match launch_plan {
         Ok(mut launch_plan) => {
             launch_plan.stop = run_guard.stop.clone();
-            if launch_plan.run_as_admin {
-                run_guard.mark_elevated();
-            }
             run_workflow(
                 app,
                 game_id,
@@ -2981,6 +2981,18 @@ async fn phase_launch(ctx: &WorkflowCtx<'_>, exe_pathbuf: &Path) -> AppResult<Se
         cloud_configured,
         None,
     );
+    // Allow `stop_game` from here on, so the `playing` phase below already
+    // reports Stop as available. A stop that lands before the spawn completes
+    // takes effect once the process exists. An elevated launch (Windows
+    // Run-As-Admin; `process.rs` ignores the flag elsewhere) is never armed:
+    // Spool runs unelevated and can't kill it.
+    let elevated = cfg!(windows) && !ctx.launch.use_proton && ctx.launch.run_as_admin;
+    if !elevated {
+        ctx.launch
+            .stop
+            .armed
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
     emit_phase(
         ctx.app,
         ctx.game_id,

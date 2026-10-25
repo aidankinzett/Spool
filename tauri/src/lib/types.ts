@@ -681,6 +681,9 @@ export type RunPhaseEvent = {
    * Nothing was written by this workflow; the next launch reconciles.
    */
   backup_deferred: boolean;
+  /** True while Spool can stop the game (`stop_game` would accept it). Only on
+   *  `playing` phases, and never for an elevated (Run-As-Admin) launch. */
+  stoppable: boolean;
 };
 
 /**

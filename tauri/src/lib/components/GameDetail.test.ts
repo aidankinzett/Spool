@@ -115,7 +115,7 @@ describe('GameDetail', () => {
   it('turns Play into Stop while playing, and stops after confirming', async () => {
     vi.mocked(confirmDialog).mockResolvedValueOnce(true);
     render(GameDetail, {
-      props: { game: makeGame(), runPhase: 'playing' },
+      props: { game: makeGame(), runPhase: 'playing', stoppable: true },
     });
 
     const button = screen.getByTestId('play-button') as HTMLButtonElement;
@@ -132,7 +132,7 @@ describe('GameDetail', () => {
     vi.mocked(confirmDialog).mockResolvedValueOnce(false);
     vi.mocked(api.stopGame).mockClear();
     render(GameDetail, {
-      props: { game: makeGame(), runPhase: 'playing' },
+      props: { game: makeGame(), runPhase: 'playing', stoppable: true },
     });
 
     await fireEvent.click(screen.getByTestId('play-button'));
@@ -140,9 +140,9 @@ describe('GameDetail', () => {
     expect(api.stopGame).not.toHaveBeenCalled();
   });
 
-  it('keeps a disabled Playing label for a Run-As-Admin launch', () => {
+  it('keeps a disabled Playing label when the game cannot be stopped', () => {
     render(GameDetail, {
-      props: { game: makeGame({ run_as_admin: true }), runPhase: 'playing' },
+      props: { game: makeGame(), runPhase: 'playing', stoppable: false },
     });
 
     const play = screen.getByTestId('play-button') as HTMLButtonElement;

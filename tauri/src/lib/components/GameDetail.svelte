@@ -69,6 +69,7 @@
   let {
     game,
     runPhase = null,
+    stoppable = false,
     backingUp = false,
     autofocusPlay = false,
     cloudConfigured = false,
@@ -81,6 +82,9 @@
     game: DisplayGame;
     /** Current Run-workflow phase for *this* game (null if idle). */
     runPhase?: RunPhase | null;
+    /** The backend can stop this game right now (`run:phase` `stoppable`):
+     *  turns the button into Stop while playing. */
+    stoppable?: boolean;
     /** A forced post-override backup is running for this game — disables Play. */
     backingUp?: boolean;
     /** When true, the Play button is the gamepad-nav initial-focus target.
@@ -122,9 +126,10 @@
   // Launchable only when installed, with an exe, not already running, and not
   // mid forced-backup (its saves are being rewritten + uploaded).
   const canPlay = $derived(!isRunning && !backingUp && !!game.exe_path && game.installed);
-  // While playing, the button becomes Stop. Not for a Run-As-Admin launch:
-  // Spool runs unelevated and can't kill an elevated process.
-  const canStop = $derived(runPhase === 'playing' && !game.run_as_admin);
+  // While playing, the button becomes Stop when the backend says it can stop
+  // the game. Not for a Run-As-Admin launch: Spool runs unelevated and can't
+  // kill an elevated process.
+  const canStop = $derived(runPhase === 'playing' && stoppable);
   let stopping = $state(false);
   $effect(() => {
     if (runPhase !== 'playing') stopping = false;

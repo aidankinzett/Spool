@@ -209,12 +209,20 @@ pub struct GameExitResult {
 }
 
 /// Lets the run workflow end a running game early. `token` is cancelled by the
-/// `stop_game` command; `spawned` is set once the game process has started, so
-/// the command can refuse a stop before there is anything to kill.
+/// `stop_game` command. `armed` is set by the workflow just before the game is
+/// spawned (never for an elevated launch); the command refuses a stop until
+/// then. A stop that arrives before the spawn completes takes effect as soon as
+/// the process exists.
 #[derive(Clone, Default)]
 pub struct StopCtl {
     pub token: CancellationToken,
-    pub spawned: Arc<AtomicBool>,
+    pub armed: Arc<AtomicBool>,
+}
+
+impl StopCtl {
+    pub fn is_armed(&self) -> bool {
+        self.armed.load(Ordering::SeqCst)
+    }
 }
 
 /// Strip AppImage-injected environment pollution from a child command.
@@ -584,11 +592,10 @@ pub async fn run_game_stoppable(
                 if !options.is_empty() {
                     tracing::warn!("launch options are not applied to an elevated launch");
                 }
-                stop.spawned.store(true, Ordering::SeqCst);
                 let code = run_elevated(exe_path).await?;
                 if let Some(dir) = &watch_dir {
-                    // Not stoppable: the stop request is refused for an
-                    // elevated launch, so the token is never cancelled.
+                    // Not stoppable: the workflow never arms an elevated
+                    // launch, so `stop_game` refuses it.
                     wait_for_handoff(dir, started_at, start.elapsed(), &stop.token).await;
                 }
                 return Ok(GameExitResult {
@@ -606,7 +613,6 @@ pub async fn run_game_stoppable(
                 Some(w) => AppError::Other(format!("failed to start launch wrapper {w}: {e}")),
                 None => AppError::Other(format!("failed to start game: {e}")),
             })?;
-            stop.spawned.store(true, Ordering::SeqCst);
 
             let target = StopTarget {
                 root_pid: child.id(),
@@ -622,7 +628,13 @@ pub async fn run_game_stoppable(
                 if let Some(dir) = &watch_dir {
                     wait_for_handoff(dir, started_at, start.elapsed(), &stop.token).await;
                     if stop.token.is_cancelled() {
-                        stop_processes(target).await;
+                        // The spawned process has exited and been reaped, so
+                        // its PID may now belong to something else.
+                        stop_processes(StopTarget {
+                            root_pid: None,
+                            ..target
+                        })
+                        .await;
                         stopped = true;
                     }
                 }
@@ -683,7 +695,6 @@ pub async fn run_game_stoppable(
                 Some(w) => AppError::Other(format!("failed to start launch wrapper {w}: {e}")),
                 None => AppError::Other(format!("failed to start game via Proton: {e}")),
             })?;
-            stop.spawned.store(true, Ordering::SeqCst);
 
             let setup = Arc::new(SetupTracker::new(on_setup));
 
@@ -730,10 +741,10 @@ pub async fn run_game_stoppable(
             let elapsed = start.elapsed();
 
             if let Some(h) = stdout_handle {
-                let _ = h.await;
+                join_relay(h, stopped).await;
             }
             if let Some(h) = stderr_handle {
-                let _ = h.await;
+                join_relay(h, stopped).await;
             }
             // Both relays are done, so no further setup callbacks can race
             // whatever phase the caller emits next.
@@ -963,11 +974,42 @@ async fn wait_for_handoff(
 /// window, so it terminates them straight away.
 #[cfg(unix)]
 const STOP_GRACE: Duration = Duration::from_secs(5);
+/// How long a stop keeps looking for and killing the game's processes before
+/// it gives up and lets the workflow continue.
+const STOP_TIMEOUT: Duration = Duration::from_secs(15);
+/// Process-list poll interval during a stop.
+const STOP_POLL: Duration = Duration::from_millis(250);
+/// After a Proton stop, how long to wait for the umu-run output relays to
+/// finish. A process the stop didn't reach can hold the pipes open forever.
+const STOP_RELAY_WAIT: Duration = Duration::from_secs(5);
+
+/// Store clients a game may start itself (Steam through
+/// `SteamAPI_RestartAppIfNecessary`, the EA or Ubisoft app) and that stay
+/// running for the user afterwards. A stop never kills these or anything they
+/// started. Matched against the process name, lowercased, without `.exe`.
+const STORE_CLIENTS: &[&str] = &[
+    "steam",
+    "steamwebhelper",
+    "steamservice",
+    "epicgameslauncher",
+    "epicwebhelper",
+    "eadesktop",
+    "eabackgroundservice",
+    "origin",
+    "originwebhelperservice",
+    "upc",
+    "ubisoftconnect",
+    "uplaywebcore",
+    "galaxyclient",
+    "galaxyclienthelper",
+    "battle.net",
+];
 
 /// What a stop request kills. See [`collect_stop_pids`].
 #[derive(Clone)]
 struct StopTarget {
     /// The spawned process (the game, a launch-option wrapper, or umu-run).
+    /// Only set while it hasn't been reaped, so its PID can't have been reused.
     root_pid: Option<u32>,
     /// The handoff watch folder, for processes the game started that aren't
     /// in the spawned process's tree.
@@ -1000,20 +1042,83 @@ async fn wait_or_stop(
     }
 }
 
-/// Kills every process [`collect_stop_pids`] finds for `target`.
+/// Kills the game's processes; see [`stop_processes_blocking`].
 async fn stop_processes(target: StopTarget) {
-    let _ = tokio::task::spawn_blocking(move || {
-        let mut sys = System::new();
+    let _ = tokio::task::spawn_blocking(move || stop_processes_blocking(&target)).await;
+}
+
+/// Kills every process [`collect_stop_pids`] finds for `target` and returns
+/// once none are left (or after [`STOP_TIMEOUT`]). The process list is re-read
+/// every round, so a process the game starts during the stop (a launcher
+/// handing off, a crash reporter) is killed too. A PID is only acted on while
+/// it has the start time it had when first seen, so one the OS hands to a new
+/// process during the stop is left alone.
+fn stop_processes_blocking(target: &StopTarget) {
+    let start = std::time::Instant::now();
+    let mut sys = System::new();
+    // PID → start time of every process signalled so far.
+    let mut tracked: HashMap<Pid, u64> = HashMap::new();
+    #[cfg(unix)]
+    let mut forced = false;
+    #[cfg(not(unix))]
+    let forced = true;
+    loop {
         sys.refresh_processes_specifics(
             ProcessesToUpdate::All,
             true,
             stop_refresh_kind(target.wine_prefix.is_some()),
         );
-        let pids = collect_stop_pids(&sys, &target);
-        tracing::info!(count = pids.len(), "stopping game processes");
-        kill_pids(&mut sys, &pids);
-    })
-    .await;
+        let alive = collect_stop_pids(&sys, target, &tracked);
+        if alive.is_empty() {
+            tracing::info!(count = tracked.len(), "game processes stopped");
+            return;
+        }
+        for (pid, started) in &alive {
+            if tracked.insert(*pid, *started).is_none() {
+                if let Some(p) = sys.process(*pid) {
+                    signal_stop(p, forced);
+                }
+            }
+        }
+        let elapsed = start.elapsed();
+        #[cfg(unix)]
+        if !forced && elapsed >= STOP_GRACE {
+            forced = true;
+            tracing::info!(
+                count = alive.len(),
+                "game processes ignored SIGTERM; killing"
+            );
+            for (pid, _) in &alive {
+                if let Some(p) = sys.process(*pid) {
+                    signal_stop(p, true);
+                }
+            }
+        }
+        if elapsed >= STOP_TIMEOUT {
+            tracing::warn!(remaining = alive.len(), "gave up stopping game processes");
+            return;
+        }
+        std::thread::sleep(STOP_POLL);
+    }
+}
+
+/// `SIGTERM`, or `SIGKILL` when `force` (Unix). Windows always terminates.
+fn signal_stop(p: &sysinfo::Process, force: bool) {
+    #[cfg(unix)]
+    {
+        if force {
+            p.kill();
+        } else {
+            p.kill_with(sysinfo::Signal::Term);
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = force;
+        if !p.kill() {
+            tracing::warn!(pid = p.pid().as_u32(), "failed to terminate game process");
+        }
+    }
 }
 
 fn stop_refresh_kind(with_environ: bool) -> ProcessRefreshKind {
@@ -1027,22 +1132,34 @@ fn stop_refresh_kind(with_environ: bool) -> ProcessRefreshKind {
     }
 }
 
-/// The processes a stop kills: the spawned process and its descendants, any
-/// process running from the watch folder, and any process in the Wine prefix.
-/// Only processes started since the launch count, and never Spool itself.
-fn collect_stop_pids(sys: &System, target: &StopTarget) -> Vec<Pid> {
+/// The live processes a stop kills, with their start times: the spawned
+/// process, any process running from the watch folder or in the Wine prefix,
+/// the processes `tracked` by earlier rounds, and everything below those. Only
+/// processes started since the launch count. Never Spool itself, a store client
+/// or anything below one, or a tracked PID whose start time changed (reused).
+fn collect_stop_pids(
+    sys: &System,
+    target: &StopTarget,
+    tracked: &HashMap<Pid, u64>,
+) -> Vec<(Pid, u64)> {
     let since = target.started_at.saturating_sub(HANDOFF_START_SLACK_SECS);
     let own_pid = Pid::from_u32(std::process::id());
-    let parents: HashMap<Pid, Pid> = sys
-        .processes()
-        .iter()
-        .filter_map(|(pid, p)| p.parent().map(|parent| (*pid, parent)))
-        .collect();
-    let mut pids = target
-        .root_pid
-        .map(|root| descendants_and_self(Pid::from_u32(root), &parents))
-        .unwrap_or_default();
+    let eligible = |pid: Pid| {
+        sys.process(pid).is_some_and(|p| {
+            pid != own_pid
+                && p.start_time() >= since
+                && tracked.get(&pid).is_none_or(|t| *t == p.start_time())
+                && !is_store_client(&p.name().to_string_lossy())
+        })
+    };
+
+    let mut children: HashMap<Pid, Vec<Pid>> = HashMap::new();
+    let mut roots: Vec<Pid> = tracked.keys().copied().collect();
+    roots.extend(target.root_pid.map(Pid::from_u32));
     for (pid, p) in sys.processes() {
+        if let Some(parent) = p.parent() {
+            children.entry(parent).or_default().push(*pid);
+        }
         let in_dir = target
             .watch_dir
             .as_deref()
@@ -1052,31 +1169,48 @@ fn collect_stop_pids(sys: &System, target: &StopTarget) -> Vec<Pid> {
             .as_deref()
             .is_some_and(|prefix| runs_in_prefix(p.environ(), prefix));
         if in_dir || in_prefix {
-            pids.insert(*pid);
+            roots.push(*pid);
         }
     }
-    pids.into_iter()
-        .filter(|pid| *pid != own_pid)
-        .filter(|pid| sys.process(*pid).is_some_and(|p| p.start_time() >= since))
+
+    descendants_and_self(roots, &children, eligible)
+        .into_iter()
+        .filter_map(|pid| {
+            let p = sys.process(pid)?;
+            // A zombie has exited and is only waiting to be reaped.
+            #[cfg(unix)]
+            if p.status() == sysinfo::ProcessStatus::Zombie {
+                return None;
+            }
+            Some((pid, p.start_time()))
+        })
         .collect()
 }
 
-/// `root` plus every process below it in the `child → parent` map.
-fn descendants_and_self(root: Pid, parents: &HashMap<Pid, Pid>) -> HashSet<Pid> {
-    let mut children: HashMap<Pid, Vec<Pid>> = HashMap::new();
-    for (child, parent) in parents {
-        children.entry(*parent).or_default().push(*child);
-    }
-    let mut found = HashSet::from([root]);
-    let mut queue = vec![root];
+/// The `roots` that pass `include`, plus every process below them in the
+/// `parent → children` map, without descending into one that fails `include`.
+fn descendants_and_self(
+    roots: impl IntoIterator<Item = Pid>,
+    children: &HashMap<Pid, Vec<Pid>>,
+    include: impl Fn(Pid) -> bool,
+) -> HashSet<Pid> {
+    let mut found = HashSet::new();
+    let mut queue: Vec<Pid> = roots.into_iter().collect();
     while let Some(pid) = queue.pop() {
-        for child in children.get(&pid).into_iter().flatten() {
-            if found.insert(*child) {
-                queue.push(*child);
-            }
+        if found.contains(&pid) || !include(pid) {
+            continue;
         }
+        found.insert(pid);
+        queue.extend(children.get(&pid).into_iter().flatten().copied());
     }
     found
+}
+
+/// Whether a process name is one of the [`STORE_CLIENTS`].
+fn is_store_client(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    let name = name.strip_suffix(".exe").unwrap_or(&name);
+    STORE_CLIENTS.contains(&name)
 }
 
 /// Whether an environment sets `WINEPREFIX` or `STEAM_COMPAT_DATA_PATH` to
@@ -1095,57 +1229,18 @@ fn runs_in_prefix(environ: &[std::ffi::OsString], prefix: &Path) -> bool {
     })
 }
 
-#[cfg(unix)]
-fn kill_pids(sys: &mut System, pids: &[Pid]) {
-    use sysinfo::{ProcessStatus, Signal};
-    for pid in pids {
-        if let Some(p) = sys.process(*pid) {
-            p.kill_with(Signal::Term);
-        }
+/// Awaits a umu-run output relay. After a stop, waits at most
+/// [`STOP_RELAY_WAIT`] and then aborts it, since a process the stop didn't
+/// reach may still hold the pipe.
+async fn join_relay<T>(handle: tokio::task::JoinHandle<T>, stopped: bool) {
+    if !stopped {
+        let _ = handle.await;
+        return;
     }
-    let deadline = std::time::Instant::now() + STOP_GRACE;
-    loop {
-        sys.refresh_processes_specifics(
-            ProcessesToUpdate::Some(pids),
-            true,
-            ProcessRefreshKind::nothing().without_tasks(),
-        );
-        // A zombie has exited and is only waiting to be reaped.
-        let alive: Vec<Pid> = pids
-            .iter()
-            .copied()
-            .filter(|pid| {
-                sys.process(*pid)
-                    .is_some_and(|p| p.status() != ProcessStatus::Zombie)
-            })
-            .collect();
-        if alive.is_empty() {
-            return;
-        }
-        if std::time::Instant::now() >= deadline {
-            tracing::info!(
-                count = alive.len(),
-                "game processes ignored SIGTERM; killing"
-            );
-            for pid in alive {
-                if let Some(p) = sys.process(pid) {
-                    p.kill();
-                }
-            }
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(250));
-    }
-}
-
-#[cfg(not(unix))]
-fn kill_pids(sys: &mut System, pids: &[Pid]) {
-    for pid in pids {
-        if let Some(p) = sys.process(*pid) {
-            if !p.kill() {
-                tracing::warn!(pid = pid.as_u32(), "failed to terminate game process");
-            }
-        }
+    let abort = handle.abort_handle();
+    if tokio::time::timeout(STOP_RELAY_WAIT, handle).await.is_err() {
+        tracing::warn!("umu-run output still open after the stop; no longer relaying it");
+        abort.abort();
     }
 }
 
@@ -1303,18 +1398,47 @@ mod tests {
     fn descendants_and_self_walks_the_whole_tree() {
         let pid = Pid::from_u32;
         // 1 → 2 → 3, 1 → 4; 5 is unrelated, and 6 is its child.
-        let parents = HashMap::from([
-            (pid(2), pid(1)),
-            (pid(3), pid(2)),
-            (pid(4), pid(1)),
-            (pid(6), pid(5)),
+        let children = HashMap::from([
+            (pid(1), vec![pid(2), pid(4)]),
+            (pid(2), vec![pid(3)]),
+            (pid(5), vec![pid(6)]),
         ]);
-        let found = descendants_and_self(pid(1), &parents);
-        assert_eq!(found, HashSet::from([pid(1), pid(2), pid(3), pid(4)]));
+        let all = |_| true;
         assert_eq!(
-            descendants_and_self(pid(3), &parents),
+            descendants_and_self([pid(1)], &children, all),
+            HashSet::from([pid(1), pid(2), pid(3), pid(4)])
+        );
+        assert_eq!(
+            descendants_and_self([pid(3)], &children, all),
             HashSet::from([pid(3)])
         );
+        // Several roots, overlapping.
+        assert_eq!(
+            descendants_and_self([pid(2), pid(3), pid(5)], &children, all),
+            HashSet::from([pid(2), pid(3), pid(5), pid(6)])
+        );
+    }
+
+    #[test]
+    fn descendants_and_self_skips_excluded_subtrees() {
+        let pid = Pid::from_u32;
+        // The game (1) started Steam (2), which started its web helper (3).
+        let children = HashMap::from([(pid(1), vec![pid(2), pid(4)]), (pid(2), vec![pid(3)])]);
+        assert_eq!(
+            descendants_and_self([pid(1)], &children, |p| p != pid(2)),
+            HashSet::from([pid(1), pid(4)])
+        );
+    }
+
+    #[test]
+    fn is_store_client_matches_names_with_or_without_exe() {
+        assert!(is_store_client("steam.exe"));
+        assert!(is_store_client("Steam.exe"));
+        assert!(is_store_client("steamwebhelper"));
+        assert!(is_store_client("EADesktop.exe"));
+        assert!(is_store_client("Battle.net.exe"));
+        assert!(!is_store_client("AlanWake.exe"));
+        assert!(!is_store_client("steam_api64.exe"));
     }
 
     #[test]
@@ -1343,11 +1467,11 @@ mod tests {
         ));
     }
 
-    /// Stopping a native launch kills the spawned process and the child it
-    /// started, and `run_game_stoppable` returns as stopped.
+    /// Launches a script that runs `prelude`, starts `sleep 60` in the
+    /// background and waits, then stops it once the `sleep` is up. Asserts
+    /// the launch returns as stopped and the `sleep` is gone.
     #[cfg(target_os = "linux")]
-    #[tokio::test]
-    async fn stop_kills_the_spawned_process_tree() {
+    async fn assert_stop_kills_tree(prelude: &str) {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let pid_file = dir.path().join("child.pid");
@@ -1355,7 +1479,7 @@ mod tests {
         std::fs::write(
             &script,
             format!(
-                "#!/bin/sh\nsleep 60 &\necho $! > '{}'\nwait\n",
+                "#!/bin/sh\n{prelude}\nsleep 60 &\necho $! > '{}'\nwait\n",
                 pid_file.display()
             ),
         )
@@ -1392,7 +1516,7 @@ mod tests {
             child_pid
         };
         let (result, child_pid) =
-            tokio::join!(tokio::time::timeout(Duration::from_secs(20), run), trigger);
+            tokio::join!(tokio::time::timeout(Duration::from_secs(30), run), trigger);
         let result = result.expect("stop timed out").unwrap();
         assert!(result.stopped);
 
@@ -1409,6 +1533,22 @@ mod tests {
             std::thread::sleep(Duration::from_millis(50));
         }
         assert!(gone(), "child process {child_pid} survived the stop");
+    }
+
+    /// Stopping a native launch kills the spawned process and the child it
+    /// started.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn stop_kills_the_spawned_process_tree() {
+        assert_stop_kills_tree("").await;
+    }
+
+    /// Processes that ignore SIGTERM are killed after the grace period. An
+    /// ignored signal stays ignored across exec, so the `sleep` ignores it too.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn stop_kills_processes_that_ignore_sigterm() {
+        assert_stop_kills_tree("trap '' TERM").await;
     }
 
     #[cfg(windows)]
