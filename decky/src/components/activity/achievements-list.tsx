@@ -145,7 +145,9 @@ export function AchievementsList({
 
       {!hasTotal && (
         <p style={{ margin: "12px 0 0", fontSize: 11.5, color: T.ink3 }}>
-          Add a Steam Web API key in Spool's Settings → Achievements to see names, icons, and the full list.
+          {data.epic_app != null && data.appid == null
+            ? "Spool couldn't get this Epic game's achievement list from egdata.app, so only unlocked achievements are shown, by ID."
+            : "Add a Steam Web API key in Spool's Settings → Achievements to see names, icons, and the full list."}
         </p>
       )}
     </DetailCard>

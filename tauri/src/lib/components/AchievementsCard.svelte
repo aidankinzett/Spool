@@ -11,7 +11,7 @@
    *   └───────────────────────────────────────────────────────┘
    *
    * `data` comes from `get_game_achievements` (loaded by GameDetail through
-   * `createGameActivity`), which scans the game's Steam-emulator stats file and
+   * `createGameActivity`), which scans the game's Steam- or Epic-emulator stats file and
    * merges it with the schema. Unlocked entries come first (newest first), then
    * locked ones (most common first). Hidden locked achievements show no name or
    * description. The card is omitted when a game has neither a schema nor any
@@ -139,7 +139,12 @@
       </button>
     {/if}
 
-    {#if !hasTotal}
+    {#if !hasTotal && data?.epic_app != null && data.appid == null}
+      <p class="mb-0 mt-3 text-[11.5px] text-ink-3">
+        Spool couldn't get this Epic game's achievement list from egdata.app, so only unlocked
+        achievements are shown, by ID.
+      </p>
+    {:else if !hasTotal}
       <p class="mb-0 mt-3 text-[11.5px] text-ink-3">
         Add a Steam Web API key in Settings → Achievements to see names, icons, and the full list.
       </p>

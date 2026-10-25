@@ -8,8 +8,9 @@
 //!   write an array of `{ "name": "ACH_X", "achieved": 1, … }` instead.
 //! * **INI** (CODEX, RUNE, Reloaded / 3DM, Skidrow, CreamAPI, OnlineFix, …):
 //!   usually one section per achievement with `Achieved=1` / `UnlockTime=…`,
-//!   under assorted key spellings. Three other layouts exist: Hoodlum's
-//!   `[Achievements]` + `[AchievementsUnlockTimes]` pair, 3DM's `[State]` +
+//!   under assorted key spellings. Four other layouts exist: Hoodlum's
+//!   `[Achievements]` + `[AchievementsUnlockTimes]` pair, RUNE's Epic
+//!   emulator's lone `[Achievements]` with `NAME = unlocked`, 3DM's `[State]` +
 //!   `[Time]` pair with hex values, and Reloaded's per-section hex `State`.
 //! * **SmartSteamEmu `stats.bin`**: a little-endian `i32` count, then 24-byte
 //!   records keyed by the CRC32 of the API name, so names are resolved against
@@ -253,6 +254,28 @@ fn parse_ini(text: &str) -> Vec<Earned> {
         return out;
     }
 
+    // RUNE's Epic emulator: [Achievements] NAME = unlocked, no times, and no
+    // other sections. A file with more sections is one of the layouts below.
+    // Only the literal `unlocked` counts, so metadata such as `Count=1` in a
+    // lone section isn't taken for an achievement.
+    let only_achievements = ini
+        .iter()
+        .all(|(s, _)| s.is_empty() || s.eq_ignore_ascii_case("Achievements"));
+    if let (Some(state), true) = (section("Achievements"), only_achievements) {
+        for name in raw_keys(text, "Achievements") {
+            if state
+                .get(&name.to_ascii_lowercase())
+                .is_some_and(|v| v.trim().eq_ignore_ascii_case("unlocked"))
+            {
+                out.push(Earned {
+                    key: Key::Name(name),
+                    unlocked_at: None,
+                });
+            }
+        }
+        return out;
+    }
+
     // 3DM: [State] NAME=0101, [Time] NAME=<hex LE u32>.
     if let (Some(state), Some(times)) = (section("State"), section("Time")) {
         for name in raw_keys(text, "State") {
@@ -452,6 +475,25 @@ mod tests {
             names(&parse(Format::Ini, ini.as_bytes())),
             vec![("Ach_One".into(), Some(1_700_000_000))]
         );
+    }
+
+    #[test]
+    fn rune_epic_ini() {
+        let ini = "[Achievements]\n35 = unlocked\n01 = unlocked\n02 = locked\n";
+        assert_eq!(
+            names(&parse(Format::Ini, ini.as_bytes())),
+            vec![("01".into(), None), ("35".into(), None)]
+        );
+        // An [Achievements] section beside per-achievement sections is read
+        // as one section per achievement.
+        let mixed = "[Achievements]\nCount=1\n[ACH_X]\nAchieved=1\n";
+        assert_eq!(
+            names(&parse(Format::Ini, mixed.as_bytes())),
+            vec![("ACH_X".into(), None)]
+        );
+        // Metadata in a lone [Achievements] section isn't an unlock.
+        let meta = "[Achievements]\nCount=1\nVersion=1\n";
+        assert!(parse(Format::Ini, meta.as_bytes()).is_empty());
     }
 
     #[test]

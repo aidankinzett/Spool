@@ -159,10 +159,10 @@ export type AchievementView = {
   display_name: string;
   description: string;
   hidden: boolean;
-  /** Steam CDN URL, or an absolute path under app data (local schema). */
+  /** Steam or Epic CDN URL, or an absolute path under app data (local schema). */
   icon: string | null;
   icon_gray: string | null;
-  /** Share of Steam players who have it, 0–100. */
+  /** Share of the store's players who have it, 0–100. */
   global_percent: number | null;
   /** Unix seconds; null while locked. */
   unlocked_at: number | null;
@@ -177,8 +177,11 @@ export type AchievementView = {
 export type GameAchievements = {
   /** Steam app id the emulator files are keyed by; null when unknown. */
   appid: number | null;
-  /** 'steam' (Web API), 'local' (the game's steam_settings), or null (no schema). */
-  schema_source: 'steam' | 'local' | null;
+  /** AppName of the Epic emulator the game ships, when it has one. */
+  epic_app: string | null;
+  /** 'steam' (Web API), 'local' (the game's steam_settings), 'epic' (egdata.app),
+   *  or null (no schema). */
+  schema_source: 'steam' | 'local' | 'epic' | null;
   total: number;
   unlocked: number;
   items: AchievementView[];

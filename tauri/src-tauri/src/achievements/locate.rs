@@ -1,4 +1,4 @@
-//! Where each Steam emulator keeps its achievement-state file.
+//! Where each Steam (and Epic) emulator keeps its achievement-state file.
 //!
 //! The emulators write under the Windows user profile, so the same relative
 //! paths are resolved against one of two sets of roots:
@@ -12,6 +12,10 @@
 //! it (the list Achievement Watcher probes). Some emulators can also be set to
 //! save beside the game ("local save"), so the install folder is walked for a
 //! directory named after the app id that holds one of those files.
+//!
+//! Games built on Epic Online Services carry RUNE's EOS emulator instead
+//! (`epic_emu.ini` beside the game exe). Its file is keyed by the ini's
+//! `AppName` rather than a Steam app id.
 
 use super::parse::Format;
 use std::path::{Path, PathBuf};
@@ -147,12 +151,51 @@ pub struct FolderScan {
     /// Directories whose name is all digits — candidate local-save folders,
     /// one of which is named after the app id.
     numeric_dirs: Vec<PathBuf>,
+    /// From the shallowest `epic_emu.ini` (RUNE's Epic Online Services
+    /// emulator), which names the folder its achievement file is kept in.
+    pub epic: Option<EpicEmu>,
+}
+
+/// An Epic Online Services emulator found in the install folder.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EpicEmu {
+    /// The ini's `AppName`, e.g. `AlanWakeRemastered`.
+    pub app_name: String,
+    /// The folder holding the ini, which is also where the game exe sits.
+    pub dir: PathBuf,
+}
+
+/// The `AppName` from an `epic_emu.ini`. `None` when it's missing or isn't a
+/// plain folder name (it's joined onto a path).
+fn epic_app_name(text: &str) -> Option<String> {
+    text.lines()
+        .map(str::trim)
+        .filter(|l| !l.starts_with('#') && !l.starts_with(';'))
+        .filter_map(|l| l.split_once('='))
+        .find(|(k, _)| k.trim().eq_ignore_ascii_case("AppName"))
+        .map(|(_, v)| v.trim().trim_matches('"').to_string())
+        .filter(|v| !v.is_empty() && v != "." && v != ".." && !v.contains(['/', '\\', ':']))
+}
+
+/// RUNE's Epic emulator writes `Users/Public/Documents/Epic/RUNE/<AppName>/`.
+pub fn epic_candidate_sources(roots: &Roots, app_name: &str) -> Vec<Source> {
+    let Some(public) = &roots.public else {
+        return Vec::new();
+    };
+    vec![Source {
+        path: public
+            .join("Documents/Epic/RUNE")
+            .join(app_name)
+            .join("achievements.ini"),
+        format: Format::Ini,
+    }]
 }
 
 impl FolderScan {
     pub fn walk(game_folder: &Path) -> Self {
         let mut out = Self::default();
         let mut appid_depth = usize::MAX;
+        let mut epic_depth = usize::MAX;
         for e in walkdir::WalkDir::new(game_folder)
             .max_depth(GAME_FOLDER_DEPTH)
             .into_iter()
@@ -173,6 +216,17 @@ impl FolderScan {
                 {
                     out.appid = Some(id);
                     appid_depth = e.depth();
+                }
+            } else if e.depth() < epic_depth && name.eq_ignore_ascii_case("epic_emu.ini") {
+                if let Some(app_name) = std::fs::read(e.path())
+                    .ok()
+                    .and_then(|b| epic_app_name(&String::from_utf8_lossy(&b)))
+                {
+                    out.epic = Some(EpicEmu {
+                        app_name,
+                        dir: e.path().parent().unwrap_or(game_folder).to_path_buf(),
+                    });
+                    epic_depth = e.depth();
                 }
             } else if out.schema_file.is_none()
                 && name == "achievements.json"
@@ -302,6 +356,42 @@ mod tests {
     #[test]
     fn roots_without_folders_yield_no_candidates() {
         assert!(candidate_sources(&Roots::default(), 480).is_empty());
+        assert!(epic_candidate_sources(&Roots::default(), "Game").is_empty());
+    }
+
+    #[test]
+    fn folder_scan_reads_the_epic_emulator_app_name() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("epic_emu.ini"),
+            "### Game data is stored at ...\\<AppName>\\\n[Settings]\n###\nAppName=AlanWakeRemastered\nLanguage=en\n#AccountId=0\n",
+        )
+        .unwrap();
+        let scan = FolderScan::walk(dir.path());
+        assert_eq!(
+            scan.epic,
+            Some(EpicEmu {
+                app_name: "AlanWakeRemastered".into(),
+                dir: dir.path().to_path_buf(),
+            })
+        );
+        let srcs = epic_candidate_sources(&Roots::prefix(Path::new("/p")), "AlanWakeRemastered");
+        assert_eq!(
+            srcs[0].path,
+            Path::new(
+                "/p/drive_c/users/Public/Documents/Epic/RUNE/AlanWakeRemastered/achievements.ini"
+            )
+        );
+    }
+
+    #[test]
+    fn epic_app_name_must_be_a_plain_folder_name() {
+        assert_eq!(epic_app_name("AppName = \"Game\"\n"), Some("Game".into()));
+        assert_eq!(epic_app_name("#AppName=Commented\n"), None);
+        assert_eq!(epic_app_name("AppName=../escape\n"), None);
+        assert_eq!(epic_app_name("AppName=C:\\x\n"), None);
+        assert_eq!(epic_app_name("AppName=..\n"), None);
+        assert_eq!(epic_app_name("AppName=\n"), None);
     }
 
     #[test]
