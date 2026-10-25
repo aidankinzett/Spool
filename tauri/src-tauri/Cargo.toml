@@ -83,6 +83,9 @@ pelite = "0.10"
 # Windows-only — Linux (evdev) / macOS (IOKit) ignore it and still build.
 gilrs = { version = "0.11.2", default-features = false, features = ["xinput"] }
 sysinfo = { version = "0.39.3", default-features = false, features = ["disk", "system"] }
+# Lists IPv4 interfaces + netmasks so LAN discovery can send a subnet broadcast
+# out each one (lan/discovery.rs).
+if-addrs = "0.15.0"
 
 # Unix-only: libc for killpg(2) — kills the entire ludusavi process group
 # (including any shelled-out rclone) when the run_blocking timeout fires.

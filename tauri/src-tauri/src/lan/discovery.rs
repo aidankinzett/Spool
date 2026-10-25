@@ -269,7 +269,7 @@ async fn announce_loop(
     device_name: String,
     server_port: Arc<AtomicU16>,
 ) {
-    let target = SocketAddr::from((BROADCAST_ADDR, DISCOVERY_PORT));
+    let limited = SocketAddr::from((BROADCAST_ADDR, DISCOVERY_PORT));
     loop {
         // Read current game count fresh each tick so peers see growth as
         // the user adds games.
@@ -302,12 +302,59 @@ async fn announce_loop(
             },
         };
         if let Ok(payload) = serde_json::to_vec(&packet) {
-            if let Err(e) = socket.send_to(&payload, target).await {
+            if let Err(e) = socket.send_to(&payload, limited).await {
                 tracing::warn!(error = %e, "LAN announce send failed");
+            }
+            // Windows sends a limited broadcast out of one interface only (the
+            // lowest-metric `255.255.255.255/32` route), which can be a WSL,
+            // Hyper-V or VPN adapter rather than the LAN. A subnet broadcast is
+            // routed by its subnet, so send one per interface as well. Peers
+            // that receive both just refresh the same entry.
+            for addr in subnet_broadcasts(local_ipv4_nets()) {
+                let target = SocketAddr::from((addr, DISCOVERY_PORT));
+                if let Err(e) = socket.send_to(&payload, target).await {
+                    tracing::debug!(error = %e, %addr, "LAN subnet announce send failed");
+                }
             }
         }
         tokio::time::sleep(ANNOUNCE_INTERVAL).await;
     }
+}
+
+/// `(ip, netmask)` of every IPv4 interface address, read fresh each announce
+/// so adapters that come and go (Wi-Fi, a dock's Ethernet) are picked up.
+fn local_ipv4_nets() -> Vec<(Ipv4Addr, Ipv4Addr)> {
+    match if_addrs::get_if_addrs() {
+        Ok(ifaces) => ifaces
+            .into_iter()
+            .filter_map(|i| match i.addr {
+                if_addrs::IfAddr::V4(v4) => Some((v4.ip, v4.netmask)),
+                _ => None,
+            })
+            .collect(),
+        Err(e) => {
+            tracing::debug!(error = %e, "LAN interface enumeration failed");
+            Vec::new()
+        }
+    }
+}
+
+/// Subnet broadcast address (`ip | !netmask`) for each address, skipping
+/// loopback, link-local (`169.254/16`, an adapter with no DHCP lease) and
+/// `/31`–`/32` nets (point-to-point links such as Tailscale have no broadcast
+/// address). Deduplicated, so two addresses on one subnet send once.
+fn subnet_broadcasts(nets: Vec<(Ipv4Addr, Ipv4Addr)>) -> Vec<Ipv4Addr> {
+    let mut out = Vec::new();
+    for (ip, mask) in nets {
+        if ip.is_loopback() || ip.is_link_local() || mask.to_bits().count_ones() > 30 {
+            continue;
+        }
+        let addr = Ipv4Addr::from_bits(ip.to_bits() | !mask.to_bits());
+        if !out.contains(&addr) {
+            out.push(addr);
+        }
+    }
+    out
 }
 
 async fn listen_loop(
@@ -471,6 +518,25 @@ pub fn spawn_peer_listener(state: Arc<LanState>, our_device_id: String) -> AppRe
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn subnet_broadcasts_cover_each_lan_and_skip_unroutable_nets() {
+        let ip = |s: &str| s.parse::<Ipv4Addr>().unwrap();
+        // The interfaces of a Windows PC with WSL, Tailscale and a Wi-Fi
+        // adapter that has no lease, plus a second address on the LAN.
+        let nets = vec![
+            (ip("127.0.0.1"), ip("255.0.0.0")),
+            (ip("192.168.86.152"), ip("255.255.255.0")),
+            (ip("172.23.208.1"), ip("255.255.240.0")),
+            (ip("169.254.108.200"), ip("255.255.0.0")),
+            (ip("100.71.4.30"), ip("255.255.255.255")),
+            (ip("192.168.86.37"), ip("255.255.255.0")),
+        ];
+        assert_eq!(
+            subnet_broadcasts(nets),
+            vec![ip("192.168.86.255"), ip("172.23.223.255")]
+        );
+    }
 
     #[test]
     fn announce_from_older_peer_without_pairing_port_parses() {
