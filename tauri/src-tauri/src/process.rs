@@ -1398,16 +1398,23 @@ mod tests {
         assert_eq!(handoff_watch_dir(Path::new("game"), None), None);
     }
 
+    /// Held by the tests that start processes and then scan or kill processes
+    /// across the whole system, so they don't run alongside each other.
+    #[cfg(target_os = "linux")]
+    static PROCESS_TESTS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
     #[cfg(target_os = "linux")]
     #[test]
     fn find_process_in_dir_only_counts_processes_started_since_the_launch() {
+        let _serial = PROCESS_TESTS.blocking_lock();
+        // Taken before the spawn, as `run_game` does.
+        let launched = unix_secs_now();
         let mut child = std::process::Command::new("sleep")
             .arg("30")
             .spawn()
             .unwrap();
         let exe = std::fs::read_link(format!("/proc/{}/exe", child.id())).unwrap();
         let dir = exe.parent().unwrap().to_path_buf();
-        let launched = unix_secs_now();
 
         let mut sys = System::new();
         let found = find_process_in_dir(&mut sys, &dir, launched);
@@ -1493,27 +1500,38 @@ mod tests {
         ));
     }
 
+    /// Launch options that run the "game" through `/bin/sh`. The test scripts
+    /// are read by `sh` rather than executed: exec'ing a file this process just
+    /// wrote can fail with ETXTBSY when another test thread forks while the
+    /// write is still open.
+    #[cfg(target_os = "linux")]
+    fn sh_wrapper() -> LaunchOptions {
+        LaunchOptions {
+            wrapper: vec!["/bin/sh".into()],
+            ..LaunchOptions::default()
+        }
+    }
+
     /// Launches a script that runs `prelude`, starts `sleep 60` in the
     /// background and waits, then stops it once the `sleep` is up. Asserts
     /// the launch returns as stopped and the `sleep` is gone.
     #[cfg(target_os = "linux")]
     async fn assert_stop_kills_tree(prelude: &str) {
-        use std::os::unix::fs::PermissionsExt;
+        let _serial = PROCESS_TESTS.lock().await;
         let dir = tempfile::tempdir().unwrap();
         let pid_file = dir.path().join("child.pid");
         let script = dir.path().join("game.sh");
         std::fs::write(
             &script,
             format!(
-                "#!/bin/sh\n{prelude}\nsleep 60 &\necho $! > '{}'\nwait\n",
+                "{prelude}\nsleep 60 &\necho $! > '{}'\nwait\n",
                 pid_file.display()
             ),
         )
         .unwrap();
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
 
         let stop = StopCtl::default();
-        let options = LaunchOptions::default();
+        let options = sh_wrapper();
         let run = run_game_stoppable(
             &script,
             LaunchSpec::Native {
@@ -1573,21 +1591,18 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn stop_works_while_waiting_on_proton_output() {
-        use std::os::unix::fs::PermissionsExt;
+        let _serial = PROCESS_TESTS.lock().await;
         let dir = tempfile::tempdir().unwrap();
         let prefix = dir.path().join("prefix");
         let pid_file = dir.path().join("child.pid");
         let umu_run = dir.path().join("umu-run");
         std::fs::write(
             &umu_run,
-            format!(
-                "#!/bin/sh\nsleep 60 &\necho $! > '{}'\n",
-                pid_file.display()
-            ),
+            format!("sleep 60 &\necho $! > '{}'\n", pid_file.display()),
         )
         .unwrap();
-        std::fs::set_permissions(&umu_run, std::fs::Permissions::from_mode(0o755)).unwrap();
         let game_exe = dir.path().join("Game.exe");
+        let wrapper = sh_wrapper().wrapper;
 
         let stop = StopCtl::default();
         let run = run_game_stoppable(
@@ -1599,7 +1614,7 @@ mod tests {
                 game_id: "stop-test",
                 extra_args: &[],
                 extra_env: &[],
-                wrapper: &[],
+                wrapper: &wrapper,
                 on_setup: None,
             },
             &stop,
