@@ -31,6 +31,7 @@
     Play,
     RotateCcw,
     Sparkles,
+    Square,
     Trash2,
     X,
   } from '@lucide/svelte';
@@ -68,6 +69,7 @@
   let {
     game,
     runPhase = null,
+    stoppable = false,
     backingUp = false,
     autofocusPlay = false,
     cloudConfigured = false,
@@ -80,6 +82,9 @@
     game: DisplayGame;
     /** Current Run-workflow phase for *this* game (null if idle). */
     runPhase?: RunPhase | null;
+    /** The backend can stop this game right now (`run:phase` `stoppable`):
+     *  turns the button into Stop while playing. */
+    stoppable?: boolean;
     /** A forced post-override backup is running for this game — disables Play. */
     backingUp?: boolean;
     /** When true, the Play button is the gamepad-nav initial-focus target.
@@ -121,6 +126,15 @@
   // Launchable only when installed, with an exe, not already running, and not
   // mid forced-backup (its saves are being rewritten + uploaded).
   const canPlay = $derived(!isRunning && !backingUp && !!game.exe_path && game.installed);
+  // While playing, the button becomes Stop when the backend says it can stop
+  // the game. Not for a Run-As-Admin launch: Spool runs unelevated and can't
+  // kill an elevated process.
+  const canStop = $derived(runPhase === 'playing' && stoppable);
+  let stopping = $state(false);
+  $effect(() => {
+    if (runPhase !== 'playing') stopping = false;
+  });
+  const buttonEnabled = $derived(canPlay || (canStop && !stopping));
   const playLabel = $derived.by(() => {
     switch (runPhase) {
       case 'restoring':
@@ -128,7 +142,8 @@
       case 'launching':
         return 'Launching…';
       case 'playing':
-        return 'Playing';
+        if (!canStop) return 'Playing';
+        return stopping ? 'Stopping…' : 'Stop';
       case 'backing-up':
         return 'Backing up…';
       case 'uploading':
@@ -146,6 +161,36 @@
       // Error is also broadcast via run:phase → 'error', but capturing here
       // so the in-button label can flip back to "Play" immediately.
       console.error('[runner] launch failed:', e);
+    }
+  }
+
+  async function stop() {
+    if (!canStop || stopping) return;
+    if (
+      !(await confirmDialog({
+        label: 'RUN · STOP',
+        title: `Stop ${game.game_name}?`,
+        body: 'Unsaved progress will be lost. Spool backs up your saves once the game has closed.',
+        confirmLabel: 'Stop game',
+        danger: true,
+        catalog: fmtCatalog(game.catalog_number),
+      }))
+    )
+      return;
+    // The game may have exited while the dialog was open.
+    if (!canStop) return;
+    stopping = true;
+    try {
+      await api.stopGame(game.id);
+    } catch (e) {
+      stopping = false;
+      toasts.show({
+        kind: 'bad',
+        label: 'RUN · STOP',
+        title: "Couldn't stop the game",
+        sub: String(e),
+        catalog: fmtCatalog(game.catalog_number),
+      });
     }
   }
 
@@ -612,15 +657,15 @@
               type="button"
               data-testid="play-button"
               data-gp-autofocus={autofocusPlay && canPlay ? '' : undefined}
-              onclick={launch}
-              disabled={!canPlay}
+              onclick={canStop ? stop : launch}
+              disabled={!buttonEnabled}
               class="font-sans inline-flex items-center gap-2.5 rounded-md border-none font-semibold transition-opacity"
               style:height="var(--control-h)"
               style:padding-inline="calc(var(--space-unit) * 4)"
               style:font-size="var(--text-base)"
-              class:cursor-pointer={canPlay}
-              class:cursor-not-allowed={!canPlay}
-              class:opacity-70={!canPlay}
+              class:cursor-pointer={buttonEnabled}
+              class:cursor-not-allowed={!buttonEnabled}
+              class:opacity-70={!buttonEnabled}
               style:background={accentHex}
               style:color="#0b0c0e"
               style:box-shadow="0 6px 20px color-mix(in srgb, {accentHex} 26%, transparent)"
@@ -628,11 +673,17 @@
                 ? 'Not installed — reinstall to play'
                 : !game.exe_path
                   ? 'No executable set'
-                  : isRunning
-                    ? playLabel
-                    : 'Restore saves, launch game, back up on exit'}
+                  : canStop
+                    ? "End the game's processes and back up saves"
+                    : isRunning
+                      ? playLabel
+                      : 'Restore saves, launch game, back up on exit'}
             >
-              <Play size={16} fill="currentColor" />
+              {#if canStop}
+                <Square size={16} fill="currentColor" />
+              {:else}
+                <Play size={16} fill="currentColor" />
+              {/if}
               {playLabel}
             </button>
 

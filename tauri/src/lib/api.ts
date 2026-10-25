@@ -260,6 +260,10 @@ export const api = {
    */
   launchGame: (gameId: string, steal = false, skipRescue = false): Promise<void> =>
     invoke('launch_game', { gameId, steal, skipRescue }),
+  /** Kill the running game's processes. The run workflow then backs up as for
+   *  a normal exit. Rejects for a Run-As-Admin launch or before the game has
+   *  started. */
+  stopGame: (gameId: string): Promise<void> => invoke('stop_game', { gameId }),
   manualBackup: (
     gameId: string,
   ): Promise<{ game_count: number; bytes_total: number; cloud_synced: boolean; game_name: string }> =>
