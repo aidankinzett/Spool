@@ -173,7 +173,7 @@ async fn run_discovery(app: AppHandle) -> AppResult<()> {
     tracing::info!(
         device_id = %device_id,
         device_name = %device_name,
-        "LAN discovery started on {BROADCAST_ADDR}:{DISCOVERY_PORT}"
+        "LAN discovery started on {BROADCAST_ADDR}:{DISCOVERY_PORT} + subnet broadcasts"
     );
 
     let lan_state = app.state::<LanState>().peers.clone();
@@ -234,7 +234,7 @@ async fn run_discovery(app: AppHandle) -> AppResult<()> {
 /// Configures the UDP socket: bind to `0.0.0.0:DISCOVERY_PORT` with
 /// SO_REUSEADDR (multiple processes can listen — useful in dev) and
 /// SO_BROADCAST (required on Windows/Linux to send to
-/// `255.255.255.255`). Tokio's UdpSocket can't set these pre-bind, so
+/// `255.255.255.255` or a subnet broadcast address). Tokio's UdpSocket can't set these pre-bind, so
 /// we go through socket2 then convert.
 ///
 /// Two Spool instances on the same machine still see each other: a
@@ -310,7 +310,11 @@ async fn announce_loop(
             // Hyper-V or VPN adapter rather than the LAN. A subnet broadcast is
             // routed by its subnet, so send one per interface as well. Peers
             // that receive both just refresh the same entry.
-            for addr in subnet_broadcasts(local_ipv4_nets()) {
+            // Enumerating interfaces is a blocking OS call.
+            let nets = tokio::task::spawn_blocking(local_ipv4_nets)
+                .await
+                .unwrap_or_default();
+            for addr in subnet_broadcasts(nets) {
                 let target = SocketAddr::from((addr, DISCOVERY_PORT));
                 if let Err(e) = socket.send_to(&payload, target).await {
                     tracing::debug!(error = %e, %addr, "LAN subnet announce send failed");
@@ -321,14 +325,33 @@ async fn announce_loop(
     }
 }
 
-/// `(ip, netmask)` of every IPv4 interface address, read fresh each announce
-/// so adapters that come and go (Wi-Fi, a dock's Ethernet) are picked up.
-fn local_ipv4_nets() -> Vec<(Ipv4Addr, Ipv4Addr)> {
+/// One IPv4 interface address, as far as the subnet broadcast needs it.
+#[derive(Debug, Clone, Copy)]
+struct LocalNet {
+    ip: Ipv4Addr,
+    prefixlen: u8,
+    /// Whether the interface supports broadcast. Linux and macOS report this
+    /// (`IFF_BROADCAST`, unset on WireGuard / OpenVPN tunnels); Windows has no
+    /// equivalent flag, so every Windows address counts as capable.
+    broadcast: bool,
+}
+
+/// IPv4 addresses of every interface that is up, read fresh each announce so
+/// adapters that come and go (Wi-Fi, a dock's Ethernet) are picked up. Uses
+/// `prefixlen` rather than `netmask`: on Windows `if-addrs` reads the prefix
+/// length from the address itself, while `netmask` comes from matching the
+/// adapter's prefix list and is `0.0.0.0` when nothing matches.
+fn local_ipv4_nets() -> Vec<LocalNet> {
     match if_addrs::get_if_addrs() {
         Ok(ifaces) => ifaces
             .into_iter()
+            .filter(|i| i.is_oper_up())
             .filter_map(|i| match i.addr {
-                if_addrs::IfAddr::V4(v4) => Some((v4.ip, v4.netmask)),
+                if_addrs::IfAddr::V4(v4) => Some(LocalNet {
+                    ip: v4.ip,
+                    prefixlen: v4.prefixlen,
+                    broadcast: cfg!(windows) || v4.broadcast.is_some(),
+                }),
                 _ => None,
             })
             .collect(),
@@ -339,17 +362,23 @@ fn local_ipv4_nets() -> Vec<(Ipv4Addr, Ipv4Addr)> {
     }
 }
 
-/// Subnet broadcast address (`ip | !netmask`) for each address, skipping
-/// loopback, link-local (`169.254/16`, an adapter with no DHCP lease) and
-/// `/31`–`/32` nets (point-to-point links such as Tailscale have no broadcast
-/// address). Deduplicated, so two addresses on one subnet send once.
-fn subnet_broadcasts(nets: Vec<(Ipv4Addr, Ipv4Addr)>) -> Vec<Ipv4Addr> {
+/// Subnet broadcast address for each address, skipping loopback, link-local
+/// (`169.254/16`, an adapter with no DHCP lease), interfaces without broadcast
+/// support, and prefixes outside `/1`–`/30` (`/31`–`/32` point-to-point links
+/// such as Tailscale have no broadcast address; `/0` is not a subnet).
+/// Deduplicated, so two addresses on one subnet send once.
+fn subnet_broadcasts(nets: Vec<LocalNet>) -> Vec<Ipv4Addr> {
     let mut out = Vec::new();
-    for (ip, mask) in nets {
-        if ip.is_loopback() || ip.is_link_local() || mask.to_bits().count_ones() > 30 {
+    for net in nets {
+        if net.ip.is_loopback()
+            || net.ip.is_link_local()
+            || !net.broadcast
+            || !(1..=30).contains(&net.prefixlen)
+        {
             continue;
         }
-        let addr = Ipv4Addr::from_bits(ip.to_bits() | !mask.to_bits());
+        let host_bits = u32::MAX >> net.prefixlen;
+        let addr = Ipv4Addr::from_bits(net.ip.to_bits() | host_bits);
         if !out.contains(&addr) {
             out.push(addr);
         }
@@ -521,16 +550,24 @@ mod tests {
 
     #[test]
     fn subnet_broadcasts_cover_each_lan_and_skip_unroutable_nets() {
+        let net = |s: &str, prefixlen: u8, broadcast: bool| LocalNet {
+            ip: s.parse().unwrap(),
+            prefixlen,
+            broadcast,
+        };
         let ip = |s: &str| s.parse::<Ipv4Addr>().unwrap();
         // The interfaces of a Windows PC with WSL, Tailscale and a Wi-Fi
-        // adapter that has no lease, plus a second address on the LAN.
+        // adapter that has no lease, plus a second address on the LAN, a
+        // WireGuard tunnel and an address with no prefix.
         let nets = vec![
-            (ip("127.0.0.1"), ip("255.0.0.0")),
-            (ip("192.168.86.152"), ip("255.255.255.0")),
-            (ip("172.23.208.1"), ip("255.255.240.0")),
-            (ip("169.254.108.200"), ip("255.255.0.0")),
-            (ip("100.71.4.30"), ip("255.255.255.255")),
-            (ip("192.168.86.37"), ip("255.255.255.0")),
+            net("127.0.0.1", 8, true),
+            net("192.168.86.152", 24, true),
+            net("172.23.208.1", 20, true),
+            net("169.254.108.200", 16, true),
+            net("100.71.4.30", 32, true),
+            net("192.168.86.37", 24, true),
+            net("10.8.0.2", 24, false),
+            net("10.1.2.3", 0, true),
         ];
         assert_eq!(
             subnet_broadcasts(nets),

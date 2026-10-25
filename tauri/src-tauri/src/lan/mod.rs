@@ -28,6 +28,11 @@
 //! won't forward `255.255.255.255` beyond the local network either, so
 //! the scope is the same as the previous multicast design. Matches
 //! what the original C# build did.
+//!
+//! Each announce also goes to the subnet broadcast address of every
+//! up IPv4 interface, because Windows sends a limited broadcast out of
+//! the lowest-metric interface only, which can be a WSL / Hyper-V / VPN
+//! adapter rather than the LAN.
 
 // Submodules are `pub(crate)` rather than re-exporting their commands:
 // `#[tauri::command]` emits helper macros (`__cmd__*`) alongside each fn

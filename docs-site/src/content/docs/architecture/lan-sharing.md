@@ -75,6 +75,19 @@ the link receives the packet), but it reliably traverses those bridges. The scop
 way — routers don't forward `255.255.255.255` beyond the local segment — and the `magic` +
 `device_id` checks make stray traffic cheap to discard.
 
+### Subnet broadcasts
+
+Windows sends a limited broadcast out of one interface only: the one with the lowest metric on the
+`255.255.255.255/32` route. On a PC with WSL, Hyper-V, VirtualBox or a VPN that can be a virtual
+adapter, so the announce never reaches the LAN. Each tick therefore also sends the packet to the
+subnet broadcast address of every IPv4 interface that is up (`192.168.86.255` for
+`192.168.86.152/24`), which is routed by subnet. Interfaces are listed with `if-addrs` on a blocking
+thread, fresh every tick. Loopback, link-local (`169.254/16`), `/31`–`/32` point-to-point links
+(Tailscale) and, on Linux/macOS, interfaces without `IFF_BROADCAST` (WireGuard, OpenVPN) are
+skipped. The broadcast address is built from the address's prefix length rather than `if-addrs`'
+`netmask`, which on Windows comes from matching the adapter's prefix list and is `0.0.0.0` when
+nothing matches. A peer that receives more than one copy just refreshes the same registry entry.
+
 ### The socket
 
 The socket is built through `socket2` rather than tokio directly, because two options must be set
@@ -82,7 +95,7 @@ before bind:
 
 ```rust
 socket.set_reuse_address(true)?; // multiple Spool processes can listen (handy in dev)
-socket.set_broadcast(true)?;     // required to send to 255.255.255.255
+socket.set_broadcast(true)?;     // required to send any broadcast
 socket.set_nonblocking(true)?;
 socket.bind(&SocketAddr::from((Ipv4Addr::UNSPECIFIED, DISCOVERY_PORT)).into())?;
 ```
