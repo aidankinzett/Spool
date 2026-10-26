@@ -6,6 +6,7 @@ import { fmtCatalog } from '$lib/format';
 import { downloadIsActive, downloadPercent, liveUploads } from '$lib/transfers';
 import { toasts } from '$lib/toasts.svelte';
 import { startUpdateChecks } from '$lib/updater';
+import { countByStatus, scopeToStatus, type PlayStatus } from '$lib/playStatus';
 import type {
   AchievementUnlockedEvent,
   Collection,
@@ -232,6 +233,8 @@ function syntheticPeerEntry(peer: PeerMeta, pg: PeerGame): DisplayGame {
     save_last_backer_device: null,
     save_cloud_revision_at: null,
     steam_app_id: null,
+    play_status: null,
+    play_status_updated_at: null,
     peer_source: source,
     peer_sources: [source],
   };
@@ -344,6 +347,9 @@ export function createLibrary() {
   // persist the whole array (see the collection methods below).
   let collections = $state<Collection[]>([]);
   let activeCollection = $state<string | null>(null);
+  // Play status scoping the sidebar / shelf (null = any status). Combines with
+  // the collection scope.
+  let activeStatus = $state<PlayStatus | null>(null);
   let conflictGameId = $state<string | null>(null);
   // Set when a launch is blocked by another device that's *suspended*
   // mid-session — drives the "Play here instead" override modal.
@@ -410,7 +416,8 @@ export function createLibrary() {
   // Collection scope first (narrow to the active collection's members), then the
   // search/filter pipeline runs over that narrowed list. Selection is unaffected
   // — it reads `displayGames`, so a selected game stays shown even when scoped out.
-  const scopedGames = $derived(scopeToCollection(displayGames, collections, activeCollection));
+  const collectionGames = $derived(scopeToCollection(displayGames, collections, activeCollection));
+  const scopedGames = $derived(scopeToStatus(collectionGames, activeStatus));
   const filteredGames = $derived(filterGames(scopedGames, filter, searchQuery));
   const selectedGame = $derived(
     selectedId ? displayGames.find((g) => g.id === selectedId) ?? null : null,
@@ -425,6 +432,9 @@ export function createLibrary() {
     recent: scopedGames.filter((g) => g.last_played_at || g.added_at).length,
     played: scopedGames.filter((g) => g.playtime_minutes > 0).length,
   });
+  // Games per play status within the active collection and filter pill (not
+  // the search box), so a status nav count matches the rows picking it shows.
+  const statusCounts = $derived(countByStatus(filterGames(collectionGames, filter, '')));
   // Game id → the collections it belongs to, built once per collections change.
   // The sidebar rows and the detail strip both look membership up by game, so a
   // shared map keeps that an O(1) lookup instead of each row re-scanning every
@@ -462,9 +472,16 @@ export function createLibrary() {
   });
 
   // Methods
+  // Bumped per `refresh()`; a response that comes back after a later refresh
+  // started is dropped, so an older `listGames()` can't overwrite a newer one.
+  let refreshSeq = 0;
+
   async function refresh() {
+    const seq = ++refreshSeq;
     try {
-      games = await api.listGames();
+      const next = await api.listGames();
+      if (seq !== refreshSeq) return;
+      games = withPendingStatuses(next);
       // A just-completed peer-only install: the synthetic `peer:` row the user
       // was viewing is gone (the game is now installed locally) — follow the
       // selection onto the real entry so the detail pane doesn't jump away.
@@ -487,9 +504,10 @@ export function createLibrary() {
         selectedId = null;
       }
     } catch (e) {
+      if (seq !== refreshSeq) return;
       error = String(e);
     } finally {
-      loaded = true;
+      if (seq === refreshSeq) loaded = true;
     }
   }
 
@@ -907,6 +925,51 @@ export function createLibrary() {
    *  O(1) lookup into the precomputed `membershipByGame` map. */
   function collectionsForGame(gameId: string): Collection[] {
     return membershipByGame[gameId] ?? [];
+  }
+
+  // Status writes go out one at a time, in the order the user made them, so two
+  // quick picks can't reach the backend (and its timestamps) out of order.
+  let statusWriteChain: Promise<void> = Promise.resolve();
+  // Game id → the latest status picked for it whose write hasn't finished.
+  // `refresh` lays these over what it loads, so the reload that follows an
+  // earlier write doesn't flip a row back while a later pick is still queued.
+  // Plain object: it only feeds `refresh`, never rendering.
+  const pendingStatuses: Record<string, { status: PlayStatus | null; seq: number }> = {};
+  let statusSeq = 0;
+
+  function withPendingStatuses(list: GameEntry[]): GameEntry[] {
+    for (const g of list) {
+      const p = pendingStatuses[g.id];
+      if (p) g.play_status = p.status;
+    }
+    return list;
+  }
+
+  /** Set (or clear) a game's play status. Updates the row optimistically; on
+   *  failure, toasts and reloads the library to drop the optimistic value. */
+  function setPlayStatus(gameId: string, status: PlayStatus | null) {
+    const g = games.find((x) => x.id === gameId);
+    if (!g) return;
+    g.play_status = status;
+    const seq = ++statusSeq;
+    pendingStatuses[gameId] = { status, seq };
+    const settle = () => {
+      if (pendingStatuses[gameId]?.seq === seq) delete pendingStatuses[gameId];
+    };
+    const catalog = fmtCatalog(g.catalog_number);
+    statusWriteChain = statusWriteChain.then(() =>
+      api.setPlayStatus(gameId, status).then(settle, (e) => {
+        settle();
+        toasts.show({
+          kind: 'bad',
+          label: 'STATUS',
+          title: "Couldn't save status",
+          sub: String(e),
+          catalog,
+        });
+        return refresh();
+      }),
+    );
   }
 
   function showRunErrorToast(gameId: string, message: string) {
@@ -1333,6 +1396,8 @@ export function createLibrary() {
     get collections() { return collections; },
     get activeCollection() { return activeCollection; },
     set activeCollection(v: string | null) { activeCollection = v; },
+    get activeStatus() { return activeStatus; },
+    set activeStatus(v: PlayStatus | null) { activeStatus = v; },
     get conflictGameId() { return conflictGameId; },
     set conflictGameId(v: string | null) { conflictGameId = v; },
     get peerChoice() { return peerChoice; },
@@ -1344,6 +1409,7 @@ export function createLibrary() {
     // Derived (read-only)
     get displayGames() { return displayGames; },
     get tabCounts() { return tabCounts; },
+    get statusCounts() { return statusCounts; },
     get filteredGames() { return filteredGames; },
     get selectedGame() { return selectedGame; },
     get syncOk() { return syncOk; },
@@ -1379,6 +1445,7 @@ export function createLibrary() {
     toggleMembership,
     reorderCollections,
     collectionsForGame,
+    setPlayStatus,
   };
 }
 

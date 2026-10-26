@@ -81,3 +81,35 @@ describe('LibraryContextMenu — Remove…', () => {
     });
   });
 });
+
+describe('LibraryContextMenu — Status', () => {
+  it('sets the picked status for the right-clicked game', async () => {
+    const onSetStatus = vi.fn();
+    render(ContextMenuHarness, { props: { game: makeGame(), onSetStatus } });
+
+    (await screen.findByRole('button', { name: /^Status/ })).click();
+    (await screen.findByRole('button', { name: /Finished/ })).click();
+
+    expect(onSetStatus).toHaveBeenCalledWith('g1', 'finished');
+  });
+
+  it('clears the status when the current one is picked again', async () => {
+    const onSetStatus = vi.fn();
+    render(ContextMenuHarness, {
+      props: { game: makeGame({ play_status: 'playing' }), onSetStatus },
+    });
+
+    (await screen.findByRole('button', { name: /^Status/ })).click();
+    (await screen.findByRole('button', { name: /^Playing/ })).click();
+
+    expect(onSetStatus).toHaveBeenCalledWith('g1', null);
+  });
+
+  it('is hidden for a peer-only row', async () => {
+    render(ContextMenuHarness, {
+      props: { game: makeGame({ id: 'peer:sid:1' }), onSetStatus: vi.fn() },
+    });
+    await screen.findByRole('menuitem', { name: /Edit…/ });
+    expect(screen.queryByRole('button', { name: /^Status/ })).toBeNull();
+  });
+});

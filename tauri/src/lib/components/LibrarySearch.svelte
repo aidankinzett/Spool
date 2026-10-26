@@ -1,5 +1,6 @@
 <script lang="ts">
   import { Search, X } from '@lucide/svelte';
+  import PlayStatusBadge from '$lib/components/PlayStatusBadge.svelte';
   import { assetUrl } from '$lib/api';
   import { relDate } from '$lib/format';
   import type { Library } from '$lib/library.svelte';
@@ -95,7 +96,7 @@
             class="flex cursor-pointer flex-col gap-2 border-none bg-transparent text-left"
           >
             <div
-              class="w-full overflow-hidden rounded-sm"
+              class="relative w-full overflow-hidden rounded-sm"
               style:aspect-ratio="2 / 2.8"
             >
               {#if cover}
@@ -109,6 +110,9 @@
                     {game.game_name.slice(0, 1)}
                   </span>
                 </div>
+              {/if}
+              {#if game.play_status}
+                <span class="absolute left-1.5 top-1.5"><PlayStatusBadge {game} size="sm" /></span>
               {/if}
             </div>
             <div>

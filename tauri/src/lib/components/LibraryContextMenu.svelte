@@ -14,7 +14,7 @@
    * non-danger rows, red hover for Remove.
    */
   import { onMount, onDestroy } from 'svelte';
-  import { ArrowDownToLine, ArrowUpFromLine, ChevronRight, Folder, FolderInput, HardDriveDownload, Layers, Package, Pencil, Play, Trash2 } from '@lucide/svelte';
+  import { ArrowDownToLine, ArrowUpFromLine, ChevronRight, Folder, FolderInput, HardDriveDownload, Layers, Package, Pencil, Play, Tag, Trash2 } from '@lucide/svelte';
   import { openView } from '$lib/nav';
   import { api, assetUrl } from '$lib/api';
   import { fmtCatalog, folderForGame, parentDir } from '$lib/format';
@@ -25,6 +25,9 @@
   import { moveInstallDialog } from '$lib/moveInstall.svelte';
   import { gamepadScope } from '$lib/gamepad';
   import AddToCollectionList from '$lib/components/AddToCollectionList.svelte';
+  import PlayStatusList from '$lib/components/PlayStatusList.svelte';
+  import { isSyntheticPeerId } from '$lib/library.svelte';
+  import { playStatusOf, type PlayStatus } from '$lib/playStatus';
   import type { Collection, GameEntry } from '$lib/types';
 
   let {
@@ -34,6 +37,7 @@
     collections = [],
     onToggleCollection,
     onCreateCollection,
+    onSetStatus,
     onclose,
   }: {
     game: GameEntry;
@@ -42,11 +46,15 @@
     collections?: Collection[];
     onToggleCollection?: (collectionId: string, gameId: string) => void;
     onCreateCollection?: (name: string, seedGameId: string) => string;
+    onSetStatus?: (gameId: string, status: PlayStatus | null) => void;
     onclose: () => void;
   } = $props();
 
   // The "Add to collection" row expands an inline checkable list in place.
   let collOpen = $state(false);
+  // Same for the "Status" row.
+  let statusOpen = $state(false);
+  const statusDef = $derived(playStatusOf(game));
 
   let menuEl: HTMLDivElement | undefined = $state();
   let isWindows = $state(false);
@@ -470,6 +478,44 @@
             gameId={game.id}
             onToggle={toggleColl}
             onCreate={createColl}
+          />
+        </div>
+      {/if}
+    </div>
+  {/if}
+
+  {#if onSetStatus && !isSyntheticPeerId(game.id)}
+    {@const setStatus = onSetStatus}
+    <div class="border-t border-dashed border-line-1 py-1">
+      <button
+        type="button"
+        onclick={() => (statusOpen = !statusOpen)}
+        class="menu-item flex h-7 w-full items-center gap-2.5 px-3 text-left text-[12px] text-ink-1 transition-colors"
+      >
+        <span class="flex" style:color={statusDef?.color ?? 'var(--color-ink-2)'}>
+          {#if statusDef}
+            {@const StatusIcon = statusDef.icon}
+            <StatusIcon size={13} />
+          {:else}
+            <Tag size={13} />
+          {/if}
+        </span>
+        <span class="flex-1">Status</span>
+        {#if statusDef}
+          <span class="text-[11px] text-ink-3">{statusDef.label}</span>
+        {/if}
+        <span class="flex transition-transform" style:transform={statusOpen ? 'rotate(90deg)' : 'rotate(0deg)'}>
+          <ChevronRight size={13} />
+        </span>
+      </button>
+      {#if statusOpen}
+        <div class="px-1.5 pb-1 pt-0.5">
+          <PlayStatusList
+            current={game.play_status}
+            onSelect={(s) => {
+              const g = dismiss();
+              setStatus(g.id, s);
+            }}
           />
         </div>
       {/if}

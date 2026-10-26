@@ -74,6 +74,14 @@ toast through the Decky plugin. With cloud saves set up, unlocks sync between
 your devices, so the list shows everything you've earned on any of them. Add a Steam Web API key in
 settings to get the official names, descriptions, icons and unlock rates.
 
+### Play status
+
+Mark a game as Playing, To Play, Finished or Dropped from its page or its
+right-click / long-press menu. The status shows as an icon on the game's cover
+everywhere it appears, and you can filter the library by it from the sidebar
+(desktop) or the shelf tabs (touch). With cloud saves set up, statuses sync
+between your devices.
+
 ### Decky plugin for Game Mode
 
 A companion [Decky Loader](https://github.com/SteamDeckHomebrew/decky-loader)

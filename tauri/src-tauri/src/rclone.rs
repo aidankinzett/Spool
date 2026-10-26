@@ -254,6 +254,28 @@ impl BlobStore<'_> {
     }
 }
 
+/// This device's own blob in `store`, read before a publish that overwrites it
+/// wholesale so its contents can be merged back in first. `Ok(None)` when it's
+/// absent or unreadable (nothing worth keeping). `Err(())` when the remote is
+/// unreachable or the blob was written by a newer schema; the caller then
+/// skips the publish.
+async fn fetch_own_blob<T: serde::de::DeserializeOwned + HasSchema>(
+    store: &BlobStore<'_>,
+    device_id: &str,
+) -> Result<Option<T>, ()> {
+    match cat_outcome(&store.remote.exe, &store.target(device_id)).await {
+        CatOutcome::Found(body) => match serde_json::from_str::<T>(&body) {
+            // Leave a newer build's blob rather than drop fields this build
+            // doesn't know.
+            Ok(blob) if blob.stored_schema() > store.schema => Err(()),
+            Ok(blob) => Ok(Some(blob)),
+            Err(_) => Ok(None),
+        },
+        CatOutcome::NotFound => Ok(None),
+        CatOutcome::Unreachable => Err(()),
+    }
+}
+
 /// Schema-version accessor for `BlobStore::fetch`. Implement on any blob
 /// struct whose `schema` field guards forward-compatibility so that a newer
 /// blob written by a future Spool version isn't interpreted with stale logic.
@@ -1433,27 +1455,18 @@ async fn sync_achievements_core(id: &RemoteIdentity, library: &crate::library::L
     // would then replace the only copy with an empty list. Anything only on
     // the remote is restored as local rows, so the projection below covers it.
     let store = id.remote.store("achievements", 1);
-    match cat_outcome(&id.remote.exe, &store.target(&id.device_id)).await {
-        CatOutcome::Found(body) => match serde_json::from_str::<AchievementsBlob>(&body) {
-            // Written by a newer Spool: leave it rather than drop fields this
-            // build doesn't know.
-            Ok(blob) if blob.schema > 1 => return,
-            Ok(blob) => {
-                let rows = achievement_fold_rows(
-                    vec![(id.device_id.clone(), blob)],
-                    chrono::Utc::now().timestamp_millis(),
-                );
-                if let Err(e) = library.fold_achievement_unlocks(&rows, &id.device_id).await {
-                    tracing::warn!(error = %e, "sync_achievements: couldn't merge the remote copy");
-                    return;
-                }
-            }
-            // Unreadable: nothing worth keeping, so it's replaced below.
-            Err(_) => {}
-        },
-        CatOutcome::NotFound => {}
-        // Can't tell what's there; the publish would most likely fail too.
-        CatOutcome::Unreachable => return,
+    let Ok(own) = fetch_own_blob::<AchievementsBlob>(&store, &id.device_id).await else {
+        return;
+    };
+    if let Some(blob) = own {
+        let rows = achievement_fold_rows(
+            vec![(id.device_id.clone(), blob)],
+            chrono::Utc::now().timestamp_millis(),
+        );
+        if let Err(e) = library.fold_achievement_unlocks(&rows, &id.device_id).await {
+            tracing::warn!(error = %e, "sync_achievements: couldn't merge the remote copy");
+            return;
+        }
     }
     let rows = match library.local_achievement_unlocks().await {
         Ok(r) => r,
@@ -1572,6 +1585,131 @@ pub async fn fold_achievements_throttled(app: &AppHandle) {
             "achievement fold: imported unlocks from other devices"
         );
     }
+}
+
+// ── Per-device play statuses ─────────────────────────────────────────────────
+
+/// One device's play statuses, stored at `_spool/play-status/<device_id>.json`:
+/// every row of its `play_statuses` table, cleared ones included, so a clear
+/// syncs too. Each device writes only its own file and every device folds all
+/// of them, keeping the newest change per game name. Rows adopted from other
+/// devices are republished with the original change's time, so all the files
+/// converge, and a device whose library lacks a game still carries its status.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+struct PlayStatusBlob {
+    entries: Vec<crate::library::PlayStatusRow>,
+    schema: u32,
+}
+
+impl HasSchema for PlayStatusBlob {
+    fn stored_schema(&self) -> u32 {
+        self.schema
+    }
+}
+
+/// Serialises play-status publishes in this process. Each one reads the table
+/// after taking the lock, so the last to finish uploads the newest state.
+static PLAY_STATUS_SYNC: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+/// Set by every publish request and cleared by the publish that serves it, so
+/// requests made while one publish runs share the next one instead of each
+/// doing its own round-trips.
+static PLAY_STATUS_DIRTY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+async fn sync_play_status_core(id: &RemoteIdentity, library: &crate::library::Library) {
+    PLAY_STATUS_DIRTY.store(true, Ordering::SeqCst);
+    let _serial = PLAY_STATUS_SYNC.lock().await;
+    // An earlier waiter already published everything requested so far.
+    if !PLAY_STATUS_DIRTY.swap(false, Ordering::SeqCst) {
+        return;
+    }
+    // The blob is overwritten wholesale, so fold the current remote copy in
+    // first: rows only it has (a reset library, say) then end up in the table
+    // and in the publish below.
+    let store = id.remote.store("play-status", 1);
+    let Ok(own) = fetch_own_blob::<PlayStatusBlob>(&store, &id.device_id).await else {
+        return;
+    };
+    if let Some(blob) = own {
+        if let Err(e) = library.fold_play_statuses(&blob.entries).await {
+            tracing::warn!(error = %e, "sync_play_status: couldn't merge the remote copy");
+            return;
+        }
+    }
+    let entries = match library.play_statuses().await {
+        Ok(rows) => rows,
+        Err(e) => {
+            tracing::warn!(error = %e, "sync_play_status: failed to read play statuses");
+            return;
+        }
+    };
+    if !store
+        .publish(&id.device_id, &PlayStatusBlob { entries, schema: 1 })
+        .await
+    {
+        tracing::warn!("sync_play_status: publish failed; the next fold retries");
+    }
+}
+
+/// Overwrite this device's play-status blob with its `play_statuses` table.
+/// Best-effort; no-op when cloud isn't configured (or offline). A publish that
+/// doesn't land is retried after the next fold ([`fold_play_status`]).
+pub async fn sync_play_status(app: &AppHandle) {
+    let Some(id) = RemoteIdentity::from_app(app) else {
+        return;
+    };
+    let library = app.state::<SharedLibrary>().inner().clone();
+    sync_play_status_core(&id, &library).await;
+}
+
+/// AppHandle-free [`sync_play_status`] for the headless server's fold.
+#[cfg_attr(windows, allow(dead_code))] // only reached via the unix-gated plugin server
+async fn sync_play_status_from_config(cfg: &ConfigData, library: &crate::library::Library) {
+    let Some(id) = RemoteIdentity::from_config(cfg) else {
+        return;
+    };
+    sync_play_status_core(&id, library).await;
+}
+
+/// Fold every device's play-status blob into the table, our own included
+/// (which restores our statuses if the local DB was wiped). Returns the number
+/// of rows changed, and whether this device's own blob is out of date (a
+/// change made offline or whose publish failed, or one adopted from a peer),
+/// in which case the caller starts a [`sync_play_status`] once the fold is done.
+async fn fold_play_status(
+    remote: &RcloneRemote,
+    library: &crate::library::Library,
+    our_device_id: &str,
+) -> (u64, bool) {
+    let blobs: Vec<(String, PlayStatusBlob)> = remote.store("play-status", 1).read_all().await;
+    let rows: Vec<crate::library::PlayStatusRow> = blobs
+        .iter()
+        .flat_map(|(_, b)| b.entries.iter().cloned())
+        .collect();
+    let changed = match library.fold_play_statuses(&rows).await {
+        Ok(n) => n,
+        Err(e) => {
+            tracing::warn!(error = %e, "fold_play_status: couldn't apply peer statuses");
+            return (0, false);
+        }
+    };
+    if our_device_id.is_empty() {
+        return (changed, false);
+    }
+    let mut own = blobs
+        .into_iter()
+        .find(|(device, _)| device == our_device_id)
+        .map(|(_, b)| b.entries)
+        .unwrap_or_default();
+    own.sort_by(|a, b| a.game_name.cmp(&b.game_name));
+    let stale = match library.play_statuses().await {
+        Ok(local) => local != own,
+        Err(e) => {
+            tracing::warn!(error = %e, "fold_play_status: failed to read play statuses");
+            false
+        }
+    };
+    (changed, stale)
 }
 
 // ── Generic fold: adopt name-keyed definitions from the control plane ─────────
@@ -1992,11 +2130,16 @@ pub async fn fold_devices_from_config() -> bool {
     // run them concurrently — their (now fanned-out) round-trips don't stack on a
     // slow remote.
     let device_store = remote.store("devices", 1);
-    let (new_sessions, blobs, new_unlocks) = tokio::join!(
+    let (new_sessions, blobs, new_unlocks, (new_statuses, statuses_stale)) = tokio::join!(
         fold_history(&remote, &library),
         device_store.read_all::<DeviceBlob>(),
         fold_achievements(&remote, &library, &our_device_id),
+        fold_play_status(&remote, &library, &our_device_id),
     );
+    if statuses_stale {
+        let (config, library) = (config.clone(), library.clone());
+        tokio::spawn(async move { sync_play_status_from_config(&config, &library).await });
+    }
     if new_sessions > 0 {
         tracing::info!(new_sessions, "headless fold: imported peer play sessions");
     }
@@ -2011,7 +2154,7 @@ pub async fn fold_devices_from_config() -> bool {
     let recomputed = library.recompute_all_playtime().await.unwrap_or(0);
 
     if blobs.is_empty() {
-        return new_sessions > 0 || recomputed > 0 || new_unlocks > 0;
+        return new_sessions > 0 || recomputed > 0 || new_unlocks > 0 || new_statuses > 0;
     }
 
     let folded = fold_device_totals(&blobs);
@@ -2032,7 +2175,7 @@ pub async fn fold_devices_from_config() -> bool {
         }
     }
     tracing::info!(applied, devices = blobs.len(), "headless fold: done");
-    applied > 0 || new_sessions > 0 || recomputed > 0 || new_unlocks > 0
+    applied > 0 || new_sessions > 0 || recomputed > 0 || new_unlocks > 0 || new_statuses > 0
 }
 
 /// Computes the JSON field updates the cross-device fold should apply to one
@@ -2111,11 +2254,16 @@ async fn run_startup_fold(app: &AppHandle) {
     // run them concurrently — their (now fanned-out) round-trips don't stack on a
     // slow remote, cutting the delay before the first `library:changed`.
     let device_store = remote.store("devices", 1);
-    let (new_sessions, blobs, new_unlocks) = tokio::join!(
+    let (new_sessions, blobs, new_unlocks, (new_statuses, statuses_stale)) = tokio::join!(
         fold_history(&remote, &library),
         device_store.read_all::<DeviceBlob>(),
         fold_achievements(&remote, &library, &our_device_id),
+        fold_play_status(&remote, &library, &our_device_id),
     );
+    if statuses_stale {
+        let app = app.clone();
+        tauri::async_runtime::spawn(async move { sync_play_status(&app).await });
+    }
     if new_sessions > 0 {
         tracing::info!(new_sessions, "startup fold: imported peer play sessions");
     }
@@ -2130,7 +2278,7 @@ async fn run_startup_fold(app: &AppHandle) {
     // fold below. Runs after the join so the just-folded sessions are present.
     let recomputed = library.recompute_all_playtime().await.unwrap_or(0);
     if blobs.is_empty() {
-        if recomputed > 0 || new_sessions > 0 {
+        if recomputed > 0 || new_sessions > 0 || new_statuses > 0 {
             let _ = app.emit("library:changed", &());
         }
         return;
@@ -2155,7 +2303,7 @@ async fn run_startup_fold(app: &AppHandle) {
         }
     }
     tracing::info!(applied, devices = blobs.len(), "startup fold: done");
-    if applied > 0 || recomputed > 0 || new_sessions > 0 {
+    if applied > 0 || recomputed > 0 || new_sessions > 0 || new_statuses > 0 {
         let _ = app.emit("library:changed", &());
     }
 }

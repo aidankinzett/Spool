@@ -19,6 +19,7 @@
   import type { DisplayGame, HomeLayout } from '$lib/types';
   import { isSyntheticPeerId, type Library } from '$lib/library.svelte';
   import MonoLabel from '$lib/components/MonoLabel.svelte';
+  import PlayStatusBadge from '$lib/components/PlayStatusBadge.svelte';
 
   let {
     lib,
@@ -135,6 +136,9 @@
     </button>
     <!-- Positioned over the cover (not the caption): the caption is ~34px tall. -->
     <div class="pointer-events-none absolute inset-x-0 top-0 aspect-[2/3]">
+      {#if g.play_status}
+        <span class="absolute left-1.5 top-1.5"><PlayStatusBadge game={g} size="sm" /></span>
+      {/if}
       {@render playButton(g, 34)}
     </div>
   </div>
@@ -170,6 +174,9 @@
         </div>
       </div>
     </button>
+    {#if g.play_status}
+      <span class="pointer-events-none absolute left-2 top-2"><PlayStatusBadge game={g} size="sm" /></span>
+    {/if}
     {@render playButton(g, 34)}
   </div>
 {/snippet}
@@ -194,7 +201,10 @@
             <img src={cover} alt={spotlight.game_name} class="h-full rounded-sm object-cover shadow-2xl" />
           {/if}
           <div class="flex min-w-0 max-w-[560px] flex-col gap-2.5">
-            <MonoLabel size={9.5}>Continue playing</MonoLabel>
+            <div class="flex items-center gap-2.5">
+              <MonoLabel size={9.5}>Continue playing</MonoLabel>
+              <PlayStatusBadge game={spotlight} size="md" label />
+            </div>
             <h2
               class="m-0 font-display text-[34px] font-bold leading-[1] tracking-[-0.025em]"
               style:text-wrap="balance"
@@ -300,11 +310,16 @@
               style:grid-template-columns="32px minmax(0,1fr) 110px 90px 80px"
               style:opacity={g.installed ? 1 : 0.45}
             >
-              <div class="h-11 w-8 overflow-hidden rounded-sm border border-line-1 bg-bg-2">
-                {#if cover}
-                  <img src={cover} alt="" class="h-full w-full object-cover" loading="lazy" onerror={() => coverErrors.add(g.id)} />
-                {:else}
-                  {@render letterTile(g)}
+              <div class="relative h-11 w-8">
+                <div class="h-full w-full overflow-hidden rounded-sm border border-line-1 bg-bg-2">
+                  {#if cover}
+                    <img src={cover} alt="" class="h-full w-full object-cover" loading="lazy" onerror={() => coverErrors.add(g.id)} />
+                  {:else}
+                    {@render letterTile(g)}
+                  {/if}
+                </div>
+                {#if g.play_status}
+                  <span class="absolute -bottom-0.5 -left-0.5"><PlayStatusBadge game={g} size="dot" /></span>
                 {/if}
               </div>
               <div class="min-w-0">

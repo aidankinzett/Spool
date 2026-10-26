@@ -10,6 +10,14 @@
   import AppChrome from '$lib/components/AppChrome.svelte';
   import GameDetail from '$lib/components/GameDetail.svelte';
   import LibraryContextMenu from '$lib/components/LibraryContextMenu.svelte';
+  import PlayStatusBadge from '$lib/components/PlayStatusBadge.svelte';
+  import {
+    PLAY_STATUSES,
+    countByStatus,
+    scopeToStatus,
+    type PlayStatus,
+    type PlayStatusDef,
+  } from '$lib/playStatus';
   import LibrarySearch from '$lib/components/LibrarySearch.svelte';
   import MonoLabel from '$lib/components/MonoLabel.svelte';
   import ButtonLegend from '$lib/components/ButtonLegend.svelte';
@@ -21,6 +29,9 @@
   // The guided Windows-installer flow runs through Proton, so the button is Linux-only.
   let isLinux = $state(false);
   onMount(() => {
+    // The touch layout has no control for the desktop sidebar's status filter,
+    // which would otherwise also narrow search results here.
+    lib.activeStatus = null;
     api.appPlatform().then((p) => (isLinux = p === 'linux'));
   });
 
@@ -84,16 +95,33 @@
       .sort((a, b) => a.catalog_number - b.catalog_number);
   });
 
+  // Status tabs use `status:<id>` ids so they can't collide with a collection id.
+  const STATUS_TAB = 'status:';
+  // A status tab's games, in catalog order.
+  const statusGames = $derived(
+    shelfCat.startsWith(STATUS_TAB)
+      ? scopeToStatus(allCat, shelfCat.slice(STATUS_TAB.length) as PlayStatus)
+      : ([] as DisplayGame[]),
+  );
+  // Games per status over the whole library (the shelf tabs aren't scoped by a
+  // collection, unlike the desktop sidebar's counts).
+  const shelfStatusCounts = $derived(countByStatus(allCat));
+
+
   const shelfGames = $derived<DisplayGame[]>(
     shelfCat === 'continue' ? continueCat :
     shelfCat === 'lan' ? lanCat :
     shelfCat === 'all' ? allCat :
+    shelfCat.startsWith(STATUS_TAB) ? statusGames :
     collectionGames,
   );
 
-  // True when the active tab is a collection (not one of the three built-ins).
+  // True when the active tab is a collection (not a built-in or status tab).
   const onCollectionTab = $derived(
-    shelfCat !== 'continue' && shelfCat !== 'all' && shelfCat !== 'lan',
+    shelfCat !== 'continue' &&
+      shelfCat !== 'all' &&
+      shelfCat !== 'lan' &&
+      !shelfCat.startsWith(STATUS_TAB),
   );
 
   const selectedGame = $derived(lib.selectedGame);
@@ -202,10 +230,29 @@
     else if (selectedGame) openView('add', { reinstall: selectedGame.id });
   }
 
-  const cats = $derived<{ id: string; label: string; accent: string | null; count: number | null }[]>([
+  type ShelfCat = {
+    id: string;
+    label: string;
+    accent: string | null;
+    count: number | null;
+    status?: PlayStatusDef;
+  };
+  const cats = $derived<ShelfCat[]>([
     { id: 'continue', label: 'Continue', accent: null, count: null },
     { id: 'all', label: 'All games', accent: null, count: null },
     { id: 'lan', label: `LAN · ${lanCat.length}`, accent: null, count: null },
+    // One tab per play status that has games, with its icon + count. The active
+    // tab stays while it's empty, so changing its last game's status doesn't
+    // throw the shelf back to All games.
+    ...PLAY_STATUSES.filter(
+      (s) => shelfStatusCounts[s.id] > 0 || shelfCat === STATUS_TAB + s.id,
+    ).map((s) => ({
+      id: STATUS_TAB + s.id,
+      label: s.label,
+      accent: null,
+      count: shelfStatusCounts[s.id],
+      status: s,
+    })),
     // One tab per collection, in sidebar order, with its accent dot + count.
     ...lib.collections.map((c) => ({
       id: c.id,
@@ -274,6 +321,7 @@
         startingGameId={lib.startingGameId}
         onDownload={(g) => lib.downloadGame(g)}
         onCancelDownload={lib.cancelActiveInstall}
+        onSetStatus={lib.setPlayStatus}
       />
     </div>
     <div class="shrink-0 border-t border-line-1 bg-black/30 py-2" style:backdrop-filter="blur(12px)">
@@ -407,6 +455,7 @@
                 Last played
               </span>
             {/if}
+            <PlayStatusBadge game={selectedGame} size="md" label />
           </div>
 
           <h1
@@ -519,7 +568,10 @@
             style:border-color={on ? 'var(--color-line-2)' : 'transparent'}
             style:color={on ? 'var(--color-ink-0)' : 'var(--color-ink-2)'}
           >
-            {#if cat.accent}
+            {#if cat.status}
+              {@const StatusIcon = cat.status.icon}
+              <StatusIcon size={15} style="color: {cat.status.color}" />
+            {:else if cat.accent}
               <span class="h-2.5 w-2.5 shrink-0 rounded-full" style:background={cat.accent}></span>
             {/if}
             {cat.label}
@@ -546,6 +598,8 @@
                 ? 'No games shared by other devices on the network.'
                 : onCollectionTab
                   ? 'No games in this collection yet. Long-press a game → Add to collection.'
+                  : shelfCat.startsWith(STATUS_TAB)
+                    ? 'No games with this status. Long-press a game → Status.'
                   : 'No games.'}
           </p>
         {:else}
@@ -571,7 +625,7 @@
               style:opacity={game.installed ? 1 : 0.45}
             >
               <div
-                class="overflow-hidden rounded-sm"
+                class="relative overflow-hidden rounded-sm"
                 style:width={tileW}
                 style:height={tileH}
                 style:outline={active
@@ -590,6 +644,11 @@
                       {game.game_name.slice(0, 1)}
                     </span>
                   </div>
+                {/if}
+                {#if game.play_status}
+                  <span class="absolute left-1.5 top-1.5">
+                    <PlayStatusBadge {game} size="sm" />
+                  </span>
                 {/if}
               </div>
               <div style:width={tileW}>
@@ -630,6 +689,7 @@
     collections={lib.collections}
     onToggleCollection={lib.toggleMembership}
     onCreateCollection={lib.createCollection}
+    onSetStatus={lib.setPlayStatus}
     onclose={() => (ctxMenu = null)}
   />
 {/if}

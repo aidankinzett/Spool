@@ -308,6 +308,7 @@ pub fn run() {
             library::list_games,
             launch_options::validate_launch_options,
             library::list_play_sessions,
+            library::set_play_status,
             achievements::get_game_achievements,
             achievements::overlay::achievement_toast_payload,
             achievements::overlay::preview_achievement_overlay,

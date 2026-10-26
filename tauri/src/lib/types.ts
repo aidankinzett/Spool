@@ -383,6 +383,12 @@ export type GameEntry = {
    * the exact existing shortcut after a rename instead of orphaning it.
    */
   steam_app_id: number | null;
+  /** Where the user is with the game (`PlayStatus` in `playStatus.ts`), or
+   *  null. Typed as string because a newer Spool may sync a status this build
+   *  doesn't know; read it through `playStatusOf`. */
+  play_status: string | null;
+  /** When `play_status` last changed, Unix ms. Drives the cross-device fold. */
+  play_status_updated_at: number | null;
 };
 
 /**
