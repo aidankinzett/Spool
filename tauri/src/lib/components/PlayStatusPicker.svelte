@@ -23,6 +23,10 @@
 
   const def = $derived(playStatusOf(game));
 
+  // Popover width (`w-[200px]` below) and the gap kept from the window edge.
+  const POPOVER_W = 200;
+  const EDGE = 8;
+
   let open = $state(false);
   let pos = $state({ x: 0, y: 0 });
   let anchorEl: HTMLButtonElement | undefined = $state();
@@ -31,7 +35,10 @@
   function toggle() {
     if (!open && anchorEl) {
       const r = anchorEl.getBoundingClientRect();
-      pos = { x: r.left, y: r.bottom + 6 };
+      // Clamp so the popover stays on screen when the button is near the
+      // window's right edge.
+      const x = Math.max(EDGE, Math.min(r.left, window.innerWidth - POPOVER_W - EDGE));
+      pos = { x, y: r.bottom + 6 };
     }
     open = !open;
   }
@@ -88,7 +95,8 @@
     role="dialog"
     aria-label="Play status"
     use:gamepadScope={{ onBack: () => (open = false) }}
-    class="fixed z-50 w-[200px] rounded-md border border-line-2 bg-bg-1 p-1.5"
+    class="fixed z-50 rounded-md border border-line-2 bg-bg-1 p-1.5"
+    style:width="{POPOVER_W}px"
     style:left="{pos.x}px"
     style:top="{pos.y}px"
     style:box-shadow="0 16px 40px rgb(0 0 0 / 0.5)"

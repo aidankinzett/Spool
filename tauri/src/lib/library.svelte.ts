@@ -472,9 +472,16 @@ export function createLibrary() {
   });
 
   // Methods
+  // Bumped per `refresh()`; a response that comes back after a later refresh
+  // started is dropped, so an older `listGames()` can't overwrite a newer one.
+  let refreshSeq = 0;
+
   async function refresh() {
+    const seq = ++refreshSeq;
     try {
-      games = withPendingStatuses(await api.listGames());
+      const next = await api.listGames();
+      if (seq !== refreshSeq) return;
+      games = withPendingStatuses(next);
       // A just-completed peer-only install: the synthetic `peer:` row the user
       // was viewing is gone (the game is now installed locally) — follow the
       // selection onto the real entry so the detail pane doesn't jump away.
@@ -497,9 +504,10 @@ export function createLibrary() {
         selectedId = null;
       }
     } catch (e) {
+      if (seq !== refreshSeq) return;
       error = String(e);
     } finally {
-      loaded = true;
+      if (seq === refreshSeq) loaded = true;
     }
   }
 
