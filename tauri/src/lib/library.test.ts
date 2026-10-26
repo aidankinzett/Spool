@@ -9,6 +9,7 @@ import {
   sourcesOf,
   shareableSources,
 } from '$lib/library.svelte';
+import { countByStatus, playStatusOf, scopeToStatus } from '$lib/playStatus';
 import type { GameEntry, LanPeer, PeerGame, PeerSource } from '$lib/types';
 
 function g(over: Partial<GameEntry> & { id: string; game_name: string }): GameEntry {
@@ -52,6 +53,8 @@ function g(over: Partial<GameEntry> & { id: string; game_name: string }): GameEn
     save_last_backer_device: null,
     save_cloud_revision_at: null,
     steam_app_id: null,
+    play_status: null,
+    play_status_updated_at: null,
     use_proton: false,
     proton_version_path: null,
     wine_prefix_path: null,
@@ -339,5 +342,31 @@ describe('downloadMatchesGame', () => {
 
   it('falls back to the lone peer_source when peer_sources is absent', () => {
     expect(downloadMatchesGame({ source_game_id: 'p1', source_device_id: 'dev-a' }, { peer_source: ps('dev-a', 'p1') })).toBe(true);
+  });
+});
+
+describe('scopeToStatus / playStatusOf', () => {
+  const games = [
+    g({ id: 'a', game_name: 'A', play_status: 'playing' }),
+    g({ id: 'b', game_name: 'B', play_status: 'finished' }),
+    g({ id: 'c', game_name: 'C' }),
+    g({ id: 'd', game_name: 'D', play_status: 'someday' }),
+  ];
+
+  it('passes everything through with no status', () => {
+    expect(scopeToStatus(games, null)).toHaveLength(4);
+  });
+
+  it('keeps only games with the status', () => {
+    expect(scopeToStatus(games, 'playing').map((x) => x.id)).toEqual(['a']);
+  });
+
+  it('counts per status, skipping unknown ones', () => {
+    expect(countByStatus(games)).toEqual({ playing: 1, 'to-play': 0, finished: 1, dropped: 0 });
+  });
+
+  it('ignores statuses this build does not know', () => {
+    expect(playStatusOf(games[3])).toBeNull();
+    expect(playStatusOf(games[1])?.label).toBe('Finished');
   });
 });

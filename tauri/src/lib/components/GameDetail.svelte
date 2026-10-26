@@ -56,6 +56,8 @@
   import MonoLabel from './MonoLabel.svelte';
   import LanDownloadProgress from './LanDownloadProgress.svelte';
   import CatalogId from './CatalogId.svelte';
+  import PlayStatusPicker from './PlayStatusPicker.svelte';
+  import type { PlayStatus } from '$lib/playStatus';
   import Btn from './Btn.svelte';
   import DetailCard from './DetailCard.svelte';
   import CrossDeviceActivityCard from './CrossDeviceActivityCard.svelte';
@@ -78,6 +80,7 @@
     startingGameId = null,
     onDownload,
     onCancelDownload,
+    onSetStatus,
   }: {
     game: DisplayGame;
     /** Current Run-workflow phase for *this* game (null if idle). */
@@ -107,6 +110,8 @@
     onDownload?: (g: DisplayGame) => void;
     /** Cancel the in-flight LAN install. */
     onCancelDownload?: () => void;
+    /** Set the game's play status. Without it the status picker is hidden. */
+    onSetStatus?: (gameId: string, status: PlayStatus | null) => void;
   } = $props();
 
   // When the selected game changes, refresh its save-backup stats from
@@ -583,6 +588,9 @@
         <CatalogId id={fmtCatalog(game.catalog_number)} accent={accentHex} />
         {#if game.genres.length > 0}
           <MonoLabel size={10}>{game.genres[0].toUpperCase()}</MonoLabel>
+        {/if}
+        {#if onSetStatus && !isSyntheticPeerId(game.id)}
+          <PlayStatusPicker {game} onSelect={(s) => onSetStatus(game.id, s)} />
         {/if}
       </div>
 

@@ -66,6 +66,9 @@ export const api = {
    *  scoped to one game by name. Feeds the cross-device activity timeline. */
   listPlaySessions: (gameName?: string): Promise<PlaySession[]> =>
     invoke('list_play_sessions', { gameName: gameName ?? null }),
+  /** Set (or clear, with null) a game's play status. Syncs to other devices. */
+  setPlayStatus: (gameId: string, status: string | null): Promise<void> =>
+    invoke('set_play_status', { gameId, status }),
   /** A game's achievements: its schema merged with the unlocks Spool has read
    *  from the game's Steam-emulator stats file. Scans the file first, so
    *  unlocks from sessions outside Spool are picked up. */

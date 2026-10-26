@@ -26,6 +26,8 @@
   import GameDetail from '$lib/components/GameDetail.svelte';
   import LibraryContextMenu from '$lib/components/LibraryContextMenu.svelte';
   import CollectionsNav from '$lib/components/CollectionsNav.svelte';
+  import StatusNav from '$lib/components/StatusNav.svelte';
+  import PlayStatusBadge from '$lib/components/PlayStatusBadge.svelte';
   import CollectionsStrip from '$lib/components/CollectionsStrip.svelte';
   import TransferPill from '$lib/components/TransferPill.svelte';
   import TransfersPanel from '$lib/components/TransfersPanel.svelte';
@@ -494,6 +496,9 @@
       <!-- Collections nav -->
       <CollectionsNav {lib} />
 
+      <!-- Play status nav -->
+      <StatusNav {lib} />
+
       <!-- Filter pills -->
       <div class="flex gap-1 px-3 pb-2.5">
         {#each filters as f (f.id)}
@@ -540,6 +545,10 @@
             <MonoLabel>Empty shelf</MonoLabel>
             <p class="text-[12px] text-ink-2">No games yet.</p>
           </div>
+        {:else if lib.filteredGames.length === 0 && lib.activeStatus && !lib.searchQuery.trim() && lib.filter === 'all'}
+          <p class="px-4 py-3 text-[12px] text-ink-3">
+            No games with this status. Right-click a game to set its status, or drag it onto a status.
+          </p>
         {:else if lib.filteredGames.length === 0 && lib.activeCollection && !lib.searchQuery.trim() && lib.filter === 'all'}
           <p class="px-4 py-3 text-[12px] text-ink-3">
             This collection is empty. Drag a game here, or use a game's “Add to collection”.
@@ -592,28 +601,30 @@
               style:border-left-color={selected ? rowAccent : 'transparent'}
               style:opacity={g.installed ? 1 : 0.45}
             >
-              <div
-                class="relative h-11 w-8 shrink-0 overflow-hidden rounded-sm border border-line-1 bg-bg-2"
-              >
-                {#if cover}
-                  <img
-                    src={cover}
-                    alt={g.game_name}
-                    class="h-full w-full object-cover"
-                    onerror={() => coverErrors.add(g.id)}
-                  />
-                {:else}
-                  <div
-                    class="flex h-full w-full items-center justify-center"
-                    style:background="linear-gradient(160deg, #2a2622 0%, #0a0807 100%)"
-                  >
-                    <span
-                      class="font-mono text-[7px] uppercase tracking-[0.1em] text-ink-3"
+              <div class="relative h-11 w-8 shrink-0">
+                <div
+                  class="h-full w-full overflow-hidden rounded-sm border border-line-1 bg-bg-2"
+                >
+                  {#if cover}
+                    <img
+                      src={cover}
+                      alt={g.game_name}
+                      class="h-full w-full object-cover"
+                      onerror={() => coverErrors.add(g.id)}
+                    />
+                  {:else}
+                    <div
+                      class="flex h-full w-full items-center justify-center"
+                      style:background="linear-gradient(160deg, #2a2622 0%, #0a0807 100%)"
                     >
-                      {g.game_name.slice(0, 1)}
-                    </span>
-                  </div>
-                {/if}
+                      <span
+                        class="font-mono text-[7px] uppercase tracking-[0.1em] text-ink-3"
+                      >
+                        {g.game_name.slice(0, 1)}
+                      </span>
+                    </div>
+                  {/if}
+                </div>
                 {#if badgeColor}
                   <!-- Sync status dot: top-right of the cover thumb.
                        The 1px ink-0 border keeps it readable against
@@ -624,6 +635,11 @@
                     style:border-color="var(--color-bg-0)"
                     title={badgeTitle}
                   ></span>
+                {/if}
+                {#if g.play_status}
+                  <span class="absolute -bottom-0.5 -left-0.5">
+                    <PlayStatusBadge game={g} size="dot" />
+                  </span>
                 {/if}
               </div>
               <div class="min-w-0 flex-1">
@@ -727,6 +743,7 @@
           startingGameId={lib.startingGameId}
           onDownload={(g) => lib.downloadGame(g)}
           onCancelDownload={lib.cancelActiveInstall}
+          onSetStatus={lib.setPlayStatus}
         />
       </div>
     {:else if lib.loaded && lib.games.length === 0}
@@ -772,6 +789,7 @@
     collections={lib.collections}
     onToggleCollection={lib.toggleMembership}
     onCreateCollection={lib.createCollection}
+    onSetStatus={lib.setPlayStatus}
     onclose={() => (ctxMenu = null)}
   />
 {/if}

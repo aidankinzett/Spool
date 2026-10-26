@@ -242,6 +242,20 @@ pub struct GameEntry {
     /// Steam integration (`add_to_steam` / rename reconcile), not the editor, so
     /// it's in [`RUNTIME_FIELDS`] and survives a whole-entry editor save.
     pub steam_app_id: Option<u32>,
+
+    /// Where the user is with the game: one of [`PLAY_STATUSES`], or `None` for
+    /// no status. Set only by the user (`set_play_status`), never by a launch.
+    /// A string rather than an enum so a status synced from a newer Spool
+    /// doesn't stop this row from parsing; the UI ignores values it doesn't know.
+    ///
+    /// Not stored on the row: it lives in the `play_statuses` table, keyed by
+    /// game name, and reads go through the `games_with_status` view, which lays
+    /// it over `data`. Whatever a whole-entry write puts in these two fields is
+    /// ignored on the next read.
+    pub play_status: Option<String>,
+    /// When `play_status` was last changed, as Unix milliseconds (see
+    /// [`PlayStatusRow::updated_at`]).
+    pub play_status_updated_at: Option<i64>,
 }
 
 impl Default for GameEntry {
@@ -293,6 +307,8 @@ impl Default for GameEntry {
             save_last_backer_device: None,
             save_cloud_revision_at: None,
             steam_app_id: None,
+            play_status: None,
+            play_status_updated_at: None,
         }
     }
 }
@@ -409,6 +425,25 @@ const RUNTIME_FIELDS: &[&str] = &[
     // edit/remove paths use to find and clean up the game's Steam shortcut.
     "steam_app_id",
 ];
+
+/// The play statuses a game can have (`GameEntry::play_status`).
+pub const PLAY_STATUSES: &[&str] = &["playing", "to-play", "finished", "dropped"];
+
+pub fn is_valid_play_status(status: &str) -> bool {
+    PLAY_STATUSES.contains(&status)
+}
+
+/// One row of the `play_statuses` table, and one entry of a device's
+/// `_spool/play-status/` blob (`rclone.rs`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct PlayStatusRow {
+    pub game_name: String,
+    /// `None` once the user cleared it. The row stays, so the clear syncs.
+    pub status: Option<String>,
+    /// Unix ms of the change. The fold keeps the largest per game name.
+    pub updated_at: i64,
+}
 
 /// Sentinel `device_id` for the synthetic legacy session that
 /// [`Library::migrate_legacy_playtime`] seeds for pre-sessions playtime. Not a
@@ -631,6 +666,30 @@ impl Library {
              )",
             "CREATE INDEX IF NOT EXISTS play_sessions_game ON play_sessions (game_name)",
             "CREATE INDEX IF NOT EXISTS play_sessions_device ON play_sessions (device_id)",
+            // Each game's play status, keyed by name like `play_sessions` so it
+            // outlives the game's row (forget + re-add keeps it) and holds the
+            // statuses other devices have for games not in this library, which
+            // this device's blob republishes. A cleared status keeps its row
+            // with `status` NULL. Wired to `meta.version` because the statuses
+            // show on the library rows.
+            "CREATE TABLE IF NOT EXISTS play_statuses (
+                 game_name  TEXT PRIMARY KEY NOT NULL,
+                 status     TEXT,
+                 updated_at INTEGER NOT NULL
+             )",
+            "CREATE TRIGGER IF NOT EXISTS play_statuses_version_ai AFTER INSERT ON play_statuses
+             BEGIN UPDATE meta SET v = v + 1 WHERE k = 'version'; END",
+            "CREATE TRIGGER IF NOT EXISTS play_statuses_version_au AFTER UPDATE ON play_statuses
+             BEGIN UPDATE meta SET v = v + 1 WHERE k = 'version'; END",
+            "CREATE TRIGGER IF NOT EXISTS play_statuses_version_ad AFTER DELETE ON play_statuses
+             BEGIN UPDATE meta SET v = v + 1 WHERE k = 'version'; END",
+            // `games` with each row's play status laid over its `data`. Every
+            // read of a full `GameEntry` goes through this.
+            "CREATE VIEW IF NOT EXISTS games_with_status AS
+             SELECT g.id, g.catalog_number, g.game_name,
+                    json_set(g.data, '$.play_status', ps.status,
+                             '$.play_status_updated_at', ps.updated_at) AS data
+             FROM games g LEFT JOIN play_statuses ps ON ps.game_name = g.game_name",
         ];
         for sql in stmts {
             sqlx::query(sql).execute(&self.pool).await?;
@@ -833,7 +892,7 @@ impl Library {
 
     /// All games, ordered by catalog number (their stable shelf order).
     pub async fn list(&self) -> AppResult<Vec<GameEntry>> {
-        let rows = sqlx::query("SELECT data FROM games ORDER BY catalog_number")
+        let rows = sqlx::query("SELECT data FROM games_with_status ORDER BY catalog_number")
             .fetch_all(&self.pool)
             .await?;
         let mut out = Vec::with_capacity(rows.len());
@@ -846,7 +905,7 @@ impl Library {
 
     /// One game by id, or `None` if absent.
     pub async fn find(&self, id: &str) -> AppResult<Option<GameEntry>> {
-        let row = sqlx::query("SELECT data FROM games WHERE id = ?1")
+        let row = sqlx::query("SELECT data FROM games_with_status WHERE id = ?1")
             .bind(id)
             .fetch_optional(&self.pool)
             .await?;
@@ -914,7 +973,7 @@ impl Library {
     ) -> AppResult<Option<GameEntry>> {
         if let Some(sid) = steam_id {
             let row = sqlx::query(
-                "SELECT data FROM games
+                "SELECT data FROM games_with_status
                  WHERE json_extract(data, '$.installed') = 0
                    AND json_extract(data, '$.steam_id') = ?1
                  ORDER BY catalog_number LIMIT 1",
@@ -928,7 +987,7 @@ impl Library {
             }
         }
         let row = sqlx::query(
-            "SELECT data FROM games
+            "SELECT data FROM games_with_status
              WHERE json_extract(data, '$.installed') = 0
                AND game_name = ?1
                AND (?2 IS NULL
@@ -1555,6 +1614,99 @@ impl Library {
         Ok(res.rows_affected() > 0)
     }
 
+    /// Sets (or clears, with `None`) the play status for `game_name`. Stamped
+    /// `now`, or 1 ms past the stored time when that's later (a change adopted
+    /// from a device whose clock runs ahead), so the user's change is always
+    /// the newest and a fold can't put the old status back. Returns the stamp.
+    pub async fn set_play_status(
+        &self,
+        game_name: &str,
+        status: Option<&str>,
+        now: i64,
+    ) -> AppResult<i64> {
+        let at: i64 = sqlx::query_scalar(
+            "INSERT INTO play_statuses (game_name, status, updated_at) VALUES (?1, ?2, ?3)
+             ON CONFLICT (game_name) DO UPDATE SET
+                 status = excluded.status,
+                 updated_at = MAX(excluded.updated_at, play_statuses.updated_at + 1)
+             RETURNING updated_at",
+        )
+        .bind(game_name)
+        .bind(status)
+        .bind(now)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(at)
+    }
+
+    /// Adopts each row that's newer than what's stored for its game name (or
+    /// has no stored row), in one transaction. Two changes with the same time
+    /// are ordered by status (a clear sorts first), so every device settles on
+    /// the same one. Statuses this build doesn't know are kept as-is, so an
+    /// older build republishes a newer build's change instead of reviving the
+    /// one before it. Returns the number of rows changed.
+    pub async fn fold_play_statuses(&self, rows: &[PlayStatusRow]) -> AppResult<u64> {
+        let mut tx = self.pool.begin().await?;
+        let mut changed = 0;
+        for r in rows.iter().filter(|r| !r.game_name.is_empty()) {
+            changed += sqlx::query(
+                "INSERT INTO play_statuses (game_name, status, updated_at) VALUES (?1, ?2, ?3)
+                 ON CONFLICT (game_name) DO UPDATE SET
+                     status = excluded.status, updated_at = excluded.updated_at
+                 WHERE excluded.updated_at > play_statuses.updated_at
+                    OR (excluded.updated_at = play_statuses.updated_at
+                        AND COALESCE(excluded.status, '') > COALESCE(play_statuses.status, ''))",
+            )
+            .bind(&r.game_name)
+            .bind(&r.status)
+            .bind(r.updated_at)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
+        }
+        tx.commit().await?;
+        Ok(changed)
+    }
+
+    /// Every stored play status, cleared ones included, by game name.
+    pub async fn play_statuses(&self) -> AppResult<Vec<PlayStatusRow>> {
+        let rows = sqlx::query(
+            "SELECT game_name, status, updated_at FROM play_statuses ORDER BY game_name",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .iter()
+            .map(|r| PlayStatusRow {
+                game_name: r.get("game_name"),
+                status: r.get("status"),
+                updated_at: r.get("updated_at"),
+            })
+            .collect())
+    }
+
+    /// Copies the play status stored for `old` to `new`, for a game being
+    /// renamed. Stamped like [`Library::set_play_status`], so it replaces any
+    /// status `new` already had and wins over it on other devices. The `old`
+    /// row stays: another entry (or another device's game) may still use that
+    /// name, and renaming back later overwrites it the same way. Returns
+    /// whether there was a status to copy.
+    pub async fn copy_play_status(&self, old: &str, new: &str, now: i64) -> AppResult<bool> {
+        let res = sqlx::query(
+            "INSERT INTO play_statuses (game_name, status, updated_at)
+             SELECT ?2, status, ?3 FROM play_statuses WHERE game_name = ?1
+             ON CONFLICT (game_name) DO UPDATE SET
+                 status = excluded.status,
+                 updated_at = MAX(excluded.updated_at, play_statuses.updated_at + 1)",
+        )
+        .bind(old)
+        .bind(new)
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
+        Ok(res.rows_affected() > 0)
+    }
+
     /// Updates any of cover path / hero path / accent colour that are `Some`.
     pub async fn set_art(
         &self,
@@ -1857,6 +2009,38 @@ pub async fn list_play_sessions(
     state.list_sessions(game_name.as_deref()).await
 }
 
+/// Sets (or clears, with `None`) a game's play status, then publishes this
+/// device's statuses to the cloud remote in the background.
+#[tauri::command]
+pub async fn set_play_status(
+    state: State<'_, SharedLibrary>,
+    app: AppHandle,
+    game_id: String,
+    status: Option<String>,
+) -> AppResult<()> {
+    if let Some(s) = status.as_deref() {
+        if !is_valid_play_status(s) {
+            return Err(AppError::Other(format!("unknown play status: {s}")));
+        }
+    }
+    let game = state
+        .find(&game_id)
+        .await?
+        .ok_or_else(|| AppError::Other(format!("game not found: {game_id}")))?;
+    state
+        .set_play_status(
+            &game.game_name,
+            status.as_deref(),
+            Utc::now().timestamp_millis(),
+        )
+        .await?;
+    let _ = app.emit("library:changed", &game_id);
+    tauri::async_runtime::spawn(async move {
+        crate::rclone::sync_play_status(&app).await;
+    });
+    Ok(())
+}
+
 /// Adds a new game. Assigns id/catalog/timestamps server-side; persists;
 /// emits `library:changed` so any open windows can refresh.
 #[tauri::command]
@@ -2126,11 +2310,32 @@ pub async fn update_game(
     // reconciling (name/exe changed) — `steam_app_id` is a runtime field, so the
     // replace below preserves it, but we read the *old* name/exe here.
     let prev = state.find(&entry.id).await?;
+    // The play status is keyed by name, so a rename copies it to the new name.
+    // Done before the replace, so a read in between never sees the renamed
+    // game without its status.
+    let status_copied = match prev.as_ref().filter(|p| p.game_name != entry.game_name) {
+        Some(prev) => {
+            state
+                .copy_play_status(
+                    &prev.game_name,
+                    &entry.game_name,
+                    Utc::now().timestamp_millis(),
+                )
+                .await?
+        }
+        None => false,
+    };
     if !state.replace(&entry).await? {
         return Err(AppError::Other(format!(
             "game with id {} not found",
             entry.id
         )));
+    }
+    if status_copied {
+        let app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            crate::rclone::sync_play_status(&app).await;
+        });
     }
 
     // Pre-hash for LAN sharing when this edit made the game newly shareable
@@ -2590,6 +2795,146 @@ mod tests {
                 .unwrap()
                 .as_deref(),
             Some("b")
+        );
+    }
+
+    fn psr(name: &str, status: Option<&str>, at: i64) -> PlayStatusRow {
+        PlayStatusRow {
+            game_name: name.into(),
+            status: status.map(Into::into),
+            updated_at: at,
+        }
+    }
+
+    #[tokio::test]
+    async fn play_status_reads_through_the_view_and_survives_re_add() {
+        let lib = Library::open_in_memory().await.unwrap();
+        lib.insert(sample("a", "Hades")).await.unwrap();
+        lib.set_play_status("Hades", Some("playing"), 1_000)
+            .await
+            .unwrap();
+        let g = lib.find("a").await.unwrap().unwrap();
+        assert_eq!(g.play_status.as_deref(), Some("playing"));
+        assert_eq!(g.play_status_updated_at, Some(1_000));
+
+        // A whole-entry write can't change it.
+        let mut edited = g.clone();
+        edited.play_status = Some("dropped".into());
+        lib.replace(&edited).await.unwrap();
+        let g = lib.find("a").await.unwrap().unwrap();
+        assert_eq!(g.play_status.as_deref(), Some("playing"));
+
+        // Forget + re-add under the same name keeps it.
+        lib.remove("a").await.unwrap();
+        lib.insert(sample("b", "Hades")).await.unwrap();
+        let all = lib.list().await.unwrap();
+        assert_eq!(all[0].play_status.as_deref(), Some("playing"));
+    }
+
+    #[tokio::test]
+    async fn set_play_status_stamps_past_a_later_adopted_change() {
+        let lib = Library::open_in_memory().await.unwrap();
+        // Adopted from a device whose clock is ahead of ours.
+        lib.fold_play_statuses(&[psr("Hades", Some("finished"), 5_000)])
+            .await
+            .unwrap();
+        let at = lib
+            .set_play_status("Hades", Some("playing"), 1_000)
+            .await
+            .unwrap();
+        assert_eq!(at, 5_001);
+        // Re-folding the peer's (older) change doesn't revert ours.
+        assert_eq!(
+            lib.fold_play_statuses(&[psr("Hades", Some("finished"), 5_000)])
+                .await
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            lib.play_statuses().await.unwrap(),
+            vec![psr("Hades", Some("playing"), 5_001)]
+        );
+    }
+
+    #[tokio::test]
+    async fn fold_play_statuses_keeps_the_newest_including_clears_and_unknowns() {
+        let lib = Library::open_in_memory().await.unwrap();
+        lib.set_play_status("Hades", Some("playing"), 1_000)
+            .await
+            .unwrap();
+        let changed = lib
+            .fold_play_statuses(&[
+                psr("Hades", Some("dropped"), 500),
+                psr("Celeste", Some("someday"), 10),
+                psr("Tunic", None, 20),
+                psr("", Some("playing"), 99),
+            ])
+            .await
+            .unwrap();
+        assert_eq!(changed, 2);
+        assert_eq!(
+            lib.play_statuses().await.unwrap(),
+            vec![
+                psr("Celeste", Some("someday"), 10),
+                psr("Hades", Some("playing"), 1_000),
+                psr("Tunic", None, 20),
+            ]
+        );
+        lib.fold_play_statuses(&[psr("Hades", None, 2_000)])
+            .await
+            .unwrap();
+        assert_eq!(
+            lib.play_statuses().await.unwrap()[1],
+            psr("Hades", None, 2_000)
+        );
+    }
+
+    #[tokio::test]
+    async fn rename_copies_the_play_status_and_renaming_back_keeps_the_latest() {
+        let lib = Library::open_in_memory().await.unwrap();
+        lib.set_play_status("Hades", Some("playing"), 1)
+            .await
+            .unwrap();
+        assert!(lib.copy_play_status("Hades", "Hades II", 10).await.unwrap());
+        lib.set_play_status("Hades II", Some("finished"), 20)
+            .await
+            .unwrap();
+        // Renaming back onto the old name carries the newer status over it.
+        assert!(lib.copy_play_status("Hades II", "Hades", 30).await.unwrap());
+        assert_eq!(
+            lib.play_statuses().await.unwrap(),
+            vec![
+                psr("Hades", Some("finished"), 30),
+                psr("Hades II", Some("finished"), 20),
+            ]
+        );
+        // Nothing to copy for a game without a status.
+        assert!(!lib.copy_play_status("Tunic", "Tunic 2", 40).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn fold_play_statuses_breaks_a_timestamp_tie_the_same_way_everywhere() {
+        let a = Library::open_in_memory().await.unwrap();
+        let b = Library::open_in_memory().await.unwrap();
+        a.fold_play_statuses(&[psr("Hades", Some("playing"), 5)])
+            .await
+            .unwrap();
+        b.fold_play_statuses(&[psr("Hades", Some("dropped"), 5)])
+            .await
+            .unwrap();
+        a.fold_play_statuses(&[psr("Hades", Some("dropped"), 5)])
+            .await
+            .unwrap();
+        b.fold_play_statuses(&[psr("Hades", Some("playing"), 5)])
+            .await
+            .unwrap();
+        assert_eq!(
+            a.play_statuses().await.unwrap(),
+            b.play_statuses().await.unwrap()
+        );
+        assert_eq!(
+            a.play_statuses().await.unwrap(),
+            vec![psr("Hades", Some("playing"), 5)]
         );
     }
 

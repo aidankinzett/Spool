@@ -9,7 +9,10 @@
   import LibraryContextMenu from './LibraryContextMenu.svelte';
   import type { GameEntry } from '$lib/types';
 
-  let { game }: { game: GameEntry } = $props();
+  let {
+    game,
+    onSetStatus,
+  }: { game: GameEntry; onSetStatus?: (gameId: string, status: string | null) => void } = $props();
   // Seeded once, exactly as a right-click seeds it in LibraryDesktop.
   // svelte-ignore state_referenced_locally
   let ctxMenu = $state<{ game: GameEntry; x: number; y: number } | null>({ game, x: 10, y: 10 });
@@ -20,6 +23,7 @@
     game={ctxMenu.game}
     x={ctxMenu.x}
     y={ctxMenu.y}
+    {onSetStatus}
     onclose={() => (ctxMenu = null)}
   />
 {/if}

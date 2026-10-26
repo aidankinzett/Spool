@@ -81,6 +81,8 @@ function makeGame(over: Partial<GameEntry> = {}): GameEntry {
     manifest_override: null,
     accent_color: null,
     sync_badge: null,
+    play_status: null,
+    play_status_updated_at: null,
     cloud_sync_baseline: null,
     save_last_backer_device: null,
     save_cloud_revision_at: null,

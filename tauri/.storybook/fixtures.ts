@@ -73,6 +73,8 @@ export function makeGame(over: Partial<GameEntry> = {}): GameEntry {
     save_last_backer_device: null,
     save_cloud_revision_at: null,
     steam_app_id: null,
+    play_status: null,
+    play_status_updated_at: null,
     ...over,
   };
 }
