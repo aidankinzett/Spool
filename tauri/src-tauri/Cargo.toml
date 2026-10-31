@@ -29,7 +29,7 @@ chrono = { version = "0.4", features = ["serde"] }
 # Runtime-checked queries (query/query_as) — no compile-time DATABASE_URL or
 # `.sqlx` offline cache needed, so CI builds unchanged.
 sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "sqlite", "chrono"] }
-dirs = "6"
+dirs = "7"
 thiserror = "2"
 tauri-plugin-dialog = "2.7.1"
 tauri-plugin-single-instance = "2"
@@ -71,7 +71,7 @@ blake3 = "1"
 # exchange lets a short on-screen code protect the rclone credentials sent over
 # plain HTTP, and an AEAD encrypts the payload under the derived key.
 spake2 = "0.4"
-chacha20poly1305 = "0.10"
+chacha20poly1305 = "0.11"
 base64 = "0.23"
 filetime = "0.2"
 serde_yaml = "0.9"
@@ -95,7 +95,7 @@ libc = "0.2"
 # Linux-only: systemd-logind D-Bus client (zbus) for the suspend watcher
 # that keeps the play-state lock alive across a Steam Deck sleep.
 [target.'cfg(target_os = "linux")'.dependencies]
-zbus = { version = "5", default-features = false, features = ["tokio"] }
+zbus = { version = "6", default-features = false, features = ["tokio"] }
 
 # Windows-only: registry probe for the per-exe Run-As-Admin
 # compatibility flag, and ShellExecuteExW-based elevated launch.
