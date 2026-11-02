@@ -82,7 +82,7 @@ pelite = "0.10"
 # poll-based (no pump) and covers Xbox-style + Steam-virtual pads. The feature is
 # Windows-only — Linux (evdev) / macOS (IOKit) ignore it and still build.
 gilrs = { version = "0.11.2", default-features = false, features = ["xinput"] }
-sysinfo = { version = "0.39.3", default-features = false, features = ["disk", "system"] }
+sysinfo = { version = "0.40.0", default-features = false, features = ["disk", "system"] }
 # Lists IPv4 interfaces + netmasks so LAN discovery can send a subnet broadcast
 # out each one (lan/discovery.rs).
 if-addrs = "0.15.0"
