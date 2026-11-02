@@ -64,8 +64,7 @@ mod linux {
     use crate::rclone;
     use chrono::Utc;
     use std::sync::atomic::Ordering;
-    use zbus::zvariant::OwnedFd;
-    use zbus::{Connection, Proxy};
+    use zbus::{Connection, OwnedFd, Proxy};
 
     const LOGIND_DEST: &str = "org.freedesktop.login1";
     const LOGIND_PATH: &str = "/org/freedesktop/login1";

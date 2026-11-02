@@ -95,7 +95,7 @@ libc = "0.2"
 # Linux-only: systemd-logind D-Bus client (zbus) for the suspend watcher
 # that keeps the play-state lock alive across a Steam Deck sleep.
 [target.'cfg(target_os = "linux")'.dependencies]
-zbus = { version = "6", default-features = false, features = ["tokio"] }
+zbus = { version = "6", default-features = false, features = ["tokio", "proxy"] }
 
 # Windows-only: registry probe for the per-exe Run-As-Admin
 # compatibility flag, and ShellExecuteExW-based elevated launch.

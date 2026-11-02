@@ -23,7 +23,7 @@ use crate::error::{AppError, AppResult};
 use crate::lan::LanState;
 use axum::http::StatusCode;
 use base64::Engine as _;
-use chacha20poly1305::aead::{Aead, AeadCore, KeyInit, OsRng};
+use chacha20poly1305::aead::{Aead, Generate, KeyInit};
 use chacha20poly1305::{ChaCha20Poly1305, Key, Nonce};
 use serde::{Deserialize, Serialize};
 use spake2::{Ed25519Group, Identity, Password, Spake2};
@@ -109,8 +109,7 @@ impl CloudPairing {
 }
 
 fn rand_below(n: u32) -> u32 {
-    use chacha20poly1305::aead::rand_core::RngCore;
-    OsRng.next_u32() % n
+    u32::generate() % n
 }
 
 // ── Wire types ──────────────────────────────────────────────────────────────
@@ -202,8 +201,8 @@ fn derive_keys(shared: &[u8]) -> ([u8; 32], [u8; 32]) {
 
 /// `nonce || ciphertext`.
 fn seal(key: &[u8; 32], plaintext: &[u8]) -> AppResult<Vec<u8>> {
-    let cipher = ChaCha20Poly1305::new(Key::from_slice(key));
-    let nonce = ChaCha20Poly1305::generate_nonce(&mut OsRng);
+    let cipher = ChaCha20Poly1305::new(&Key::from(*key));
+    let nonce = Nonce::generate();
     let mut out = nonce.to_vec();
     out.extend(
         cipher
@@ -218,8 +217,9 @@ fn open(key: &[u8; 32], blob: &[u8]) -> Option<Vec<u8>> {
         return None;
     }
     let (nonce, ct) = blob.split_at(12);
-    ChaCha20Poly1305::new(Key::from_slice(key))
-        .decrypt(Nonce::from_slice(nonce), ct)
+    let nonce = Nonce::try_from(nonce).ok()?;
+    ChaCha20Poly1305::new(&Key::from(*key))
+        .decrypt(&nonce, ct)
         .ok()
 }
 
