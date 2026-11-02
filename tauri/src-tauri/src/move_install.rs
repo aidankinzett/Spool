@@ -401,6 +401,10 @@ pub async fn move_game_install(
     tracing::info!(game_id = %id, "move_game_install: syncing custom saves");
     crate::custom_saves::sync_best_effort(&app).await;
 
+    // The LAN hash cache is keyed by absolute path; carry its entries over to
+    // the new folder so the next manifest request doesn't re-hash the game.
+    crate::lan::server::on_install_moved(&app, &id, src.clone(), dest.clone()).await;
+
     tracing::info!(game_id = %id, "move_game_install: done, emitting move:progress done + library:changed");
     emit(&app, &move_state, |p| {
         p.copied_bytes = p.total_bytes;
