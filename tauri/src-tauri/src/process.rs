@@ -1407,14 +1407,23 @@ mod tests {
     #[test]
     fn find_process_in_dir_only_counts_processes_started_since_the_launch() {
         let _serial = PROCESS_TESTS.blocking_lock();
+        // Resolved before the spawn rather than read back from
+        // `/proc/<pid>/exe`: `spawn` can return while the child is still
+        // inside `execve`, when that link still names the test binary.
+        // Canonical, as sysinfo reports it (`/bin` → `/usr/bin` on usrmerge).
+        let exe = std::fs::canonicalize("/bin/sleep").unwrap();
+        let dir = exe.parent().unwrap().to_path_buf();
         // Taken before the spawn, as `run_game` does.
         let launched = unix_secs_now();
-        let mut child = std::process::Command::new("sleep")
-            .arg("30")
-            .spawn()
-            .unwrap();
-        let exe = std::fs::read_link(format!("/proc/{}/exe", child.id())).unwrap();
-        let dir = exe.parent().unwrap().to_path_buf();
+        let mut child = std::process::Command::new(&exe).arg("30").spawn().unwrap();
+        // sysinfo caches the exe it first reads, so don't let it look until
+        // the exec has landed.
+        let link = format!("/proc/{}/exe", child.id());
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while std::fs::read_link(&link).ok().as_deref() != Some(exe.as_path()) {
+            assert!(std::time::Instant::now() < deadline, "sleep never exec'd");
+            std::thread::sleep(Duration::from_millis(5));
+        }
 
         let mut sys = System::new();
         let found = find_process_in_dir(&mut sys, &dir, launched);
