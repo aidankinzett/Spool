@@ -45,6 +45,17 @@ updates:
       tauri-frontend-major:
         update-types:
           - "major"
+    # Majors that need a migration rather than a bump; remove when doing it.
+    # SvelteKit 3 no longer reads svelte.config.js (config moves into the
+    # sveltekit() Vite plugin), and adapter-static 4 requires Kit 3.
+    # TypeScript 7 isn't supported by typescript-eslint yet.
+    ignore:
+      - dependency-name: "@sveltejs/kit"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "@sveltejs/adapter-static"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "typescript"
+        update-types: ["version-update:semver-major"]
 
   - package-ecosystem: "bun"
     directory: "/decky"
