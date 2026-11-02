@@ -1423,8 +1423,75 @@ mod tests {
         child.kill().unwrap();
         let _ = child.wait();
 
-        assert!(found.is_some_and(|p| p.starts_with(&dir)));
+        let diag = probe_diag(&mut sys, child.id(), launched);
+        assert!(
+            found.as_ref().is_some_and(|p| p.starts_with(&dir)),
+            "found={found:?} dir={dir:?} {diag}"
+        );
         assert_eq!(later, None);
+    }
+
+    // DIAGNOSTIC (temporary): what sysinfo sees for `pid` against the launch time.
+    #[cfg(target_os = "linux")]
+    fn probe_diag(sys: &mut System, pid: u32, launched: u64) -> String {
+        let btime: u64 = std::fs::read_to_string("/proc/stat")
+            .unwrap()
+            .lines()
+            .find_map(|l| l.strip_prefix("btime ").map(|v| v.trim().parse().unwrap()))
+            .unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs_f64();
+        let uptime = std::fs::read_to_string("/proc/uptime").unwrap();
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap_or_default();
+        let entry = sys
+            .process(Pid::from_u32(pid))
+            .map(|p| format!("start_time={} exe={:?}", p.start_time(), p.exe()));
+        format!(
+            "launched={launched} now={now:.3} btime={btime} uptime={} sysinfo_boot={} entry={entry:?} stat={stat:?}",
+            uptime.trim(),
+            System::boot_time()
+        )
+    }
+
+    // DIAGNOSTIC (temporary): repeats the scenario and reports the spread.
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore]
+    fn probe_start_time_skew() {
+        let mut worst = i64::MAX;
+        let mut bad = Vec::new();
+        for _ in 0..300 {
+            let launched = unix_secs_now();
+            let mut child = std::process::Command::new("sleep")
+                .arg("5")
+                .spawn()
+                .unwrap();
+            let exe = std::fs::read_link(format!("/proc/{}/exe", child.id())).unwrap();
+            let dir = exe.parent().unwrap().to_path_buf();
+            let mut sys = System::new();
+            let found = find_process_in_dir(&mut sys, &dir, launched);
+            let st = sys
+                .process(Pid::from_u32(child.id()))
+                .map(|p| p.start_time());
+            if let Some(st) = st {
+                worst = worst.min(st as i64 - launched as i64);
+            }
+            if found.is_none() {
+                bad.push(probe_diag(&mut sys, child.id(), launched));
+            }
+            child.kill().unwrap();
+            let _ = child.wait();
+            std::thread::sleep(Duration::from_millis(30));
+        }
+        eprintln!(
+            "PROBE worst start_time-launched={worst} misses={}",
+            bad.len()
+        );
+        for b in bad.iter().take(10) {
+            eprintln!("PROBE miss: {b}");
+        }
     }
 
     #[test]
