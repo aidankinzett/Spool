@@ -834,7 +834,11 @@ fn walk_game_files_with_hashes(
         if rel_str.is_empty() {
             continue;
         }
-        let metadata = entry.metadata()?;
+        // Name the file in the error: a single unreadable file fails the
+        // whole walk, and the bare OS error doesn't say which one it was.
+        let with_path =
+            |e: std::io::Error| std::io::Error::new(e.kind(), format!("{rel_str}: {e}"));
+        let metadata = entry.metadata().map_err(|e| with_path(e.into()))?;
         let size = metadata.len();
         let mtime = metadata.modified().ok();
 
@@ -862,7 +866,7 @@ fn walk_game_files_with_hashes(
             );
             h
         } else {
-            let h = hash_file_blocking(&abs)?;
+            let h = hash_file_blocking(&abs).map_err(with_path)?;
             tracing::debug!(
                 path = %rel_str,
                 size,
@@ -917,6 +921,62 @@ fn walk_game_files_with_hashes(
 /// file either way.
 fn persist_hash_cache(cache: &HashCache) {
     super::manifest_cache::save_blocking(&crate::paths::lan_hash_cache_file(), cache);
+}
+
+/// Moves every hash-cache entry under `src` to the same relative path
+/// under `dest`, returning how many entries moved. The cache is keyed by
+/// absolute path, so without this an install moved to a new folder misses
+/// on every file and the next manifest request re-hashes the whole game.
+/// Mtimes are carried over unchanged: a same-filesystem rename keeps each
+/// file's mtime, so the entries still match; after a cross-device copy the
+/// mtimes differ and those files are re-hashed on the next walk as before.
+fn rekey_cache_entries(
+    cache: &mut HashMap<PathBuf, (std::time::SystemTime, String)>,
+    src: &Path,
+    dest: &Path,
+) -> usize {
+    let moved: Vec<PathBuf> = cache
+        .keys()
+        .filter(|p| p.starts_with(src))
+        .cloned()
+        .collect();
+    for old in &moved {
+        let Ok(rel) = old.strip_prefix(src) else {
+            continue;
+        };
+        if let Some(value) = cache.remove(old) {
+            cache.insert(dest.join(rel), value);
+        }
+    }
+    moved.len()
+}
+
+/// Called after a game's install folder moves from `src` to `dest`
+/// (`move_install.rs`): rekeys the hash cache to the new paths, persists
+/// it, then starts a manifest prep so the first peer request after a move
+/// doesn't wait on a walk. Blocking work runs on `spawn_blocking`.
+pub(crate) async fn on_install_moved(app: &AppHandle, game_id: &str, src: PathBuf, dest: PathBuf) {
+    let cache = app.state::<LanManifests>().hash_cache.clone();
+    let res = tokio::task::spawn_blocking(move || {
+        let moved = match cache.write() {
+            Ok(mut g) => rekey_cache_entries(&mut g, &src, &dest),
+            Err(_) => 0,
+        };
+        if moved > 0 {
+            persist_hash_cache(&cache);
+        }
+        moved
+    })
+    .await;
+    match res {
+        Ok(moved) => {
+            tracing::info!(game_id = %game_id, moved, "lan hash cache rekeyed after install move")
+        }
+        Err(e) => {
+            tracing::warn!(game_id = %game_id, error = %e, "lan hash cache rekey task failed")
+        }
+    }
+    spawn_manifest_prep(app.clone(), game_id.to_string());
 }
 
 /// Returns the walk for `game_id`'s folder, joining one already in
@@ -1323,6 +1383,36 @@ pub fn spawn_manifest_warm(app: AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rekey_cache_entries_moves_only_entries_under_src() {
+        let t = std::time::SystemTime::UNIX_EPOCH + Duration::from_secs(1_000);
+        let src = PathBuf::from("/games/Old");
+        let dest = PathBuf::from("/spool/Old");
+        let mut cache = HashMap::new();
+        cache.insert(src.join("bin/game.exe"), (t, "aa".to_string()));
+        cache.insert(src.join("data.pak"), (t, "bb".to_string()));
+        cache.insert(PathBuf::from("/games/Older/x.pak"), (t, "cc".to_string()));
+        cache.insert(PathBuf::from("/games/Other/y.pak"), (t, "dd".to_string()));
+
+        let moved = rekey_cache_entries(&mut cache, &src, &dest);
+
+        assert_eq!(moved, 2);
+        assert_eq!(cache.len(), 4);
+        assert_eq!(
+            cache.get(&dest.join("bin/game.exe")),
+            Some(&(t, "aa".to_string()))
+        );
+        assert_eq!(
+            cache.get(&dest.join("data.pak")),
+            Some(&(t, "bb".to_string()))
+        );
+        assert!(!cache.contains_key(&src.join("data.pak")));
+        // `starts_with` is per path component, so a sibling sharing a name
+        // prefix isn't moved.
+        assert!(cache.contains_key(Path::new("/games/Older/x.pak")));
+        assert!(cache.contains_key(Path::new("/games/Other/y.pak")));
+    }
 
     /// Building the route table validates every path pattern. axum panics
     /// here on the pre-0.8 `:id`/`*path` capture syntax, so this is the guard
